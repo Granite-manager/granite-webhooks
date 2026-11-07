@@ -275,7 +275,9 @@ impl Maps {
                 continue;
             }
             let (Some(index), Some(secs)) = (
-                element["destinationIndex"].as_u64().and_then(|i| usize::try_from(i).ok()),
+                element["destinationIndex"]
+                    .as_u64()
+                    .and_then(|i| usize::try_from(i).ok()),
                 seconds(&element["duration"]),
             ) else {
                 continue;
