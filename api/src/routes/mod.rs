@@ -100,6 +100,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(integrations::router())
         .merge(position_sections::router())
         .merge(superuser_companies::router())
+        .merge(superuser_ringcentral::router())
         .merge(manual_feedback_reviews::router())
         .merge(signature_requests::router())
         .merge(signing::router())
