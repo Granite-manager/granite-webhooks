@@ -61,12 +61,10 @@ async fn the_schedule_lists_a_ranges_events(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
-async fn events_carry_their_sales_square_feet(pool: MySqlPool) {
+async fn events_name_the_sold_quote_that_added_them(pool: MySqlPool) {
     seed(&pool).await;
     sqlx::raw_sql(
-        "INSERT INTO sales (id, customer_id, seller_id, company_id, price, status, project_address, sale_date, square_feet) VALUES
-           (9720, 1000, 100, 100, 1000, 'sold', '1 Main St', '2026-03-01', 42.5);
-         UPDATE events SET sale_id = 9720 WHERE id = 9710;",
+        "UPDATE events SET quote_id = 9720 WHERE id = 9710;",
     )
     .execute(&pool)
     .await
@@ -77,8 +75,8 @@ async fn events_carry_their_sales_square_feet(pool: MySqlPool) {
         .await
         .json::<Value>();
     assert_eq!(common::ids(&body["events"]), [9712, 9710]);
-    assert_eq!(body["events"][0]["square_feet"], Value::Null);
-    assert_eq!(body["events"][1]["square_feet"], 42.5);
+    assert_eq!(body["events"][0]["quote_id"], Value::Null);
+    assert_eq!(body["events"][1]["quote_id"], 9720);
 }
 
 #[test_db::test(seed)]
