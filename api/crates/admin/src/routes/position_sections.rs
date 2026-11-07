@@ -9,9 +9,7 @@
 //! the app hides the tabs and the skills' buttons.
 
 use crate::auth::UserManager;
-use crate::auth::sections::{
-    self, CONFIGURABLE_POSITIONS, SHOP_TABS, SHOP_WORKER_POSITION, TABS,
-};
+use crate::auth::sections::{self, CONFIGURABLE_POSITIONS, SHOP_TABS, SHOP_WORKER_POSITION, TABS};
 use crate::auth::skills::{self, SKILLS};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -107,7 +105,8 @@ pub struct PositionSectionsInput {
 /// changed them. Shop Worker stays in the Shop app: its tabs are that app's
 /// Transactions, Samples and Schedule. Someone with several positions gets
 /// all their tabs together. By default every position opens the whole main
-/// app, except Inventory Manager, Scheduling Manager and Shop Worker. The Admin switch still opens
+/// app, except Shop Manager and Shop Worker (Schedule, Transactions,
+/// Samples), Inventory Manager and Scheduling Manager. The Admin switch still opens
 /// every admin page; an admin tab opens that page to someone without it.
 /// Every skill too, and each position's: by default every position sells
 /// slabs and works with transactions and quotes, and only Scheduling Manager
