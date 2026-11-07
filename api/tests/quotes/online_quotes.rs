@@ -707,3 +707,45 @@ async fn the_customers_notes_go_on_the_quote_and_to_the_team(pool: MySqlPool) {
         "{text}"
     );
 }
+
+#[test_db::test(seed)]
+async fn the_phone_reads_the_lines_the_team_was_told(pool: MySqlPool) {
+    let (server, _sent, chats) = server(&pool).await;
+    price_list(&server, &pool).await;
+    let mut body = quote_body("jane@new.example", "3175550199");
+    body["notes"] = json!("Gate code 1234.");
+    server
+        .post("/v1/public/companies/100/online-quotes")
+        .json(&body)
+        .await
+        .assert_status(StatusCode::CREATED);
+    let customer_id: i32 = sqlx::query_scalar("SELECT customer_id FROM quotes")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let notice: Value = server
+        .get(&format!("/v1/customers/{customer_id}/online-quote-notice"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    let lines: Vec<&str> = notice["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line.as_str().unwrap())
+        .collect();
+    // The same lines as the lead message in Telegram.
+    let chats = chats.lock().unwrap().clone();
+    let text = chats[0]["body"]["text"].as_str().unwrap();
+    for line in &lines {
+        assert!(text.contains(line), "{line} not in {text}");
+    }
+    assert!(lines[0].starts_with("Name: "), "{lines:?}");
+    assert_eq!(lines.last(), Some(&"Notes: Gate code 1234."));
+
+    server
+        .get("/v1/customers/1000/online-quote-notice")
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+}

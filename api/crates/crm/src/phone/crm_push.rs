@@ -150,9 +150,10 @@ pub async fn push_lead(
     .await
 }
 
-/// [`push_lead`] for the sales managers: a new or repeated lead also carries
-/// `assign: "1"`, so tapping it opens the customer with the Assign a sales
-/// rep sheet up (a repeated lead's rep can be changed there).
+/// [`push_lead`] for the sales managers: a new or repeated lead, and a
+/// finished online quote of a lead with no rep yet (the managers get only
+/// those), also carry `assign: "1"`, so tapping it opens the lead inbox
+/// where its sales rep is chosen (a repeated lead's rep can be changed there).
 pub async fn push_manager_lead(
     state: &AppState,
     company_id: i32,
@@ -161,7 +162,7 @@ pub async fn push_manager_lead(
     customer_id: i32,
     deal_id: Option<i64>,
 ) -> sqlx::Result<usize> {
-    let assign = matches!(kind, LeadKind::New | LeadKind::Repeat);
+    let assign = matches!(kind, LeadKind::New | LeadKind::Repeat | LeadKind::Quote);
     push_lead_data(
         state,
         company_id,

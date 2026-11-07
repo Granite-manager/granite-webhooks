@@ -33357,6 +33357,85 @@
         }
       }
     },
+    "/v1/customers/{id}/online-quote-notice": {
+      "get": {
+        "tags": [
+          "online-quotes"
+        ],
+        "summary": "Get what the team was told about a customer's online quote",
+        "description": "The lines of the lead message (Telegram's) for the customer's newest\nquote made with the online quote: the customer's name, phone and email,\neach color's price as priced now, and the customer's notes. The phone\napp shows them in its \"online quote\" notification, as Telegram does.",
+        "operationId": "get_customer_online_quote_notice",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The lines",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnlineQuoteNotice"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such customer in the caller's company, or no online quote of theirs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/commission-rules": {
       "get": {
         "tags": [
@@ -88536,6 +88615,28 @@
           }
         },
         "additionalProperties": false
+      },
+      "OnlineQuoteNotice": {
+        "type": "object",
+        "description": "What the team was told about a customer's newest online quote, one line\neach, as the Telegram lead message has them.",
+        "required": [
+          "quote_id",
+          "lines"
+        ],
+        "properties": {
+          "quote_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The quote's id."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "`Name: …`, `Phone: …`, `Email: …`, then each color's price\n(`Granite Absolute Black Leathered: $5,482.00`) and `Notes: …`."
+          }
+        }
       },
       "OnlineQuoteOption": {
         "type": "object",

@@ -659,6 +659,13 @@ async fn a_lead_assigned_in_telegram_refreshes_every_phone_of_the_company(pool: 
     .await;
     // The `new` push went to Mark: the others refetch quietly.
     assert_eq!(tokens(&leads_refreshes(&stubs)[4..]), ["push-1", "push-3"]);
+    // A managers' finished quote (a lead with no rep yet) opens the lead
+    // inbox to choose its rep, as a new lead does.
+    let quote = pushes(&stubs, "lead")
+        .into_iter()
+        .rfind(|(_, data)| data["kind"] == "quote")
+        .expect("Mark got the quote");
+    assert_eq!(quote.1["assign"], "1");
 }
 
 #[test_db::test(seed)]

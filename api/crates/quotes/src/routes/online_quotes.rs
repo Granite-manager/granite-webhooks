@@ -19,11 +19,12 @@
 //! a known customer with no rep goes to the managers.
 
 use crate::app_origin::{app_origin, company_subdomain};
+use crate::auth::EmployeeUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
 use crate::openapi::{OpenApiRouter, routes};
-use crate::phone::crm_push::{LeadKind, push_lead_logged};
+use crate::phone::crm_push::{LeadKind, push_lead_logged, push_manager_lead};
 use crate::quote_pricing::doc::QuoteDoc;
 use crate::quote_pricing::edit::new_id;
 use crate::quote_pricing::js::{arr, num, on, truthy};
@@ -59,6 +60,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(setup))
         .routes(routes!(prices))
         .routes(routes!(create))
+        .routes(routes!(lead_notice))
 }
 
 /// `positions.id` of a sales rep and of a sales manager.
@@ -1455,7 +1457,8 @@ async fn notify_managers(
         }
     }
     let manager_ids: Vec<i32> = managers.iter().map(|m| m.id).collect();
-    push_lead_logged(
+    // `assign: "1"`: tapping it opens the lead inbox, where a manager picks its rep.
+    if let Err(error) = push_manager_lead(
         state,
         company_id,
         &manager_ids,
@@ -1463,7 +1466,10 @@ async fn notify_managers(
         customer_id,
         None,
     )
-    .await;
+    .await
+    {
+        tracing::warn!(?error, company_id, customer_id, "lead push failed");
+    }
     // A manager with the app still gets the Telegram message: it carries the
     // buttons that assign the lead. The app counts as reaching them.
     let with_app = users_with_app(&state.pool, company_id, &manager_ids).await;
@@ -1856,6 +1862,81 @@ pub async fn create(
             prices,
         }),
     ))
+}
+
+/// What the team was told about a customer's newest online quote, one line
+/// each, as the Telegram lead message has them.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct OnlineQuoteNotice {
+    /// The quote's id.
+    pub quote_id: i32,
+    /// `Name: …`, `Phone: …`, `Email: …`, then each color's price
+    /// (`Granite Absolute Black Leathered: $5,482.00`) and `Notes: …`.
+    pub lines: Vec<String>,
+}
+
+/// Get what the team was told about a customer's online quote
+///
+/// The lines of the lead message (Telegram's) for the customer's newest
+/// quote made with the online quote: the customer's name, phone and email,
+/// each color's price as priced now, and the customer's notes. The phone
+/// app shows them in its "online quote" notification, as Telegram does.
+#[crate::openapi::path(
+    get,
+    path = "/v1/customers/{id}/online-quote-notice",
+    operation_id = "get_customer_online_quote_notice",
+    tag = "online-quotes",
+    params(("id" = i32, Path, description = "Customer id")),
+    responses(
+        (status = 200, description = "The lines", body = OnlineQuoteNotice),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 404, description = "No such customer in the caller's company, or no online quote of theirs", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn lead_notice(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    Path(customer_id): Path<i32>,
+) -> ApiResult<Json<OnlineQuoteNotice>> {
+    let company_id = user.company_id;
+    let name: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT name FROM customers WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
+    )
+    .bind(customer_id)
+    .bind(company_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(name) = name else {
+        return Err(ApiError::NotFound);
+    };
+    let quotes = customer_online_quotes(&state.pool, company_id, customer_id).await?;
+    let Some(quote) = quotes.into_iter().next() else {
+        return Err(ApiError::NotFound);
+    };
+    let (phone, email, notes): (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT phone, email, notes FROM quotes WHERE id = ? AND company_id = ?")
+            .bind(quote.id)
+            .bind(company_id)
+            .fetch_one(&state.pool)
+            .await?;
+    let notice = Notice {
+        customer: name.as_deref().unwrap_or_default(),
+        phone: phone.as_deref().unwrap_or_default(),
+        email: email.as_deref().unwrap_or_default(),
+        prices: &quote.prices,
+        link: "",
+        // Neither is kept with the quote: no line for them.
+        emailed: true,
+        contact_by: None,
+        notes: notes.as_deref().map(str::trim).filter(|n| !n.is_empty()),
+    };
+    Ok(Json(OnlineQuoteNotice {
+        quote_id: quote.id,
+        lines: notice.details().lines().map(str::to_string).collect(),
+    }))
 }
 
 /// One of a customer's online quotes, as their own page shows it.
