@@ -5,11 +5,12 @@
 //! [`default_tabs`]). Someone holding several of them (in the company the
 //! request acts in) gets all their tabs together. Most positions open every
 //! main-app tab by default, so nothing changes until a company takes some
-//! away; Shop Manager (the shop app's pages), Inventory Manager and
-//! Scheduling Manager open only a few. The
-//! portal positions (Shop Worker, Installer, Marketing, Walk-in, Template
-//! Guy) keep their own apps, and Super Admin, superusers and users without a
-//! listed position keep the whole app.
+//! away; Shop Manager and Shop Worker (the Shop app's pages), Inventory
+//! Manager and Scheduling Manager open only a few. Shop Worker stays in the
+//! Shop app, where its tabs ([`SHOP_TABS`]) pick the pages it shows. The
+//! other portal positions (Installer, Marketing, Walk-in, Template Guy) keep
+//! their own apps, and Super Admin, superusers and users without a listed
+//! position keep the whole app.
 //!
 //! The Admin switch still opens the whole admin side: for an admin, position
 //! access hides only main-app tabs, and the API keeps all of its data. For
@@ -28,22 +29,30 @@ use sqlx::MySqlPool;
 
 /// `positions.id` of Shop Manager.
 pub const SHOP_MANAGER_POSITION: i32 = 3;
+/// `positions.id` of Shop Worker.
+pub const SHOP_WORKER_POSITION: i32 = 4;
 /// `positions.id` of Inventory Manager.
 pub const INVENTORY_MANAGER_POSITION: i32 = 12;
 /// `positions.id` of Scheduling Manager.
 pub const SCHEDULING_MANAGER_POSITION: i32 = 13;
 
-/// The positions whose tabs a company may change, in the Company page's
-/// order: Sales Rep, Sales Manager, Manager, Shop Manager, Inventory Manager,
-/// Scheduling Manager. Office Manager (10) is retired.
-pub const CONFIGURABLE_POSITIONS: [i32; 6] = [
+/// The positions whose tabs a company may change, in the Company page's order.
+///
+/// Sales Rep, Sales Manager, Manager, Shop Manager, Shop Worker, Inventory
+/// Manager, Scheduling Manager. Office Manager (10) is retired.
+pub const CONFIGURABLE_POSITIONS: [i32; 7] = [
     1,
     2,
     5,
     SHOP_MANAGER_POSITION,
+    SHOP_WORKER_POSITION,
     INVENTORY_MANAGER_POSITION,
     SCHEDULING_MANAGER_POSITION,
 ];
+
+/// The tabs the Shop app has, the only ones Shop Worker may open (its login
+/// stays in the Shop app), in [`TABS`] order.
+pub const SHOP_TABS: [&str; 3] = ["schedule", "transactions", "samples"];
 
 /// What an admin tab opens as admin: the inventory.
 const INVENTORY_API: [&str; 7] = [
@@ -244,12 +253,12 @@ pub fn tab(key: &str) -> Option<&'static Tab> {
 }
 
 /// The tabs a position opens in a company that has not changed them, in
-/// [`TABS`] order: every main-app tab, except for Shop Manager (the pages
-/// of the shop app: Schedule, Transactions, Samples), Inventory Manager and
-/// Scheduling Manager.
+/// [`TABS`] order: every main-app tab, except for Shop Manager and Shop
+/// Worker (the Shop app's pages: Schedule, Transactions, Samples), Inventory
+/// Manager and Scheduling Manager.
 pub fn default_tabs(position_id: i32) -> Vec<&'static str> {
     let keys: &[&str] = match position_id {
-        SHOP_MANAGER_POSITION => &["schedule", "transactions", "samples"],
+        SHOP_MANAGER_POSITION | SHOP_WORKER_POSITION => &SHOP_TABS,
         INVENTORY_MANAGER_POSITION => &[
             "stones",
             "sinks",
@@ -488,9 +497,10 @@ mod tests {
     fn only_listed_positions_in_the_acting_company_count() {
         let u = user(3);
         assert_eq!(configured_positions(&u, &rows(&[])), Vec::<i32>::new());
-        // Installer and Shop Worker keep their own apps.
+        // Installer keeps its own app; Shop Worker's tabs pick the Shop app's.
+        assert_eq!(configured_positions(&u, &rows(&[(6, 3), (4, 3)])), vec![4]);
         assert_eq!(
-            configured_positions(&u, &rows(&[(6, 3), (4, 3)])),
+            configured_positions(&u, &rows(&[(6, 3)])),
             Vec::<i32>::new()
         );
         assert_eq!(
@@ -585,6 +595,7 @@ mod tests {
         }
         assert_eq!(default_tabs(3), vec!["schedule", "transactions", "samples"]);
         assert_eq!(default_tabs(13), vec!["customers", "schedule"]);
+        assert_eq!(default_tabs(4), SHOP_TABS.to_vec());
         assert!(default_tabs(12).contains(&"admin_stones"));
         assert!(!default_tabs(12).contains(&"transactions"));
     }
