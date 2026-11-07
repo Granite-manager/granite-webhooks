@@ -159,7 +159,7 @@ async fn subscriptions_move_to_the_current_token(pool: MySqlPool) {
     );
     let renewal = subscribed_seen.lock().unwrap()[2].1.clone();
     assert_eq!(renewal["deliveryMode"]["address"], ours.as_str());
-    assert_eq!(renewal["deliveryMode"]["verificationToken"], TOKEN);
+    assert_eq!(renewal["deliveryMode"]["verificationToken"], &TOKEN[4..]);
     assert_eq!(
         renewal["eventFilters"][0],
         "/restapi/v1.0/account/~/extension/501/message-store/instant?type=SMS"
@@ -167,7 +167,7 @@ async fn subscriptions_move_to_the_current_token(pool: MySqlPool) {
     // Never created here.
     assert_eq!(requests(&other_seen), ["GET subscription"]);
 
-    let current = Some(token_hash(TOKEN));
+    let current = Some(token_hash(&TOKEN[4..]));
     assert_eq!(stored_hash(&pool, 7101).await, current);
     assert_eq!(stored_hash(&pool, 7102).await, current);
 
@@ -199,8 +199,11 @@ async fn a_new_token_reaches_subscriptions_on_the_old_one(pool: MySqlPool) {
         .unwrap()
         .1
         .clone();
-    assert_eq!(renewal["deliveryMode"]["verificationToken"], TOKEN);
-    assert_eq!(stored_hash(&pool, 7103).await, Some(token_hash(TOKEN)));
+    assert_eq!(renewal["deliveryMode"]["verificationToken"], &TOKEN[4..]);
+    assert_eq!(
+        stored_hash(&pool, 7103).await,
+        Some(token_hash(&TOKEN[4..]))
+    );
 }
 
 #[test_db::test]

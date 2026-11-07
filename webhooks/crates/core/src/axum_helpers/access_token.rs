@@ -26,6 +26,7 @@ use axum::http::{HeaderMap, StatusCode, request::Parts};
 use common::access_token::{self as tokens, CACHE_TTL, Denied, Scope, TokenCache, VerifyError};
 use lambda_http::tracing;
 use sqlx::MySqlPool;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::{LazyLock, Mutex};
@@ -105,7 +106,7 @@ pub trait LegacyAuth: TokenScope {
 }
 
 /// The access token in `headers`, if any looks like one.
-fn presented_token(headers: &HeaderMap) -> Option<&str> {
+fn presented_token(headers: &HeaderMap) -> Option<Cow<'_, str>> {
     let header = |name: &str| {
         headers
             .get(name)
@@ -118,14 +119,24 @@ fn presented_token(headers: &HeaderMap) -> Option<&str> {
             .filter(|scheme| scheme.eq_ignore_ascii_case("bearer "))
             .map_or(value, |_| value[7..].trim())
     });
-    [
-        authorization,
-        header("x-telegram-bot-api-secret-token"),
-        header("verification-token"),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|value| value.starts_with(tokens::TOKEN_PREFIX))
+    [authorization, header("x-telegram-bot-api-secret-token")]
+        .into_iter()
+        .flatten()
+        .find(|value| value.starts_with(tokens::TOKEN_PREFIX))
+        .map(Cow::Borrowed)
+        .or_else(|| header("verification-token").and_then(verification_token))
+}
+
+/// `RingCentral`'s `Verification-Token`. It allows only letters and digits in
+/// a subscription's `verificationToken`, so subscriptions carry the token
+/// without its `gmk_` prefix, put back here.
+fn verification_token(value: &str) -> Option<Cow<'_, str>> {
+    if value.starts_with(tokens::TOKEN_PREFIX) {
+        return Some(Cow::Borrowed(value));
+    }
+    (value.len() == tokens::TOKEN_LEN - tokens::TOKEN_PREFIX.len()
+        && value.bytes().all(|b| b.is_ascii_alphanumeric()))
+    .then(|| Cow::Owned(format!("{}{value}", tokens::TOKEN_PREFIX)))
 }
 
 /// The `token` query parameter, if it looks like an access token. Tokens
@@ -140,10 +151,10 @@ fn url_token(uri: &axum::http::Uri) -> Option<&str> {
 }
 
 /// The token a request for a route of scope `S` presents.
-fn request_token<S: TokenScope>(parts: &Parts) -> Option<&str> {
+fn request_token<S: TokenScope>(parts: &Parts) -> Option<Cow<'_, str>> {
     presented_token(&parts.headers).or_else(|| {
         if S::TOKEN_IN_URL {
-            url_token(&parts.uri)
+            url_token(&parts.uri).map(Cow::Borrowed)
         } else {
             None
         }
@@ -182,7 +193,7 @@ where
             return Err(UNAUTHORIZED_RESPONSE);
         };
         let pool = MySqlPool::from_ref(state);
-        match TOKENS.verify(&pool, token, S::SCOPE, company_id).await {
+        match TOKENS.verify(&pool, &token, S::SCOPE, company_id).await {
             Ok(token) => Ok(Self {
                 token,
                 scope: PhantomData,
@@ -233,7 +244,7 @@ where
         let report = AuthReport::new(parts, L::SCOPE, company_id);
         if let Some(token) = request_token::<L>(parts) {
             let pool = MySqlPool::from_ref(state);
-            match TOKENS.verify(&pool, token, L::SCOPE, company_id).await {
+            match TOKENS.verify(&pool, &token, L::SCOPE, company_id).await {
                 Ok(token) => return Ok(Self::new(Some(token))),
                 // Not refused yet: the old check below still decides, so a
                 // caller is never worse off for trying a token.
@@ -401,15 +412,15 @@ mod tests {
         let bearer = format!("Bearer {TOKEN}");
         let lower = format!("bearer  {TOKEN}");
         assert_eq!(
-            presented_token(&headers(&[("authorization", &bearer)])),
+            presented_token(&headers(&[("authorization", &bearer)])).as_deref(),
             Some(TOKEN)
         );
         assert_eq!(
-            presented_token(&headers(&[("authorization", &lower)])),
+            presented_token(&headers(&[("authorization", &lower)])).as_deref(),
             Some(TOKEN)
         );
         assert_eq!(
-            presented_token(&headers(&[("authorization", TOKEN)])),
+            presented_token(&headers(&[("authorization", TOKEN)])).as_deref(),
             Some(TOKEN)
         );
     }
@@ -417,11 +428,11 @@ mod tests {
     #[test]
     fn token_is_read_from_the_provider_headers() {
         assert_eq!(
-            presented_token(&headers(&[("x-telegram-bot-api-secret-token", TOKEN)])),
+            presented_token(&headers(&[("x-telegram-bot-api-secret-token", TOKEN)])).as_deref(),
             Some(TOKEN)
         );
         assert_eq!(
-            presented_token(&headers(&[("verification-token", TOKEN)])),
+            presented_token(&headers(&[("verification-token", TOKEN)])).as_deref(),
             Some(TOKEN)
         );
         // The old secret in Authorization, a token in another header.
@@ -432,8 +443,32 @@ mod tests {
                     "Bearer 9ca4dfa8-0eec-46cc-967f-3385624be883"
                 ),
                 ("verification-token", TOKEN),
-            ])),
+            ]))
+            .as_deref(),
             Some(TOKEN)
+        );
+    }
+
+    #[test]
+    fn verification_token_gets_its_prefix_back() {
+        // RingCentral allows only letters and digits: subscriptions carry the
+        // token without `gmk_`.
+        assert_eq!(
+            presented_token(&headers(&[("verification-token", &TOKEN[4..])])).as_deref(),
+            Some(TOKEN)
+        );
+        // The old UUID (32 hex digits) is not a token.
+        assert_eq!(
+            presented_token(&headers(&[(
+                "verification-token",
+                "9ca4dfa80eec46cc967f3385624be883"
+            )])),
+            None
+        );
+        // Only RingCentral's header drops the prefix.
+        assert_eq!(
+            presented_token(&headers(&[("authorization", &TOKEN[4..])])),
+            None
         );
     }
 
