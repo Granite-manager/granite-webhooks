@@ -48,7 +48,7 @@ pub struct DayRoute {
     pub home: Option<Point>,
     /// Where each stop is, in the order asked; `None` where Google cannot find it.
     pub stops: Vec<Option<Point>>,
-    /// The driving route from home through the stops, as an encoded polyline.
+    /// The driving route through the stops and back home, as an encoded polyline.
     pub line: Option<String>,
     /// PNG as a `data:` URL.
     pub image: Option<String>,
@@ -355,10 +355,13 @@ impl Maps {
         for address in addresses {
             route.stops.push(self.geocode(address).await);
         }
+        // The stops in order, then back to the warehouse (routes start
+        // farthest out and end at the shop).
         let points: Vec<Point> = route
-            .home
+            .stops
             .iter()
-            .chain(route.stops.iter().flatten())
+            .flatten()
+            .chain(route.home.iter())
             .copied()
             .collect();
         if points.is_empty() {

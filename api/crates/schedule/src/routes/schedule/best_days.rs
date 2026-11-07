@@ -3,7 +3,7 @@
 //! - `POST /v1/schedule/best-days` → how far a waiting job is from each
 //!   later stop of its calendar, so the month can light up the days whose
 //!   route passes closest while the job is dragged (Best days while dragging
-//!   skill). Template jobs only for now: installations are scheduled by hand.
+//!   skill). Template and installation jobs.
 
 use crate::auth::EmployeeUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -57,10 +57,10 @@ struct Stop {
 
 /// Best days for a waiting job
 ///
-/// Miles and driving minutes from the job to every one-off event of its calendar with an address
-/// between now (or the range start, if later) and the range end. The app
-/// groups them by day; the nearest stop of a day is how well the job fits it.
-/// Template jobs only for now: an installation job gets no stops.
+/// Miles and driving minutes from the job to every one-off event of its
+/// calendar with an address between now (or the range start, if later) and
+/// the range end. The app lights up the closest events while the job is
+/// dragged. Template and installation jobs; any other job gets no stops.
 #[crate::openapi::path(
     post,
     path = "/v1/schedule/best-days",
@@ -100,8 +100,8 @@ pub async fn best_days(
     .await?;
     let (location, calendar_id, slug) = job.ok_or(ApiError::NotFound)?;
     let none = || Json(BestDays { stops: Vec::new() });
-    // Template jobs only for now: installations are scheduled by hand.
-    if slug.as_deref() != Some("templates") {
+    // Template and installation jobs.
+    if !matches!(slug.as_deref(), Some("templates" | "installations")) {
         return Ok(none());
     }
     let Some(location) = location else {

@@ -41178,7 +41178,7 @@
           "schedule"
         ],
         "summary": "Optimize a day's route",
-        "description": "Orders the events by the shortest drive from the company address (or in\nthe approved `order` from the preview) and hands the day's existing start\ntimes out in that order (each event keeps its length). All-day and\nrepeating events are ordered but keep their times. Moved events get a\nhistory line and re-timed reminders.",
+        "description": "Orders the events from the farthest stop back toward the company address\n(or in the approved `order` from the preview) and hands the day's existing start\ntimes out in that order (each event keeps its length). All-day and\nrepeating events are ordered but keep their times. Moved events get a\nhistory line and re-timed reminders.",
         "operationId": "optimize_schedule_route",
         "requestBody": {
           "content": {
@@ -41265,7 +41265,7 @@
           "schedule"
         ],
         "summary": "Preview a day's route",
-        "description": "The fastest order from the company address and the new times the timed\nevents would get, without saving anything. Send the order back to\n`optimize-route` to apply it.",
+        "description": "The order from the farthest stop back toward the company address and the\nnew times the timed events would get, without saving anything. Send the\norder back to `optimize-route` to apply it.",
         "operationId": "preview_schedule_route",
         "requestBody": {
           "content": {
@@ -41352,7 +41352,7 @@
           "schedule"
         ],
         "summary": "Best days for a waiting job",
-        "description": "Miles from the job to every one-off event of its calendar with an address\nbetween now (or the range start, if later) and the range end. The app\ngroups them by day; the nearest stop of a day is how well the job fits it.\nTemplate jobs only for now: an installation job gets no stops.",
+        "description": "Miles and driving minutes from the job to every one-off event of its\ncalendar with an address between now (or the range start, if later) and\nthe range end. The app lights up the closest events while the job is\ndragged. Template and installation jobs; any other job gets no stops.",
         "operationId": "schedule_best_days",
         "requestBody": {
           "content": {
@@ -89363,7 +89363,7 @@
               "type": "integer",
               "format": "int32"
             },
-            "description": "Event ids in driving order from the company."
+            "description": "Event ids in driving order, farthest first."
           },
           "changed": {
             "type": "integer",
@@ -97688,7 +97688,7 @@
               "type": "integer",
               "format": "int32"
             },
-            "description": "Event ids in driving order from the company."
+            "description": "Event ids in driving order, farthest first."
           },
           "moves": {
             "type": "array",

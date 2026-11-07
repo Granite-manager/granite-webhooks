@@ -117,18 +117,34 @@ pub fn solve_open_route(cost: &[Vec<f64>]) -> Vec<usize> {
 /// 2026-11-07). The best open route on the reversed drive times, walked backwards.
 pub fn solve_route_back_home(cost: &[Vec<f64>]) -> Vec<usize> {
     let points = cost.len();
-    let reversed: Vec<Vec<f64>> = (0..points)
-        .map(|from| (0..points).map(|to| cost[to][from]).collect())
-        .collect();
-    let mut order = solve_open_route(&reversed);
-    order.reverse();
     // The farthest from the shop always comes first.
-    if let Some(far) = (1..points).max_by(|a, b| cost[0][*a].total_cmp(&cost[0][*b]))
-        && let Some(at) = order.iter().position(|stop| *stop == far)
-    {
-        let stop = order.remove(at);
-        order.insert(0, stop);
-    }
+    let Some(far) = (1..points).max_by(|a, b| cost[0][*a].total_cmp(&cost[0][*b])) else {
+        return Vec::new();
+    };
+    // The rest: the open route from the shop on the reversed drive times,
+    // walked backwards, so it ends nearest the shop. A leg Google was not
+    // asked for (a stop back to the shop) takes the other direction's time.
+    let rest: Vec<usize> = std::iter::once(0)
+        .chain((1..points).filter(|point| *point != far))
+        .collect();
+    let leg = |from: usize, to: usize| {
+        let back = cost[to][from];
+        if back.is_finite() {
+            back
+        } else {
+            cost[from][to]
+        }
+    };
+    let reversed: Vec<Vec<f64>> = rest
+        .iter()
+        .map(|&from| rest.iter().map(|&to| leg(from, to)).collect())
+        .collect();
+    let mut order: Vec<usize> = solve_open_route(&reversed)
+        .into_iter()
+        .map(|index| rest[index])
+        .collect();
+    order.reverse();
+    order.insert(0, far);
     order
 }
 
@@ -202,11 +218,22 @@ mod tests {
     }
 
     #[test]
-    fn templates_start_farthest_and_work_back_home() {
+    fn routes_start_farthest_and_work_back_home() {
         // Stops at 1, 5 and 3 miles out on one road.
         let cost = line(&[0.0, 1.0, 5.0, 3.0]);
         assert_eq!(solve_route_back_home(&cost), vec![2, 3, 1]);
         assert_eq!(solve_route_back_home(&line(&[0.0])), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn routes_back_home_without_drive_times_back_to_the_shop() {
+        // Google is asked from the shop and the stops to the stops only: no
+        // stop has a time back to the shop. Every stop stays on the route.
+        let mut cost = line(&[0.0, 1.0, 5.0, 3.0, 4.0]);
+        for row in cost.iter_mut().skip(1) {
+            row[0] = f64::INFINITY;
+        }
+        assert_eq!(solve_route_back_home(&cost), vec![2, 4, 3, 1]);
     }
 
     #[test]
