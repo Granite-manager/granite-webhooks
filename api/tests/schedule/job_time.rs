@@ -209,12 +209,24 @@ async fn server_with_drives(pool: MySqlPool) -> TestServer {
 }
 
 #[test_db::test(seed)]
-async fn auto_plan_fills_one_installers_days_by_drive_time(pool: MySqlPool) {
+async fn auto_plan_fills_one_templaters_days_by_drive_time(pool: MySqlPool) {
     seed(&pool).await;
+    // Auto-plan is for templates only for now: the seed's jobs move to a
+    // Templates calendar and Mark and Ada make templates.
+    sqlx::raw_sql(
+        "UPDATE calendars SET name = 'Templates', slug = 'templates' WHERE id = 9800;
+         UPDATE users_positions SET position_id = 11 WHERE user_id IN (101, 102) AND position_id = 6 AND company_id = 100;
+         INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (9802, 100, 'Installations', 'blue', 'installations');
+         INSERT INTO users_positions (user_id, position_id, company_id) VALUES (104, 6, 100);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let server = server_with_drives(pool.clone()).await;
     server
         .put("/v1/schedule/time-rules")
-        .json(&json!({ "kind": "installations", "rules": install_rules() }))
+        .json(&json!({ "kind": "templates", "rules": install_rules() }))
         .with_session(sessions::ADMIN)
         .await
         .assert_status(StatusCode::NO_CONTENT);
@@ -227,7 +239,7 @@ async fn auto_plan_fills_one_installers_days_by_drive_time(pool: MySqlPool) {
     let plan = server
         .post("/v1/schedule/auto-plan")
         .json(&request(json!(102)))
-        .with_session(sessions::REP)
+        .with_session(sessions::ADMIN)
         .await
         .json::<Value>();
     // Ada's Monday opens with the oldest job, Alice's at Stop B: 60 minutes
@@ -282,7 +294,7 @@ async fn auto_plan_fills_one_installers_days_by_drive_time(pool: MySqlPool) {
     let mark = server
         .post("/v1/schedule/auto-plan")
         .json(&request(json!(101)))
-        .with_session(sessions::REP)
+        .with_session(sessions::ADMIN)
         .await
         .json::<Value>();
     let ids: Vec<i64> = mark["placements"]
@@ -297,17 +309,19 @@ async fn auto_plan_fills_one_installers_days_by_drive_time(pool: MySqlPool) {
     assert_eq!(mark["placements"][1]["start_date"], "2026-11-03T15:00:00Z");
 
     for bad in [
-        // No installer picked, someone not an installer, not a job calendar,
-        // no days.
+        // No template maker picked, someone not a template maker, not a job
+        // calendar, the Installations calendar (not auto-planned for now), no
+        // days.
         request(Value::Null),
         request(json!(104)),
         json!({ "calendar_id": 9801, "user_id": 102, "start_date": "2026-11-02", "days": 5, "statuses": ["ready"] }),
+        json!({ "calendar_id": 9802, "user_id": 104, "start_date": "2026-11-02", "days": 5, "statuses": ["ready"] }),
         json!({ "calendar_id": 9800, "user_id": 102, "start_date": "2026-11-02", "days": 0, "statuses": ["ready"] }),
     ] {
         server
             .post("/v1/schedule/auto-plan")
             .json(&bad)
-            .with_session(sessions::REP)
+            .with_session(sessions::ADMIN)
             .await
             .assert_status_bad_request();
     }

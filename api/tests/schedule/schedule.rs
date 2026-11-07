@@ -243,11 +243,11 @@ async fn a_day_map_is_drawn(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
-async fn best_days_measure_the_later_stops_of_the_jobs_calendar(pool: MySqlPool) {
+async fn best_days_measure_the_later_stops_of_a_template_jobs_calendar(pool: MySqlPool) {
     sqlx::raw_sql(
         "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
-           (9150, 100, 'Installations', 'blue', 'installations'),
-           (9151, 100, 'Templates', 'red', 'templates');
+           (9150, 100, 'Templates', 'red', 'templates'),
+           (9151, 100, 'Installations', 'blue', 'installations');
          INSERT INTO events (id, title, location, start_date, end_date, all_day, created_user_id, calendar_id, unscheduled, rrule) VALUES
            (9160, 'Waiting', 'Job', '2030-01-01 12:00:00', '2030-01-01 12:00:00', 1, 100, 9150, 1, NULL),
            (9161, 'Same place', 'job', '2030-01-15 14:00:00', '2030-01-15 15:00:00', 0, 100, 9150, 0, NULL),
@@ -259,7 +259,8 @@ async fn best_days_measure_the_later_stops_of_the_jobs_calendar(pool: MySqlPool)
            (9167, 'Past', 'Near', '2020-01-16 14:00:00', '2020-01-16 15:00:00', 0, 100, 9150, 0, NULL),
            (9168, 'Repeats', 'Near', '2030-01-16 14:00:00', '2030-01-16 15:00:00', 0, 100, 9150, 0, 'FREQ=WEEKLY'),
            (9169, 'Also waiting', 'Near', '2030-01-16 14:00:00', '2030-01-16 15:00:00', 0, 100, 9150, 1, NULL),
-           (9170, 'After the range', 'Near', '2030-03-16 14:00:00', '2030-03-16 15:00:00', 0, 100, 9150, 0, NULL);",
+           (9170, 'After the range', 'Near', '2030-03-16 14:00:00', '2030-03-16 15:00:00', 0, 100, 9150, 0, NULL),
+           (9171, 'Waiting install', 'Job', '2030-01-01 12:00:00', '2030-01-01 12:00:00', 1, 100, 9151, 1, NULL);",
     )
     .execute(&pool)
     .await
@@ -282,6 +283,15 @@ async fn best_days_measure_the_later_stops_of_the_jobs_calendar(pool: MySqlPool)
             { "event_id": 9163, "miles": 69.1 },
         ] })
     );
+    // Template jobs only for now: a waiting installation has no best days,
+    // even with stops on its calendar.
+    let install: Value = server
+        .post("/v1/schedule/best-days")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "event_id": 9171, "start": "2020-01-01T00:00:00Z", "end": "2030-02-01T00:00:00Z" }))
+        .await
+        .json();
+    assert_eq!(install, json!({ "stops": [] }));
     server
         .post("/v1/schedule/best-days")
         .with_session(sessions::ADMIN)

@@ -876,10 +876,10 @@ fn utc_text(at: DateTime<Utc>) -> String {
 /// Body of `POST /v1/schedule/auto-plan`.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AutoPlanInput {
-    /// The Installations or Templates calendar.
+    /// The Templates calendar (installations are not auto-planned for now).
     pub calendar_id: i32,
-    /// The installer (Installations) or template maker (Templates) to plan
-    /// for. Leave it out only when the company has no one in that role.
+    /// The template maker to plan for. Leave it out only when the company
+    /// has no one in that role.
     #[serde(default)]
     pub user_id: Option<i32>,
     /// The first day to fill (shop time).
@@ -987,8 +987,9 @@ fn address_points(addresses: &[Option<&str>]) -> (Vec<String>, Vec<Option<usize>
 
 /// Auto-plan one person's unscheduled jobs
 ///
-/// Proposes a day and time for the unscheduled events of the Installations
-/// or Templates calendar with one of the statuses that are the person's or
+/// Proposes a day and time for the unscheduled events of the Templates
+/// calendar (templates only for now: installations are scheduled by hand)
+/// with one of the statuses that are the person's or
 /// no one's, around the person's other events (on any calendar). Each job's
 /// length comes from its sale and the job time rules (else the event's own
 /// length). The person leaves the shop when the work day starts; a free day
@@ -1003,7 +1004,7 @@ fn address_points(addresses: &[Option<&str>]) -> (Vec<String>, Vec<Option<usize>
     request_body = AutoPlanInput,
     responses(
         (status = 200, description = "Plan", body = AutoPlan),
-        (status = 400, description = "Not the Installations or Templates calendar, days not 1 to 30, or no person of that role picked", body = ErrorBody),
+        (status = 400, description = "Not the Templates calendar (installations are not auto-planned for now), days not 1 to 30, or no template maker picked", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
@@ -1021,9 +1022,15 @@ pub async fn auto_plan(
         .await?
         .ok_or_else(|| {
             ApiError::BadRequest(
-                "Auto-plan works on the Installations and Templates calendars.".into(),
+                "Auto-plan works on the Templates calendar.".into(),
             )
         })?;
+    // Templates only for now: installations are scheduled by hand.
+    if kind != JobKind::Templates {
+        return Err(ApiError::BadRequest(
+            "Auto-plan is for templates only for now. Schedule installations by hand.".into(),
+        ));
+    }
     if input.days == 0 || input.days > MAX_PLAN_DAYS {
         return Err(ApiError::BadRequest(format!(
             "Plan 1 to {MAX_PLAN_DAYS} work days."
