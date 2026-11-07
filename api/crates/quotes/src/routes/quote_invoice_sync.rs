@@ -109,20 +109,18 @@ pub async fn get_invoice_sync(
     .bind(user.company_id)
     .fetch_optional(&state.pool)
     .await?;
-    Ok(Json(row.map(|row| {
-        InvoiceSync {
-            option_index: row.option_index,
-            kind: row.kind,
-            invoice_ids: row
-                .invoice_ids
-                .split(',')
-                .filter(|id| !id.is_empty())
-                .map(String::from)
-                .collect(),
-            detail: serde_json::from_str(&row.detail_json).unwrap_or(Value::Null),
-            source_hash: row.source_hash,
-            enabled: row.enabled,
-        }
+    Ok(Json(row.map(|row| InvoiceSync {
+        option_index: row.option_index,
+        kind: row.kind,
+        invoice_ids: row
+            .invoice_ids
+            .split(',')
+            .filter(|id| !id.is_empty())
+            .map(String::from)
+            .collect(),
+        detail: serde_json::from_str(&row.detail_json).unwrap_or(Value::Null),
+        source_hash: row.source_hash,
+        enabled: row.enabled,
     })))
 }
 

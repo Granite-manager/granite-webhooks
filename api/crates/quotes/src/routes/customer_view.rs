@@ -30,10 +30,10 @@ use crate::routes::quickbooks::{CustomerInvoices, customer_invoice_pdf_of, invoi
 use crate::state::AppState;
 use crate::webhooks_client::OutgoingEmail;
 use axum::Json;
+use chrono::NaiveDateTime;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use chrono::NaiveDateTime;
 use hmac::digest::Digest;
 use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
@@ -1251,21 +1251,9 @@ mod tests {
     #[test]
     fn visits_belong_to_the_project_sold_by_their_day() {
         let sales = [
-            Sold {
-                id: 1,
-                at: Some(at("2026-03-01")),
-                cancelled: false,
-            },
-            Sold {
-                id: 2,
-                at: Some(at("2026-06-01")),
-                cancelled: false,
-            },
-            Sold {
-                id: 3,
-                at: Some(at("2026-07-01")),
-                cancelled: true,
-            },
+            Sold { id: 1, at: Some(at("2026-03-01")), cancelled: false },
+            Sold { id: 2, at: Some(at("2026-06-01")), cancelled: false },
+            Sold { id: 3, at: Some(at("2026-07-01")), cancelled: true },
         ];
         // Its own sale wins.
         assert_eq!(project_of(Some(1), at("2026-08-01"), &sales), Some(1));
@@ -1276,11 +1264,7 @@ mod tests {
         // A visit before any sale: the first one. A sale of someone else: ignored.
         assert_eq!(project_of(None, at("2026-01-01"), &sales), Some(1));
         assert_eq!(project_of(Some(99), at("2026-04-10"), &sales), Some(1));
-        let cancelled = [Sold {
-            id: 3,
-            at: Some(at("2026-07-01")),
-            cancelled: true,
-        }];
+        let cancelled = [Sold { id: 3, at: Some(at("2026-07-01")), cancelled: true }];
         assert_eq!(project_of(None, at("2026-09-01"), &cancelled), None);
     }
 
