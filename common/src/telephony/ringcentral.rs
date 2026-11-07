@@ -668,8 +668,8 @@ async fn existing_subscription(
         .and_then(|record| record["id"].as_str().map(str::to_string)))
 }
 
-/// Creates the login's subscription to the texts of `extension_ids`, or
-/// renews `existing` with them and the current token.
+/// Creates the login's subscription to the texts of `extension_ids`, then
+/// deletes `existing`, the one it replaces.
 #[allow(clippy::too_many_arguments)]
 async fn subscribe(
     pool: &MySqlPool,
@@ -689,30 +689,36 @@ async fn subscribe(
         },
         "expiresIn": SUBSCRIPTION_EXPIRES_IN_SECONDS,
     });
-    let (method, path, outcome) = match existing {
-        Some(id) => (
-            Method::PUT,
-            format!("subscription/{id}"),
-            SubscriptionOutcome::Renewed,
-        ),
-        None => (
-            Method::POST,
-            "subscription".to_string(),
-            SubscriptionOutcome::Created,
-        ),
+    // Always a new subscription: a PUT changes only `eventFilters` and
+    // `expiresIn`, so an old subscription would keep echoing its old
+    // `verificationToken`, which the webhook refuses. The new one is made
+    // first, so no text is missed; a text pushed by both is stored once.
+    request_as(
+        pool,
+        client,
+        company_id,
+        extension,
+        Method::POST,
+        "subscription",
+        &Body::Json(&body),
+        None,
+    )
+    .await?;
+    let Some(id) = existing else {
+        return Ok(SubscriptionOutcome::Created);
     };
     request_as(
         pool,
         client,
         company_id,
         extension,
-        method,
-        &path,
-        &Body::Json(&body),
+        Method::DELETE,
+        &format!("subscription/{id}"),
+        &Body::Empty,
         None,
     )
     .await?;
-    Ok(outcome)
+    Ok(SubscriptionOutcome::Renewed)
 }
 
 /// Creates the company's SMS webhook subscription, or renews it with the
