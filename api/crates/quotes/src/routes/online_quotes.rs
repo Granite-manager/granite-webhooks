@@ -77,7 +77,15 @@ const QUOTES_PER_COMPANY_PER_HOUR: i64 = 30;
 /// The one area of an online quote.
 const AREA_ID: &str = "area-1";
 /// The note of the quote's first revision, for the team.
-const REVISION_NOTE: &str = "Made by the customer with the online quote";
+pub const REVISION_NOTE: &str = "Made by the customer with the online quote";
+/// SQL (on `quotes q`, one `?` for [`REVISION_NOTE`]): a quote the customer
+/// made with the online quote that no one at the company has emailed or
+/// printed yet. Until then the customer sees only its drawing: no prices and
+/// no quote document.
+pub const UNSHARED_ONLINE_SQL: &str = "(EXISTS (SELECT 1 FROM quote_revisions r
+              WHERE r.quote_id = q.id AND r.revision_number = 1 AND r.notes = ?)
+        AND NOT EXISTS (SELECT 1 FROM quote_emails e WHERE e.quote_id = q.id AND e.sent_by IS NOT NULL)
+        AND NOT EXISTS (SELECT 1 FROM quote_prints p WHERE p.quote_id = q.id))";
 const NO_REPLY: &str = "noreply@granite-manager.com";
 
 /// A color the customer can pick: a stone in stock with a photo that the
@@ -1878,28 +1886,31 @@ pub struct CustomerOnlineQuote {
 }
 
 /// The customer's quotes made with the online quote, newest first, each
-/// priced as the quote is (its price snapshot and tax).
+/// priced as the quote is (its price snapshot and tax) once the company has
+/// emailed or printed it; before that, with no prices.
 pub async fn customer_online_quotes(
     pool: &MySqlPool,
     company_id: i32,
     customer_id: i32,
 ) -> ApiResult<Vec<CustomerOnlineQuote>> {
-    let rows: Vec<(i32, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT q.id, q.quote_name, DATE_FORMAT(q.created_date, '%Y-%m-%dT%H:%i:%sZ'),
-                DATE_FORMAT(q.expiration_date, '%Y-%m-%d')
-           FROM quotes q
-          WHERE q.customer_id = ? AND q.company_id = ? AND q.deleted_at IS NULL
-            AND EXISTS (SELECT 1 FROM quote_revisions r
-                         WHERE r.quote_id = q.id AND r.revision_number = 1 AND r.notes = ?)
-          ORDER BY q.created_date DESC, q.id DESC",
-    )
-    .bind(customer_id)
-    .bind(company_id)
-    .bind(REVISION_NOTE)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(i32, Option<String>, Option<String>, Option<String>, i64)> =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT q.id, q.quote_name, DATE_FORMAT(q.created_date, '%Y-%m-%dT%H:%i:%sZ'),
+                    DATE_FORMAT(q.expiration_date, '%Y-%m-%d'), CAST({UNSHARED_ONLINE_SQL} AS SIGNED) AS hidden
+               FROM quotes q
+              WHERE q.customer_id = ? AND q.company_id = ? AND q.deleted_at IS NULL
+                AND EXISTS (SELECT 1 FROM quote_revisions r
+                             WHERE r.quote_id = q.id AND r.revision_number = 1 AND r.notes = ?)
+              ORDER BY q.created_date DESC, q.id DESC"
+        )))
+        .bind(REVISION_NOTE)
+        .bind(customer_id)
+        .bind(company_id)
+        .bind(REVISION_NOTE)
+        .fetch_all(pool)
+        .await?;
     let mut quotes = Vec::with_capacity(rows.len());
-    for (id, name, created_date, expiration_date) in rows {
+    for (id, name, created_date, expiration_date, hidden) in rows {
         let Some(quote) = crate::quote_pricing::load_company_quote(pool, id, company_id).await?
         else {
             continue;
@@ -1916,7 +1927,8 @@ pub async fn customer_online_quotes(
                 OnlinePrice {
                     product: picked.map(|p| p.product.clone()).unwrap_or_default(),
                     color: picked.map(|p| p.color.clone()).unwrap_or_default(),
-                    total: (!priced.missing && priced.total.is_finite())
+                    // No price until the company emails or prints the quote.
+                    total: (hidden == 0 && !priced.missing && priced.total.is_finite())
                         .then(|| js_round(priced.total * 100.0) / 100.0),
                 }
             })

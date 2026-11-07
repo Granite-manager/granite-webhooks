@@ -9,6 +9,7 @@
 //! Every one needs a verified visitor (the `__customer_view` cookie).
 
 use super::customer_view::{no_store, verified_customer};
+use super::online_quotes::{REVISION_NOTE, UNSHARED_ONLINE_SQL};
 use super::signatures::{NativeScope, native_document_of, signed_pdf_of};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::maps::Point;
@@ -208,17 +209,19 @@ pub async fn documents(
     .bind(customer.id)
     .fetch_all(&state.pool)
     .await?;
-    let quotes: Vec<DocumentRow> = sqlx::query_as(
+    // An online quote shows once the company emailed or printed it.
+    let quotes: Vec<DocumentRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT CAST(q.id AS SIGNED) AS id, COALESCE(NULLIF(TRIM(q.quote_name), ''), 'Quote') AS name,
                 q.status, DATE_FORMAT(q.created_date, '%Y-%m-%dT%H:%i:%sZ') AS created_at,
                 q.portal_token AS token
            FROM quotes q
           WHERE q.company_id = ? AND q.customer_id = ? AND q.deleted_at IS NULL
-            AND q.portal_token IS NOT NULL
-          ORDER BY q.created_date DESC, q.id DESC",
-    )
+            AND q.portal_token IS NOT NULL AND NOT {UNSHARED_ONLINE_SQL}
+          ORDER BY q.created_date DESC, q.id DESC"
+    )))
     .bind(company_id)
     .bind(customer.id)
+    .bind(REVISION_NOTE)
     .fetch_all(&state.pool)
     .await?;
     let mut list: Vec<ViewDocument> = contracts
