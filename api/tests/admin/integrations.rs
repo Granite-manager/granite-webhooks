@@ -876,6 +876,42 @@ async fn managers_switch_sold_quote_jobs_in_unscheduled(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn managers_remove_sold_quote_template_or_installation(pool: MySqlPool) {
+    let Setup { server, .. } = setup(&pool, false, false).await;
+    let body = json!({ "template": true, "installation": false });
+    // Both kept by default; a rep and a non-manager admin may not change it.
+    let features: Value = server
+        .get("/v1/company/features")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(features["sale_template_job"], true);
+    assert_eq!(features["sale_installation_job"], true);
+    for session in [sessions::REP, sessions::ADMIN] {
+        server
+            .put("/v1/company/sale-built-in-jobs")
+            .with_session(session)
+            .json(&body)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+    admin_manages(&pool).await;
+    server
+        .put("/v1/company/sale-built-in-jobs")
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let features: Value = server
+        .get("/v1/company/features")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(features["sale_template_job"], true);
+    assert_eq!(features["sale_installation_job"], false);
+}
+
+#[test_db::test(seed)]
 async fn managers_switch_invoice_on_sold_quote(pool: MySqlPool) {
     let Setup { server, .. } = setup(&pool, false, false).await;
     let on = || async {

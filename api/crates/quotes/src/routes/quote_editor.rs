@@ -1893,6 +1893,14 @@ pub struct Sale {
     /// template and installation job, both `not_ready`.
     #[serde(default)]
     pub full_height_backsplash: bool,
+    /// The seller unticked the template event in Mark as Sold: no template
+    /// job (nor its FH Backsplash one) is added.
+    #[serde(default)]
+    pub skip_template: bool,
+    /// The seller unticked the installation event: no installation job (nor
+    /// its FH Backsplash one) is added.
+    #[serde(default)]
+    pub skip_installation: bool,
     /// Extra events to add (Mark as Sold › Extra events): the event templates
     /// ticked (`GET /v1/quote-sale-events`), each with optional notes. Each
     /// adds one unscheduled, `not_ready` event on its template's calendar,
@@ -1980,6 +1988,8 @@ pub async fn mark_sold(
             template_notes: input.template_notes,
             install_notes: input.install_notes,
             full_height_backsplash: input.full_height_backsplash,
+            skip_template: input.skip_template,
+            skip_installation: input.skip_installation,
             extra_events: input
                 .extra_events
                 .into_iter()
