@@ -122,7 +122,7 @@ a subdomain of the session cookie's domain (for example through CloudFront)
 so the browser sends the cookie; the frontend calls it from
 `VITE_GRANITE_STREAM_URL`. The chat's CRM manual is
 `api/crates/ai/src/chat/crm_manual.json`, rebuilt from the CRM repo with
-`node scripts/sync-crm-manual.mjs ../general_datebase`.
+`node scripts/sync-crm-manual.mjs ../granite-front`.
 
 ### Pictures, PDFs and audio
 

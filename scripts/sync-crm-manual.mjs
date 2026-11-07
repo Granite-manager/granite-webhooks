@@ -3,11 +3,11 @@
 // sections) and the clarify table (words of several features, asked back)
 // live in the JSON itself; edit them there. Also copies the CRM repo's test
 // cases of the how-to detector (both repos run the same ones).
-// Usage: node scripts/sync-crm-manual.mjs ../general_datebase
+// Usage: node scripts/sync-crm-manual.mjs ../granite-front
 import fs from 'node:fs'
 import path from 'node:path'
 
-const crm = process.argv[2] ?? '../general_datebase'
+const crm = process.argv[2] ?? '../granite-front'
 const target = new URL('../api/crates/ai/src/chat/crm_manual.json', import.meta.url)
 const current = JSON.parse(fs.readFileSync(target, 'utf8'))
 const dir = path.join(crm, 'docs/manual')
