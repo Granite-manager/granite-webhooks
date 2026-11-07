@@ -35,6 +35,9 @@ pub struct StopDistance {
     pub event_id: i32,
     /// Miles as the crow flies, one decimal.
     pub miles: f64,
+    /// Driving minutes from the job to the stop (Google), whole minutes;
+    /// `null` when Google has no route or fails.
+    pub minutes: Option<u32>,
 }
 
 /// `POST /v1/schedule/best-days`.
@@ -54,7 +57,7 @@ struct Stop {
 
 /// Best days for a waiting job
 ///
-/// Miles from the job to every one-off event of its calendar with an address
+/// Miles and driving minutes from the job to every one-off event of its calendar with an address
 /// between now (or the range start, if later) and the range end. The app
 /// groups them by day; the nearest stop of a day is how well the job fits it.
 /// Template jobs only for now: an installation job gets no stops.
@@ -145,6 +148,16 @@ pub async fn best_days(
     let Some(job_point) = points[0] else {
         return Ok(none());
     };
+    // One driving-time ask from the job to every found stop address.
+    let found: Vec<usize> = (1..addresses.len())
+        .filter(|&at| points[at].is_some())
+        .collect();
+    let targets: Vec<_> = found.iter().filter_map(|&at| points[at]).collect();
+    let drive = state.maps.drive_minutes_from(job_point, &targets).await;
+    let minutes_at = |at: usize| {
+        let index = found.iter().position(|&f| f == at)?;
+        drive[index].map(|minutes| minutes.round() as u32)
+    };
     let stops = stops
         .iter()
         .filter_map(|stop| {
@@ -155,6 +168,7 @@ pub async fn best_days(
             Some(StopDistance {
                 event_id: stop.id,
                 miles: (job_point.miles_to(point) * 10.0).round() / 10.0,
+                minutes: minutes_at(at),
             })
         })
         .collect();

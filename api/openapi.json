@@ -13199,8 +13199,7 @@
           "stats"
         ],
         "summary": "Set my daily outreach minimums",
-        "description": "The signed-in user sets the minimum calls, texts and emails they want to
-make a day. Null (or 0) clears one.",
+        "description": "The signed-in user sets the minimum calls, texts and emails they want to\nmake a day. Null (or 0) clears one.",
         "operationId": "set_my_outreach_goals",
         "requestBody": {
           "content": {
@@ -102939,6 +102938,15 @@ make a day. Null (or 0) clears one.",
             "type": "number",
             "format": "double",
             "description": "Miles as the crow flies, one decimal."
+          },
+          "minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Driving minutes from the job to the stop (Google), whole minutes;\n`null` when Google has no route or fails.",
+            "minimum": 0
           }
         }
       },
