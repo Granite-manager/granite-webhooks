@@ -112,6 +112,26 @@ pub fn solve_open_route(cost: &[Vec<f64>]) -> Vec<usize> {
     }
 }
 
+/// The stops (1..n) for a day that starts far out and works back toward point 0 (the shop):
+/// the one farthest from it first, then the order that ends nearest it (templates: owner,
+/// 2026-11-07). The best open route on the reversed drive times, walked backwards.
+pub fn solve_route_back_home(cost: &[Vec<f64>]) -> Vec<usize> {
+    let points = cost.len();
+    let reversed: Vec<Vec<f64>> = (0..points)
+        .map(|from| (0..points).map(|to| cost[to][from]).collect())
+        .collect();
+    let mut order = solve_open_route(&reversed);
+    order.reverse();
+    // The farthest from the shop always comes first.
+    if let Some(far) = (1..points).max_by(|a, b| cost[0][*a].total_cmp(&cost[0][*b]))
+        && let Some(at) = order.iter().position(|stop| *stop == far)
+    {
+        let stop = order.remove(at);
+        order.insert(0, stop);
+    }
+    order
+}
+
 /// A timed stop on the route.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimedStop {
@@ -179,6 +199,14 @@ mod tests {
     #[test]
     fn visits_stops_outward_along_a_line() {
         assert_eq!(solve_open_route(&line(&[0.0, 30.0, 10.0, 20.0])), [2, 3, 1]);
+    }
+
+    #[test]
+    fn templates_start_farthest_and_work_back_home() {
+        // Stops at 1, 5 and 3 miles out on one road.
+        let cost = line(&[0.0, 1.0, 5.0, 3.0]);
+        assert_eq!(solve_route_back_home(&cost), vec![2, 3, 1]);
+        assert_eq!(solve_route_back_home(&line(&[0.0])), Vec::<usize>::new());
     }
 
     #[test]
