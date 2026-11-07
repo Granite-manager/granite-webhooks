@@ -131,8 +131,8 @@ jobs:
         with:
           app-id: ${{ vars.AUTOFIX_APP_ID }}
           private-key: ${{ secrets.AUTOFIX_APP_PRIVATE_KEY }}
-          owner: DmitryZaika
-          repositories: granite-webhooks,general_datebase
+          owner: Granite-manager
+          repositories: granite-webhooks,granite-front
           permission-contents: read
           permission-pull-requests: read
 
@@ -148,17 +148,17 @@ jobs:
       - name: Check out granite-webhooks
         uses: actions/checkout@v4
         with:
-          repository: DmitryZaika/granite-webhooks
+          repository: Granite-manager/granite-webhooks
           ref: main
           path: granite-webhooks
           token: ${{ steps.read-token.outputs.token }}
           fetch-depth: 100
           persist-credentials: false
 
-      - name: Check out general_datebase
+      - name: Check out granite-front (as general_datebase/)
         uses: actions/checkout@v4
         with:
-          repository: DmitryZaika/general_datebase
+          repository: Granite-manager/granite-front
           ref: main
           path: general_datebase
           token: ${{ steps.read-token.outputs.token }}
@@ -332,8 +332,8 @@ jobs:
         with:
           app-id: ${{ vars.AUTOFIX_APP_ID }}
           private-key: ${{ secrets.AUTOFIX_APP_PRIVATE_KEY }}
-          owner: DmitryZaika
-          repositories: ${{ steps.plan.outputs.target_repo }}
+          owner: Granite-manager
+          repositories: ${{ steps.plan.outputs.github_repo }}
           permission-contents: write
           permission-pull-requests: write
           permission-issues: write
@@ -342,7 +342,7 @@ jobs:
         if: steps.plan.outputs.publish == 'true'
         uses: actions/checkout@v4
         with:
-          repository: DmitryZaika/${{ steps.plan.outputs.target_repo }}
+          repository: Granite-manager/${{ steps.plan.outputs.github_repo }}
           ref: ${{ steps.plan.outputs.base_sha }}
           path: target
           token: ${{ steps.write-token.outputs.token }}

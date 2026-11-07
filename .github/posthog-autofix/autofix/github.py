@@ -3,10 +3,14 @@
 from dataclasses import dataclass
 from urllib.parse import quote
 
-from .context import OWNER
+from .context import OWNER, github_name
 from .http import HttpError, Transport, send_json, urllib_transport, with_retries
 
 API = "https://api.github.com"
+
+
+def _repo_path(repo: str) -> str:
+    return f"/repos/{OWNER}/{github_name(repo)}"
 
 
 @dataclass(frozen=True)
@@ -52,12 +56,12 @@ class GitHub:
         if existing is not None:
             return existing
         payload = {"title": title, "head": branch, "base": "main", "body": body, "draft": draft}
-        created = self._call("POST", f"/repos/{OWNER}/{repo}/pulls", payload)
+        created = self._call("POST", f"{_repo_path(repo)}/pulls", payload)
         return _pull_request(created)
 
     def _find_open(self, repo: str, branch: str) -> PullRequest | None:
         head = quote(f"{OWNER}:{branch}", safe="")
-        found = self._call("GET", f"/repos/{OWNER}/{repo}/pulls?state=open&head={head}")
+        found = self._call("GET", f"{_repo_path(repo)}/pulls?state=open&head={head}")
         if isinstance(found, list) and found:
             return _pull_request(found[0])
         return None
@@ -68,14 +72,14 @@ class GitHub:
         Read from the pulls API, which the token's pull request permission
         covers (the issues API, which filters by label, needs another one).
         """
-        found = self._call("GET", f"/repos/{OWNER}/{repo}/pulls?state=open&per_page=100")
+        found = self._call("GET", f"{_repo_path(repo)}/pulls?state=open&per_page=100")
         if not isinstance(found, list):
             raise HttpError(None, "GitHub returned no list of pull requests")
         labelled = [item for item in found if isinstance(item, dict) and _has_label(item, label)]
         return labelled[:limit]
 
     def changed_files(self, repo: str, number: int, limit: int) -> list[str]:
-        found = self._call("GET", f"/repos/{OWNER}/{repo}/pulls/{number}/files?per_page={limit}")
+        found = self._call("GET", f"{_repo_path(repo)}/pulls/{number}/files?per_page={limit}")
         if not isinstance(found, list):
             raise HttpError(None, "GitHub returned no list of files")
         names = (item.get("filename") for item in found if isinstance(item, dict))
@@ -83,7 +87,7 @@ class GitHub:
 
     def add_labels(self, repo: str, number: int, labels: list[str]) -> None:
         # Labels that do not exist yet are created by this call.
-        self._call("POST", f"/repos/{OWNER}/{repo}/issues/{number}/labels", {"labels": labels})
+        self._call("POST", f"{_repo_path(repo)}/issues/{number}/labels", {"labels": labels})
 
 
 def _pull_request(body: object) -> PullRequest:

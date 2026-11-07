@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from . import agent_result, isolation, pr_body, proc
-from .context import OWNER, REPOS, RunContext, is_sha, write_output
+from .context import OWNER, REPOS, RunContext, github_name, is_sha, write_output
 from .contract import check_commits
 from .git import Git
 from .github import GitHub
@@ -83,6 +83,7 @@ def plan(run: RunContext, base_shas: Mapping[str, str]) -> Plan:
 def write_plan(chosen: Plan) -> None:
     write_output("publish", "true" if chosen.publish else "false")
     write_output("target_repo", chosen.target_repo)
+    write_output("github_repo", github_name(chosen.target_repo))
     write_output("base_sha", chosen.base_sha)
 
 
@@ -117,7 +118,7 @@ def open_pr(
         raise PublishError("refusing to push: " + "; ".join(contract.errors or ["no commits"]))
     verification, notes = _rechecked(report, contract.errors)
     branch = pr_body.branch_name(run.issue_id, run.run_id, run.bug_id)
-    url = push_url or f"https://github.com/{OWNER}/{chosen.target_repo}.git"
+    url = push_url or f"https://github.com/{OWNER}/{github_name(chosen.target_repo)}.git"
     push(git, head, branch, url, token)
     draft = verification == "unverified"
     body = pr_body.render(
