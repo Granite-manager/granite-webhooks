@@ -39,7 +39,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
 use chrono::NaiveDateTime;
-use route::{TimedStop, assign_time_slots, solve_open_route};
+use route::{TimedStop, assign_time_slots, solve_open_route, solve_route_back_home};
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
@@ -191,6 +191,8 @@ struct Stop {
     all_day: bool,
     rrule: Option<String>,
     created_user_id: i32,
+    /// On the Templates calendar.
+    template: bool,
 }
 
 /// The company's live events among `ids` that have an address, by start.
@@ -201,8 +203,10 @@ async fn load_stops(
 ) -> Result<Vec<Stop>, sqlx::Error> {
     let mut sql = sqlx::QueryBuilder::<sqlx::MySql>::new(
         "SELECT e.id, TRIM(e.location) AS location, e.start_date, e.end_date,
-                COALESCE(e.all_day, 0) <> 0 AS all_day, e.rrule, e.created_user_id
+                COALESCE(e.all_day, 0) <> 0 AS all_day, e.rrule, e.created_user_id,
+                COALESCE(cal.slug = 'templates', 0) <> 0 AS template
            FROM events e JOIN users u ON e.created_user_id = u.id
+           LEFT JOIN calendars cal ON cal.id = e.calendar_id
           WHERE u.company_id = ",
     );
     sql.push_bind(company_id).push(
@@ -298,7 +302,14 @@ async fn plan_route(state: &AppState, company_id: i32, input: RouteInput) -> Api
                 .drive_times(&home, &locations)
                 .await
                 .map_err(ApiError::Upstream)?;
-            solve_open_route(&cost)
+            // Templates: the farthest first, working back toward the shop (owner's rule);
+            // other days go out from the shop, nearest first.
+            let solved = if stops.iter().all(|stop| stop.template) {
+                solve_route_back_home(&cost)
+            } else {
+                solve_open_route(&cost)
+            };
+            solved
                 .into_iter()
                 .map(|point| stops[point - 1].id)
                 .collect()
