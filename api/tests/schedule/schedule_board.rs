@@ -61,6 +61,27 @@ async fn the_schedule_lists_a_ranges_events(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn events_carry_their_sales_square_feet(pool: MySqlPool) {
+    seed(&pool).await;
+    sqlx::raw_sql(
+        "INSERT INTO sales (id, customer_id, seller_id, company_id, price, status, project_address, sale_date, square_feet) VALUES
+           (9720, 1000, 100, 100, 1000, 'sold', '1 Main St', '2026-03-01', 42.5);
+         UPDATE events SET sale_id = 9720 WHERE id = 9710;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let body = server(pool)
+        .get("/v1/schedule/events?start=2026-04-01T00:00:00Z&end=2026-04-30T23:59:59Z")
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    assert_eq!(common::ids(&body["events"]), [9712, 9710]);
+    assert_eq!(body["events"][0]["square_feet"], Value::Null);
+    assert_eq!(body["events"][1]["square_feet"], 42.5);
+}
+
+#[test_db::test(seed)]
 async fn admins_color_schedule_people_and_hide_calendars(pool: MySqlPool) {
     seed(&pool).await;
     let server = server(pool);
