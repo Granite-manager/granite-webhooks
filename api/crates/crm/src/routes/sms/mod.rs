@@ -12,6 +12,7 @@
 //!   → the admin inbox over every provider, merged by phone
 //! - `POST /v1/sms/{provider}/messages`               → send a text (or schedule it)
 //! - `POST /v1/sms/{provider}/messages/{id}/retry`    → send a failed text again
+//! - `DELETE /v1/sms/{provider}/messages/{id}`        → delete a failed text
 //! - `POST /v1/sms/attachments`                       → make uploaded files ready to send
 //! - `POST /v1/sms/ringcentral/inbound-media`         → keep an inbound MMS's files (`webhooks` Lambda)
 //! - `GET  /v1/sms/{provider}/history`                → a deal's or customer's texts
@@ -24,6 +25,7 @@
 
 mod all;
 mod attachments;
+mod discard;
 pub mod flow_stops;
 pub mod flows;
 mod history;
@@ -61,6 +63,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(thread::mark_unread))
         .routes(routes!(send::send))
         .routes(routes!(retry::retry))
+        .routes(routes!(discard::delete_failed))
         .routes(routes!(attachments::prepare_attachments))
         .routes(routes!(inbound_media::store_inbound_media))
         .routes(routes!(history::history))
