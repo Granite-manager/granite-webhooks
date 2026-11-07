@@ -276,6 +276,30 @@ async fn the_sidebar_pin_is_saved(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn undo_send_is_on_until_switched_off(pool: MySqlPool) {
+    let server = common::server(pool);
+    let read = |server: &TestServer| {
+        server
+            .get("/v1/me/undo-send")
+            .with_session(sessions::REP)
+    };
+    read(&server).await.assert_json(&json!({ "on": true }));
+    server
+        .put("/v1/me/undo-send")
+        .with_session(sessions::REP)
+        .json(&json!({ "on": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    read(&server).await.assert_json(&json!({ "on": false }));
+    // Another user's stays on.
+    server
+        .get("/v1/me/undo-send")
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_json(&json!({ "on": true }));
+}
+
+#[test_db::test(seed)]
 async fn marketing_companies_are_those_of_the_position(pool: MySqlPool) {
     sqlx::query(
         "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (104, 7, 101), (104, 1, 100)",

@@ -876,6 +876,121 @@
         ]
       }
     },
+    "/v1/me/undo-send": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Get my Undo send",
+        "description": "Whether my sent texts and emails wait 10 seconds with Undo before they go out (on by\ndefault), on the website and in the phone app.",
+        "operationId": "get_my_undo_send",
+        "responses": {
+          "200": {
+            "description": "Undo send",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UndoSend"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Turn my Undo send on or off",
+        "description": "My Account on the website, Settings › General in the phone app. Off: my texts and emails\ngo out the moment I send them, with no Undo.",
+        "operationId": "set_my_undo_send",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoSend"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/me/ai-assistant": {
       "put": {
         "tags": [
@@ -76937,6 +77052,20 @@
               "$ref": "#/components/schemas/OnlinePrice"
             },
             "description": "Each color's total, as on the quote; no breakdown."
+          },
+          "sent_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the company last emailed or printed the quote (ISO 8601, UTC);\nnull until it has. The customer's own emailed copy does not count."
+          },
+          "sent_doc": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "The drawing as the company last emailed or printed it (the quote\ndocument, no supplier costs); null until it has."
           }
         }
       },
@@ -106960,6 +107089,19 @@
           }
         },
         "additionalProperties": false
+      },
+      "UndoSend": {
+        "type": "object",
+        "description": "Whether Undo send is on.",
+        "required": [
+          "on"
+        ],
+        "properties": {
+          "on": {
+            "type": "boolean",
+            "description": "On: a sent text or email waits 10 seconds with Undo before it goes out. Off: it goes\nout at once."
+          }
+        }
       },
       "UnpricedModel": {
         "type": "object",
