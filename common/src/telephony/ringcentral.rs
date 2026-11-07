@@ -611,10 +611,19 @@ impl SubscriptionTarget {
         format!("{}/ringcentral/notify/{company_id}", self.base)
     }
 
-    /// SHA-256 (hex) of the token, as `company.ringcentral_subscription_token_hash`
-    /// keeps it.
+    /// SHA-256 (hex) of the subscriptions' [`Self::verification_token`], as
+    /// `company.ringcentral_subscription_token_hash` keeps it.
     pub fn token_hash(&self) -> String {
-        crate::access_token::token_hash(&self.token)
+        crate::access_token::token_hash(self.verification_token())
+    }
+
+    /// The token as a subscription's `verificationToken`. `RingCentral` allows
+    /// only letters and digits there (CMN-101 for `gmk_...`), so an access
+    /// token goes without its prefix; the webhook puts it back.
+    pub fn verification_token(&self) -> &str {
+        self.token
+            .strip_prefix(crate::access_token::TOKEN_PREFIX)
+            .unwrap_or(&self.token)
     }
 }
 
@@ -685,7 +694,7 @@ async fn subscribe(
         "deliveryMode": {
             "transportType": "WebHook",
             "address": target.address(company_id),
-            "verificationToken": target.token,
+            "verificationToken": target.verification_token(),
         },
         "expiresIn": SUBSCRIPTION_EXPIRES_IN_SECONDS,
     });
@@ -945,6 +954,8 @@ mod subscription_tests {
     fn the_webhooks_key_is_the_token_once_it_is_an_access_token() {
         let target = target("https://hooks.test/", Some(TOKEN), Some(LEGACY)).unwrap();
         assert_eq!(target.token, TOKEN);
+        // RingCentral refuses the `_` of `gmk_`.
+        assert_eq!(target.verification_token(), &TOKEN[4..]);
         assert_eq!(
             target.address(12),
             "https://hooks.test/ringcentral/notify/12"
