@@ -5,7 +5,8 @@
 //! [`default_tabs`]). Someone holding several of them (in the company the
 //! request acts in) gets all their tabs together. Most positions open every
 //! main-app tab by default, so nothing changes until a company takes some
-//! away; Inventory Manager and Scheduling Manager open only a few. The
+//! away; Shop Manager (the shop app's pages), Inventory Manager and
+//! Scheduling Manager open only a few. The
 //! portal positions (Shop Worker, Installer, Marketing, Walk-in, Template
 //! Guy) keep their own apps, and Super Admin, superusers and users without a
 //! listed position keep the whole app.
@@ -25,6 +26,8 @@ use crate::auth::session::{SUPER_ADMIN_POSITION, SessionUser, UserPositionRow};
 use crate::error::ApiError;
 use sqlx::MySqlPool;
 
+/// `positions.id` of Shop Manager.
+pub const SHOP_MANAGER_POSITION: i32 = 3;
 /// `positions.id` of Inventory Manager.
 pub const INVENTORY_MANAGER_POSITION: i32 = 12;
 /// `positions.id` of Scheduling Manager.
@@ -37,7 +40,7 @@ pub const CONFIGURABLE_POSITIONS: [i32; 6] = [
     1,
     2,
     5,
-    3,
+    SHOP_MANAGER_POSITION,
     INVENTORY_MANAGER_POSITION,
     SCHEDULING_MANAGER_POSITION,
 ];
@@ -241,10 +244,12 @@ pub fn tab(key: &str) -> Option<&'static Tab> {
 }
 
 /// The tabs a position opens in a company that has not changed them, in
-/// [`TABS`] order: every main-app tab, except for Inventory Manager and
+/// [`TABS`] order: every main-app tab, except for Shop Manager (the pages
+/// of the shop app: Schedule, Transactions, Samples), Inventory Manager and
 /// Scheduling Manager.
 pub fn default_tabs(position_id: i32) -> Vec<&'static str> {
     let keys: &[&str] = match position_id {
+        SHOP_MANAGER_POSITION => &["schedule", "transactions", "samples"],
         INVENTORY_MANAGER_POSITION => &[
             "stones",
             "sinks",
@@ -575,9 +580,10 @@ mod tests {
             .filter(|tab| !tab.admin)
             .map(|tab| tab.key)
             .collect();
-        for position in [1, 2, 3, 5] {
+        for position in [1, 2, 5] {
             assert_eq!(default_tabs(position), main, "{position}");
         }
+        assert_eq!(default_tabs(3), vec!["schedule", "transactions", "samples"]);
         assert_eq!(default_tabs(13), vec!["customers", "schedule"]);
         assert!(default_tabs(12).contains(&"admin_stones"));
         assert!(!default_tabs(12).contains(&"transactions"));
