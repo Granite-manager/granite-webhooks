@@ -103,7 +103,8 @@ pub struct PositionSectionsInput {
 /// Walk-in, Template Guy) the tabs it opens, its defaults and whether the
 /// company changed them. Someone with several positions gets all their tabs
 /// together. By default every position opens the whole main app, except
-/// Inventory Manager and Scheduling Manager. The Admin switch still opens
+/// Shop Manager (Schedule, Transactions, Samples), Inventory Manager and
+/// Scheduling Manager. The Admin switch still opens
 /// every admin page; an admin tab opens that page to someone without it.
 /// Every skill too, and each position's: by default every position sells
 /// slabs and works with transactions and quotes, and only Scheduling Manager
