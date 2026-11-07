@@ -42,7 +42,7 @@ pub const SUPER_ADMIN: i32 = 9;
 /// Texts the company's notices (surveys, bookings) from their line.
 pub const SCHEDULING_MANAGER: i32 = 13;
 /// Every position id there is (`POSITIONS`).
-const POSITIONS: [i32; 11] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+const POSITIONS: [i32; 13] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
 
 /// Query of `GET /v1/admin/users`.
 #[derive(Debug, Default, Deserialize, IntoParams)]
