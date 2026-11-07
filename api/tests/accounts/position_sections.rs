@@ -6,6 +6,17 @@ use common::{WithSession, server, sessions};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 
+/// A Scheduling Manager's default skills: all but Best days while dragging.
+fn scheduling_skills() -> Value {
+    json!([
+        "sell_slabs",
+        "edit_transactions",
+        "edit_quotes",
+        "plan_schedule",
+        "see_readiness"
+    ])
+}
+
 /// Vic (104, no employee or admin flag) holds `position` in Acme (100); Ada
 /// (102, admin) is Acme's Manager, who may change position access.
 async fn seat(pool: &MySqlPool, position: i32) {
@@ -263,8 +274,8 @@ async fn skills(server: &TestServer, session: &str) -> Value {
 async fn each_position_has_its_default_skills_and_admins_have_all(pool: MySqlPool) {
     seat(&pool, 13).await;
     let server = server(pool);
-    // A Scheduling Manager has every skill: null, as for an admin.
-    assert_eq!(skills(&server, sessions::VIEWER).await, Value::Null);
+    // A Scheduling Manager has every skill but Best days while dragging.
+    assert_eq!(skills(&server, sessions::VIEWER).await, scheduling_skills());
     for session in [sessions::REP, sessions::MANAGER] {
         assert_eq!(
             skills(&server, session).await,
@@ -290,7 +301,8 @@ async fn each_position_has_its_default_skills_and_admins_have_all(pool: MySqlPoo
             "edit_transactions",
             "edit_quotes",
             "plan_schedule",
-            "see_readiness"
+            "see_readiness",
+            "best_days"
         ]
     );
     let rep = &access["positions"][0];
@@ -392,7 +404,7 @@ async fn tabs_saved_without_skills_keep_the_default_skills(pool: MySqlPool) {
         .json(&json!({ "sections": ["schedule"] }))
         .await
         .assert_status(StatusCode::NO_CONTENT);
-    assert_eq!(skills(&server, sessions::VIEWER).await, Value::Null);
+    assert_eq!(skills(&server, sessions::VIEWER).await, scheduling_skills());
     let access: Value = server
         .get("/v1/company/position-sections")
         .with_session(sessions::ADMIN)

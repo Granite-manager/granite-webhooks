@@ -34,6 +34,9 @@ pub const PLAN_SCHEDULE: &str = "plan_schedule";
 /// See each job's readiness dot (Not ready, Called, Ready) on the schedule.
 /// Only the app reads it; no route needs it.
 pub const SEE_READINESS: &str = "see_readiness";
+/// While a waiting job is dragged onto the month, light up the later days
+/// whose stops are closest to it (`POST /v1/schedule/best-days`).
+pub const BEST_DAYS: &str = "best_days";
 
 /// One skill a position may have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +51,7 @@ pub struct Skill {
 }
 
 /// Every skill, in the Company page's order.
-pub const SKILLS: [Skill; 5] = [
+pub const SKILLS: [Skill; 6] = [
     Skill {
         key: SELL_SLABS,
         label: "Sell slabs",
@@ -74,6 +77,11 @@ pub const SKILLS: [Skill; 5] = [
         label: "See readiness",
         description: "See each job's readiness dot (Not ready, Called, Ready) on the schedule.",
     },
+    Skill {
+        key: BEST_DAYS,
+        label: "Best days while dragging",
+        description: "Dragging a waiting job lights up the later days with stops closest to it.",
+    },
 ];
 
 /// The skill with this key.
@@ -85,14 +93,16 @@ pub fn skill(key: &str) -> Option<&'static Skill> {
 ///
 /// In [`SKILLS`] order: every position sells slabs and works with
 /// transactions and quotes, as before skills; only Scheduling Manager plans
-/// the schedule and sees readiness.
+/// the schedule and sees readiness. [`BEST_DAYS`] is off until a company
+/// gives it.
 pub fn default_skills(position_id: i32) -> Vec<&'static str> {
     SKILLS
         .iter()
         .map(|skill| skill.key)
         .filter(|key| {
-            ![PLAN_SCHEDULE, SEE_READINESS].contains(key)
-                || position_id == SCHEDULING_MANAGER_POSITION
+            *key != BEST_DAYS
+                && (![PLAN_SCHEDULE, SEE_READINESS].contains(key)
+                    || position_id == SCHEDULING_MANAGER_POSITION)
         })
         .collect()
 }
@@ -199,6 +209,7 @@ pub fn required(method: &Method, path: &str) -> Option<&'static [&'static str]> 
             "auto-plan" | "optimize-route" | "route-preview",
         ] => Some(&[PLAN_SCHEDULE]),
         ["v1", "events", id, "confirmation"] if is_id(id) => Some(&[PLAN_SCHEDULE]),
+        ["v1", "schedule", "best-days"] => Some(&[BEST_DAYS]),
         _ => None,
     }
 }
@@ -281,6 +292,10 @@ mod tests {
         ] {
             assert_eq!(required(&post, path), Some(&[PLAN_SCHEDULE][..]), "{path}");
         }
+        assert_eq!(
+            required(&post, "/v1/schedule/best-days"),
+            Some(&[BEST_DAYS][..])
+        );
         for (method, path) in [
             (Method::GET, "/v1/sales/12"),
             (Method::GET, "/v1/quotes/3"),
@@ -312,7 +327,13 @@ mod tests {
         }
         assert_eq!(
             default_skills(13),
-            SKILLS.iter().map(|skill| skill.key).collect::<Vec<_>>()
+            vec![
+                SELL_SLABS,
+                EDIT_TRANSACTIONS,
+                EDIT_QUOTES,
+                PLAN_SCHEDULE,
+                SEE_READINESS
+            ]
         );
     }
 

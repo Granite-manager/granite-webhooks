@@ -27,6 +27,18 @@ pub struct Point {
     /// Longitude.
     pub lng: f64,
 }
+
+impl Point {
+    /// Miles to `other` as the crow flies.
+    pub fn miles_to(self, other: Point) -> f64 {
+        const EARTH_MILES: f64 = 3958.8;
+        let (lat1, lat2) = (self.lat.to_radians(), other.lat.to_radians());
+        let dlat = lat2 - lat1;
+        let dlng = (other.lng - self.lng).to_radians();
+        let h = (dlat / 2.0).sin().powi(2) + lat1.cos() * lat2.cos() * (dlng / 2.0).sin().powi(2);
+        2.0 * EARTH_MILES * h.sqrt().asin()
+    }
+}
 const METERS_PER_MILE: f64 = 1609.344;
 
 /// A day's stops on the map; see [`Maps::day_map`].
@@ -266,6 +278,12 @@ impl Maps {
             points.insert(cache_key, point);
         }
         point
+    }
+
+    /// Where each address is, all asked at once; `None` where Google cannot
+    /// find it.
+    pub async fn geocode_all(&self, addresses: &[String]) -> Vec<Option<Point>> {
+        futures_util::future::join_all(addresses.iter().map(|address| self.geocode(address))).await
     }
 
     /// The home address and up to 20 stops placed on the map, the driving

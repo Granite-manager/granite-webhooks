@@ -2,6 +2,8 @@
 //! Google Maps.
 //!
 //! - `GET /v1/schedule/activity` → the latest changes to events (`activity`)
+//! - `POST /v1/schedule/best-days` → how far a waiting job is from later
+//!   stops of its calendar (`best_days`)
 //! - `GET /v1/schedule/crew-positions` → where the crew's phones are
 //!   (`crew_map`)
 //! - `GET /v1/schedule/day-map` → a map of the company and a day's stops
@@ -17,6 +19,7 @@
 //! Replaces the Remix `api.schedule-day-map` and `api.schedule-optimize-route`.
 
 pub mod activity;
+pub mod best_days;
 pub mod board;
 pub mod crew_map;
 pub mod job_time;
@@ -48,6 +51,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(day_map))
         .routes(routes!(optimize_route))
         .routes(routes!(route_preview))
+        .routes(routes!(best_days::best_days))
         .routes(routes!(board::events))
         .routes(routes!(board::unscheduled))
         .routes(routes!(board::my_schedule))
@@ -288,8 +292,7 @@ async fn plan_route(state: &AppState, company_id: i32, input: RouteInput) -> Api
             let home = company_address(pool, company_id).await?.ok_or_else(|| {
                 bad("Add the company address in settings so the route has a starting point.")
             })?;
-            let locations: Vec<String> =
-                stops.iter().map(|stop| stop.location.clone()).collect();
+            let locations: Vec<String> = stops.iter().map(|stop| stop.location.clone()).collect();
             let cost = state
                 .maps
                 .drive_times(&home, &locations)
