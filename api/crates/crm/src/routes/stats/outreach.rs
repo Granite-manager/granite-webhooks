@@ -1,10 +1,10 @@
 //! The dashboard's Outreach activity widget.
 //!
 //! The calls, texts and emails the signed-in user made today (the company's
-//! time zone), against the daily minimums a Manager or Sales Manager sets.
+//! time zone), against the daily minimums each person sets for themself.
 //!
-//! - `GET /v1/me/stats/outreach`      → today's counts and the minimums
-//! - `PUT /v1/company/outreach-goals` → set the minimums
+//! - `GET /v1/me/stats/outreach` → today's counts and my minimums
+//! - `PUT /v1/me/outreach-goals` → set my minimums
 
 use super::schemas::SmsProvider;
 use crate::auth::EmployeeUser;
@@ -20,13 +20,10 @@ use serde::{Deserialize, Serialize};
 // Dynamic SQL here only splices fixed table and column names.
 use sqlx::{AssertSqlSafe, FromRow, MySqlPool};
 
-/// `positions.id` of a Sales Manager and a Manager.
-const GOAL_SETTER_POSITIONS: [i32; 2] = [2, 5];
-
 /// The columns are SMALLINT UNSIGNED; nobody makes 10,000 calls a day.
 const MAX_GOAL: u16 = 9999;
 
-/// The company's daily minimums; null when not set.
+/// The user's own daily minimums; null when not set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct OutreachGoals {
     pub calls: Option<u16>,
@@ -44,32 +41,17 @@ pub struct Outreach {
     /// Emails the user sent today; automated emails left out.
     pub emails: i64,
     pub goals: OutreachGoals,
-    /// The caller is a Manager or Sales Manager and may set the minimums.
-    pub can_set_goals: bool,
 }
 
-async fn goals(pool: &MySqlPool, company_id: i32) -> sqlx::Result<OutreachGoals> {
+async fn goals(pool: &MySqlPool, user_id: i32) -> sqlx::Result<OutreachGoals> {
     let row: Option<OutreachGoals> = sqlx::query_as(
         "SELECT daily_calls_goal AS calls, daily_sms_goal AS sms, daily_emails_goal AS emails
-           FROM company WHERE id = ?",
+           FROM users WHERE id = ?",
     )
-    .bind(company_id)
+    .bind(user_id)
     .fetch_optional(pool)
     .await?;
     Ok(row.unwrap_or_default())
-}
-
-async fn sets_goals(pool: &MySqlPool, user_id: i32, company_id: i32) -> sqlx::Result<bool> {
-    sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM users_positions
-                       WHERE user_id = ? AND company_id = ? AND position_id IN (?, ?))",
-    )
-    .bind(user_id)
-    .bind(company_id)
-    .bind(GOAL_SETTER_POSITIONS[0])
-    .bind(GOAL_SETTER_POSITIONS[1])
-    .fetch_one(pool)
-    .await
 }
 
 const fn naive(at: DateTime<Utc>) -> NaiveDateTime {
@@ -188,26 +170,25 @@ pub async fn get_outreach(
         calls: calls_on(pool, user.id, user.company_id, day).await?,
         sms,
         emails: emails_on(pool, user.id, user.company_id, day).await?,
-        goals: goals(pool, user.company_id).await?,
-        can_set_goals: user.is_superuser || sets_goals(pool, user.id, user.company_id).await?,
+        goals: goals(pool, user.id).await?,
     }))
 }
 
-/// Set the daily outreach minimums
+/// Set my daily outreach minimums
 ///
-/// A Manager or Sales Manager sets the minimum calls, texts and emails each
-/// rep should make a day. Null (or 0) clears one.
+/// The signed-in user sets the minimum calls, texts and emails they want to
+/// make a day. Null (or 0) clears one.
 #[crate::openapi::path(
     put,
-    path = "/v1/company/outreach-goals",
-    operation_id = "set_company_outreach_goals",
+    path = "/v1/me/outreach-goals",
+    operation_id = "set_my_outreach_goals",
     tag = "stats",
     request_body = OutreachGoals,
     responses(
         (status = 200, description = "The minimums as saved", body = OutreachGoals),
         (status = 400, description = "A minimum out of range", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not a Manager or Sales Manager", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("session_cookie" = []))
@@ -218,9 +199,6 @@ pub async fn set_goals(
     JsonBody(body): JsonBody<OutreachGoals>,
 ) -> ApiResult<Json<OutreachGoals>> {
     let pool = &state.pool;
-    if !user.is_superuser && !sets_goals(pool, user.id, user.company_id).await? {
-        return Err(ApiError::Forbidden);
-    }
     if [body.calls, body.sms, body.emails]
         .iter()
         .flatten()
@@ -233,14 +211,14 @@ pub async fn set_goals(
     // 0 reads as "not set".
     let clean = |goal: Option<u16>| goal.filter(|goal| *goal > 0);
     sqlx::query(
-        "UPDATE company SET daily_calls_goal = ?, daily_sms_goal = ?, daily_emails_goal = ?
+        "UPDATE users SET daily_calls_goal = ?, daily_sms_goal = ?, daily_emails_goal = ?
           WHERE id = ?",
     )
     .bind(clean(body.calls))
     .bind(clean(body.sms))
     .bind(clean(body.emails))
-    .bind(user.company_id)
+    .bind(user.id)
     .execute(pool)
     .await?;
-    Ok(Json(goals(pool, user.company_id).await?))
+    Ok(Json(goals(pool, user.id).await?))
 }
