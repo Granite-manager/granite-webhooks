@@ -346,19 +346,19 @@ async fn handle_assign_lead<T: Telegram>(
         Audience::Rep(position.user_id),
     )
     .await;
-    // The managers' phones hear who has it, as their Telegram messages did.
-    let assigner: Option<i32> = sqlx::query_scalar(
-        "SELECT id FROM users WHERE telegram_id = ? AND company_id = ? AND is_deleted = 0 LIMIT 1",
+    // The managers' phones hear who has it, as their Telegram messages did; never the one
+    // who pressed the button (whatever company their account is in: an owner's may be another).
+    let assigners: Vec<i32> = sqlx::query_scalar(
+        "SELECT id FROM users WHERE telegram_id = ? AND is_deleted = 0",
     )
     .bind(message.chat.id.0)
-    .bind(position.company_id)
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await
     .unwrap_or_else(|error| {
         tracing::warn!(?error, lead_id, "Assigning manager not looked up");
-        None
+        Vec::new()
     });
-    let except = std::iter::once(position.user_id).chain(assigner).collect();
+    let except = std::iter::once(position.user_id).chain(assigners).collect();
     push_lead_taken(
         position.company_id,
         i64::from(lead_id),
