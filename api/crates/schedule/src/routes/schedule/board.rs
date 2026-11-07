@@ -131,10 +131,10 @@ pub struct ScheduleEvent {
     /// system. `created_user_id` is then whoever sold it.
     #[sqlx(default)]
     pub automated: bool,
-    /// Square feet of its sale (the company's, not cancelled); null without
-    /// one. The calendar adds them up per day.
+    /// The sold quote that added it (Mark as Sold); null when a person
+    /// made it. The calendar adds up these quotes' sq ft per day.
     #[sqlx(default)]
-    pub square_feet: Option<f64>,
+    pub quote_id: Option<i32>,
     /// Its QuickBooks invoice (only when QuickBooks is connected).
     #[sqlx(skip)]
     pub qbo_invoice: Option<EventInvoice>,
@@ -225,13 +225,11 @@ async fn load_events(
                 DATE_FORMAT(e.arrived_at, '%Y-%m-%dT%H:%i:%sZ') AS arrived_at,
                 DATE_FORMAT(e.completed_at, '%Y-%m-%dT%H:%i:%sZ') AS completed_at,
                 e.on_my_way_sent_at IS NOT NULL AS customer_told,
-                CAST(s.square_feet AS DOUBLE) AS square_feet
+                e.quote_id
            FROM events e
            JOIN users u ON e.created_user_id = u.id
            LEFT JOIN customers c
              ON c.id = e.customer_id AND c.company_id = u.company_id AND c.deleted_at IS NULL
-           LEFT JOIN sales s
-             ON s.id = e.sale_id AND s.company_id = u.company_id AND s.cancelled_date IS NULL
           WHERE u.company_id = ? AND e.deleted_date IS NULL AND e.unscheduled = 0
             AND (? IS NULL OR e.calendar_id IS NULL OR NOT EXISTS (
                   SELECT 1 FROM calendar_hidden_users h
