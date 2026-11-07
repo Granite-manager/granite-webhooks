@@ -1973,6 +1973,47 @@ pub struct CustomerOnlineQuote {
     pub doc: Value,
     /// Each color's total, as on the quote; no breakdown.
     pub prices: Vec<OnlinePrice>,
+    /// When the company last emailed or printed the quote (ISO 8601, UTC);
+    /// null until it has. The customer's own emailed copy does not count.
+    pub sent_at: Option<String>,
+    /// The drawing as the company last emailed or printed it (the quote
+    /// document, no supplier costs); null until it has.
+    #[schema(value_type = Option<Object>)]
+    pub sent_doc: Option<Value>,
+}
+
+/// The revision drawing the company last emailed or printed, and when; the
+/// current drawing when that revision is gone. None until it has.
+async fn last_sent_drawing(
+    pool: &MySqlPool,
+    quote_id: i32,
+    current: &Value,
+) -> ApiResult<Option<(String, Value)>> {
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT CAST(r.drawing_json AS CHAR), DATE_FORMAT(s.at, '%Y-%m-%dT%H:%i:%sZ')
+           FROM (SELECT revision_number, sent_at AS at FROM quote_emails
+                  WHERE quote_id = ? AND sent_by IS NOT NULL
+                 UNION ALL
+                 SELECT revision_number, printed_at FROM quote_prints WHERE quote_id = ?) s
+           LEFT JOIN quote_revisions r
+             ON r.quote_id = ? AND r.revision_number = s.revision_number
+          ORDER BY s.at DESC
+          LIMIT 1",
+    )
+    .bind(quote_id)
+    .bind(quote_id)
+    .bind(quote_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((drawing, Some(at))) = row else {
+        return Ok(None);
+    };
+    let drawing = drawing
+        .as_deref()
+        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(|| current.clone());
+    Ok(Some((at, crate::quote_pricing::customer_doc(&drawing))))
 }
 
 /// The customer's quotes made with the online quote, newest first, each
@@ -2028,6 +2069,12 @@ pub async fn customer_online_quotes(
             .as_deref()
             .and_then(|t| serde_json::from_str::<Value>(t).ok())
             .unwrap_or(Value::Null);
+        let sent = if hidden == 0 {
+            last_sent_drawing(pool, id, &stored).await?
+        } else {
+            None
+        };
+        let (sent_at, sent_doc) = sent.map_or((None, None), |(at, doc)| (Some(at), Some(doc)));
         quotes.push(CustomerOnlineQuote {
             id,
             name: name.unwrap_or_default(),
@@ -2035,6 +2082,8 @@ pub async fn customer_online_quotes(
             expiration_date,
             doc: crate::quote_pricing::customer_doc(&stored),
             prices,
+            sent_at,
+            sent_doc,
         });
     }
     Ok(quotes)
