@@ -371,14 +371,20 @@ pub enum ConnectionStatus {
     Connected,
     /// `RingCentral` ended the connection; the company must reconnect.
     Disconnected,
+    /// The login works, but customers' texts cannot reach the CRM: no active
+    /// SMS subscription pushes to the webhooks Lambda with the current token.
+    /// Reconnecting makes one.
+    TextsOff,
     /// `RingCentral` did not answer (rate limit, outage).
     Unverified,
 }
 
-/// Asks `RingCentral` whether the connection still works.
+/// Asks `RingCentral` whether the connection still works and, where
+/// subscriptions are made (`target`), whether customers' texts can arrive.
 pub async fn check(
     pool: &MySqlPool,
     client: &reqwest::Client,
+    target: Option<&ringcentral::SubscriptionTarget>,
     company_id: i32,
 ) -> ConnectionStatus {
     match ringcentral::request(
@@ -392,10 +398,65 @@ pub async fn check(
     )
     .await
     {
-        Ok(_) => ConnectionStatus::Connected,
-        Err(error) if matches!(error.status, 400 | 401) => ConnectionStatus::Disconnected,
+        Ok(_) => {}
+        Err(error) if matches!(error.status, 400 | 401) => return ConnectionStatus::Disconnected,
+        Err(_) => return ConnectionStatus::Unverified,
+    }
+    let Some(target) = target else {
+        return ConnectionStatus::Connected;
+    };
+    match texts_arrive(pool, client, target, company_id).await {
+        Ok(true) => ConnectionStatus::Connected,
+        Ok(false) => ConnectionStatus::TextsOff,
         Err(_) => ConnectionStatus::Unverified,
     }
+}
+
+/// The company's login has an active subscription at the webhooks address,
+/// last made with the current token. A subscription on an older token is
+/// still "Active" to `RingCentral`, but the webhook refuses its pushes.
+async fn texts_arrive(
+    pool: &MySqlPool,
+    client: &reqwest::Client,
+    target: &ringcentral::SubscriptionTarget,
+    company_id: i32,
+) -> Result<bool, ringcentral::ApiError> {
+    // The token rides in the address, so an exact match is a subscription
+    // on the current token.
+    let address = target.delivery_address(company_id);
+    let subscriptions = ringcentral::request(
+        pool,
+        client,
+        company_id,
+        Method::GET,
+        "subscription",
+        &Body::Empty,
+        None,
+    )
+    .await?;
+    let active = subscriptions["records"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|record| {
+            record["deliveryMode"]["address"].as_str() == Some(address.as_str())
+                && record["status"].as_str() == Some("Active")
+        });
+    if !active {
+        return Ok(false);
+    }
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT ringcentral_subscription_token_hash FROM company WHERE id = ?",
+    )
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| ringcentral::ApiError {
+        status: 500,
+        message: Some(error.to_string()),
+    })?
+    .flatten();
+    Ok(stored.as_deref() == Some(target.token_hash().as_str()))
 }
 
 /// Stops `RingCentral` pushing the company's texts (while the token still
@@ -421,7 +482,11 @@ pub async fn disconnect(
                 .as_array()
                 .into_iter()
                 .flatten()
-                .find(|record| record["deliveryMode"]["address"].as_str() == Some(address.as_str()))
+                .find(|record| {
+                    record["deliveryMode"]["address"]
+                        .as_str()
+                        .is_some_and(|found| ringcentral::is_notify_address(found, &address))
+                })
                 .and_then(|record| record["id"].as_str().map(str::to_string));
             if let Some(id) = existing {
                 ringcentral::request(

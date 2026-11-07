@@ -75361,6 +75361,7 @@
         "enum": [
           "connected",
           "disconnected",
+          "texts_off",
           "unverified"
         ]
       },

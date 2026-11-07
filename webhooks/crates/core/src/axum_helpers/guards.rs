@@ -375,12 +375,14 @@ impl TokenScope for RingCentralWebhookUser {
 }
 
 /// `RingCentral`'s own webhook push (`/ringcentral/notify`). It cannot send a
-/// bearer, so the subscription carries the token as its `verificationToken`,
-/// echoed in `Verification-Token`.
+/// bearer and refuses an access token as a subscription's
+/// `verificationToken`, so the subscription address carries it
+/// (`?token=gmk_...`).
 pub struct RingCentralNotificationUser;
 
 impl TokenScope for RingCentralNotificationUser {
     const SCOPE: Scope = Scope::Telephony;
+    const TOKEN_IN_URL: bool = true;
 }
 
 /// Telegram's bot webhook: a `telegram` token as the webhook's
