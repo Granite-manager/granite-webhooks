@@ -140,8 +140,9 @@ async fn check_sections(
 /// `/v1/delayed` is the caller's own scheduled texts and emails (list, edit,
 /// send now, cancel), as the composers' Send later list has them on the web;
 /// `/v1/me/todos` and `/v1/me/todo-order` are the caller's own to-do list
-/// (the app's To do tab).
-pub const DEVICE_ROUTES: [&str; 7] = [
+/// (the app's To do tab); `/v1/me/undo-send` is the caller's Undo send (Settings ›
+/// General).
+pub const DEVICE_ROUTES: [&str; 8] = [
     "/v1/emails",
     "/v1/schedule",
     "/v1/events",
@@ -149,6 +150,7 @@ pub const DEVICE_ROUTES: [&str; 7] = [
     "/v1/delayed",
     "/v1/me/todos",
     "/v1/me/todo-order",
+    "/v1/me/undo-send",
 ];
 
 /// CRM routes the app reads with its device token, `GET` only (my texts
@@ -723,6 +725,7 @@ mod tests {
             "/v1/me/todos",
             "/v1/me/todos/done",
             "/v1/me/todo-order",
+            "/v1/me/undo-send",
         ] {
             assert!(device_route(&Method::GET, path), "{path}");
             assert!(device_route(&Method::POST, path), "{path}");
