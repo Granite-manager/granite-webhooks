@@ -187,69 +187,106 @@ async fn company_quote_email_templates_stay_numbered(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
-async fn online_quote_options_start_with_three_defaults_all_off(pool: MySqlPool) {
-    let server = server(pool);
+async fn online_quote_options_are_the_companys_extras(pool: MySqlPool) {
+    let server = server(pool.clone());
     server
         .get("/v1/online-quote-options")
         .with_session(sessions::REP)
         .await
         .assert_status(StatusCode::FORBIDDEN);
+    // None to start.
     let list: Value = server
         .get("/v1/online-quote-options")
         .with_session(sessions::ADMIN)
         .await
         .json();
-    let rows: Vec<(&str, bool)> = list
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|row| {
-            (
-                row["name"].as_str().unwrap(),
-                row["enabled"].as_bool().unwrap(),
+    assert_eq!(list, json!([]));
+    sqlx::raw_sql(
+        "INSERT INTO quote_extras (company_id, sequence, item_json) VALUES
+           (100, 1, '{\"name\":\"Stone/Tile Tear Out\"}'),
+           (100, 2, '{\"name\":\"10 year Sealer\"}'),
+           (100, 3, '{\"name\":\"Plumbing\"}'),
+           (101, 1, '{\"name\":\"Elsewhere\"}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let extra = |name: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i32>(
+                "SELECT id FROM quote_extras WHERE JSON_UNQUOTE(JSON_EXTRACT(item_json, '$.name')) = ?",
             )
-        })
-        .collect();
-    assert_eq!(
-        rows,
-        [
-            ("Laminate tear out", false),
-            ("Stone tear out", false),
-            ("10 year sealer", false)
-        ]
-    );
-    let laminate = list[0]["id"].as_i64().unwrap();
-    let sealer = list[2]["id"].as_i64().unwrap();
-    server
-        .delete(&format!("/v1/online-quote-options/{laminate}"))
-        .with_session(sessions::ADMIN)
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
-    server
-        .put(&format!("/v1/online-quote-options/{sealer}"))
-        .with_session(sessions::ADMIN)
-        .json(&json!({ "name": "10 year sealer", "sequence": 3, "enabled": true }))
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
-    server
-        .post("/v1/online-quote-options")
-        .with_session(sessions::ADMIN)
-        .json(&json!({ "name": " Plumbing ", "sequence": 4 }))
+            .bind(name)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let tear_out = extra("Stone/Tile Tear Out").await;
+    let sealer = extra("10 year Sealer").await;
+    let elsewhere = extra("Elsewhere").await;
+
+    let add = |body: Value| {
+        server
+            .post("/v1/online-quote-options")
+            .with_session(sessions::ADMIN)
+            .json(&body)
+    };
+    add(json!({ "extra_id": tear_out, "sequence": 1 }))
         .await
         .assert_status(StatusCode::CREATED);
-    // The deleted default does not come back.
+    add(json!({ "extra_id": sealer, "sequence": 2, "enabled": true }))
+        .await
+        .assert_status(StatusCode::CREATED);
+    // By name (an older page), any case.
+    add(json!({ "name": " plumbing ", "sequence": 3 }))
+        .await
+        .assert_status(StatusCode::CREATED);
+    // Only the company's own extras, each once.
+    add(json!({ "extra_id": elsewhere }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    add(json!({ "name": "Haul away" }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    add(json!({ "extra_id": sealer }))
+        .await
+        .assert_status(StatusCode::CONFLICT);
+
     let list: Value = server
         .get("/v1/online-quote-options")
         .with_session(sessions::ADMIN)
         .await
         .json();
-    let rows: Vec<(&str, bool)> = list
+    let first = list[0]["id"].as_i64().unwrap();
+    server
+        .put(&format!("/v1/online-quote-options/{first}"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "extra_id": tear_out, "sequence": 1, "enabled": true }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // A renamed extra shows its new name; a deleted one drops out.
+    sqlx::raw_sql(
+        "UPDATE quote_extras SET item_json = '{\"name\":\"Stone Tear Out\"}' WHERE JSON_UNQUOTE(JSON_EXTRACT(item_json, '$.name')) = 'Stone/Tile Tear Out';
+         UPDATE quote_extras SET deleted_at = NOW() WHERE JSON_UNQUOTE(JSON_EXTRACT(item_json, '$.name')) = 'Plumbing'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let list: Value = server
+        .get("/v1/online-quote-options")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    let rows: Vec<(&str, i64, bool)> = list
         .as_array()
         .unwrap()
         .iter()
         .map(|row| {
             (
                 row["name"].as_str().unwrap(),
+                row["extra_id"].as_i64().unwrap(),
                 row["enabled"].as_bool().unwrap(),
             )
         })
@@ -257,9 +294,8 @@ async fn online_quote_options_start_with_three_defaults_all_off(pool: MySqlPool)
     assert_eq!(
         rows,
         [
-            ("Stone tear out", false),
-            ("10 year sealer", true),
-            ("Plumbing", false)
+            ("Stone Tear Out", i64::from(tear_out), true),
+            ("10 year Sealer", i64::from(sealer), true),
         ]
     );
 }
