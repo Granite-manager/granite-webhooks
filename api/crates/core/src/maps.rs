@@ -238,6 +238,55 @@ fn seconds(duration: &Value) -> Option<f64> {
 }
 
 impl Maps {
+    /// Driving minutes from `from` to each of `to`, in order; `None` where
+    /// there is no route. All `None` when there is no key or Google fails.
+    pub async fn drive_minutes_from(&self, from: Point, to: &[Point]) -> Vec<Option<f64>> {
+        let mut minutes = vec![None; to.len()];
+        let Some(key) = self.key.as_ref() else {
+            return minutes;
+        };
+        if to.is_empty() {
+            return minutes;
+        }
+        let waypoint = |point: &Point| json!({ "waypoint": { "location": { "latLng": { "latitude": point.lat, "longitude": point.lng } } } });
+        let Ok(response) = self
+            .http
+            .post(&*self.url)
+            .header("X-Goog-Api-Key", &**key)
+            .header("X-Goog-FieldMask", "destinationIndex,duration,condition")
+            .json(&json!({
+                "origins": [waypoint(&from)],
+                "destinations": to.iter().map(waypoint).collect::<Vec<_>>(),
+                "travelMode": "DRIVE",
+            }))
+            .send()
+            .await
+        else {
+            return minutes;
+        };
+        if !response.status().is_success() {
+            return minutes;
+        }
+        let Ok(Value::Array(elements)) = response.json::<Value>().await else {
+            return minutes;
+        };
+        for element in elements {
+            if element["condition"] != "ROUTE_EXISTS" {
+                continue;
+            }
+            let (Some(index), Some(secs)) = (
+                element["destinationIndex"].as_u64().and_then(|i| usize::try_from(i).ok()),
+                seconds(&element["duration"]),
+            ) else {
+                continue;
+            };
+            if let Some(slot) = minutes.get_mut(index) {
+                *slot = Some(secs / 60.0);
+            }
+        }
+        minutes
+    }
+
     /// Where an address is, or `None` when Google cannot find it.
     pub async fn geocode(&self, address: &str) -> Option<Point> {
         let key = self.key.as_ref()?;
