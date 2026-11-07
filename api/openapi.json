@@ -29959,7 +29959,7 @@
           "quotes"
         ],
         "summary": "List online quote options",
-        "description": "The extras the company's online quote can offer, by sequence then name.\nA company that never had any gets Laminate tear out, Stone tear out and\n10 year sealer, all off.",
+        "description": "The extras the company's online quote can offer, by sequence then name:\neach one of the company's extras (Admin > Quotes > Extras).",
         "operationId": "list_online_quote_options",
         "responses": {
           "200": {
@@ -30017,7 +30017,7 @@
           "quotes"
         ],
         "summary": "Add an online quote option",
-        "description": "Adds an extra the online quote can offer.",
+        "description": "Offers one of the company's extras on the online quote.",
         "operationId": "create_online_quote_option",
         "requestBody": {
           "content": {
@@ -30041,7 +30041,7 @@
             }
           },
           "400": {
-            "description": "No name",
+            "description": "Not one of the company's extras",
             "content": {
               "application/json": {
                 "schema": {
@@ -30062,6 +30062,16 @@
           },
           "403": {
             "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That extra is already an option",
             "content": {
               "application/json": {
                 "schema": {
@@ -30094,7 +30104,7 @@
           "quotes"
         ],
         "summary": "Save an online quote option",
-        "description": "Saves the name, sequence and whether customers are offered it.",
+        "description": "Saves which extra it offers, its sequence and whether customers are offered it.",
         "operationId": "update_online_quote_option",
         "parameters": [
           {
@@ -30123,7 +30133,7 @@
             "description": "Saved"
           },
           "400": {
-            "description": "No name",
+            "description": "Not one of the company's extras",
             "content": {
               "application/json": {
                 "schema": {
@@ -30154,6 +30164,16 @@
           },
           "404": {
             "description": "No such option in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "That extra is already an option",
             "content": {
               "application/json": {
                 "schema": {
@@ -41134,6 +41154,93 @@
           },
           "502": {
             "description": "Google Maps could not build the route",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/schedule/best-days": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Best days for a waiting job",
+        "description": "Miles from the job to every one-off event of its calendar with an address\nbetween now (or the range start, if later) and the range end. The app\ngroups them by day; the nearest stop of a day is how well the job fits it.",
+        "operationId": "schedule_best_days",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BestDaysInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Distances",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BestDays"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The range ends before it starts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin, or lacks the Best days while dragging skill",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
             "content": {
               "application/json": {
                 "schema": {
@@ -70131,7 +70238,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The skills the user's positions give them (Position access):\n`sell_slabs`, `edit_transactions`, `edit_quotes`, `plan_schedule`, `see_readiness`.\nNull when they have every skill (admins always do)."
+            "description": "The skills the user's positions give them (Position access):\n`sell_slabs`, `edit_transactions`, `edit_quotes`, `plan_schedule`, `see_readiness`, `best_days`.\nNull when they have every skill (admins always do)."
           },
           "has_cloudtalk_api": {
             "type": "boolean",
@@ -70877,6 +70984,48 @@
           }
         },
         "additionalProperties": false
+      },
+      "BestDays": {
+        "type": "object",
+        "description": "`POST /v1/schedule/best-days`.",
+        "required": [
+          "stops"
+        ],
+        "properties": {
+          "stops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StopDistance"
+            },
+            "description": "The job's calendar's events of the range that start after now and\nhave an address Google can find. Empty when the job has no address,\nGoogle cannot find it, or Google Maps is not set up."
+          }
+        }
+      },
+      "BestDaysInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/schedule/best-days`.",
+        "required": [
+          "event_id",
+          "start",
+          "end"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The waiting job being dragged."
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Range start (ISO 8601); nothing before now is looked at."
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Range end (ISO 8601)."
+          }
+        }
       },
       "BillingGate": {
         "allOf": [
@@ -100645,7 +100794,7 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "Stable key (`sell_slabs`, `edit_transactions`, `edit_quotes`,\n`plan_schedule`, `see_readiness`)."
+            "description": "Stable key (`sell_slabs`, `edit_transactions`, `edit_quotes`,\n`plan_schedule`, `see_readiness`, `best_days`)."
           },
           "label": {
             "type": "string",
@@ -102465,6 +102614,25 @@
               "null"
             ],
             "description": "Stone name."
+          }
+        }
+      },
+      "StopDistance": {
+        "type": "object",
+        "description": "A later stop and how far the job is from it.",
+        "required": [
+          "event_id",
+          "miles"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "miles": {
+            "type": "number",
+            "format": "double",
+            "description": "Miles as the crow flies, one decimal."
           }
         }
       },

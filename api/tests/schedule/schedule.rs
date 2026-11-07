@@ -49,7 +49,22 @@ async fn google() -> String {
         )
         .route(
             "/geocode/json",
-            get(|| async { Json(json!({ "status": "OK", "results": [{ "geometry": { "location": { "lat": 39.9, "lng": -86.1 } } }] })) }),
+            // Every address at 39.9, but `Near` 0.1° north, `Far` 1° north
+            // and `Lost` nowhere.
+            get(|RawQuery(query): RawQuery| async move {
+                let address = query
+                    .unwrap_or_default()
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("address=").map(str::to_string))
+                    .unwrap_or_default();
+                let lat = match address.as_str() {
+                    "Lost" => return Json(json!({ "status": "ZERO_RESULTS", "results": [] })),
+                    "Near" => 40.0,
+                    "Far" => 40.9,
+                    _ => 39.9,
+                };
+                Json(json!({ "status": "OK", "results": [{ "geometry": { "location": { "lat": lat, "lng": -86.1 } } }] }))
+            }),
         )
         .route(
             "/routes",
@@ -225,4 +240,64 @@ async fn a_day_map_is_drawn(pool: MySqlPool) {
     assert_eq!(body["home"], json!({ "lat": 39.9, "lng": -86.1 }));
     assert_eq!(body["stops"].as_array().unwrap().len(), 2);
     assert_eq!(body["route"], "_p~iF~ps|U");
+}
+
+#[test_db::test(seed)]
+async fn best_days_measure_the_later_stops_of_the_jobs_calendar(pool: MySqlPool) {
+    sqlx::raw_sql(
+        "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (9150, 100, 'Installations', 'blue', 'installations'),
+           (9151, 100, 'Templates', 'red', 'templates');
+         INSERT INTO events (id, title, location, start_date, end_date, all_day, created_user_id, calendar_id, unscheduled, rrule) VALUES
+           (9160, 'Waiting', 'Job', '2030-01-01 12:00:00', '2030-01-01 12:00:00', 1, 100, 9150, 1, NULL),
+           (9161, 'Same place', 'job', '2030-01-15 14:00:00', '2030-01-15 15:00:00', 0, 100, 9150, 0, NULL),
+           (9162, 'Near', 'Near', '2030-01-16 14:00:00', '2030-01-16 15:00:00', 0, 100, 9150, 0, NULL),
+           (9163, 'Far', 'Far', '2030-01-17 14:00:00', '2030-01-17 15:00:00', 0, 100, 9150, 0, NULL),
+           (9164, 'Lost', 'Lost', '2030-01-17 16:00:00', '2030-01-17 17:00:00', 0, 100, 9150, 0, NULL),
+           (9165, 'Other calendar', 'Near', '2030-01-16 14:00:00', '2030-01-16 15:00:00', 0, 100, 9151, 0, NULL),
+           (9166, 'No address', NULL, '2030-01-16 14:00:00', '2030-01-16 15:00:00', 0, 100, 9150, 0, NULL),
+           (9167, 'Past', 'Near', '2020-01-16 14:00:00', '2020-01-16 15:00:00', 0, 100, 9150, 0, NULL),
+           (9168, 'Repeats', 'Near', '2030-01-16 14:00:00', '2030-01-16 15:00:00', 0, 100, 9150, 0, 'FREQ=WEEKLY'),
+           (9169, 'Also waiting', 'Near', '2030-01-16 14:00:00', '2030-01-16 15:00:00', 0, 100, 9150, 1, NULL),
+           (9170, 'After the range', 'Near', '2030-03-16 14:00:00', '2030-03-16 15:00:00', 0, 100, 9150, 0, NULL);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let server = server(pool.clone()).await;
+    let range =
+        json!({ "event_id": 9160, "start": "2020-01-01T00:00:00Z", "end": "2030-02-01T00:00:00Z" });
+    let body: Value = server
+        .post("/v1/schedule/best-days")
+        .with_session(sessions::ADMIN)
+        .json(&range)
+        .await
+        .json();
+    // Only the later one-off stops of the job's calendar that Google finds.
+    assert_eq!(
+        body,
+        json!({ "stops": [
+            { "event_id": 9161, "miles": 0.0 },
+            { "event_id": 9162, "miles": 6.9 },
+            { "event_id": 9163, "miles": 69.1 },
+        ] })
+    );
+    server
+        .post("/v1/schedule/best-days")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "event_id": 9999, "start": "2020-01-01T00:00:00Z", "end": "2030-02-01T00:00:00Z" }))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    // A job Google cannot find has no best days.
+    sqlx::query("UPDATE events SET location = 'Lost' WHERE id = 9160")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let lost: Value = server
+        .post("/v1/schedule/best-days")
+        .with_session(sessions::ADMIN)
+        .json(&range)
+        .await
+        .json();
+    assert_eq!(lost, json!({ "stops": [] }));
 }
