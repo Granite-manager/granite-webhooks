@@ -12,8 +12,8 @@ use common::{ALLOWED_ORIGIN, SECRET, WithSession, sessions};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 
-/// Drive minutes between the company (H) and the stops: H→C is shortest,
-/// then C→A, then A→B.
+/// Drive minutes between the company (H) and the stops: C is farthest from
+/// H, then C→A and A→B are short.
 fn minutes(from: &str, to: &str) -> Option<u32> {
     let rank = |place: &str| {
         ["Home", "Stop A", "Stop B", "Stop C", "Nowhere"]
@@ -22,7 +22,8 @@ fn minutes(from: &str, to: &str) -> Option<u32> {
     };
     match (rank(from)?, rank(to)?) {
         (_, 4) | (4, _) => None,
-        (0, 3) | (3, 1) | (1, 2) => Some(5),
+        (0, 3) => Some(40),
+        (3, 1) | (1, 2) => Some(5),
         _ => Some(30),
     }
 }
@@ -32,7 +33,8 @@ async fn google() -> String {
         .route(
             "/matrix",
             post(|Json(body): Json<Value>| async move {
-                let name = |point: &Value| point["waypoint"]["address"].as_str().unwrap().to_string();
+                // Best days sends points, not addresses: no route for those.
+                let name = |point: &Value| point["waypoint"]["address"].as_str().unwrap_or_default().to_string();
                 let origins: Vec<String> = body["origins"].as_array().unwrap().iter().map(name).collect();
                 let destinations: Vec<String> = body["destinations"].as_array().unwrap().iter().map(name).collect();
                 let mut elements = Vec::new();
@@ -243,7 +245,7 @@ async fn a_day_map_is_drawn(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
-async fn best_days_measure_the_later_stops_of_a_template_jobs_calendar(pool: MySqlPool) {
+async fn best_days_measure_the_later_stops_of_a_jobs_calendar(pool: MySqlPool) {
     sqlx::raw_sql(
         "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
            (9150, 100, 'Templates', 'red', 'templates'),
@@ -278,20 +280,22 @@ async fn best_days_measure_the_later_stops_of_a_template_jobs_calendar(pool: MyS
     assert_eq!(
         body,
         json!({ "stops": [
-            { "event_id": 9161, "miles": 0.0 },
-            { "event_id": 9162, "miles": 6.9 },
-            { "event_id": 9163, "miles": 69.1 },
+            { "event_id": 9161, "miles": 0.0, "minutes": null },
+            { "event_id": 9162, "miles": 6.9, "minutes": null },
+            { "event_id": 9163, "miles": 69.1, "minutes": null },
         ] })
     );
-    // Template jobs only for now: a waiting installation has no best days,
-    // even with stops on its calendar.
+    // A waiting installation measures the stops of its own calendar.
     let install: Value = server
         .post("/v1/schedule/best-days")
         .with_session(sessions::ADMIN)
         .json(&json!({ "event_id": 9171, "start": "2020-01-01T00:00:00Z", "end": "2030-02-01T00:00:00Z" }))
         .await
         .json();
-    assert_eq!(install, json!({ "stops": [] }));
+    assert_eq!(
+        install,
+        json!({ "stops": [{ "event_id": 9165, "miles": 6.9, "minutes": null }] })
+    );
     server
         .post("/v1/schedule/best-days")
         .with_session(sessions::ADMIN)

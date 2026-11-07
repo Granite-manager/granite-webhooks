@@ -39,7 +39,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
 use chrono::NaiveDateTime;
-use route::{TimedStop, assign_time_slots, solve_open_route, solve_route_back_home};
+use route::{TimedStop, assign_time_slots, solve_route_back_home};
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
@@ -174,7 +174,7 @@ pub struct RouteInput {
 /// `POST /v1/schedule/optimize-route`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct OptimizedRoute {
-    /// Event ids in driving order from the company.
+    /// Event ids in driving order, farthest first.
     pub order: Vec<i32>,
     /// Events that got a new time.
     pub changed: usize,
@@ -191,8 +191,6 @@ struct Stop {
     all_day: bool,
     rrule: Option<String>,
     created_user_id: i32,
-    /// On the Templates calendar.
-    template: bool,
 }
 
 /// The company's live events among `ids` that have an address, by start.
@@ -203,10 +201,8 @@ async fn load_stops(
 ) -> Result<Vec<Stop>, sqlx::Error> {
     let mut sql = sqlx::QueryBuilder::<sqlx::MySql>::new(
         "SELECT e.id, TRIM(e.location) AS location, e.start_date, e.end_date,
-                COALESCE(e.all_day, 0) <> 0 AS all_day, e.rrule, e.created_user_id,
-                COALESCE(cal.slug = 'templates', 0) <> 0 AS template
+                COALESCE(e.all_day, 0) <> 0 AS all_day, e.rrule, e.created_user_id
            FROM events e JOIN users u ON e.created_user_id = u.id
-           LEFT JOIN calendars cal ON cal.id = e.calendar_id
           WHERE u.company_id = ",
     );
     sql.push_bind(company_id).push(
@@ -248,7 +244,7 @@ pub struct RouteMove {
 /// `POST /v1/schedule/route-preview`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RoutePreview {
-    /// Event ids in driving order from the company.
+    /// Event ids in driving order, farthest first.
     pub order: Vec<i32>,
     /// Timed events whose start would change, with their new times.
     pub moves: Vec<RouteMove>,
@@ -302,14 +298,9 @@ async fn plan_route(state: &AppState, company_id: i32, input: RouteInput) -> Api
                 .drive_times(&home, &locations)
                 .await
                 .map_err(ApiError::Upstream)?;
-            // Templates: the farthest first, working back toward the shop (owner's rule);
-            // other days go out from the shop, nearest first.
-            let solved = if stops.iter().all(|stop| stop.template) {
-                solve_route_back_home(&cost)
-            } else {
-                solve_open_route(&cost)
-            };
-            solved
+            // The farthest first, working back toward the shop (owner's rule,
+            // templates and installations alike).
+            solve_route_back_home(&cost)
                 .into_iter()
                 .map(|point| stops[point - 1].id)
                 .collect()
@@ -357,9 +348,9 @@ fn utc(time: NaiveDateTime) -> String {
 
 /// Preview a day's route
 ///
-/// The fastest order from the company address and the new times the timed
-/// events would get, without saving anything. Send the order back to
-/// `optimize-route` to apply it.
+/// The order from the farthest stop back toward the company address and the
+/// new times the timed events would get, without saving anything. Send the
+/// order back to `optimize-route` to apply it.
 #[crate::openapi::path(
     post,
     path = "/v1/schedule/route-preview",
@@ -399,8 +390,8 @@ pub async fn route_preview(
 
 /// Optimize a day's route
 ///
-/// Orders the events by the shortest drive from the company address (or in
-/// the approved `order` from the preview) and hands the day's existing start
+/// Orders the events from the farthest stop back toward the company address
+/// (or in the approved `order` from the preview) and hands the day's existing start
 /// times out in that order (each event keeps its length). All-day and
 /// repeating events are ordered but keep their times. Moved events get a
 /// history line and re-timed reminders.
