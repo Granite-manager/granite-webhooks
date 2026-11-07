@@ -678,6 +678,12 @@ pub struct SaleJobs {
     /// Full Height Backsplash (higher than 15"): also a "FH Backsplash"
     /// template and installation job.
     pub full_height_backsplash: bool,
+    /// The seller unticked the template event (Mark as Sold › Extra events):
+    /// no template job, nor its FH Backsplash one.
+    pub skip_template: bool,
+    /// The seller unticked the installation event: no installation job, nor
+    /// its FH Backsplash one.
+    pub skip_installation: bool,
     /// The event templates the seller ticked (Mark as Sold › Extra events),
     /// each with its notes.
     pub extra_events: Vec<ExtraEventPick>,
@@ -813,7 +819,10 @@ pub async fn mark_quote_sold(
 /// calendars, the template "ready" (or "not ready" when `jobs.template_ready`
 /// is false), the installation "not ready", each with its notes from `jobs`.
 /// With `jobs.full_height_backsplash` each calendar also gets a "FH
-/// Backsplash" job, "not ready", with the same notes.
+/// Backsplash" job, "not ready", with the same notes. The template (or
+/// installation) jobs are left out when the company removed them
+/// (`company.sale_template_job` / `sale_installation_job`) or the seller
+/// unticked them (`jobs.skip_template` / `skip_installation`).
 ///
 /// Then, switch or not, one "not ready" event per event template the seller
 /// ticked (`jobs.extra_events`; the company's `quote_sale_event_templates`,
@@ -828,14 +837,19 @@ async fn add_waiting_jobs(
     user_id: Option<i32>,
     jobs: &SaleJobs,
 ) -> Result<(), sqlx::Error> {
-    let on: Option<bool> =
-        sqlx::query_scalar("SELECT auto_unscheduled_jobs <> 0 FROM company WHERE id = ?")
-            .bind(quote.company_id)
-            .fetch_optional(pool)
-            .await?;
-    let on = on == Some(true);
+    let switches: Option<(bool, bool, bool)> = sqlx::query_as(
+        "SELECT auto_unscheduled_jobs <> 0, sale_template_job <> 0, sale_installation_job <> 0
+           FROM company WHERE id = ?",
+    )
+    .bind(quote.company_id)
+    .fetch_optional(pool)
+    .await?;
+    let (on, template_job, installation_job) = switches.unwrap_or_default();
+    // The built-in events the company keeps and the seller left ticked.
+    let template = on && template_job && !jobs.skip_template;
+    let installation = on && installation_job && !jobs.skip_installation;
     let extra = picked_extra_events(pool, quote.company_id, &jobs.extra_events).await?;
-    if !on && extra.is_empty() {
+    if !template && !installation && extra.is_empty() {
         return Ok(());
     }
     let Some(creator) = user_id.or(quote.salesperson_id).or(quote.created_by) else {
@@ -850,13 +864,15 @@ async fn add_waiting_jobs(
     if added.is_some() {
         return Ok(());
     }
-    let calendars: Vec<(i32, bool)> = if on {
+    let calendars: Vec<(i32, bool)> = if template || installation {
         sqlx::query_as(
             "SELECT id, slug = 'templates' FROM calendars
-              WHERE company_id = ? AND slug IN ('templates', 'installations') AND deleted_at IS NULL
+              WHERE company_id = ? AND slug IN (?, ?) AND deleted_at IS NULL
               ORDER BY slug = 'installations', id",
         )
         .bind(quote.company_id)
+        .bind(if template { "templates" } else { "" })
+        .bind(if installation { "installations" } else { "" })
         .fetch_all(pool)
         .await?
     } else {

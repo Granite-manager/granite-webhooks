@@ -44,6 +44,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_settings, save_settings))
         .routes(routes!(save_auto_sale))
         .routes(routes!(save_auto_unscheduled_jobs))
+        .routes(routes!(save_sale_built_in_jobs))
         .routes(routes!(save_auto_invoice))
         .routes(routes!(save_quote_invoice_sync))
         .routes(routes!(save_auto_project))
@@ -427,6 +428,65 @@ pub async fn save_auto_unscheduled_jobs(
         .bind(company_id)
         .execute(&state.pool)
         .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Body of `PUT /v1/company/sale-built-in-jobs`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaleBuiltInJobsInput {
+    /// A sold quote adds its template event (with Jobs to Unscheduled on).
+    pub template: bool,
+    /// A sold quote adds its installation event (with Jobs to Unscheduled on).
+    pub installation: bool,
+}
+
+/// Keep or remove a sold quote's template and installation events
+///
+/// Admin › Quotes › Automation › Event templates. With Jobs to Unscheduled
+/// on, marking a quote sold adds a template and an installation event; each
+/// can be removed here (`sale_template_job` and `sale_installation_job` in
+/// `GET /v1/company/features`).
+#[crate::openapi::path(
+    put,
+    path = "/v1/company/sale-built-in-jobs",
+    operation_id = "save_company_sale_built_in_jobs",
+    tag = "company",
+    params(TargetCompany),
+    request_body = SaleBuiltInJobsInput,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller does not manage the company", body = ErrorBody),
+        (status = 404, description = "No such company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn save_sale_built_in_jobs(
+    State(state): State<AppState>,
+    UserManager(user): UserManager,
+    Query(query): Query<TargetCompany>,
+    JsonBody(input): JsonBody<SaleBuiltInJobsInput>,
+) -> ApiResult<StatusCode> {
+    let company_id = target(&user, &query);
+    let saved = sqlx::query(
+        "UPDATE company SET sale_template_job = ?, sale_installation_job = ? WHERE id = ?",
+    )
+    .bind(input.template)
+    .bind(input.installation)
+    .bind(company_id)
+    .execute(&state.pool)
+    .await?;
+    if saved.rows_affected() == 0 {
+        let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM company WHERE id = ?")
+            .bind(company_id)
+            .fetch_one(&state.pool)
+            .await?;
+        if !exists {
+            return Err(ApiError::NotFound);
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

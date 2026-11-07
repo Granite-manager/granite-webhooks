@@ -760,11 +760,17 @@ async fn a_sold_quote_waits_in_unscheduled_only_when_switched_on(pool: MySqlPool
     .await
     .unwrap();
     let mut jobs = Vec::new();
-    for (on, sale) in [
-        (false, json!({ "option": 0 })),
-        (true, json!({ "option": 0 })),
+    let off =
+        "UPDATE company SET auto_unscheduled_jobs = 0, sale_installation_job = 1 WHERE id = 100";
+    let on =
+        "UPDATE company SET auto_unscheduled_jobs = 1, sale_installation_job = 1 WHERE id = 100";
+    let no_installation =
+        "UPDATE company SET auto_unscheduled_jobs = 1, sale_installation_job = 0 WHERE id = 100";
+    for (set, sale) in [
+        (off, json!({ "option": 0 })),
+        (on, json!({ "option": 0 })),
         (
-            true,
+            on,
             json!({
                 "option": 0,
                 "job_status": "not_ready",
@@ -773,19 +779,31 @@ async fn a_sold_quote_waits_in_unscheduled_only_when_switched_on(pool: MySqlPool
             }),
         ),
         (
-            true,
+            on,
             json!({
                 "option": 0,
                 "install_notes": "Tall splash",
                 "full_height_backsplash": true,
             }),
         ),
+        // The seller unticked the template: no template, nor its FH one.
+        (
+            on,
+            json!({
+                "option": 0,
+                "skip_template": true,
+                "full_height_backsplash": true,
+            }),
+        ),
+        // The seller unticked both: nothing.
+        (
+            on,
+            json!({ "option": 0, "skip_template": true, "skip_installation": true }),
+        ),
+        // The company removed the installation (Admin › Event templates).
+        (no_installation, json!({ "option": 0 })),
     ] {
-        sqlx::query("UPDATE company SET auto_unscheduled_jobs = ? WHERE id = 100")
-            .bind(on)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(set).execute(&pool).await.unwrap();
         let id = create(&server, json!({ "customer_id": 1004 })).await;
         let path = format!("/v1/quotes/{id}");
         server
@@ -827,8 +845,15 @@ async fn a_sold_quote_waits_in_unscheduled_only_when_switched_on(pool: MySqlPool
                 "not_ready|Tall splash",
                 "FH not_ready|Tall splash",
             ],
+            vec!["not_ready|-", "FH not_ready|-"],
+            vec![],
+            vec!["ready|-"],
         ]
     );
+    sqlx::query("UPDATE company SET sale_installation_job = 1 WHERE id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
     // The jobs are named after the quote (a quote without a name: after the
     // customer, as above).
     let id = create(

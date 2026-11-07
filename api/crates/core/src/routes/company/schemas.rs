@@ -44,6 +44,14 @@ pub struct CompanyFeatures {
     /// schedule's Unscheduled list (Admin › Quotes › Automation,
     /// `PUT /v1/company/auto-unscheduled-jobs`).
     pub auto_unscheduled_jobs: bool,
+    /// With `auto_unscheduled_jobs`, a sold quote adds its template event
+    /// (Admin › Quotes › Automation › Event templates, where it can be
+    /// removed: `PUT /v1/company/sale-built-in-jobs`). Mark as Sold may
+    /// still untick it.
+    pub sale_template_job: bool,
+    /// With `auto_unscheduled_jobs`, a sold quote adds its installation event
+    /// (as `sale_template_job`).
+    pub sale_installation_job: bool,
     /// Marking a quote sold opens its QuickBooks invoice, filled from the sold
     /// option; confirming it creates the invoice in QuickBooks (Admin › Quotes ›
     /// Automation, `PUT /v1/company/auto-invoice`).
