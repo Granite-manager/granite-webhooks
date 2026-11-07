@@ -9,7 +9,9 @@
 //! the app hides the tabs and the skills' buttons.
 
 use crate::auth::UserManager;
-use crate::auth::sections::{self, CONFIGURABLE_POSITIONS, TABS};
+use crate::auth::sections::{
+    self, CONFIGURABLE_POSITIONS, SHOP_TABS, SHOP_WORKER_POSITION, TABS,
+};
 use crate::auth::skills::{self, SKILLS};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -57,8 +59,9 @@ pub struct SkillInfo {
 /// One position whose tabs the company may change.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PositionSections {
-    /// `positions.id`: 1 Sales Rep, 2 Sales Manager, 5 Manager, 10 Office
-    /// Manager, 3 Shop Manager, 12 Inventory Manager, 13 Scheduling Manager.
+    /// `positions.id`: 1 Sales Rep, 2 Sales Manager, 5 Manager, 3 Shop
+    /// Manager, 4 Shop Worker (only the Shop app's tabs: Transactions,
+    /// Samples, Schedule), 12 Inventory Manager, 13 Scheduling Manager.
     pub position_id: i32,
     /// The tabs it opens in this company, in [`SectionInfo`] order.
     pub sections: Vec<&'static str>,
@@ -99,11 +102,12 @@ pub struct PositionSectionsInput {
 /// List position access
 ///
 /// Every tab of the app, and for each position the company may change (all
-/// but Super Admin and the portal ones: Shop Worker, Installer, Marketing,
-/// Walk-in, Template Guy) the tabs it opens, its defaults and whether the
-/// company changed them. Someone with several positions gets all their tabs
-/// together. By default every position opens the whole main app, except
-/// Inventory Manager and Scheduling Manager. The Admin switch still opens
+/// but Super Admin and the portal ones: Installer, Marketing, Walk-in,
+/// Template Guy) the tabs it opens, its defaults and whether the company
+/// changed them. Shop Worker stays in the Shop app: its tabs are that app's
+/// Transactions, Samples and Schedule. Someone with several positions gets
+/// all their tabs together. By default every position opens the whole main
+/// app, except Inventory Manager, Scheduling Manager and Shop Worker. The Admin switch still opens
 /// every admin page; an admin tab opens that page to someone without it.
 /// Every skill too, and each position's: by default every position sells
 /// slabs and works with transactions and quotes, and only Scheduling Manager
@@ -176,7 +180,7 @@ fn configurable(position_id: i32) -> ApiResult<()> {
         Ok(())
     } else {
         Err(ApiError::BadRequest(
-            "This position's tabs can't be changed: Super Admin keeps the whole app, and Shop Worker, Installer, Marketing, Walk-in and Template Guy keep their own apps".into(),
+            "This position's tabs can't be changed: Super Admin keeps the whole app, and Installer, Marketing, Walk-in and Template Guy keep their own apps".into(),
         ))
     }
 }
@@ -185,7 +189,8 @@ fn configurable(position_id: i32) -> ApiResult<()> {
 ///
 /// Replaces the tabs the position opens in the company, and its skills
 /// (null: the defaults), from then on for every user holding it (their next
-/// request). Unknown keys are refused.
+/// request). Unknown keys are refused, and for Shop Worker any tab the Shop
+/// app doesn't have.
 /// `DELETE` the same path to go back to the defaults.
 #[crate::openapi::path(
     put,
@@ -193,7 +198,7 @@ fn configurable(position_id: i32) -> ApiResult<()> {
     operation_id = "save_position_sections",
     tag = "company",
     params(
-        ("position_id" = i32, Path, description = "1 Sales Rep, 2 Sales Manager, 5 Manager, 3 Shop Manager, 12 Inventory Manager, 13 Scheduling Manager"),
+        ("position_id" = i32, Path, description = "1 Sales Rep, 2 Sales Manager, 5 Manager, 3 Shop Manager, 4 Shop Worker, 12 Inventory Manager, 13 Scheduling Manager"),
         TargetCompany,
     ),
     request_body = PositionSectionsInput,
@@ -220,6 +225,16 @@ pub async fn save(
         .find(|key| sections::tab(key).is_none())
     {
         return Err(ApiError::BadRequest(format!("Unknown tab: {unknown}")));
+    }
+    if position_id == SHOP_WORKER_POSITION
+        && let Some(other) = input
+            .sections
+            .iter()
+            .find(|key| !SHOP_TABS.contains(&key.as_str()))
+    {
+        return Err(ApiError::BadRequest(format!(
+            "Shop Worker stays in the Shop app, which has no {other} tab: pick Transactions, Samples or Schedule"
+        )));
     }
     if let Some(unknown) = input
         .skills
@@ -257,7 +272,7 @@ pub async fn save(
     operation_id = "reset_position_sections",
     tag = "company",
     params(
-        ("position_id" = i32, Path, description = "1 Sales Rep, 2 Sales Manager, 5 Manager, 3 Shop Manager, 12 Inventory Manager, 13 Scheduling Manager"),
+        ("position_id" = i32, Path, description = "1 Sales Rep, 2 Sales Manager, 5 Manager, 3 Shop Manager, 4 Shop Worker, 12 Inventory Manager, 13 Scheduling Manager"),
         TargetCompany,
     ),
     responses(
