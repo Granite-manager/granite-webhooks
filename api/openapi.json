@@ -13193,14 +13193,15 @@
         ]
       }
     },
-    "/v1/company/outreach-goals": {
+    "/v1/me/outreach-goals": {
       "put": {
         "tags": [
           "stats"
         ],
-        "summary": "Set the daily outreach minimums",
-        "description": "A Manager or Sales Manager sets the minimum calls, texts and emails each\nrep should make a day. Null (or 0) clears one.",
-        "operationId": "set_company_outreach_goals",
+        "summary": "Set my daily outreach minimums",
+        "description": "The signed-in user sets the minimum calls, texts and emails they want to
+make a day. Null (or 0) clears one.",
+        "operationId": "set_my_outreach_goals",
         "requestBody": {
           "content": {
             "application/json": {
@@ -13243,7 +13244,7 @@
             }
           },
           "403": {
-            "description": "Caller is not a Manager or Sales Manager",
+            "description": "Caller is not an employee or admin",
             "content": {
               "application/json": {
                 "schema": {
@@ -89442,8 +89443,7 @@
           "calls",
           "sms",
           "emails",
-          "goals",
-          "can_set_goals"
+          "goals"
         ],
         "properties": {
           "calls": {
@@ -89463,16 +89463,12 @@
           },
           "goals": {
             "$ref": "#/components/schemas/OutreachGoals"
-          },
-          "can_set_goals": {
-            "type": "boolean",
-            "description": "The caller is a Manager or Sales Manager and may set the minimums."
           }
         }
       },
       "OutreachGoals": {
         "type": "object",
-        "description": "The company's daily minimums; null when not set.",
+        "description": "The user's own daily minimums; null when not set.",
         "properties": {
           "calls": {
             "type": [
