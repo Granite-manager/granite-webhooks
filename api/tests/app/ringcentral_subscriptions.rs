@@ -8,8 +8,8 @@ use ::common::telephony::ringcentral::SubscriptionTarget;
 use api::app;
 use api::state::AppState;
 use axum::extract::{Path, State};
-use axum::http::Method;
-use axum::routing::{get, post, put};
+use axum::http::{Method, StatusCode};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use axum_test::TestServer;
 use common::{ALLOWED_ORIGIN, SECRET};
@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 const HOOKS: &str = "https://hooks.test";
 const TOKEN: &str = "gmk_abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ";
 
-/// What a stand-in was asked: `METHOD path`, and the body of a `PUT`/`POST`.
+/// What a stand-in was asked: `METHOD path`, and the body of a `POST`.
 type Seen = Arc<Mutex<Vec<(String, Value)>>>;
 
 /// A company's `RingCentral`: a JWT token, one enabled extension, and the
@@ -61,12 +61,10 @@ async fn ringcentral(addresses: &[String]) -> (String, Seen) {
             )
             .route(
                 "/restapi/v1.0/subscription/{id}",
-                put(
-                    move |State(seen): State<Seen>,
-                          Path(id): Path<String>,
-                          Json(body): Json<Value>| async move {
-                        note(&seen, Method::PUT, &format!("subscription/{id}"), body);
-                        Json(json!({ "id": id }))
+                delete(
+                    move |State(seen): State<Seen>, Path(id): Path<String>| async move {
+                        note(&seen, Method::DELETE, &format!("subscription/{id}"), Value::Null);
+                        StatusCode::NO_CONTENT
                     },
                 ),
             )
@@ -133,7 +131,8 @@ fn requests(seen: &Seen) -> Vec<String> {
 async fn subscriptions_move_to_the_current_token(pool: MySqlPool) {
     let target = SubscriptionTarget::new(Some(HOOKS), Some(TOKEN), None).unwrap();
     let ours = target.address(7101);
-    // Subscribed here (and from elsewhere): renewed with the new token.
+    // Subscribed here (and from elsewhere): replaced by one on the new token
+    // (a PUT cannot change the token).
     let (subscribed, subscribed_seen) = ringcentral(&[
         "https://elsewhere.test/ringcentral/notify/7101".into(),
         ours.clone(),
@@ -154,7 +153,8 @@ async fn subscriptions_move_to_the_current_token(pool: MySqlPool) {
         [
             "GET subscription",
             "GET extension",
-            "PUT subscription/sub-1"
+            "POST subscription",
+            "DELETE subscription/sub-1"
         ]
     );
     let renewal = subscribed_seen.lock().unwrap()[2].1.clone();
@@ -174,7 +174,7 @@ async fn subscriptions_move_to_the_current_token(pool: MySqlPool) {
     // Both are on the current token now: nothing more to do.
     let body = run(&server).await;
     assert_eq!(body["ringcentral_subscriptions"], 0, "{body}");
-    assert_eq!(requests(&subscribed_seen).len(), 3);
+    assert_eq!(requests(&subscribed_seen).len(), 4);
     assert_eq!(requests(&other_seen).len(), 1);
 }
 
@@ -191,7 +191,14 @@ async fn a_new_token_reaches_subscriptions_on_the_old_one(pool: MySqlPool) {
 
     let body = run(&server(pool.clone(), Some(target))).await;
     assert_eq!(body["ringcentral_subscriptions"], 1, "{body}");
-    let renewal = seen.lock().unwrap().last().unwrap().1.clone();
+    let renewal = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(request, _)| request == "POST subscription")
+        .unwrap()
+        .1
+        .clone();
     assert_eq!(renewal["deliveryMode"]["verificationToken"], TOKEN);
     assert_eq!(stored_hash(&pool, 7103).await, Some(token_hash(TOKEN)));
 }
