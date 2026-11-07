@@ -1285,7 +1285,7 @@ fn customer_html(
           <tr><td style=\"padding-bottom:24px;\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\">{rows}</table></td></tr>
           <tr><td align=\"center\" style=\"padding:4px 0 24px;\">{}</td></tr>",
             escape_html(first),
-            button_html(link, "See What You Sent"),
+            button_html(link, "See Your Quote"),
         ),
     )
 }
