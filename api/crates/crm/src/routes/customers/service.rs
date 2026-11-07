@@ -411,7 +411,7 @@ pub fn rep_reassigned_text(customer_name: &str, lead_link: &str) -> String {
 /// themselves. With `reassigned` (the customer's name, when they were moved
 /// from another rep) it says "You were reassigned the customer
 /// {name}. Click here:" instead. The sales managers' Telegram messages about the lead are
-/// edited to "Lead assigned to {rep}", and the other managers' phones get a
+/// edited to "Lead assigned to {rep}", and the other managers' phones get a (not for a walk-in)
 /// `taken` push. Every other phone of the company (the actor's own included)
 /// gets the quiet `leads` push, so the lead leaves "Waiting for a sales rep"
 /// everywhere at once. Best effort: the assignment is saved already, so
@@ -456,6 +456,20 @@ pub async fn notify_assigned_rep(
         }
     };
     managers.retain(|id| *id != rep && *id != actor);
+    // A walk-in given a rep is no news for the managers (owner, 2026-11-07): no "Lead assigned".
+    let walk_in: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) > 0 FROM customers c WHERE c.id = ? AND {WALKIN_SOURCE}"
+    )))
+    .bind(customer_id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or_else(|error| {
+        tracing::warn!(?error, customer_id, "assigned lead: walk-in not checked");
+        false
+    });
+    if walk_in {
+        managers.clear();
+    }
     if let Err(error) = push_manager_lead(
         state,
         company_id,
