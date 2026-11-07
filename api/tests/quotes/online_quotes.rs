@@ -622,9 +622,14 @@ async fn the_customer_adds_the_extras_the_company_offers(pool: MySqlPool) {
     // Off by default: no Extras step.
     let setup = server.get("/v1/public/companies/100/online-quote").await;
     assert_eq!(setup.json::<Value>()["extras"], json!([]));
+    // Each option is one of the company's extras (Admin > Quotes > Extras).
     sqlx::raw_sql(
-        "INSERT INTO online_quote_options (company_id, name, sequence, enabled) VALUES
-           (100, 'Stone tear out', 1, 1), (100, 'Haul away', 2, 1), (100, '10 year sealer', 3, 0)",
+        "INSERT INTO quote_extras (company_id, sequence, item_json) VALUES
+           (100, 1, '{\"name\":\"Stone tear out\"}'), (100, 2, '{\"name\":\"Haul away\"}'),
+           (100, 3, '{\"name\":\"10 year sealer\"}');
+         INSERT INTO online_quote_options (company_id, extra_id, name, sequence, enabled)
+           SELECT 100, id, JSON_UNQUOTE(JSON_EXTRACT(item_json, '$.name')), sequence, sequence < 3
+             FROM quote_extras WHERE company_id = 100",
     )
     .execute(&pool)
     .await
@@ -644,8 +649,8 @@ async fn the_customer_adds_the_extras_the_company_offers(pool: MySqlPool) {
         .await
         .assert_status(StatusCode::BAD_REQUEST);
 
-    // "Haul away" is already on every quote; "Stone tear out" has no price
-    // list extra, so it goes on unpriced for the team.
+    // "Haul away" is already on every quote; "Stone tear out" goes on as the
+    // company's extra, priced by the price list.
     body["extras"] = json!(["stone tear out", "Haul away"]);
     let res = server
         .post("/v1/public/companies/100/online-quotes")
@@ -667,8 +672,15 @@ async fn the_customer_adds_the_extras_the_company_offers(pool: MySqlPool) {
         .collect();
     assert_eq!(
         items,
-        [("priceList", "Haul away"), ("misc", "Stone tear out")]
+        [("priceList", "Haul away"), ("priceList", "Stone tear out")]
     );
+    let stone = doc["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["name"] == "Stone tear out")
+        .unwrap();
+    assert!(stone["catalogId"].as_i64().is_some());
 }
 
 #[test_db::test(seed)]

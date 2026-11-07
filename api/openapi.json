@@ -88539,9 +88539,10 @@
       },
       "OnlineQuoteOption": {
         "type": "object",
-        "description": "An extra the online quote can offer the customer.",
+        "description": "An extra the online quote can offer the customer: one of the company's\nextras (Admin > Quotes > Extras).",
         "required": [
           "id",
+          "extra_id",
           "name",
           "sequence",
           "enabled"
@@ -88552,9 +88553,14 @@
             "format": "int32",
             "description": "Option id."
           },
+          "extra_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The extra (`quote_extras.id`) the customer can add."
+          },
           "name": {
             "type": "string",
-            "description": "Name, e.g. \"Stone tear out\". A price list extra of the same name prices it."
+            "description": "The extra's name, e.g. \"Stone/Tile Countertop Tear Out\"."
           },
           "sequence": {
             "type": "integer",
@@ -88570,13 +88576,18 @@
       "OnlineQuoteOptionInput": {
         "type": "object",
         "description": "Body of creating or saving an online quote option.",
-        "required": [
-          "name"
-        ],
         "properties": {
+          "extra_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The extra (`quote_extras.id`). Unset: the extra named `name`."
+          },
           "name": {
             "type": "string",
-            "description": "Name; required, at most 120 characters (longer is cut)."
+            "description": "The extra's name; only used when `extra_id` is unset."
           },
           "sequence": {
             "type": [

@@ -441,15 +441,15 @@ pub async fn delete_payment_term(
     soft_delete(&state, "quote_payment_terms", user.company_id, id).await
 }
 
-/// What every company's online quote starts with, all off.
-const DEFAULT_ONLINE_OPTIONS: [&str; 3] = ["Laminate tear out", "Stone tear out", "10 year sealer"];
-
-/// An extra the online quote can offer the customer.
+/// An extra the online quote can offer the customer: one of the company's
+/// extras (Admin > Quotes > Extras).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, FromRow, ToSchema)]
 pub struct OnlineQuoteOption {
     /// Option id.
     pub id: i32,
-    /// Name, e.g. "Stone tear out". A price list extra of the same name prices it.
+    /// The extra (`quote_extras.id`) the customer can add.
+    pub extra_id: i32,
+    /// The extra's name, e.g. "Stone/Tile Countertop Tear Out".
     pub name: String,
     /// Order on the customer's Extras step.
     pub sequence: i32,
@@ -461,7 +461,11 @@ pub struct OnlineQuoteOption {
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OnlineQuoteOptionInput {
-    /// Name; required, at most 120 characters (longer is cut).
+    /// The extra (`quote_extras.id`). Unset: the extra named `name`.
+    #[serde(default)]
+    pub extra_id: Option<i32>,
+    /// The extra's name; only used when `extra_id` is unset.
+    #[serde(default)]
     pub name: String,
     /// Order; 1 or more (default 1).
     #[serde(default)]
@@ -471,11 +475,17 @@ pub struct OnlineQuoteOptionInput {
     pub enabled: bool,
 }
 
+/// The options with their extra's current name (extras since deleted drop out).
+const OPTIONS_SQL: &str = "SELECT o.id, o.extra_id,
+        TRIM(JSON_UNQUOTE(JSON_EXTRACT(x.item_json, '$.name'))) AS name, o.sequence, o.enabled
+   FROM online_quote_options o
+   JOIN quote_extras x ON x.id = o.extra_id AND x.company_id = o.company_id AND x.deleted_at IS NULL
+  WHERE o.company_id = ? AND o.deleted_at IS NULL";
+
 /// List online quote options
 ///
-/// The extras the company's online quote can offer, by sequence then name.
-/// A company that never had any gets Laminate tear out, Stone tear out and
-/// 10 year sealer, all off.
+/// The extras the company's online quote can offer, by sequence then name:
+/// each one of the company's extras (Admin > Quotes > Extras).
 #[crate::openapi::path(
     get,
     path = "/v1/online-quote-options",
@@ -493,54 +503,82 @@ pub async fn list_online_options(
     State(state): State<AppState>,
     AdminUser(user): AdminUser,
 ) -> ApiResult<Json<Vec<OnlineQuoteOption>>> {
-    // Deleted rows count: defaults the admin deleted stay deleted.
-    let ever: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM online_quote_options WHERE company_id = ?")
-            .bind(user.company_id)
-            .fetch_one(&state.pool)
-            .await?;
-    if ever == 0 {
-        for (sequence, name) in (1..).zip(DEFAULT_ONLINE_OPTIONS) {
-            sqlx::query(
-                "INSERT INTO online_quote_options (company_id, name, sequence, enabled, created_by)
-                 VALUES (?, ?, ?, 0, ?)",
-            )
-            .bind(user.company_id)
-            .bind(name)
-            .bind(sequence)
-            .bind(user.id)
-            .execute(&state.pool)
-            .await?;
-        }
-    }
     Ok(Json(
-        sqlx::query_as(
-            "SELECT id, name, sequence, enabled FROM online_quote_options
-              WHERE company_id = ? AND deleted_at IS NULL ORDER BY sequence, name, id",
-        )
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "{OPTIONS_SQL} ORDER BY o.sequence, name, o.id"
+        )))
         .bind(user.company_id)
         .fetch_all(&state.pool)
         .await?,
     ))
 }
 
-/// The names of the company's options offered to customers, in order.
+/// The company's options offered to customers, in order.
 pub async fn enabled_online_options(
     pool: &sqlx::MySqlPool,
     company_id: i32,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT name FROM online_quote_options
-          WHERE company_id = ? AND enabled = 1 AND deleted_at IS NULL ORDER BY sequence, name, id",
-    )
+) -> Result<Vec<OnlineQuoteOption>, sqlx::Error> {
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{OPTIONS_SQL} AND o.enabled = 1 ORDER BY o.sequence, name, o.id"
+    )))
     .bind(company_id)
     .fetch_all(pool)
     .await
 }
 
+/// The company extra an option points at: by id, else by name. Rejects an
+/// extra another option of the company already offers.
+async fn option_extra(
+    state: &AppState,
+    company_id: i32,
+    input: &OnlineQuoteOptionInput,
+    except: Option<i32>,
+) -> Result<(i32, String), ApiError> {
+    let found: Option<(i32, String)> = match input.extra_id {
+        Some(id) => {
+            sqlx::query_as(
+                "SELECT id, TRIM(JSON_UNQUOTE(JSON_EXTRACT(item_json, '$.name'))) FROM quote_extras
+                  WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
+            )
+            .bind(id)
+            .bind(company_id)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+        None => {
+            sqlx::query_as(
+                "SELECT id, TRIM(JSON_UNQUOTE(JSON_EXTRACT(item_json, '$.name'))) FROM quote_extras
+                  WHERE company_id = ? AND deleted_at IS NULL
+                    AND LOWER(TRIM(JSON_UNQUOTE(JSON_EXTRACT(item_json, '$.name')))) = LOWER(TRIM(?))
+                  ORDER BY sequence, id LIMIT 1",
+            )
+            .bind(company_id)
+            .bind(&input.name)
+            .fetch_optional(&state.pool)
+            .await?
+        }
+    };
+    let (id, name) = found.ok_or_else(|| {
+        ApiError::BadRequest("Pick one of your extras (Admin > Quotes > Extras).".into())
+    })?;
+    let taken: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM online_quote_options
+          WHERE company_id = ? AND extra_id = ? AND deleted_at IS NULL AND id <> ?",
+    )
+    .bind(company_id)
+    .bind(id)
+    .bind(except.unwrap_or(0))
+    .fetch_one(&state.pool)
+    .await?;
+    if taken > 0 {
+        return Err(ApiError::Conflict(format!("{name} is already an option.")));
+    }
+    Ok((id, name))
+}
+
 /// Add an online quote option
 ///
-/// Adds an extra the online quote can offer.
+/// Offers one of the company's extras on the online quote.
 #[crate::openapi::path(
     post,
     path = "/v1/online-quote-options",
@@ -549,9 +587,10 @@ pub async fn enabled_online_options(
     request_body = OnlineQuoteOptionInput,
     responses(
         (status = 201, description = "Added", body = OnlineQuoteOption),
-        (status = 400, description = "No name", body = ErrorBody),
+        (status = 400, description = "Not one of the company's extras", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 409, description = "That extra is already an option", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("session_cookie" = []))
@@ -561,14 +600,15 @@ pub async fn create_online_option(
     AdminUser(user): AdminUser,
     JsonBody(input): JsonBody<OnlineQuoteOptionInput>,
 ) -> ApiResult<(StatusCode, Json<OnlineQuoteOption>)> {
-    let name = required(&input.name, 120, "Name is required.")?;
+    let (extra_id, name) = option_extra(&state, user.company_id, &input, None).await?;
     let sequence = sequence(input.sequence);
     let id = sqlx::query(
-        "INSERT INTO online_quote_options (company_id, name, sequence, enabled, created_by)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO online_quote_options (company_id, extra_id, name, sequence, enabled, created_by)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(user.company_id)
-    .bind(&name)
+    .bind(extra_id)
+    .bind(name.chars().take(120).collect::<String>())
     .bind(sequence)
     .bind(input.enabled)
     .bind(user.id)
@@ -579,6 +619,7 @@ pub async fn create_online_option(
         StatusCode::CREATED,
         Json(OnlineQuoteOption {
             id: i32::try_from(id).unwrap_or(i32::MAX),
+            extra_id,
             name,
             sequence,
             enabled: input.enabled,
@@ -588,7 +629,7 @@ pub async fn create_online_option(
 
 /// Save an online quote option
 ///
-/// Saves the name, sequence and whether customers are offered it.
+/// Saves which extra it offers, its sequence and whether customers are offered it.
 #[crate::openapi::path(
     put,
     path = "/v1/online-quote-options/{id}",
@@ -598,10 +639,11 @@ pub async fn create_online_option(
     request_body = OnlineQuoteOptionInput,
     responses(
         (status = 204, description = "Saved"),
-        (status = 400, description = "No name", body = ErrorBody),
+        (status = 400, description = "Not one of the company's extras", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 404, description = "No such option in the company", body = ErrorBody),
+        (status = 409, description = "That extra is already an option", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("session_cookie" = []))
@@ -612,13 +654,14 @@ pub async fn update_online_option(
     Path(id): Path<i32>,
     JsonBody(input): JsonBody<OnlineQuoteOptionInput>,
 ) -> ApiResult<StatusCode> {
-    let name = required(&input.name, 120, "Name is required.")?;
     exists(&state, "online_quote_options", user.company_id, id).await?;
+    let (extra_id, name) = option_extra(&state, user.company_id, &input, Some(id)).await?;
     sqlx::query(
-        "UPDATE online_quote_options SET name = ?, sequence = ?, enabled = ?
+        "UPDATE online_quote_options SET extra_id = ?, name = ?, sequence = ?, enabled = ?
           WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
     )
-    .bind(name)
+    .bind(extra_id)
+    .bind(name.chars().take(120).collect::<String>())
     .bind(sequence(input.sequence))
     .bind(input.enabled)
     .bind(id)
