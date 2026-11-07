@@ -1,6 +1,6 @@
 # api — frontend-facing Lambda
 
-This crate replaces the Remix loaders/actions in `general_datebase` with JSON
+This crate replaces the Remix loaders/actions in `granite-front` with JSON
 endpoints, one route at a time, so the frontend can eventually be a static
 React app. The twin of this document in the frontend repo is
 `docs/backend-migration.md`.
@@ -301,7 +301,7 @@ resource. Keep the behaviour (tests prove it), not the shape:
 ## Seed data
 
 `seed/local_seed.sql` is shared by the Rust tests, the frontend's Playwright
-tests (`e2e/` in general_datebase, which reset the docker DB with
+tests (`e2e/` in granite-front, which reset the docker DB with
 `make api-db-reset`) and local dev. Append only; ids by range:
 
 | Range       | Rows                                                        |

@@ -39,7 +39,7 @@ pub const MMS_MAX_BYTES: u64 = 1_000_000;
 pub const MMS_MAX_FILES: usize = 10;
 /// Types sent as MMS media; any other file goes as a link.
 const MMS_TYPES: [&str; 4] = ["image/jpeg", "image/png", "image/gif", "application/pdf"];
-/// Pictures go to Telnyx through the Cloudflare picture worker (general_datebase
+/// Pictures go to Telnyx through the Cloudflare picture worker (granite-front
 /// `infra/cloudflare`): JPEG of at most 1280 px and about 110 KB (`?for=mms`),
 /// so about nine fit one MMS. `PICTURE_WORKER_URL` overrides it; set empty,
 /// the stored files go as they are.

@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::time::Duration;
 
 const CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
-/// Same variable the CRM (`general_datebase`) reads its API key from.
+/// Same variable the CRM (`granite-front`) reads its API key from.
 pub const API_KEY_ENV: &str = "OPEN_AI_SECRET_KEY";
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(12);
 
