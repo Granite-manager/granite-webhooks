@@ -24866,6 +24866,67 @@
         ]
       }
     },
+    "/v1/sms/{provider}/messages/{id}": {
+      "delete": {
+        "tags": [
+          "sms"
+        ],
+        "summary": "Delete a failed text",
+        "description": "Removes one of the caller's own failed outbound texts (`provider` names\nwhere it is stored) from the conversation, with its files.",
+        "operationId": "delete_failed_sms",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "SMS provider",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SmsProvider"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The failed message",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a failed text of the caller's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/sms/attachments": {
       "post": {
         "tags": [
@@ -41291,7 +41352,7 @@
           "schedule"
         ],
         "summary": "Best days for a waiting job",
-        "description": "Miles from the job to every one-off event of its calendar with an address\nbetween now (or the range start, if later) and the range end. The app\ngroups them by day; the nearest stop of a day is how well the job fits it.",
+        "description": "Miles from the job to every one-off event of its calendar with an address\nbetween now (or the range start, if later) and the range end. The app\ngroups them by day; the nearest stop of a day is how well the job fits it.\nTemplate jobs only for now: an installation job gets no stops.",
         "operationId": "schedule_best_days",
         "requestBody": {
           "content": {
@@ -42303,7 +42364,7 @@
           "schedule"
         ],
         "summary": "Auto-plan one person's unscheduled jobs",
-        "description": "Proposes a day and time for the unscheduled events of the Installations\nor Templates calendar with one of the statuses that are the person's or\nno one's, around the person's other events (on any calendar). Each job's\nlength comes from its sale and the job time rules (else the event's own\nlength). The person leaves the shop when the work day starts; a free day\nopens with the oldest job, then the nearest job by Google drive time goes\nnext, keeping the drive between stops. Nothing is saved: save the kept\nones with `PUT /v1/events/{id}`.",
+        "description": "Proposes a day and time for the unscheduled events of the Templates\ncalendar (templates only for now: installations are scheduled by hand)\nwith one of the statuses that are the person's or\nno one's, around the person's other events (on any calendar). Each job's\nlength comes from its sale and the job time rules (else the event's own\nlength). The person leaves the shop when the work day starts; a free day\nopens with the oldest job, then the nearest job by Google drive time goes\nnext, keeping the drive between stops. Nothing is saved: save the kept\nones with `PUT /v1/events/{id}`.",
         "operationId": "auto_plan_schedule",
         "requestBody": {
           "content": {
@@ -42327,7 +42388,7 @@
             }
           },
           "400": {
-            "description": "Not the Installations or Templates calendar, days not 1 to 30, or no person of that role picked",
+            "description": "Not the Templates calendar (installations are not auto-planned for now), days not 1 to 30, or no template maker picked",
             "content": {
               "application/json": {
                 "schema": {
@@ -53150,6 +53211,88 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/AutoUnscheduledJobsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not manage the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/company/sale-built-in-jobs": {
+      "put": {
+        "tags": [
+          "company"
+        ],
+        "summary": "Keep or remove a sold quote's template and installation events",
+        "description": "Admin › Quotes › Automation › Event templates. With Jobs to Unscheduled\non, marking a quote sold adds a template and an installation event; each\ncan be removed here (`sale_template_job` and `sale_installation_job` in\n`GET /v1/company/features`).",
+        "operationId": "save_company_sale_built_in_jobs",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "query",
+            "description": "Superusers only: the company to act on (default: the caller's).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaleBuiltInJobsInput"
               }
             }
           },
@@ -70815,7 +70958,7 @@
           "calendar_id": {
             "type": "integer",
             "format": "int32",
-            "description": "The Installations or Templates calendar."
+            "description": "The Templates calendar (installations are not auto-planned for now)."
           },
           "user_id": {
             "type": [
@@ -70823,7 +70966,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "The installer (Installations) or template maker (Templates) to plan\nfor. Leave it out only when the company has no one in that role."
+            "description": "The template maker to plan for. Leave it out only when the company\nhas no one in that role."
           },
           "start_date": {
             "type": "string",
@@ -74182,6 +74325,8 @@
           "telnyx_sms",
           "auto_sale",
           "auto_unscheduled_jobs",
+          "sale_template_job",
+          "sale_installation_job",
           "auto_invoice",
           "quote_invoice_sync",
           "auto_project",
@@ -74235,6 +74380,14 @@
           "auto_unscheduled_jobs": {
             "type": "boolean",
             "description": "Marking a quote sold adds its template and installation to the\nschedule's Unscheduled list (Admin › Quotes › Automation,\n`PUT /v1/company/auto-unscheduled-jobs`)."
+          },
+          "sale_template_job": {
+            "type": "boolean",
+            "description": "With `auto_unscheduled_jobs`, a sold quote adds its template event\n(Admin › Quotes › Automation › Event templates, where it can be\nremoved: `PUT /v1/company/sale-built-in-jobs`). Mark as Sold may\nstill untick it."
+          },
+          "sale_installation_job": {
+            "type": "boolean",
+            "description": "With `auto_unscheduled_jobs`, a sold quote adds its installation event\n(as `sale_template_job`)."
           },
           "auto_invoice": {
             "type": "boolean",
@@ -97788,12 +97941,39 @@
             "type": "boolean",
             "description": "Full Height Backsplash (higher than 15\"): also adds a \"FH Backsplash\"\ntemplate and installation job, both `not_ready`."
           },
+          "skip_template": {
+            "type": "boolean",
+            "description": "The seller unticked the template event in Mark as Sold: no template\njob (nor its FH Backsplash one) is added."
+          },
+          "skip_installation": {
+            "type": "boolean",
+            "description": "The seller unticked the installation event: no installation job (nor\nits FH Backsplash one) is added."
+          },
           "extra_events": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SaleExtraEvent"
             },
             "description": "Extra events to add (Mark as Sold › Extra events): the event templates\nticked (`GET /v1/quote-sale-events`), each with optional notes. Each\nadds one unscheduled, `not_ready` event on its template's calendar,\nwhether or not the company adds template and installation jobs. Left\nout or empty: none. Unknown template ids are skipped."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SaleBuiltInJobsInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/company/sale-built-in-jobs`.",
+        "required": [
+          "template",
+          "installation"
+        ],
+        "properties": {
+          "template": {
+            "type": "boolean",
+            "description": "A sold quote adds its template event (with Jobs to Unscheduled on)."
+          },
+          "installation": {
+            "type": "boolean",
+            "description": "A sold quote adds its installation event (with Jobs to Unscheduled on)."
           }
         },
         "additionalProperties": false

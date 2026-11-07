@@ -388,6 +388,49 @@ async fn a_retry_that_fails_again_stays_failed(pool: MySqlPool) {
     assert_eq!(status_of(&pool, failed).await.as_deref(), Some("failed"));
 }
 
+#[test_db::test(seed)]
+async fn a_rep_deletes_only_their_own_failed_texts(pool: MySqlPool) {
+    let setup = setup(&pool, Reply::Sent).await;
+    let theirs = failed_text(&pool, 101).await;
+    let sent = failed_text(&pool, 100).await;
+    sqlx::query("UPDATE cloudtalk_sms SET status = 'sent' WHERE id = ?")
+        .bind(sent)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mine = failed_text(&pool, 100).await;
+    for (session, id) in [
+        (sessions::REP, theirs),
+        (sessions::REP, sent),
+        (sessions::OTHER_COMPANY_REP, mine),
+    ] {
+        setup
+            .server
+            .delete(&format!("/v1/sms/cloudtalk/messages/{id}"))
+            .with_session(session)
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+    }
+    setup
+        .server
+        .delete(&format!("/v1/sms/cloudtalk/messages/{mine}"))
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(status_of(&pool, mine).await, None);
+    let files: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM cloudtalk_sms_attachments WHERE cloudtalk_sms_id = ?",
+    )
+    .bind(mine)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(files, 0);
+    assert_eq!(status_of(&pool, theirs).await.as_deref(), Some("failed"));
+    assert_eq!(status_of(&pool, sent).await.as_deref(), Some("sent"));
+    assert!(setup.seen().is_empty());
+}
+
 /// Rita texts through CloudTalk now; her text failed earlier through Granite
 /// Phone (Telnyx), where she no longer has a line. Its id.
 async fn failed_telnyx_text(pool: &MySqlPool) -> u64 {
