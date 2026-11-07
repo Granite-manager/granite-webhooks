@@ -258,6 +258,8 @@ async fn a_lead_assigned_from_the_phone_reaches_the_rep_in_the_app_and_in_telegr
     .await;
     add_phone(&pool, 1, 100, 100).await;
     add_phone(&pool, 2, 101, 100).await;
+    // Bob is a web lead here (the seed has him as a walk-in, whose rep the managers aren't told).
+    sql(&pool, "UPDATE customers SET source = 'leads' WHERE id = 1001").await;
     // Rita has the app and Telegram's lead alerts.
     sql(&pool, "UPDATE users SET telegram_id = 5551 WHERE id = 100").await;
     // Mark, the sales manager, got the lead in Telegram: once with its text
@@ -723,4 +725,23 @@ async fn a_lead_given_or_taken_back_on_the_website_or_a_phone_refreshes_every_ph
         ["push-1", "push-2", "push-3", "push-4"]
     );
     assert_eq!(waiting(&server, 2).await, Vec::<i64>::new());
+}
+
+#[test_db::test(seed)]
+async fn a_walk_in_given_a_rep_is_no_news_for_the_managers(pool: MySqlPool) {
+    use crate::common::{WithSession, sessions};
+    let (server, stubs) = waiting_lead(&pool).await;
+    sql(&pool, "UPDATE customers SET source = 'check-in' WHERE id = 1001").await;
+    server
+        .put("/v1/customers/1001/sales-rep")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "sales_rep": 100 }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Rita still hears it is hers; no manager gets "Lead assigned".
+    let kinds: Vec<String> = pushes(&stubs, "lead")
+        .into_iter()
+        .map(|(_, data)| data["kind"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds, ["assigned"]);
 }

@@ -138,6 +138,10 @@ pub async fn push_lead_route(
         None => {
             let mut managers = sales_managers(&state.pool, body.company_id).await?;
             managers.retain(|id| !body.except_user_ids.contains(id));
+            // A walk-in given a rep is no news for the managers (owner, 2026-11-07).
+            if body.kind == LeadKind::Taken && walk_in(&state, body.customer_id).await? {
+                managers.clear();
+            }
             let pushed = push_manager_lead(
                 &state,
                 body.company_id,
@@ -154,6 +158,17 @@ pub async fn push_lead_route(
         }
     };
     Ok(Json(PushSent { pushed }))
+}
+
+/// The customer is a walk-in (checked in at the showroom, or a source counted as one).
+async fn walk_in(state: &AppState, customer_id: i32) -> sqlx::Result<bool> {
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) > 0 FROM customers c WHERE c.id = ? AND {}",
+        api_crm::routes::customers::service::WALKIN_SOURCE
+    )))
+    .bind(customer_id)
+    .fetch_one(&state.pool)
+    .await
 }
 
 /// The push names a live customer of its company (else nobody is told).
