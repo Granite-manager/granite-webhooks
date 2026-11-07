@@ -854,6 +854,29 @@ mod tests {
         assert_eq!(get_sms_received(&pool).await.len(), 1);
     }
 
+    /// Subscriptions carry the token in their address: `RingCentral` refuses
+    /// it as a `verificationToken`.
+    #[test_db::test]
+    async fn test_notify_takes_the_token_in_the_url(pool: MySqlPool) {
+        let app = new_test_app(pool.clone());
+        let body: serde_json::Value =
+            serde_json::from_slice(crate::tests::ringcentral::NOTIFY_INBOUND_SMS).unwrap();
+
+        let token = internal_token(&pool).await;
+        let response = app
+            .post(&format!("/ringcentral/notify/42?token={token}"))
+            .json(&body)
+            .await;
+        assert_eq!(response.status_code(), StatusCode::OK);
+        assert_eq!(get_sms_received(&pool).await.len(), 1);
+
+        let refused = app
+            .post("/ringcentral/notify/42?token=gmk_wrongwrongwrongwrongwrongwrongwrongwrongw")
+            .json(&body)
+            .await;
+        assert_eq!(refused.status_code(), StatusCode::UNAUTHORIZED);
+    }
+
     #[test_db::test]
     async fn test_notify_rejects_missing_token_and_echoes_validation(pool: MySqlPool) {
         let app = new_test_app(pool.clone());

@@ -606,25 +606,50 @@ impl SubscriptionTarget {
         })
     }
 
-    /// `/ringcentral/notify/{company_id}` on the webhooks Lambda.
+    /// `/ringcentral/notify/{company_id}` on the webhooks Lambda, without a
+    /// query string: what a subscription is matched by
+    /// ([`is_notify_address`]).
     pub fn address(&self, company_id: i32) -> String {
         format!("{}/ringcentral/notify/{company_id}", self.base)
     }
 
-    /// SHA-256 (hex) of the subscriptions' [`Self::verification_token`], as
-    /// `company.ringcentral_subscription_token_hash` keeps it.
-    pub fn token_hash(&self) -> String {
-        crate::access_token::token_hash(self.verification_token())
+    /// The address a subscription is made with. An access token rides in the
+    /// URL (`?token=gmk_...`): `RingCentral` refuses it as a
+    /// `verificationToken` (CMN-101 for the 47- and 43-character forms,
+    /// 2026-11-07), while the old 32-hex UUID still went there.
+    pub fn delivery_address(&self, company_id: i32) -> String {
+        if self.is_access_token() {
+            format!("{}?token={}", self.address(company_id), self.token)
+        } else {
+            self.address(company_id)
+        }
     }
 
-    /// The token as a subscription's `verificationToken`. `RingCentral` allows
-    /// only letters and digits there (CMN-101 for `gmk_...`), so an access
-    /// token goes without its prefix; the webhook puts it back.
-    pub fn verification_token(&self) -> &str {
-        self.token
-            .strip_prefix(crate::access_token::TOKEN_PREFIX)
-            .unwrap_or(&self.token)
+    /// The subscription's `verificationToken`: only the old UUID.
+    pub fn verification_token(&self) -> Option<&str> {
+        (!self.is_access_token()).then_some(self.token.as_str())
     }
+
+    /// Fingerprint (SHA-256, hex) of how subscriptions carry the token, as
+    /// `company.ringcentral_subscription_token_hash` keeps it. A change of
+    /// either the token or the way it is carried makes the job renew them.
+    pub fn token_hash(&self) -> String {
+        if self.is_access_token() {
+            crate::access_token::token_hash(&format!("url:{}", self.token))
+        } else {
+            crate::access_token::token_hash(&self.token)
+        }
+    }
+
+    fn is_access_token(&self) -> bool {
+        crate::access_token::is_token_shaped(&self.token)
+    }
+}
+
+/// Whether a subscription's `deliveryMode.address` is `address` (whatever
+/// token its query string carries).
+pub fn is_notify_address(record_address: &str, address: &str) -> bool {
+    record_address.split('?').next() == Some(address)
 }
 
 /// Where `RingCentral` pushes the company's new texts
@@ -673,7 +698,11 @@ async fn existing_subscription(
         .as_array()
         .into_iter()
         .flatten()
-        .find(|record| record["deliveryMode"]["address"].as_str() == Some(address))
+        .find(|record| {
+            record["deliveryMode"]["address"]
+                .as_str()
+                .is_some_and(|found| is_notify_address(found, address))
+        })
         .and_then(|record| record["id"].as_str().map(str::to_string)))
 }
 
@@ -689,13 +718,16 @@ async fn subscribe(
     existing: Option<&str>,
     extension_ids: &[String],
 ) -> Result<SubscriptionOutcome, ApiError> {
+    let mut delivery = json!({
+        "transportType": "WebHook",
+        "address": target.delivery_address(company_id),
+    });
+    if let Some(token) = target.verification_token() {
+        delivery["verificationToken"] = json!(token);
+    }
     let body = json!({
         "eventFilters": sms_event_filters(extension_ids),
-        "deliveryMode": {
-            "transportType": "WebHook",
-            "address": target.address(company_id),
-            "verificationToken": target.verification_token(),
-        },
+        "deliveryMode": delivery,
         "expiresIn": SUBSCRIPTION_EXPIRES_IN_SECONDS,
     });
     // Always a new subscription: a PUT changes only `eventFilters` and
@@ -954,18 +986,35 @@ mod subscription_tests {
     fn the_webhooks_key_is_the_token_once_it_is_an_access_token() {
         let target = target("https://hooks.test/", Some(TOKEN), Some(LEGACY)).unwrap();
         assert_eq!(target.token, TOKEN);
-        // RingCentral refuses the `_` of `gmk_`.
-        assert_eq!(target.verification_token(), &TOKEN[4..]);
         assert_eq!(
             target.address(12),
             "https://hooks.test/ringcentral/notify/12"
         );
+        // RingCentral refuses it as a verificationToken: it rides in the URL.
+        assert_eq!(target.verification_token(), None);
+        assert_eq!(
+            target.delivery_address(12),
+            format!("https://hooks.test/ringcentral/notify/12?token={TOKEN}")
+        );
+        assert!(super::is_notify_address(
+            &target.delivery_address(12),
+            &target.address(12)
+        ));
+        assert!(!super::is_notify_address(
+            "https://hooks.test/ringcentral/notify/123",
+            &target.address(12)
+        ));
     }
 
     #[test]
     fn until_then_the_shared_uuid_without_hyphens() {
         let target = target("https://hooks.test", Some("remix-key"), Some(LEGACY)).unwrap();
         assert_eq!(target.token, "9ca4dfa80eec46cc967f3385624be883");
+        assert_eq!(
+            target.verification_token(),
+            Some("9ca4dfa80eec46cc967f3385624be883")
+        );
+        assert_eq!(target.delivery_address(5), target.address(5));
         assert_eq!(
             SubscriptionTarget::new(Some("https://hooks.test"), None, Some(LEGACY))
                 .unwrap()

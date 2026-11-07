@@ -158,8 +158,13 @@ async fn subscriptions_move_to_the_current_token(pool: MySqlPool) {
         ]
     );
     let renewal = subscribed_seen.lock().unwrap()[2].1.clone();
-    assert_eq!(renewal["deliveryMode"]["address"], ours.as_str());
-    assert_eq!(renewal["deliveryMode"]["verificationToken"], &TOKEN[4..]);
+    // RingCentral refuses an access token as a verificationToken: it rides in
+    // the address.
+    assert_eq!(
+        renewal["deliveryMode"]["address"],
+        format!("{ours}?token={TOKEN}")
+    );
+    assert!(renewal["deliveryMode"]["verificationToken"].is_null());
     assert_eq!(
         renewal["eventFilters"][0],
         "/restapi/v1.0/account/~/extension/501/message-store/instant?type=SMS"
@@ -167,7 +172,7 @@ async fn subscriptions_move_to_the_current_token(pool: MySqlPool) {
     // Never created here.
     assert_eq!(requests(&other_seen), ["GET subscription"]);
 
-    let current = Some(token_hash(&TOKEN[4..]));
+    let current = Some(token_hash(&format!("url:{TOKEN}")));
     assert_eq!(stored_hash(&pool, 7101).await, current);
     assert_eq!(stored_hash(&pool, 7102).await, current);
 
@@ -199,11 +204,43 @@ async fn a_new_token_reaches_subscriptions_on_the_old_one(pool: MySqlPool) {
         .unwrap()
         .1
         .clone();
-    assert_eq!(renewal["deliveryMode"]["verificationToken"], &TOKEN[4..]);
+    assert_eq!(
+        renewal["deliveryMode"]["address"],
+        format!("{}?token={TOKEN}", target_address(7103))
+    );
     assert_eq!(
         stored_hash(&pool, 7103).await,
-        Some(token_hash(&TOKEN[4..]))
+        Some(token_hash(&format!("url:{TOKEN}")))
     );
+}
+
+/// A subscription the job made, as `RingCentral` lists it: the address with
+/// the token in its query string. It is matched (and replaced) too.
+#[test_db::test]
+async fn a_subscription_with_a_token_in_its_address_is_matched(pool: MySqlPool) {
+    let target = SubscriptionTarget::new(Some(HOOKS), Some(TOKEN), None).unwrap();
+    let (server_url, seen) = ringcentral(&[format!(
+        "{}?token=gmk_olderolderolderolderolderolderolderolder1",
+        target.address(7105)
+    )])
+    .await;
+    company(&pool, 7105, &server_url).await;
+
+    let body = run(&server(pool.clone(), Some(target))).await;
+    assert_eq!(body["ringcentral_subscriptions"], 1, "{body}");
+    assert_eq!(
+        requests(&seen),
+        [
+            "GET subscription",
+            "GET extension",
+            "POST subscription",
+            "DELETE subscription/sub-0"
+        ]
+    );
+}
+
+fn target_address(company_id: i32) -> String {
+    format!("{HOOKS}/ringcentral/notify/{company_id}")
 }
 
 #[test_db::test]

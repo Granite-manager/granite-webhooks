@@ -187,7 +187,15 @@ pub async fn get_settings(
     .await?
     .ok_or(ApiError::NotFound)?;
     let ringcentral_status = if ringcentral_connect::is_connected(&state.pool, company_id).await? {
-        Some(ringcentral_connect::check(&state.pool, &state.telephony_http, company_id).await)
+        Some(
+            ringcentral_connect::check(
+                &state.pool,
+                &state.telephony_http,
+                state.ringcentral_subscriptions.as_ref(),
+                company_id,
+            )
+            .await,
+        )
     } else {
         None
     };
