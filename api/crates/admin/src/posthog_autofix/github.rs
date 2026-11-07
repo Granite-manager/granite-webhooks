@@ -123,7 +123,7 @@ mod tests {
         let (url, body) = dispatch_request(&Config::default(), &dispatch).unwrap();
         assert_eq!(
             url,
-            "https://api.github.com/repos/DmitryZaika/granite-webhooks/actions/workflows/posthog-autofix.yml/dispatches"
+            "https://api.github.com/repos/Granite-manager/granite-webhooks/actions/workflows/posthog-autofix.yml/dispatches"
         );
         assert_eq!(
             body,

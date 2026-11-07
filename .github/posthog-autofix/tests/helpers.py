@@ -81,5 +81,5 @@ def run_context(workspace: Path, out_dir: Path) -> RunContext:
         issue_id=ISSUE_ID,
         workspace=workspace,
         out_dir=out_dir,
-        github_run_url="https://github.com/DmitryZaika/granite-webhooks/actions/runs/1",
+        github_run_url="https://github.com/Granite-manager/granite-webhooks/actions/runs/1",
     )

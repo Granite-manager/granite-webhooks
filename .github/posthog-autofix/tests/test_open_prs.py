@@ -27,7 +27,7 @@ BODY = (
 def pull(number: int, **changes: object) -> dict[str, object]:
     return {
         "number": number,
-        "html_url": f"https://github.com/DmitryZaika/general_datebase/pull/{number}",
+        "html_url": f"https://github.com/Granite-manager/granite-front/pull/{number}",
         "title": f"fix: thing {number}",
         "body": BODY,
         "labels": [{"name": "ai-fix"}],
@@ -50,7 +50,9 @@ class FakeGitHub:
         if self.fail:
             return http.Response(403, {"message": "Resource not accessible"})
         if "/pulls?" in url:
-            repo = url.split("/repos/DmitryZaika/")[1].split("/")[0]
+            name = url.split("/repos/Granite-manager/")[1].split("/")[0]
+            # GitHub knows the CRM as granite-front; the fixtures use the workspace key.
+            repo = {"granite-front": "general_datebase"}.get(name, name)
             return http.Response(200, self.issues.get(repo, []))
         if "/files?" in url:
             return http.Response(200, [{"filename": "app/a.ts"}, {"filename": "app/b.ts"}])
@@ -93,6 +95,9 @@ class FetchTest(unittest.TestCase):
         self.assertEqual(prs[0].files, ["app/a.ts", "app/b.ts"])
         self.assertEqual(prs[0].bug_id, "0123456789ab")
         self.assertTrue(any("/pulls?state=open" in url for url in fake.urls))
+        self.assertTrue(
+            any("/repos/Granite-manager/granite-front/pulls?" in url for url in fake.urls)
+        )
         self.assertTrue(all(h["Authorization"] == "Bearer tok" for h in fake.headers))
 
     def test_caps_the_pull_requests_and_files(self) -> None:

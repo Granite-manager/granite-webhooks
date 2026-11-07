@@ -9,11 +9,12 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from helpers import commit, git, init_repo, run_context, sample_result
 
 from autofix import publish
-from autofix.context import RunContext
+from autofix.context import RunContext, github_name
 from autofix.github import GitHub
 from autofix.http import Response
 from autofix.publish import Plan, PublishError
@@ -32,7 +33,7 @@ class FakeGitHub:
             return Response(
                 201,
                 {
-                    "html_url": "https://github.com/DmitryZaika/general_datebase/pull/7",
+                    "html_url": "https://github.com/Granite-manager/granite-front/pull/7",
                     "number": 7,
                     "draft": payload["draft"],
                 },
@@ -209,6 +210,22 @@ class PublishTest(unittest.TestCase):
         self.assertEqual(
             publish.plan(run_context(self.tmp, self.tmp / "empty"), self.bases), Plan(False)
         )
+
+
+class GitHubNameTest(unittest.TestCase):
+    def test_the_crm_is_granite_front_on_github(self) -> None:
+        self.assertEqual(github_name("general_datebase"), "granite-front")
+        self.assertEqual(github_name("granite-webhooks"), "granite-webhooks")
+
+    def test_the_plan_names_the_github_repository(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        out = tmp / "output"
+        with mock.patch.dict("os.environ", {"GITHUB_OUTPUT": str(out)}):
+            publish.write_plan(Plan(True, "general_datebase", "a" * 40, "b" * 40))
+        lines = out.read_text().splitlines()
+        self.assertIn("target_repo=general_datebase", lines)
+        self.assertIn("github_repo=granite-front", lines)
 
 
 if __name__ == "__main__":

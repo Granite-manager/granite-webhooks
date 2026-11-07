@@ -106,7 +106,7 @@ effort: on any failure the agent fetches the issue through the MCP tools.
 token, and writes nothing on any failure.
 
 Browser errors resolve to real files and functions once the SPA uploads its
-source maps at deploy (`general_datebase`, `docs/static-hosting.md`). Until
+source maps at deploy (`granite-front`, `docs/static-hosting.md`). Until
 then their frames are minified, and only the error text identifies the bug.
 
 Ledger states: `discovered → queued | skipped | duplicate`, `queued →
@@ -163,7 +163,7 @@ sent after it releases the database lock.
 | `POSTHOG_AUTOFIX_EXCLUDE` | see `config.rs` `DEFAULT_EXCLUDE` | Newline- or `;`-separated, case-insensitive substrings of `<type>: <message>`. Replaces the defaults. |
 | `POSTHOG_AUTOFIX_WRITE_KEY` | none | Optional write-back: PostHog personal API key with `error_tracking:write`, project 141685. |
 | `POSTHOG_AUTOFIX_ASSIGNEE` | none | Optional write-back: comma-separated `user:<PostHog user id>` or `role:<role uuid>`, e.g. `user:378526,user:123`. When a fix's pull request opens, its issue is assigned to one of them (PostHog allows one assignee per issue; they take turns by run), retried on the next poll if PostHog fails. Both write-back variables must be set. |
-| `POSTHOG_AUTOFIX_GITHUB_REPO` / `_WORKFLOW` / `_REF` | `DmitryZaika/granite-webhooks` / `posthog-autofix.yml` / `main` | Where the workflow lives. |
+| `POSTHOG_AUTOFIX_GITHUB_REPO` / `_WORKFLOW` / `_REF` | `Granite-manager/granite-webhooks` / `posthog-autofix.yml` / `main` | Where the workflow lives. |
 
 An unparsable value keeps its default and is logged; secrets never appear in logs.
 

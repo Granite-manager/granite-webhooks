@@ -149,7 +149,7 @@ impl Default for Config {
             posthog_host: "https://us.posthog.com".into(),
             posthog_project_id: 141_685,
             posthog_key: None,
-            github_repo: "DmitryZaika/granite-webhooks".into(),
+            github_repo: "Granite-manager/granite-webhooks".into(),
             github_workflow: "posthog-autofix.yml".into(),
             github_ref: "main".into(),
             github_token: None,

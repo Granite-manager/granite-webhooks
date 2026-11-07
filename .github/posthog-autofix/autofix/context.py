@@ -11,8 +11,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-OWNER = "DmitryZaika"
+OWNER = "Granite-manager"
 REPOS = ("granite-webhooks", "general_datebase")
+# REPOS are the workspace folder names, also stored by the api; on GitHub the
+# CRM has been granite-front since the 2026-11-07 move to the org.
+GITHUB_NAMES = {"granite-webhooks": "granite-webhooks", "general_datebase": "granite-front"}
 POSTHOG_PROJECT = 141685
 
 _RUN_ID = re.compile(r"[0-9]{1,20}")
@@ -53,6 +56,11 @@ def validate_bug_id(value: str) -> str:
 
 def is_sha(value: object) -> bool:
     return isinstance(value, str) and _SHA.fullmatch(value) is not None
+
+
+def github_name(repo: str) -> str:
+    """`repo`'s repository name on GitHub, for API paths and clone URLs."""
+    return GITHUB_NAMES.get(repo, repo)
 
 
 @dataclass(frozen=True)
