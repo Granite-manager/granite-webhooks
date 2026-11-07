@@ -678,6 +678,10 @@ pub struct SaleJobs {
     /// Full Height Backsplash (higher than 15"): also a "FH Backsplash"
     /// template and installation job.
     pub full_height_backsplash: bool,
+    /// Only the FH Backsplash template job (Mark as Sold › Extra events).
+    pub fh_backsplash_template: bool,
+    /// Only the FH Backsplash installation job (Mark as Sold › Extra events).
+    pub fh_backsplash_installation: bool,
     /// The seller unticked the template event (Mark as Sold › Extra events):
     /// no template job, nor its FH Backsplash one.
     pub skip_template: bool,
@@ -819,7 +823,8 @@ pub async fn mark_quote_sold(
 /// calendars, the template "ready" (or "not ready" when `jobs.template_ready`
 /// is false), the installation "not ready", each with its notes from `jobs`.
 /// With `jobs.full_height_backsplash` each calendar also gets a "FH
-/// Backsplash" job, "not ready", with the same notes. The template (or
+/// Backsplash" job, "not ready", with the same notes; `fh_backsplash_template`
+/// / `fh_backsplash_installation` add only that calendar's one. The template (or
 /// installation) jobs are left out when the company removed them
 /// (`company.sale_template_job` / `sale_installation_job`) or the seller
 /// unticked them (`jobs.skip_template` / `skip_installation`).
@@ -937,7 +942,14 @@ fn built_in_jobs(calendars: &[(i32, bool)], jobs: &SaleJobs, title: &str) -> Vec
                 (calendar_id, template, true),
             ]
         })
-        .filter(|&(_, _, fh)| !fh || jobs.full_height_backsplash)
+        .filter(|&(_, template, fh)| {
+            !fh || jobs.full_height_backsplash
+                || if template {
+                    jobs.fh_backsplash_template
+                } else {
+                    jobs.fh_backsplash_installation
+                }
+        })
         .map(|(calendar_id, template, fh)| {
             let notes = if template {
                 &jobs.template_notes

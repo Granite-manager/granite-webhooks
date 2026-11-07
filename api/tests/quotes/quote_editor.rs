@@ -795,6 +795,11 @@ async fn a_sold_quote_waits_in_unscheduled_only_when_switched_on(pool: MySqlPool
                 "full_height_backsplash": true,
             }),
         ),
+        // Only the FH Backsplash installation (Extra events).
+        (
+            on,
+            json!({ "option": 0, "fh_backsplash_installation": true }),
+        ),
         // The seller unticked both: nothing.
         (
             on,
@@ -832,7 +837,7 @@ async fn a_sold_quote_waits_in_unscheduled_only_when_switched_on(pool: MySqlPool
     // Off: nothing added; on: a template, Ready unless the seller picked Not
     // ready, and an installation, always Not ready; each with its notes
     // (trimmed, blank stays none). Full Height Backsplash adds a Not ready
-    // FH Backsplash template and installation.
+    // FH Backsplash template and installation; either can be picked alone.
     assert_eq!(
         jobs,
         [
@@ -846,6 +851,7 @@ async fn a_sold_quote_waits_in_unscheduled_only_when_switched_on(pool: MySqlPool
                 "FH not_ready|Tall splash",
             ],
             vec!["not_ready|-", "FH not_ready|-"],
+            vec!["ready|-", "not_ready|-", "FH not_ready|-"],
             vec![],
             vec!["ready|-"],
         ]
