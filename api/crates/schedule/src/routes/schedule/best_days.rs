@@ -32,6 +32,7 @@ pub struct BestDaysInput {
 /// A later stop and how far the job is from it.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct StopDistance {
+    /// The stop's event id.
     pub event_id: i32,
     /// Miles as the crow flies, one decimal.
     pub miles: f64,

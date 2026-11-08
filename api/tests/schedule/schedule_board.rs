@@ -330,6 +330,7 @@ async fn waiting_events_bring_their_invoices(pool: MySqlPool) {
 
 #[test_db::test(seed)]
 async fn the_shop_sees_the_schedule(pool: MySqlPool) {
+    seed(&pool).await;
     let server = server(pool.clone());
     let april = "/v1/schedule/events?start=2026-04-01T00:00:00Z&end=2026-04-30T23:59:59Z";
     // Vic (104) is not an employee.

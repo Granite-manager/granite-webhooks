@@ -266,7 +266,7 @@ async fn images_and_documents_come_back_as_downloads(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
-async fn stored_files_are_for_employees_and_the_proxy_for_admins(pool: MySqlPool) {
+async fn stored_files_and_the_image_proxy_are_for_employees(pool: MySqlPool) {
     let (server, storage) = common::server_with_storage(pool);
     storage
         .put("emails/a.png", b"png".to_vec(), "image/png")
@@ -281,11 +281,13 @@ async fn stored_files_are_for_employees_and_the_proxy_for_admins(pool: MySqlPool
         .get(&format!("/v1/stones/image-proxy?url={url}"))
         .await
         .assert_status(StatusCode::UNAUTHORIZED);
-    server
+    // Any employee may load a picture to crop it.
+    let res = server
         .get(&format!("/v1/stones/image-proxy?url={url}"))
         .with_session(sessions::REP)
-        .await
-        .assert_status(StatusCode::FORBIDDEN);
+        .await;
+    res.assert_status_ok();
+    assert_eq!(res.as_bytes().as_ref(), b"png");
     // Only the bucket's own URLs, and no climbing out of it.
     for url in [
         "https://elsewhere.test/a.png",

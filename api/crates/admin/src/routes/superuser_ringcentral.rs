@@ -43,6 +43,7 @@ const HANDOVER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10)
 /// `RingCentral` ids looked up per query.
 const ID_CHUNK: usize = 500;
 
+/// Body of the `RingCentral` texts catch-up: the window and the extensions to read.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CatchUpRequest {
     /// Start of the window, RFC 3339 (`2026-11-07T00:15:00Z`), at most 30
@@ -57,6 +58,7 @@ pub struct CatchUpRequest {
     pub extensions: Vec<String>,
 }
 
+/// What a catch-up call read, and what is left for the next call.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CatchUpReport {
     /// The extensions read in this call.
@@ -66,8 +68,10 @@ pub struct CatchUpReport {
     pub remaining: Vec<String>,
 }
 
+/// The texts of one extension in the window.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ExtensionReport {
+    /// The `RingCentral` extension id.
     pub extension: String,
     /// Texts `RingCentral` keeps for the window.
     pub texts: usize,

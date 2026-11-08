@@ -95,7 +95,10 @@ async fn server(pool: MySqlPool) -> TestServer {
     TestServer::new(app(state))
 }
 
+// Ryan (100) also plans the schedule: Scheduling Manager (13) has the
+// "Plan the schedule" skill.
 const DAY: &str = "
+INSERT INTO users_positions (user_id, position_id, company_id) VALUES (100, 13, 100);
 UPDATE company SET address = 'Home' WHERE id = 100;
 INSERT INTO events (id, title, location, start_date, end_date, all_day, created_user_id) VALUES
   (9100, 'A', 'Stop A', '2030-01-15 14:00:00', '2030-01-15 15:00:00', 0, 100),

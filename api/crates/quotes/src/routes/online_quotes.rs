@@ -1929,7 +1929,7 @@ pub async fn lead_notice(
     let Some(name) = name else {
         return Err(ApiError::NotFound);
     };
-    let quotes = customer_online_quotes(&state.pool, company_id, customer_id).await?;
+    let quotes = customer_online_quotes(&state.pool, company_id, customer_id, false).await?;
     let Some(quote) = quotes.into_iter().next() else {
         return Err(ApiError::NotFound);
     };
@@ -2017,12 +2017,14 @@ async fn last_sent_drawing(
 }
 
 /// The customer's quotes made with the online quote, newest first, each
-/// priced as the quote is (its price snapshot and tax) once the company has
-/// emailed or printed it; before that, with no prices.
+/// priced as the quote is (its price snapshot and tax). For the customer
+/// (`for_customer`), a quote the company has not emailed or printed yet has
+/// no prices.
 pub async fn customer_online_quotes(
     pool: &MySqlPool,
     company_id: i32,
     customer_id: i32,
+    for_customer: bool,
 ) -> ApiResult<Vec<CustomerOnlineQuote>> {
     let rows: Vec<(i32, Option<String>, Option<String>, Option<String>, i64)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -2041,7 +2043,9 @@ pub async fn customer_online_quotes(
         .fetch_all(pool)
         .await?;
     let mut quotes = Vec::with_capacity(rows.len());
-    for (id, name, created_date, expiration_date, hidden) in rows {
+    for (id, name, created_date, expiration_date, unshared) in rows {
+        // Only the customer waits for the company to share the quote.
+        let hidden = i64::from(for_customer && unshared != 0);
         let Some(quote) = crate::quote_pricing::load_company_quote(pool, id, company_id).await?
         else {
             continue;

@@ -43,6 +43,7 @@ pub enum ChatRole {
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ChatTurn {
     pub role: ChatRole,
+    /// The message text.
     pub content: String,
 }
 

@@ -1194,9 +1194,13 @@ pub async fn quotes(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let customer = verified_customer(&state, &headers, company_id, &view_id).await?;
-    let quotes =
-        crate::routes::online_quotes::customer_online_quotes(&state.pool, company_id, customer.id)
-            .await?;
+    let quotes = crate::routes::online_quotes::customer_online_quotes(
+        &state.pool,
+        company_id,
+        customer.id,
+        true,
+    )
+    .await?;
     Ok(no_store(Json(quotes)))
 }
 

@@ -35,14 +35,19 @@ const SAMPLE_CUSTOMER_NAME: &str = "Onboarding Sample Customer";
 /// A lead of the inbox.
 #[derive(Debug, Serialize, sqlx::FromRow, ToSchema)]
 pub struct InboxLead {
+    /// The lead's customer id.
     pub customer_id: i32,
+    /// The customer's name (null when the lead has none).
     pub name: Option<String>,
+    /// The customer's phone (null when the lead has none).
     pub phone: Option<String>,
     /// When the lead came in.
     pub created_at: Option<DateTime<Utc>>,
     /// When it was first given a rep (null while it has none).
     pub assigned_at: Option<DateTime<Utc>>,
+    /// The sales rep's user id; null while the lead has no rep.
     pub sales_rep_id: Option<i32>,
+    /// The sales rep's name; null while the lead has no rep.
     pub sales_rep_name: Option<String>,
     /// Its newest live deal, the one the app opens.
     pub deal_id: Option<i64>,

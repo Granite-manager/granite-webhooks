@@ -47,6 +47,7 @@ pub struct PortAskInput {
     /// Whether the signed LOA and the recent bill are attached.
     #[serde(default)]
     pub loa_attached: bool,
+    /// Whether the recent bill is attached.
     #[serde(default)]
     pub bill_attached: bool,
     /// The Business details as typed (the PIN itself is not sent).
@@ -56,6 +57,7 @@ pub struct PortAskInput {
 /// The AI's answer.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PortAskResult {
+    /// The answer, plain text.
     pub answer: String,
 }
 

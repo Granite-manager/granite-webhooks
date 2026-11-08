@@ -26,8 +26,11 @@ const MAX_GOAL: u16 = 9999;
 /// The user's own daily minimums; null when not set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, FromRow, ToSchema)]
 pub struct OutreachGoals {
+    /// Outbound calls a day (0 to 9999); null when not set.
     pub calls: Option<u16>,
+    /// Texts a day (0 to 9999); null when not set.
     pub sms: Option<u16>,
+    /// Emails a day (0 to 9999); null when not set.
     pub emails: Option<u16>,
 }
 

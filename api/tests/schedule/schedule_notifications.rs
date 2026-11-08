@@ -881,6 +881,11 @@ async fn events_get_the_default_flow_or_the_ones_they_pick(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn a_confirmation_goes_out_right_away(pool: MySqlPool) {
     sqlx::raw_sql(CALENDARS).execute(&pool).await.unwrap();
+    // Ryan (100) also is a Scheduling Manager (13): "Send SMS from events".
+    sqlx::query("INSERT INTO users_positions (user_id, position_id, company_id) VALUES (100, 13, 100)")
+        .execute(&pool)
+        .await
+        .unwrap();
     let template = sqlx::query(
         "INSERT INTO schedule_notification_templates (company_id, name, channel, subject, body)
          VALUES (100, 'Confirmation', 'email', 'Booked, {{customer.first_name}}',
@@ -1128,19 +1133,16 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
     assert!(history(&pool, install).await.contains(
         &"Status changed to Confirmed by AI: the customer agreed: “Yes that works”".to_string()
     ));
+    // Every Scheduling Manager hears about it: Rita (100) and Mark (101).
     let told: Vec<(i32, String)> = sqlx::query_as(
-        "SELECT user_id, message FROM notifications WHERE notification_type = 'schedule_ai_ready'",
+        "SELECT user_id, message FROM notifications WHERE notification_type = 'schedule_ai_ready'
+          ORDER BY user_id",
     )
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(
-        told,
-        [(
-            100,
-            "1000 is Confirmed: the customer agreed to the date (AI)".to_string()
-        )]
-    );
+    let message = "1000 is Confirmed: the customer agreed to the date (AI)".to_string();
+    assert_eq!(told, [(100, message.clone()), (101, message)]);
     // Settled: nothing more is read or sent.
     let body = run().await;
     assert_eq!(body["answers_read"], 0);

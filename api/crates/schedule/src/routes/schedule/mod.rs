@@ -240,6 +240,7 @@ pub async fn own_events_only(
 /// A stop that gets a new time on the route.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RouteMove {
+    /// Event id.
     pub id: i32,
     /// New start, UTC (`2030-01-15T14:00:00Z`).
     pub start: String,
