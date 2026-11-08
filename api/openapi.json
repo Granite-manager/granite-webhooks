@@ -4526,8 +4526,8 @@
         "tags": [
           "customer-view"
         ],
-        "summary": "Email a login code",
-        "description": "Sends a one-time code (10 minutes) to the customer's email. An address\ngets at most one code every 45 seconds and 5 an hour; a new code\nreplaces the previous one.",
+        "summary": "Email or text a login code",
+        "description": "Sends a one-time code (10 minutes) to the customer's email, or with\n`channel: sms` texts it to their phone (`has_phone` on the gate). An\naddress gets at most one code every 45 seconds and 5 an hour; a new code\nreplaces the previous one.",
         "operationId": "send_customer_view_code",
         "parameters": [
           {
@@ -4550,6 +4550,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "204": {
             "description": "Sent"
@@ -4565,7 +4575,7 @@
             }
           },
           "409": {
-            "description": "The customer has no email",
+            "description": "The customer has no email (or no phone, or the company cannot text)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4585,7 +4595,7 @@
             }
           },
           "502": {
-            "description": "The email could not be sent",
+            "description": "The email or text could not be sent",
             "content": {
               "application/json": {
                 "schema": {
@@ -5130,8 +5140,8 @@
         "tags": [
           "customer-view"
         ],
-        "summary": "Email a code to an account's address",
-        "description": "Sends a code when a customer of the company has that email. The answer\nis the same either way, so it does not reveal who is a customer. Same\nlimits as `send_customer_view_code`.",
+        "summary": "Email or text a code to an account",
+        "description": "Sends a code when a customer of the company has that email, or texts one\nwhen a customer has that phone (or phone 2). The answer is the same\neither way, so it does not reveal who is a customer. Same limits as\n`send_customer_view_code`.",
         "operationId": "send_customer_view_login_code",
         "parameters": [
           {
@@ -5160,7 +5170,17 @@
             "description": "Sent (if the address is a customer's)"
           },
           "400": {
-            "description": "Not an email",
+            "description": "Not an email or a phone",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The company cannot text codes",
             "content": {
               "application/json": {
                 "schema": {
@@ -5180,7 +5200,7 @@
             }
           },
           "502": {
-            "description": "The email could not be sent",
+            "description": "The email or text could not be sent",
             "content": {
               "application/json": {
                 "schema": {
@@ -5198,7 +5218,7 @@
           "customer-view"
         ],
         "summary": "Enter an account sign-in code",
-        "description": "Verifies the code sent to the account's address (8 attempts at most);\nanswers the page it unlocks.",
+        "description": "Verifies the code sent to the account's address or phone (8 attempts at most);\nanswers the page it unlocks.",
         "operationId": "verify_customer_view_login_code",
         "parameters": [
           {
@@ -5252,7 +5272,7 @@
           "customer-view"
         ],
         "summary": "Drop a pending code",
-        "description": "So the visitor can sign in with another email.",
+        "description": "So the visitor can sign in with another email or phone.",
         "operationId": "cancel_customer_view_code",
         "responses": {
           "204": {
@@ -74221,6 +74241,24 @@
           "error"
         ]
       },
+      "CodeChannel": {
+        "type": "string",
+        "description": "How a code is sent.",
+        "enum": [
+          "email",
+          "sms"
+        ]
+      },
+      "CodeRequest": {
+        "type": "object",
+        "description": "How the visitor wants their code.",
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/CodeChannel",
+            "description": "`email` (the default) or `sms` (a text to the customer's phone)."
+          }
+        }
+      },
       "Color": {
         "type": "object",
         "description": "A stone color tag.",
@@ -81024,7 +81062,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "The 6 digits from the email."
+            "description": "The 6 digits from the email or text."
           }
         }
       },
@@ -86598,7 +86636,11 @@
         "properties": {
           "email": {
             "type": "string",
-            "description": "The email on the customer's account; empty resends to the pending one."
+            "description": "The email on the customer's account; empty (with no `phone`) resends\nto the pending one."
+          },
+          "phone": {
+            "type": "string",
+            "description": "The phone on the customer's account (any format; US or Canada) to\ntext the code to, instead of an email."
           }
         }
       },
@@ -90817,9 +90859,10 @@
       },
       "PendingLogin": {
         "type": "object",
-        "description": "A sign-in by email in progress.",
+        "description": "A sign-in by email or text in progress.",
         "required": [
-          "code_sent"
+          "code_sent",
+          "can_text"
         ],
         "properties": {
           "code_sent": {
@@ -90831,7 +90874,22 @@
               "string",
               "null"
             ],
-            "description": "Where it went, masked."
+            "description": "Where it went, masked: the email (`a***@example.com`), or the phone\n(`***-***-0188`) for a texted code."
+          },
+          "code_channel": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CodeChannel",
+                "description": "How it went; null without one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "can_text": {
+            "type": "boolean",
+            "description": "The company can text codes (offer \"Text me a code\")."
           }
         }
       },
@@ -108838,6 +108896,7 @@
         "required": [
           "verified",
           "has_email",
+          "has_phone",
           "code_sent"
         ],
         "properties": {
@@ -108863,9 +108922,31 @@
             ],
             "description": "That email, masked (`a***@example.com`)."
           },
+          "has_phone": {
+            "type": "boolean",
+            "description": "The customer has a phone a code can be texted to, and the company can\ntext it."
+          },
+          "masked_phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That phone, masked (`***-***-0188`)."
+          },
           "code_sent": {
             "type": "boolean",
             "description": "A code was sent and has not expired."
+          },
+          "code_channel": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CodeChannel",
+                "description": "How the pending code went; null without one."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

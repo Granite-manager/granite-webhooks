@@ -67,7 +67,8 @@ async fn a_customer_unlocks_their_page_with_an_emailed_code(pool: MySqlPool) {
     assert_eq!(
         gate.json::<Value>(),
         json!({ "verified": false, "customer_name": null, "has_email": true,
-                "masked_email": "a***@example.com", "code_sent": false })
+                "masked_email": "a***@example.com", "has_phone": false, "masked_phone": null,
+                "code_sent": false, "code_channel": null })
     );
     server
         .get(&page("/projects"))
@@ -362,7 +363,7 @@ async fn a_customer_signs_in_with_their_email(pool: MySqlPool) {
     let login = "/v1/public/customer-view/100/login";
     assert_eq!(
         server.get(login).await.json::<Value>(),
-        json!({ "code_sent": false, "masked_email": null })
+        json!({ "code_sent": false, "masked_email": null, "code_channel": null, "can_text": false })
     );
     server
         .post(&format!("{login}/code"))
@@ -378,7 +379,7 @@ async fn a_customer_signs_in_with_their_email(pool: MySqlPool) {
         .assert_status(StatusCode::NO_CONTENT);
     assert_eq!(
         server.get(login).await.json::<Value>(),
-        json!({ "code_sent": true, "masked_email": "a***@example.com" })
+        json!({ "code_sent": true, "masked_email": "a***@example.com", "code_channel": "email", "can_text": false })
     );
     let res = server
         .post(&format!("{login}/verify"))
@@ -404,7 +405,7 @@ async fn an_unknown_email_looks_the_same_but_never_verifies(pool: MySqlPool) {
     assert!(sent.lock().unwrap().is_empty());
     assert_eq!(
         server.get(login).await.json::<Value>(),
-        json!({ "code_sent": true, "masked_email": "s***@example.com" })
+        json!({ "code_sent": true, "masked_email": "s***@example.com", "code_channel": "email", "can_text": false })
     );
     server
         .post(&format!("{login}/verify"))
@@ -765,7 +766,7 @@ async fn a_code_is_only_good_at_its_company(pool: MySqlPool) {
         .add_header("cookie", &cookie)
         .await
         .json::<Value>();
-    assert_eq!(other, json!({ "code_sent": false, "masked_email": null }));
+    assert_eq!(other, json!({ "code_sent": false, "masked_email": null, "code_channel": null, "can_text": false }));
     assert_eq!(attempts(&pool).await, [0]);
     let (status, body) = verify(&server, &format!("{LOGIN}/verify"), &cookie, &code).await;
     assert_eq!(status, StatusCode::OK);
@@ -1239,7 +1240,7 @@ async fn verifying_clears_the_pending_code(pool: MySqlPool) {
     assert_eq!(gate["code_sent"], false);
     assert_eq!(
         server.get(LOGIN).await.json::<Value>(),
-        json!({ "code_sent": false, "masked_email": null })
+        json!({ "code_sent": false, "masked_email": null, "code_channel": null, "can_text": false })
     );
 }
 
@@ -1303,7 +1304,7 @@ async fn a_pending_sign_in_belongs_to_its_company(pool: MySqlPool) {
             .get("/v1/public/customer-view/101/login")
             .await
             .json::<Value>(),
-        json!({ "code_sent": false, "masked_email": null })
+        json!({ "code_sent": false, "masked_email": null, "code_channel": null, "can_text": false })
     );
 }
 
@@ -1381,4 +1382,147 @@ async fn sending_an_older_cookie_again_does_not_reset_the_attempts(pool: MySqlPo
         res.json::<Value>()["error"],
         "Too many attempts. Request a new code."
     );
+}
+
+/// Company 100 texts through CloudTalk from Mark (101), its Scheduling
+/// Manager.
+const TEXTING: &str = "UPDATE company SET cloudtalk_access_key = 'k', cloudtalk_access_secret = 's' WHERE id = 100;
+    UPDATE users SET cloudtalk_agent_id = '5101', cloudtalk_phone_number = '3175550999' WHERE id = 101;
+    INSERT INTO users_positions (user_id, position_id, company_id) VALUES (101, 13, 100);";
+
+type Texts = Arc<Mutex<Vec<api::webhooks_client::OutgoingSms>>>;
+
+/// [`server`], with texting set up and the texts it sends.
+async fn texting_server(pool: &MySqlPool) -> (TestServer, Sent, Texts) {
+    sqlx::raw_sql(FIXTURE).execute(pool).await.unwrap();
+    sqlx::raw_sql(TEXTING).execute(pool).await.unwrap();
+    let sent = Sent::default();
+    let texts = Texts::default();
+    let kept = texts.clone();
+    let router = Router::new()
+        .route("/email/send", post(send_email))
+        .route(
+            "/sms/send",
+            post(
+                move |Json(sms): Json<api::webhooks_client::OutgoingSms>| async move {
+                    kept.lock().unwrap().push(sms);
+                    Json(json!({ "ids": [1] }))
+                },
+            ),
+        )
+        .with_state(sent.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let state = AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN)
+        .with_webhooks(WebhooksClient::new(Some(&base), Some("webhooks-key")));
+    let mut server = TestServer::new(app(state));
+    server.save_cookies();
+    (server, sent, texts)
+}
+
+/// The code in the last text.
+fn last_texted_code(texts: &Texts) -> String {
+    let text = texts.lock().unwrap().last().unwrap().text.clone();
+    let start = text.find("code is ").unwrap() + "code is ".len();
+    text[start..start + 6].to_string()
+}
+
+#[test_db::test(seed)]
+async fn a_customer_picks_a_texted_code_for_their_page(pool: MySqlPool) {
+    let (server, sent, texts) = texting_server(&pool).await;
+    let gate = server.get(&page("")).await.json::<Value>();
+    assert_eq!(
+        (gate["has_phone"].clone(), gate["masked_phone"].clone()),
+        (json!(true), json!("***-***-0100"))
+    );
+    server
+        .post(&page("/code"))
+        .json(&json!({ "channel": "sms" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert!(sent.lock().unwrap().is_empty(), "no email when texting");
+    {
+        let texts = texts.lock().unwrap();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(
+            (texts[0].provider.as_str(), texts[0].user_id, texts[0].phone_digits.as_str()),
+            ("cloudtalk", 101, "3175550100")
+        );
+        assert!(texts[0].is_automated);
+    }
+    let gate = server.get(&page("")).await.json::<Value>();
+    assert_eq!(
+        (gate["code_sent"].clone(), gate["code_channel"].clone()),
+        (json!(true), json!("sms"))
+    );
+    server
+        .post(&page("/verify"))
+        .json(&json!({ "code": last_texted_code(&texts) }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(server.get(&page("")).await.json::<Value>()["verified"], true);
+}
+
+#[test_db::test(seed)]
+async fn a_customer_signs_in_with_their_phone(pool: MySqlPool) {
+    let (server, _, texts) = texting_server(&pool).await;
+    let login = "/v1/public/customer-view/100/login";
+    assert_eq!(server.get(login).await.json::<Value>()["can_text"], true);
+    server
+        .post(&format!("{login}/code"))
+        .json(&json!({ "phone": "555-01" }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    // Phone 2 works too.
+    server
+        .post(&format!("{login}/code"))
+        .json(&json!({ "phone": "(317) 555-0101" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(texts.lock().unwrap()[0].phone_digits, "3175550101");
+    assert_eq!(
+        server.get(login).await.json::<Value>(),
+        json!({ "code_sent": true, "masked_email": "***-***-0101", "code_channel": "sms", "can_text": true })
+    );
+    let res = server
+        .post(&format!("{login}/verify"))
+        .json(&json!({ "code": last_texted_code(&texts) }))
+        .await;
+    res.assert_status_ok();
+    assert_eq!(res.json::<Value>(), json!({ "view_id": VIEW }));
+}
+
+#[test_db::test(seed)]
+async fn an_unknown_phone_looks_the_same_but_gets_no_text(pool: MySqlPool) {
+    let (server, _, texts) = texting_server(&pool).await;
+    let login = "/v1/public/customer-view/100/login";
+    server
+        .post(&format!("{login}/code"))
+        .json(&json!({ "phone": "317-555-0177" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert!(texts.lock().unwrap().is_empty());
+    assert_eq!(server.get(login).await.json::<Value>()["code_sent"], true);
+    server
+        .post(&format!("{login}/verify"))
+        .json(&json!({ "code": "123456" }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[test_db::test(seed)]
+async fn without_texting_a_code_cannot_be_texted(pool: MySqlPool) {
+    let (server, _) = server(&pool).await;
+    assert_eq!(server.get(&page("")).await.json::<Value>()["has_phone"], false);
+    server
+        .post(&page("/code"))
+        .json(&json!({ "channel": "sms" }))
+        .await
+        .assert_status(StatusCode::CONFLICT);
+    server
+        .post("/v1/public/customer-view/100/login/code")
+        .json(&json!({ "phone": "317-555-0100" }))
+        .await
+        .assert_status(StatusCode::CONFLICT);
 }
