@@ -1,0 +1,35 @@
+name: Linear auto-archive
+
+# Archives Linear issues that have been Done, Canceled or Duplicate for more
+# than 7 days (the free plan allows only 250 non-archived issues, and Linear's
+# own auto-archive setting can go no lower than 1 month).
+#
+# Secret LINEAR_API_KEY: a Linear personal API key for the granite-manager workspace.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Only list the issues that would be archived
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linear-auto-archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive closed issues older than 7 days
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          DRY_RUN: ${{ inputs.dry_run && '--dry-run' || '' }}
+        run: python3 scripts/linear_auto_archive.py $DRY_RUN
