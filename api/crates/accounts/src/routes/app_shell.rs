@@ -85,7 +85,7 @@ pub struct AppShell {
     /// limited.
     pub sections: Option<Vec<String>>,
     /// The skills the user's positions give them (Position access):
-    /// `sell_slabs`, `edit_transactions`, `edit_quotes`, `plan_schedule`, `see_readiness`, `best_days`.
+    /// `sell_slabs`, `edit_transactions`, `edit_quotes`, `plan_schedule`, `see_readiness`, `send_sms`, `best_days`.
     /// Null when they have every skill (admins always do).
     pub skills: Option<Vec<String>>,
     /// The company has CloudTalk.

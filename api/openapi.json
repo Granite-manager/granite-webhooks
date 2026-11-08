@@ -70496,7 +70496,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The skills the user's positions give them (Position access):\n`sell_slabs`, `edit_transactions`, `edit_quotes`, `plan_schedule`, `see_readiness`, `best_days`.\nNull when they have every skill (admins always do)."
+            "description": "The skills the user's positions give them (Position access):\n`sell_slabs`, `edit_transactions`, `edit_quotes`, `plan_schedule`, `see_readiness`, `send_sms`, `best_days`.\nNull when they have every skill (admins always do)."
           },
           "has_cloudtalk_api": {
             "type": "boolean",
@@ -101099,7 +101099,7 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "Stable key (`sell_slabs`, `edit_transactions`, `edit_quotes`,\n`plan_schedule`, `see_readiness`, `best_days`)."
+            "description": "Stable key (`sell_slabs`, `edit_transactions`, `edit_quotes`,\n`plan_schedule`, `see_readiness`, `send_sms`, `best_days`)."
           },
           "label": {
             "type": "string",
