@@ -276,7 +276,11 @@ pub async fn seed_auto_confirm(
     company_id: i32,
 ) -> Result<(), sqlx::Error> {
     let mut ids = Vec::new();
-    for (name, slugs, body) in [AUTO_CONFIRM_TEMPLATE, AUTO_CONFIRM_INSTALL, AUTO_CONFIRM_REMINDER] {
+    for (name, slugs, body) in [
+        AUTO_CONFIRM_TEMPLATE,
+        AUTO_CONFIRM_INSTALL,
+        AUTO_CONFIRM_REMINDER,
+    ] {
         let id = sqlx::query(
             "INSERT INTO schedule_notification_templates
                (company_id, name, kind, channel, body, position)
@@ -1274,6 +1278,7 @@ pub async fn send_on_my_way(
         subject: Some(&subject),
         body: &body,
         idempotency_key: Some(format!("on-my-way-{event_id}-{}", event.start_date)),
+        by_hand: false,
     };
     Ok(match deliver(state, &message, &event, customer_id).await? {
         None => Ok(channel),
@@ -1897,19 +1902,30 @@ pub struct Slot<'a> {
     pub calendar: Option<&'a str>,
     /// Who the job is assigned to: the installer or template technician.
     pub crew: Option<&'a str>,
+    /// An all-day event's time is left blank (`BLANK_TIME`) instead of
+    /// "All day": a text sent by hand offers the day, the time comes later.
+    pub blank_time: bool,
 }
+
+/// The time in a text sent by hand for an event with no exact time.
+pub const BLANK_TIME: &str = "____";
 
 /// `{{appointment.*}}` filled in; the other variables are left for the
 /// shared template filler. One with nothing to fill it (no address, nobody
 /// assigned) stays, so the message is held back.
 pub fn fill_appointment(text: &str, slot: &Slot<'_>) -> String {
     let day = |at: NaiveDate| at.format("%A, %B %-d").to_string();
+    let no_time = if slot.blank_time {
+        BLANK_TIME
+    } else {
+        "All day"
+    };
     let (date, time, end_date, end_time) = if slot.all_day {
         (
             day(slot.start.date()),
-            "All day".to_string(),
+            no_time.to_string(),
             day(end_day(slot.start, slot.end, true)),
-            "All day".to_string(),
+            no_time.to_string(),
         )
     } else {
         let start = slot.start.and_utc().with_timezone(&Indianapolis);
@@ -1926,7 +1942,7 @@ pub fn fill_appointment(text: &str, slot: &Slot<'_>) -> String {
         )
     };
     let range = if slot.all_day {
-        "All day".to_string()
+        no_time.to_string()
     } else {
         format!("{time} – {end_time}")
     };
@@ -2097,6 +2113,8 @@ struct Outgoing<'a> {
     body: &'a str,
     /// Keeps a retried text from going out twice.
     idempotency_key: Option<String>,
+    /// Sent by hand from the event: an all-day event's time stays blank.
+    by_hand: bool,
 }
 
 /// The message's subject and body for this appointment, or why it cannot go.
@@ -2136,6 +2154,7 @@ async fn render(
         location: event.location.as_deref(),
         calendar: calendar.as_deref(),
         crew: crew.as_deref(),
+        blank_time: message.by_hand,
     };
     let fill = |text: &str| {
         let text = fill_appointment(text, &slot);
@@ -2492,6 +2511,7 @@ pub async fn send_due(state: &AppState) -> Result<RuleRun, sqlx::Error> {
                     event.id,
                     event.start_date.and_utc().timestamp()
                 )),
+                by_hand: false,
             };
             let outcome = match deliver(state, &message, &event, customer_id).await {
                 Ok(outcome) => outcome,
@@ -2570,6 +2590,7 @@ pub async fn send_on_complete(state: &AppState, event_id: i32) -> Result<usize, 
                 event.id,
                 event.start_date.and_utc().timestamp()
             )),
+            by_hand: false,
         };
         let outcome = match deliver(state, &message, &event, customer_id).await {
             Ok(outcome) => outcome,
@@ -2602,7 +2623,14 @@ pub async fn send_on_complete(state: &AppState, event_id: i32) -> Result<usize, 
 pub struct ConfirmationInput {
     /// A template of the company.
     pub template_id: i32,
+    /// The text as edited before sending; replaces a text template's body.
+    /// Left out, the template goes as it is.
+    #[serde(default)]
+    pub text: Option<String>,
 }
+
+/// Longest edited text a confirmation takes.
+const MAX_EDITED_TEXT: usize = 1600;
 
 /// `POST /v1/events/{id}/confirmation`.
 #[derive(Debug, Serialize, ToSchema)]
@@ -2677,12 +2705,22 @@ pub async fn send_confirmation(
     let Some(customer_id) = event.customer_id else {
         return Err(bad("The event has no customer"));
     };
+    let channel = Channel::parse(&template.channel);
+    let edited = match input.text.as_deref().map(str::trim) {
+        Some("") => return Err(bad("Write the text first")),
+        Some(text) if text.chars().count() > MAX_EDITED_TEXT => {
+            return Err(bad("The text is too long"));
+        }
+        Some(text) if channel == Channel::Sms => Some(text.to_string()),
+        _ => None,
+    };
     let message = Outgoing {
         company_id: user.company_id,
-        channel: Channel::parse(&template.channel),
+        channel,
         subject: template.subject.as_deref(),
-        body: &template.body,
+        body: edited.as_deref().unwrap_or(&template.body),
         idempotency_key: None,
+        by_hand: true,
     };
     let sent = match deliver_sent(&state, &message, &event, customer_id).await? {
         Ok(sent) => sent,
@@ -2961,6 +2999,7 @@ pub async fn scheduling_texts(
                     subject: None,
                     body: &template.body,
                     idempotency_key: None,
+                    by_hand: true,
                 };
                 let user_id = message_user(pool, company_id, &event, customer_id).await?;
                 match render(pool, &message, &event, customer_id, user_id).await? {
@@ -3128,6 +3167,7 @@ async fn read_answer(
         location: None,
         calendar: None,
         crew: None,
+        blank_time: false,
     };
     let when = fill_appointment("{{appointment.date}}, {{appointment.time_range}}", &slot);
     let transcript = replies
@@ -3187,7 +3227,11 @@ async fn read_answer(
 
 /// The customer replied YES: the job turns Confirmed (unless it already is, or it
 /// moved) and the Scheduling Managers hear about it.
-async fn mark_confirmed(state: &AppState, wait: &Waiting, evidence: &str) -> Result<bool, sqlx::Error> {
+async fn mark_confirmed(
+    state: &AppState,
+    wait: &Waiting,
+    evidence: &str,
+) -> Result<bool, sqlx::Error> {
     let pool = &state.pool;
     let changed = sqlx::query(
         "UPDATE events SET status = 'confirmed'
@@ -3303,6 +3347,7 @@ async fn send_followup(
         subject: None,
         body: &next.body,
         idempotency_key: Some(format!("schedule-followup-{}-{count}", wait.id)),
+        by_hand: false,
     };
     let outcome = match deliver_sent(state, &message, &event, customer_id).await {
         Ok(outcome) => outcome,
@@ -3363,10 +3408,12 @@ pub const CLARIFY_TEXT: &str = "Thanks for your reply! Just to make sure we got 
 /// marked as asked even when it fails, so it is never sent twice.
 async fn send_clarification(state: &AppState, wait: &Waiting) -> Result<(), sqlx::Error> {
     let pool = &state.pool;
-    sqlx::query("UPDATE schedule_text_answers SET clarified = 1, followup_due_at = NULL WHERE id = ?")
-        .bind(wait.id)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE schedule_text_answers SET clarified = 1, followup_due_at = NULL WHERE id = ?",
+    )
+    .bind(wait.id)
+    .execute(pool)
+    .await?;
     let event = appointment(pool, wait.event_id).await?;
     let Some(customer_id) = event.customer_id else {
         return Ok(());
@@ -3377,6 +3424,7 @@ async fn send_clarification(state: &AppState, wait: &Waiting) -> Result<(), sqlx
         subject: None,
         body: CLARIFY_TEXT,
         idempotency_key: Some(format!("schedule-clarify-{}", wait.id)),
+        by_hand: false,
     };
     let outcome = match deliver_sent(state, &message, &event, customer_id).await {
         Ok(outcome) => outcome,
@@ -3643,6 +3691,7 @@ mod tests {
             location,
             calendar: Some(" Installations "),
             crew: None,
+            blank_time: false,
         };
         let morning = slot(
             at("2030-01-15 15:00"),
@@ -3672,6 +3721,24 @@ mod tests {
             ),
             "Wednesday, January 16 All day"
         );
+        // Sent by hand: an all-day event's time is left blank to fill in.
+        let by_hand = Slot {
+            blank_time: true,
+            ..slot(at("2030-01-15 00:00"), at("2030-01-16 00:00"), true, None)
+        };
+        assert_eq!(
+            fill_appointment(
+                "{{appointment.date}} at {{appointment.time}} | {{appointment.time_range}}",
+                &by_hand
+            ),
+            "Tuesday, January 15 at ____ | ____"
+        );
+        // A timed event keeps its time.
+        let timed = Slot {
+            blank_time: true,
+            ..slot(at("2030-01-15 15:00"), at("2030-01-15 17:30"), false, None)
+        };
+        assert_eq!(fill_appointment("{{appointment.time}}", &timed), "10:00 AM");
     }
 
     #[test]

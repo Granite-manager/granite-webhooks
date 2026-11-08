@@ -1020,11 +1020,7 @@ pub async fn auto_plan(
     let company_id = user.company_id;
     let kind = calendar_kind(pool, company_id, input.calendar_id)
         .await?
-        .ok_or_else(|| {
-            ApiError::BadRequest(
-                "Auto-plan works on the Templates calendar.".into(),
-            )
-        })?;
+        .ok_or_else(|| ApiError::BadRequest("Auto-plan works on the Templates calendar.".into()))?;
     // Templates only for now: installations are scheduled by hand.
     if kind != JobKind::Templates {
         return Err(ApiError::BadRequest(
