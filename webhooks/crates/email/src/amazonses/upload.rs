@@ -20,7 +20,7 @@ where
             // Compressed first: a HEIC photo's key ends in .jpg.
             let attachment = attachment.compressed().await;
             let key = attachment_object_key(&message_id, index, attachment.filename());
-            attachment.to_uploaded_attachment(&final_client, key).await
+            (index, attachment.to_uploaded_attachment(&final_client, key).await)
         });
     }
 
@@ -29,5 +29,10 @@ where
     while let Some(res) = set.join_next().await {
         uploaded_attachments.push(res?);
     }
-    Ok(uploaded_attachments)
+    // Uploads finish in any order; the email keeps its attachments' order.
+    uploaded_attachments.sort_by_key(|(index, _)| *index);
+    Ok(uploaded_attachments
+        .into_iter()
+        .map(|(_, uploaded)| uploaded)
+        .collect())
 }

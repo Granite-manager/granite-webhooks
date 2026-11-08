@@ -56,27 +56,37 @@ pub struct PortCheckInput {
     /// The losing carrier, when Telnyx named it.
     #[serde(default)]
     pub old_carrier: Option<String>,
+    /// The business name on the current carrier's account.
     #[serde(default)]
     pub entity_name: String,
+    /// The person allowed to authorize the port.
     #[serde(default)]
     pub auth_person_name: String,
+    /// The account's billing phone number (BTN).
     #[serde(default)]
     pub billing_phone_number: String,
+    /// The account number with the current carrier.
     #[serde(default)]
     pub account_number: String,
     /// Whether a PIN is typed or already saved (the PIN itself is not sent).
     #[serde(default)]
     pub pin_set: bool,
+    /// Service address: street and number.
     #[serde(default)]
     pub street_address: String,
+    /// Service address: suite, unit or floor.
     #[serde(default)]
     pub extended_address: String,
+    /// Service address: city.
     #[serde(default)]
     pub locality: String,
+    /// Service address: state (two letters in the US).
     #[serde(default)]
     pub administrative_area: String,
+    /// Service address: ZIP code.
     #[serde(default)]
     pub postal_code: String,
+    /// Service address: country (two letters, e.g. `US`).
     #[serde(default)]
     pub country_code: String,
     /// `full` or `partial`.
@@ -85,6 +95,7 @@ pub struct PortCheckInput {
     /// `keep`, `disconnect` or empty.
     #[serde(default)]
     pub remaining_numbers_action: String,
+    /// The billing number the account keeps after a partial port.
     #[serde(default)]
     pub new_billing_phone_number: String,
 }
@@ -101,6 +112,7 @@ pub struct PortCheckIssue {
 /// What the AI found; empty when everything looks right.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PortCheckResult {
+    /// The problems found, in form order.
     pub issues: Vec<PortCheckIssue>,
 }
 

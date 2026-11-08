@@ -3207,6 +3207,7 @@ pub fn next_text_time(at: DateTime<Utc>, settings: &SchedulingSettings) -> DateT
 pub struct SchedulingTextPreview {
     /// Template id: send it with `POST /v1/events/{id}/confirmation`.
     pub id: i32,
+    /// The template's name.
     pub name: String,
     /// The text as the customer would get it; null when it can't be filled.
     pub text: Option<String>,

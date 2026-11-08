@@ -517,6 +517,19 @@ const NOT_FILLED: &[&str] = &[
 /// Longest value kept, in characters.
 const FILLED_CHARS: usize = 200;
 
+/// The parts of a `QuickBooks` address, in the order they are written.
+const ADDRESS_ORDER: [&str; 9] = [
+    "Line1",
+    "Line2",
+    "Line3",
+    "Line4",
+    "Line5",
+    "City",
+    "CountrySubDivisionCode",
+    "PostalCode",
+    "Country",
+];
+
 /// A field's value as text; none when empty or false.
 fn filled_text(value: &Value) -> Option<String> {
     let text = match value {
@@ -532,9 +545,21 @@ fn filled_text(value: &Value) -> Option<String> {
             .iter()
             .find_map(|key| fields.get(*key).and_then(filled_text))
             .unwrap_or_else(|| {
-                fields
+                // An address reads in address order, whatever order the JSON
+                // map keeps its keys in; other keys follow.
+                let rank = |key: &str| {
+                    ADDRESS_ORDER
+                        .iter()
+                        .position(|known| *known == key)
+                        .unwrap_or(ADDRESS_ORDER.len())
+                };
+                let mut parts: Vec<(&String, &Value)> = fields
                     .iter()
                     .filter(|(key, _)| !matches!(key.as_str(), "Id" | "Lat" | "Long"))
+                    .collect();
+                parts.sort_by_key(|(key, _)| rank(key));
+                parts
+                    .into_iter()
                     .filter_map(|(_, value)| filled_text(value))
                     .collect::<Vec<_>>()
                     .join(", ")

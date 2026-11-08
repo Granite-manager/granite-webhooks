@@ -22,7 +22,9 @@ const TEMPLATE: i32 = 11;
 /// An installer or template maker and where their phone last was.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CrewPosition {
+    /// Their user id.
     pub user_id: i32,
+    /// Their name.
     pub name: String,
     /// `installer` or `template`.
     pub role: String,

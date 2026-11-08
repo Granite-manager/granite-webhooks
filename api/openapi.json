@@ -73675,6 +73675,7 @@
       },
       "CatchUpReport": {
         "type": "object",
+        "description": "What a catch-up call read, and what is left for the next call.",
         "required": [
           "done",
           "remaining"
@@ -73698,6 +73699,7 @@
       },
       "CatchUpRequest": {
         "type": "object",
+        "description": "Body of the `RingCentral` texts catch-up: the window and the extensions to read.",
         "required": [
           "since"
         ],
@@ -73830,7 +73832,8 @@
             "$ref": "#/components/schemas/ChatRole"
           },
           "content": {
-            "type": "string"
+            "type": "string",
+            "description": "The message text."
           }
         }
       },
@@ -77023,10 +77026,12 @@
         "properties": {
           "user_id": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "Their user id."
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Their name."
           },
           "role": {
             "type": "string",
@@ -81880,6 +81885,7 @@
       },
       "ExtensionReport": {
         "type": "object",
+        "description": "The texts of one extension in the window.",
         "required": [
           "extension",
           "texts",
@@ -81889,7 +81895,8 @@
         ],
         "properties": {
           "extension": {
-            "type": "string"
+            "type": "string",
+            "description": "The `RingCentral` extension id."
           },
           "texts": {
             "type": "integer",
@@ -84325,19 +84332,22 @@
         "properties": {
           "customer_id": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "The lead's customer id."
           },
           "name": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The customer's name (null when the lead has none)."
           },
           "phone": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The customer's phone (null when the lead has none)."
           },
           "created_at": {
             "type": [
@@ -84360,13 +84370,15 @@
               "integer",
               "null"
             ],
-            "format": "int32"
+            "format": "int32",
+            "description": "The sales rep's user id; null while the lead has no rep."
           },
           "sales_rep_name": {
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "The sales rep's name; null while the lead has no rep."
           },
           "deal_id": {
             "type": [
@@ -90225,6 +90237,7 @@
               "null"
             ],
             "format": "int32",
+            "description": "Outbound calls a day (0 to 9999); null when not set.",
             "minimum": 0
           },
           "sms": {
@@ -90233,6 +90246,7 @@
               "null"
             ],
             "format": "int32",
+            "description": "Texts a day (0 to 9999); null when not set.",
             "minimum": 0
           },
           "emails": {
@@ -90241,6 +90255,7 @@
               "null"
             ],
             "format": "int32",
+            "description": "Emails a day (0 to 9999); null when not set.",
             "minimum": 0
           }
         }
@@ -92023,7 +92038,8 @@
             "description": "Whether the signed LOA and the recent bill are attached."
           },
           "billAttached": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Whether the recent bill is attached."
           },
           "details": {
             "$ref": "#/components/schemas/PortCheckInput",
@@ -92039,7 +92055,8 @@
         ],
         "properties": {
           "answer": {
-            "type": "string"
+            "type": "string",
+            "description": "The answer, plain text."
           }
         }
       },
@@ -92156,38 +92173,48 @@
             "description": "The losing carrier, when Telnyx named it."
           },
           "entityName": {
-            "type": "string"
+            "type": "string",
+            "description": "The business name on the current carrier's account."
           },
           "authPersonName": {
-            "type": "string"
+            "type": "string",
+            "description": "The person allowed to authorize the port."
           },
           "billingPhoneNumber": {
-            "type": "string"
+            "type": "string",
+            "description": "The account's billing phone number (BTN)."
           },
           "accountNumber": {
-            "type": "string"
+            "type": "string",
+            "description": "The account number with the current carrier."
           },
           "pinSet": {
             "type": "boolean",
             "description": "Whether a PIN is typed or already saved (the PIN itself is not sent)."
           },
           "streetAddress": {
-            "type": "string"
+            "type": "string",
+            "description": "Service address: street and number."
           },
           "extendedAddress": {
-            "type": "string"
+            "type": "string",
+            "description": "Service address: suite, unit or floor."
           },
           "locality": {
-            "type": "string"
+            "type": "string",
+            "description": "Service address: city."
           },
           "administrativeArea": {
-            "type": "string"
+            "type": "string",
+            "description": "Service address: state (two letters in the US)."
           },
           "postalCode": {
-            "type": "string"
+            "type": "string",
+            "description": "Service address: ZIP code."
           },
           "countryCode": {
-            "type": "string"
+            "type": "string",
+            "description": "Service address: country (two letters, e.g. `US`)."
           },
           "kind": {
             "type": "string",
@@ -92198,7 +92225,8 @@
             "description": "`keep`, `disconnect` or empty."
           },
           "newBillingPhoneNumber": {
-            "type": "string"
+            "type": "string",
+            "description": "The billing number the account keeps after a partial port."
           }
         }
       },
@@ -92233,7 +92261,8 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PortCheckIssue"
-            }
+            },
+            "description": "The problems found, in form order."
           }
         }
       },
@@ -98444,7 +98473,8 @@
         "properties": {
           "id": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "Event id."
           },
           "start": {
             "type": "string",
@@ -98715,6 +98745,13 @@
               "null"
             ],
             "description": "Notes on the installation job it adds to Unscheduled."
+          },
+          "project_notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A note for the project the sale starts (Project on a sale)."
           },
           "full_height_backsplash": {
             "type": "boolean",
@@ -100239,7 +100276,8 @@
             "description": "Template id: send it with `POST /v1/events/{id}/confirmation`."
           },
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "The template's name."
           },
           "text": {
             "type": [
@@ -103731,7 +103769,8 @@
         "properties": {
           "event_id": {
             "type": "integer",
-            "format": "int32"
+            "format": "int32",
+            "description": "The stop's event id."
           },
           "miles": {
             "type": "number",
