@@ -41,10 +41,14 @@ mod tests {
 
     #[test]
     fn rds_hosts_get_verified_tls() {
-        let options =
-            connect_options("mysql://u:p@database-1-copy.c9uq4w6eak98.us-east-2.rds.amazonaws.com:3306/main")
-                .unwrap();
-        assert!(matches!(options.get_ssl_mode(), MySqlSslMode::VerifyIdentity));
+        let options = connect_options(
+            "mysql://u:p@database-1-copy.c9uq4w6eak98.us-east-2.rds.amazonaws.com:3306/main",
+        )
+        .unwrap();
+        assert!(matches!(
+            options.get_ssl_mode(),
+            MySqlSslMode::VerifyIdentity
+        ));
     }
 
     #[test]

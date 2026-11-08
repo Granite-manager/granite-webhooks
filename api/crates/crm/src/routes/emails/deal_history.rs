@@ -135,16 +135,13 @@ pub async fn address_emails(
     }
     let marks = vec!["?"; addresses.len()].join(", ");
     let mut args: Vec<Arg> = vec![company_id.into()];
-    for _ in 0..4 {
+    for _ in 0..2 {
         args.extend(addresses.iter().map(|a| Arg::from(a.clone())));
     }
+    // The indexed bare addresses (migration `emails-address-index`): MySQL
+    // merges the two index lookups instead of reading every message.
     history_sql(
-        &format!(
-            "(LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(e.sender_email, '<', -1), '>', 1))) IN ({marks})
-        OR (e.sender_email NOT LIKE '%<%' AND LOWER(TRIM(e.sender_email)) IN ({marks}))
-        OR LOWER(TRIM(SUBSTRING_INDEX(SUBSTRING_INDEX(e.receiver_email, '<', -1), '>', 1))) IN ({marks})
-        OR (e.receiver_email NOT LIKE '%<%' AND LOWER(TRIM(e.receiver_email)) IN ({marks})))"
-        ),
+        &format!("(e.sender_address IN ({marks}) OR e.receiver_address IN ({marks}))"),
         args,
     )
     .query_as()
