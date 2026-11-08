@@ -188,6 +188,8 @@ pub struct Viewer {
     pub convert_any: bool,
     /// Has a Projects board.
     board: bool,
+    /// Sees every project on the employee side, where only positions count.
+    employee_view_all: bool,
 }
 
 impl Viewer {
@@ -222,7 +224,15 @@ impl Viewer {
             own: rep,
             convert_any: admin || sales_manager,
             board: admin || rep || scheduling || shop || tasked,
+            employee_view_all: !rep && (has(MANAGER) || scheduling || shop),
         }
+    }
+
+    /// The caller as the employee side sees them: being an admin counts only
+    /// in admin, and a sales rep sees their own there whatever else they are.
+    pub const fn on_employee_side(mut self) -> Self {
+        self.permissions.view_all = self.employee_view_all;
+        self
     }
 
     pub async fn load(pool: &MySqlPool, user: &SessionUser) -> ApiResult<Self> {
@@ -313,6 +323,22 @@ mod tests {
             assert!(viewer(false, &[position]).has_board(), "{position}");
         }
         assert!(!viewer(false, &[]).has_board());
+    }
+
+    #[test]
+    fn on_the_employee_side_only_positions_count() {
+        let seen = |is_admin, positions: &[i32]| {
+            viewer(is_admin, positions).on_employee_side().visible_sql()
+        };
+        // An admin who is also a Manager and a sales rep sees their own.
+        let rep = seen(true, &[SALES_REP, SALES_MANAGER, MANAGER]);
+        assert!(rep.contains("p.sales_rep_id = 7"), "{rep}");
+        // The admin flag alone shows nothing but the caller's tasks.
+        let admin = seen(true, &[]);
+        assert!(admin.contains("ta.assigned_user_id") && !admin.contains("sales_rep_id"));
+        for position in [MANAGER, SCHEDULING_MANAGER, SHOP_MANAGER] {
+            assert_eq!(seen(false, &[position]), "TRUE", "{position}");
+        }
     }
 
     #[test]
