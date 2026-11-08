@@ -73,6 +73,9 @@ pub struct ScheduleEvent {
     pub color: Option<String>,
     /// Status.
     pub status: Option<String>,
+    /// Red flag: it must be scheduled fast (Mark as Sold or its edit form).
+    #[sqlx(default)]
+    pub urgent: bool,
     /// Notes.
     pub notes: Option<String>,
     /// Calendar.
@@ -219,7 +222,7 @@ async fn load_events(
                 NULLIF(TRIM(e.recurrence_exdates), '') AS recurrence_exdates,
                 e.created_user_id, e.assigned_user_id, e.sale_id, e.customer_id,
                 c.name AS customer_name, u.name AS created_user_name,
-                e.quote_id IS NOT NULL AS automated,
+                e.quote_id IS NOT NULL AS automated, e.urgent <> 0 AS urgent,
                 e.contact_phone, e.contact_email, e.contact_phone_2, e.contact_email_2, e.crew_status,
                 DATE_FORMAT(e.on_my_way_at, '%Y-%m-%dT%H:%i:%sZ') AS on_my_way_at,
                 DATE_FORMAT(e.arrived_at, '%Y-%m-%dT%H:%i:%sZ') AS arrived_at,
@@ -336,7 +339,7 @@ pub async fn unscheduled(
                 e.calendar_id, NULL AS rrule, NULL AS recurrence_until,
                 e.created_user_id, e.assigned_user_id, e.sale_id, e.customer_id,
                 c.name AS customer_name, u.name AS created_user_name,
-                e.quote_id IS NOT NULL AS automated,
+                e.quote_id IS NOT NULL AS automated, e.urgent <> 0 AS urgent,
                 e.contact_phone, e.contact_email, e.contact_phone_2, e.contact_email_2
            FROM events e
            JOIN users u ON e.created_user_id = u.id

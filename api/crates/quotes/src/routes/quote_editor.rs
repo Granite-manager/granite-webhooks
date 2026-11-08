@@ -1918,12 +1918,27 @@ pub struct Sale {
     /// out or empty: none. Unknown template ids are skipped.
     #[serde(default)]
     pub extra_events: Vec<SaleExtraEvent>,
+    /// Red flag on the template job: it must be scheduled fast.
+    #[serde(default)]
+    pub template_urgent: bool,
+    /// Red flag on the installation job.
+    #[serde(default)]
+    pub installation_urgent: bool,
+    /// Red flag on the FH Backsplash template job.
+    #[serde(default)]
+    pub fh_backsplash_template_urgent: bool,
+    /// Red flag on the FH Backsplash installation job.
+    #[serde(default)]
+    pub fh_backsplash_installation_urgent: bool,
 }
 
 /// An extra event ticked in Mark as Sold.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SaleExtraEvent {
+    /// Red flag: the event must be scheduled fast.
+    #[serde(default)]
+    pub urgent: bool,
     /// The event template (`GET /v1/quote-sale-events`).
     pub template_id: i32,
     /// Notes on the event (trimmed; blank: none).
@@ -2003,12 +2018,17 @@ pub async fn mark_sold(
             fh_backsplash_installation: input.fh_backsplash_installation,
             skip_template: input.skip_template,
             skip_installation: input.skip_installation,
+            template_urgent: input.template_urgent,
+            installation_urgent: input.installation_urgent,
+            fh_backsplash_template_urgent: input.fh_backsplash_template_urgent,
+            fh_backsplash_installation_urgent: input.fh_backsplash_installation_urgent,
             extra_events: input
                 .extra_events
                 .into_iter()
                 .map(|extra| ExtraEventPick {
                     template_id: extra.template_id,
                     notes: extra.notes,
+                    urgent: extra.urgent,
                 })
                 .collect(),
         },
