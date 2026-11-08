@@ -1,8 +1,9 @@
 //! A customer's own page (no CRM session): their projects, appointments and
-//! invoices, unlocked by a one-time code emailed to the address on file.
+//! invoices, unlocked by a one-time code sent to the email or (texted) the
+//! phone on file, whichever the visitor picks.
 //!
 //! - `GET    /v1/public/customer-view/{company_id}/{view_id}`          → the gate: verified, and where a code goes
-//! - `POST   /v1/public/customer-view/{company_id}/{view_id}/code`     → email a code
+//! - `POST   /v1/public/customer-view/{company_id}/{view_id}/code`     → email or text a code
 //! - `POST   /v1/public/customer-view/{company_id}/{view_id}/verify`   → enter it
 //! - `GET    /v1/public/customer-view/{company_id}/{view_id}/projects` → their sales
 //! - `GET    /v1/public/customer-view/{company_id}/{view_id}/schedule` → their appointments
@@ -10,7 +11,7 @@
 //! - `GET    /v1/public/customer-view/{company_id}/{view_id}/invoices` → their `QuickBooks` invoices
 //! - `GET    /v1/public/customer-view/{company_id}/{view_id}/invoices/{invoice_id}/pdf`
 //! - `GET    /v1/public/customer-view/{company_id}/login`              → a pending sign-in by email
-//! - `POST   /v1/public/customer-view/{company_id}/login/code`         → email a code to the account's address
+//! - `POST   /v1/public/customer-view/{company_id}/login/code`         → email or text a code to the account's address or phone
 //! - `POST   /v1/public/customer-view/{company_id}/login/verify`       → enter it; answers the page to open
 //! - `DELETE /v1/public/customer-view/login`                           → drop a pending code
 //!
@@ -18,7 +19,8 @@
 //! (same format and secret as the CRM's, so they stay verified for 7 days).
 //! Pending codes live in `customer_view_codes`, the cookie holding only a
 //! random handle on one: attempts are counted there, since a cookie can be
-//! replayed, and sends are limited per address. Port of
+//! replayed, and sends are limited per address. A texted code's address is
+//! `sms:` and the phone's 10 digits ([`SMS_PREFIX`]). Port of
 //! `customerViewAuth.server.ts` and the `customer.$company.$viewId` and
 //! `customer.$company.stones.account` routes.
 
@@ -27,13 +29,15 @@ use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::openapi::ToSchema;
 use crate::openapi::{OpenApiRouter, routes};
 use crate::routes::quickbooks::{CustomerInvoices, customer_invoice_pdf_of, invoices_of_customer};
+use crate::routes::schedule::notifications::sms_sender;
+use crate::routes::sms::send::send_text;
 use crate::state::AppState;
-use crate::webhooks_client::OutgoingEmail;
+use crate::webhooks_client::{OutgoingEmail, OutgoingSms};
 use axum::Json;
-use chrono::NaiveDateTime;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use chrono::NaiveDateTime;
 use hmac::digest::Digest;
 use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
@@ -67,6 +71,9 @@ const MAX_VERIFY_ATTEMPTS: i32 = 8;
 const VERIFIED_MAX_AGE_SECONDS: i64 = 60 * 60 * 24 * 7;
 /// The cookie's handle on its pending code (a `customer_view_codes.token`).
 const PENDING: &str = "pendingCode";
+/// Before a phone's 10 digits in `customer_view_codes.email`: the code was
+/// texted there.
+const SMS_PREFIX: &str = "sms:";
 
 fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
@@ -180,6 +187,75 @@ pub fn mask_email(email: &str) -> String {
     }
 }
 
+/// `***-***-0188`: the last 4 of a phone's 10 digits.
+pub fn mask_phone(digits: &str) -> String {
+    let last: String = digits
+        .chars()
+        .skip(digits.len().saturating_sub(4))
+        .collect();
+    format!("***-***-{last}")
+}
+
+/// A phone's 10 digits (US or Canada, a leading 1 dropped), or `None`.
+fn phone_digits(value: &str) -> Option<String> {
+    let digits: String = value.chars().filter(char::is_ascii_digit).collect();
+    let digits = match digits.len() {
+        11 if digits.starts_with('1') => digits[1..].to_string(),
+        10 => digits,
+        _ => return None,
+    };
+    Some(digits)
+}
+
+/// Where a code goes: an email, or a phone it is texted to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Destination {
+    Email(String),
+    Sms(String),
+}
+
+impl Destination {
+    /// As `customer_view_codes.email` keeps it.
+    fn key(&self) -> String {
+        match self {
+            Self::Email(email) => email.clone(),
+            Self::Sms(digits) => format!("{SMS_PREFIX}{digits}"),
+        }
+    }
+
+    fn from_key(key: &str) -> Self {
+        key.strip_prefix(SMS_PREFIX).map_or_else(
+            || Self::Email(key.to_string()),
+            |digits| Self::Sms(digits.to_string()),
+        )
+    }
+
+    fn masked(&self) -> String {
+        match self {
+            Self::Email(email) => mask_email(email),
+            Self::Sms(digits) => mask_phone(digits),
+        }
+    }
+
+    const fn channel(&self) -> CodeChannel {
+        match self {
+            Self::Email(_) => CodeChannel::Email,
+            Self::Sms(_) => CodeChannel::Sms,
+        }
+    }
+}
+
+/// How a code is sent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CodeChannel {
+    /// By email.
+    #[default]
+    Email,
+    /// By text message.
+    Sms,
+}
+
 /// The address in `Name <a@b>` or a bare address, lowercased.
 fn parse_email(value: &str) -> String {
     let value = value.trim();
@@ -252,6 +328,15 @@ pub(crate) struct ViewCustomer {
     pub(crate) id: i32,
     name: Option<String>,
     email: Option<String>,
+    /// The customer's phone as stored; [`ViewCustomer::phone_digits`] reads it.
+    phone: Option<String>,
+}
+
+impl ViewCustomer {
+    /// The 10 digits a code can be texted to.
+    fn phone_digits(&self) -> Option<String> {
+        self.phone.as_deref().and_then(phone_digits)
+    }
 }
 
 async fn by_view_id(state: &AppState, company_id: i32, view_id: &str) -> ApiResult<ViewCustomer> {
@@ -259,7 +344,7 @@ async fn by_view_id(state: &AppState, company_id: i32, view_id: &str) -> ApiResu
         return Err(ApiError::NotFound);
     }
     let row: Option<ViewCustomer> = sqlx::query_as(
-        "SELECT c.id, c.name, ce.email
+        "SELECT c.id, c.name, ce.email, c.phone
            FROM customers c
            LEFT JOIN customers_emails ce ON ce.id = c.email_id AND ce.customer_id = c.id
           WHERE c.view_id = UUID_TO_BIN(?) AND c.company_id = ? AND c.deleted_at IS NULL
@@ -286,7 +371,7 @@ async fn by_email(
     email: &str,
 ) -> ApiResult<Option<ViewCustomer>> {
     let row: Option<ViewCustomer> = sqlx::query_as(
-        "SELECT c.id, c.name, ce.email
+        "SELECT c.id, c.name, ce.email, c.phone
            FROM customers c
            JOIN customers_emails ce ON ce.customer_id = c.id
           WHERE c.company_id = ? AND c.deleted_at IS NULL AND LOWER(ce.email) = ? AND c.view_id IS NOT NULL
@@ -306,6 +391,36 @@ async fn by_email(
         );
         c
     }))
+}
+
+/// The customer of the company with this phone (or phone 2) that has a page.
+async fn by_phone(
+    state: &AppState,
+    company_id: i32,
+    digits: &str,
+) -> ApiResult<Option<ViewCustomer>> {
+    let row: Option<ViewCustomer> = sqlx::query_as(
+        "SELECT c.id, c.name, NULL AS email, ? AS phone
+           FROM customers c
+          WHERE c.company_id = ? AND c.deleted_at IS NULL AND c.view_id IS NOT NULL
+            AND (RIGHT(REGEXP_REPLACE(COALESCE(c.phone, ''), '[^0-9]', ''), 10) = ?
+                 OR RIGHT(REGEXP_REPLACE(COALESCE(c.phone_2, ''), '[^0-9]', ''), 10) = ?)
+          ORDER BY c.id DESC
+          LIMIT 1",
+    )
+    .bind(digits)
+    .bind(company_id)
+    .bind(digits)
+    .bind(digits)
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(row)
+}
+
+/// Whether the company can text a code: it has a provider and someone to
+/// text from (the schedule's sender: Scheduling Manager or office manager).
+async fn can_text(state: &AppState, company_id: i32) -> ApiResult<bool> {
+    Ok(sms_sender(&state.pool, company_id).await?.is_ok())
 }
 
 /// The page of a customer, for a verified code.
@@ -331,18 +446,20 @@ fn code_email_html(code: &str) -> String {
     )
 }
 
-/// Emails a code to `email` for `customer` (`sendCustomerViewLoginCode`),
-/// or with no customer only records one that can never verify, so an
-/// unknown address looks the same. Either way the address gets at most one
-/// code every 45 seconds and [`MAX_SENDS_PER_HOUR`] an hour, and its older
-/// codes stop working.
+/// Emails or texts a code to `to` for `customer`
+/// (`sendCustomerViewLoginCode`), or with no customer only records one that
+/// can never verify, so an unknown address looks the same. Either way the
+/// address gets at most one code every 45 seconds and
+/// [`MAX_SENDS_PER_HOUR`] an hour, and its older codes stop working.
 async fn send_code(
     state: &AppState,
     visitor: &mut Visitor,
     company_id: i32,
-    email: &str,
+    to: &Destination,
     customer: Option<&ViewCustomer>,
 ) -> ApiResult<()> {
+    let key = to.key();
+    let email = key.as_str();
     let mut tx = state.pool.begin().await?;
     sqlx::query(
         "DELETE FROM customer_view_codes WHERE expires_at < UTC_TIMESTAMP() - INTERVAL 1 DAY",
@@ -397,32 +514,67 @@ async fn send_code(
     .bind(CODE_EXPIRY_MINUTES)
     .execute(&mut *tx)
     .await?;
-    if let Some(code) = &code {
-        let message = OutgoingEmail {
-            from_name: None,
-            from_address: "noreply@granite-manager.com".into(),
-            to: vec![email.to_string()],
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            subject: "Your customer login code".into(),
-            body: code_email_html(code),
-            signature: None,
-            reply_to: Vec::new(),
-            in_reply_to: None,
-            references: Vec::new(),
-            attachments: Vec::new(),
-            transactional: true,
-        };
-        if let Err(error) = state.webhooks.send_email(&message).await {
-            tracing::warn!(?error, company_id, "customer view code email failed");
-            return Err(ApiError::Upstream(
-                "We could not send the email. Please try again.".into(),
-            ));
+    match (&code, to) {
+        (Some(code), Destination::Sms(digits)) => {
+            text_code(state, company_id, digits, code).await?;
         }
+        (Some(code), Destination::Email(_)) => {
+            let message = OutgoingEmail {
+                from_name: None,
+                from_address: "noreply@granite-manager.com".into(),
+                to: vec![email.to_string()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: "Your customer login code".into(),
+                body: code_email_html(code),
+                signature: None,
+                reply_to: Vec::new(),
+                in_reply_to: None,
+                references: Vec::new(),
+                attachments: Vec::new(),
+                transactional: true,
+            };
+            if let Err(error) = state.webhooks.send_email(&message).await {
+                tracing::warn!(?error, company_id, "customer view code email failed");
+                return Err(ApiError::Upstream(
+                    "We could not send the email. Please try again.".into(),
+                ));
+            }
+        }
+        (None, _) => {}
     }
     tx.commit().await?;
     visitor.clear_pending();
     visitor.set(PENDING, json!(token));
+    Ok(())
+}
+
+/// Texts `code` to the phone's 10 digits from the company's schedule sender.
+async fn text_code(state: &AppState, company_id: i32, digits: &str, code: &str) -> ApiResult<()> {
+    let Ok((provider, manager, seat)) = sms_sender(&state.pool, company_id).await? else {
+        return Err(ApiError::Conflict(
+            "Codes cannot be texted right now. Please use email.".into(),
+        ));
+    };
+    let sms = OutgoingSms {
+        provider: provider.as_str().to_string(),
+        company_id,
+        user_id: manager.id,
+        agent_id: manager.agent_id.clone(),
+        phone_digits: digits.to_string(),
+        text: format!(
+            "Your login code is {code}. It expires in 10 minutes. If you did not ask for it, ignore this text."
+        ),
+        attachments: Vec::new(),
+        is_automated: true,
+        idempotency_key: None,
+    };
+    if let Err(failure) = send_text(state, provider, &seat, &sms).await {
+        tracing::warn!(error = %failure.error, company_id, "customer view code text failed");
+        return Err(ApiError::Upstream(
+            "We could not send the text. Please try again or use email.".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -515,8 +667,15 @@ pub struct ViewGate {
     pub has_email: bool,
     /// That email, masked (`a***@example.com`).
     pub masked_email: Option<String>,
+    /// The customer has a phone a code can be texted to, and the company can
+    /// text it.
+    pub has_phone: bool,
+    /// That phone, masked (`***-***-0188`).
+    pub masked_phone: Option<String>,
     /// A code was sent and has not expired.
     pub code_sent: bool,
+    /// How the pending code went; null without one.
+    pub code_channel: Option<CodeChannel>,
 }
 
 /// Open a customer's page
@@ -547,26 +706,46 @@ pub async fn view_gate(
     let result = async {
         let customer = by_view_id(&state, company_id, &view_id).await?;
         let verified = visitor.verified(&view_id, company_id);
-        let code_sent = visitor
+        let pending = visitor
             .pending(&state, company_id)
             .await?
-            .is_some_and(|code| code.live && code.customer_id == Some(customer.id));
+            .filter(|code| code.live && code.customer_id == Some(customer.id));
+        let phone = if verified {
+            None
+        } else {
+            match customer.phone_digits() {
+                Some(digits) if can_text(&state, company_id).await? => Some(digits),
+                _ => None,
+            }
+        };
         Ok(Json(ViewGate {
             verified,
             customer_name: verified.then(|| customer.name.clone().unwrap_or_default()),
             has_email: customer.email.is_some(),
             masked_email: customer.email.as_deref().map(mask_email),
-            code_sent,
+            has_phone: phone.is_some(),
+            masked_phone: phone.as_deref().map(mask_phone),
+            code_sent: pending.is_some(),
+            code_channel: pending.map(|code| Destination::from_key(&code.email).channel()),
         }))
     }
     .await;
     finish(&state, &visitor, result)
 }
 
-/// Email a login code
+/// How the visitor wants their code.
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct CodeRequest {
+    /// `email` (the default) or `sms` (a text to the customer's phone).
+    #[serde(default)]
+    pub channel: CodeChannel,
+}
+
+/// Email or text a login code
 ///
-/// Sends a one-time code (10 minutes) to the customer's email. An address
-/// gets at most one code every 45 seconds and 5 an hour; a new code
+/// Sends a one-time code (10 minutes) to the customer's email, or with
+/// `channel: sms` texts it to their phone (`has_phone` on the gate). An
+/// address gets at most one code every 45 seconds and 5 an hour; a new code
 /// replaces the previous one.
 #[crate::openapi::path(
     post,
@@ -577,29 +756,39 @@ pub async fn view_gate(
         ("company_id" = i32, Path, description = "Company id"),
         ("view_id" = String, Path, description = "The customer's page id (a UUID)"),
     ),
+    request_body = CodeRequest,
     responses(
         (status = 204, description = "Sent"),
         (status = 404, description = "No such page", body = ErrorBody),
-        (status = 409, description = "The customer has no email", body = ErrorBody),
+        (status = 409, description = "The customer has no email (or no phone, or the company cannot text)", body = ErrorBody),
         (status = 429, description = "A code was just sent, or 5 this hour", body = ErrorBody),
-        (status = 502, description = "The email could not be sent", body = ErrorBody),
+        (status = 502, description = "The email or text could not be sent", body = ErrorBody),
     )
 )]
 pub async fn send_view_code(
     State(state): State<AppState>,
     Path((company_id, view_id)): Path<(i32, String)>,
     headers: HeaderMap,
+    input: Option<Json<CodeRequest>>,
 ) -> Response {
     let mut visitor = Visitor::read(&state, &headers);
+    let channel = input.map(|Json(input)| input.channel).unwrap_or_default();
     let result = async {
         let customer = by_view_id(&state, company_id, &view_id).await?;
-        let Some(email) = customer.email.clone() else {
-            return Err(ApiError::Conflict(
-                "This page is locked. Ask the company to add your email so we can send a login code."
-                    .into(),
-            ));
+        let to = match channel {
+            CodeChannel::Email => Destination::Email(customer.email.clone().ok_or_else(|| {
+                ApiError::Conflict(
+                    "This page is locked. Ask the company to add your email so we can send a login code."
+                        .into(),
+                )
+            })?),
+            CodeChannel::Sms => Destination::Sms(customer.phone_digits().ok_or_else(|| {
+                ApiError::Conflict(
+                    "There is no phone on file. Ask the company to add one, or use email.".into(),
+                )
+            })?),
         };
-        send_code(&state, &mut visitor, company_id, &email, Some(&customer)).await?;
+        send_code(&state, &mut visitor, company_id, &to, Some(&customer)).await?;
         Ok(StatusCode::NO_CONTENT)
     }
     .await;
@@ -609,7 +798,7 @@ pub async fn send_view_code(
 /// A code the visitor typed.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct EnteredCode {
-    /// The 6 digits from the email.
+    /// The 6 digits from the email or text.
     pub code: String,
 }
 
@@ -1083,13 +1272,18 @@ pub async fn invoice_pdf(
     customer_invoice_pdf_of(&state, company_id, customer.id, invoice_id.trim()).await
 }
 
-/// A sign-in by email in progress.
+/// A sign-in by email or text in progress.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct PendingLogin {
     /// A code was sent (or would have been) and has not expired.
     pub code_sent: bool,
-    /// Where it went, masked.
+    /// Where it went, masked: the email (`a***@example.com`), or the phone
+    /// (`***-***-0188`) for a texted code.
     pub masked_email: Option<String>,
+    /// How it went; null without one.
+    pub code_channel: Option<CodeChannel>,
+    /// The company can text codes (offer "Text me a code").
+    pub can_text: bool,
 }
 
 /// Check a pending sign-in
@@ -1118,9 +1312,12 @@ pub async fn pending_login(
             .pending(&state, company_id)
             .await?
             .filter(|code| code.live);
+        let to = pending.map(|code| Destination::from_key(&code.email));
         Ok(Json(PendingLogin {
-            code_sent: pending.is_some(),
-            masked_email: pending.map(|code| mask_email(&code.email)),
+            code_sent: to.is_some(),
+            masked_email: to.as_ref().map(Destination::masked),
+            code_channel: to.as_ref().map(Destination::channel),
+            can_text: can_text(&state, company_id).await?,
         }))
     }
     .await;
@@ -1130,16 +1327,22 @@ pub async fn pending_login(
 /// An address to sign in with.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct LoginEmail {
-    /// The email on the customer's account; empty resends to the pending one.
+    /// The email on the customer's account; empty (with no `phone`) resends
+    /// to the pending one.
     #[serde(default)]
     pub email: String,
+    /// The phone on the customer's account (any format; US or Canada) to
+    /// text the code to, instead of an email.
+    #[serde(default)]
+    pub phone: String,
 }
 
-/// Email a code to an account's address
+/// Email or text a code to an account
 ///
-/// Sends a code when a customer of the company has that email. The answer
-/// is the same either way, so it does not reveal who is a customer. Same
-/// limits as `send_customer_view_code`.
+/// Sends a code when a customer of the company has that email, or texts one
+/// when a customer has that phone (or phone 2). The answer is the same
+/// either way, so it does not reveal who is a customer. Same limits as
+/// `send_customer_view_code`.
 #[crate::openapi::path(
     post,
     path = "/v1/public/customer-view/{company_id}/login/code",
@@ -1149,9 +1352,10 @@ pub struct LoginEmail {
     request_body = LoginEmail,
     responses(
         (status = 204, description = "Sent (if the address is a customer's)"),
-        (status = 400, description = "Not an email", body = ErrorBody),
+        (status = 400, description = "Not an email or a phone", body = ErrorBody),
+        (status = 409, description = "The company cannot text codes", body = ErrorBody),
         (status = 429, description = "A code was just sent, or 5 this hour", body = ErrorBody),
-        (status = 502, description = "The email could not be sent", body = ErrorBody),
+        (status = 502, description = "The email or text could not be sent", body = ErrorBody),
     )
 )]
 pub async fn send_login_code(
@@ -1162,25 +1366,49 @@ pub async fn send_login_code(
 ) -> Response {
     let mut visitor = Visitor::read(&state, &headers);
     let result = async {
-        let typed = parse_email(&input.email);
-        let email = if typed.is_empty() {
-            visitor
-                .pending(&state, company_id)
-                .await?
-                .map(|code| code.email)
-                .unwrap_or_default()
-        } else {
-            typed
-        };
-        if !valid_email(&email) {
-            return Err(ApiError::BadRequest("Email is required".into()));
-        }
+        let to =
+            if input.phone.trim().is_empty() {
+                let typed = parse_email(&input.email);
+                if typed.is_empty() {
+                    visitor
+                        .pending(&state, company_id)
+                        .await?
+                        .map_or_else(
+                            || Destination::Email(String::new()),
+                            |code| Destination::from_key(&code.email),
+                        )
+                } else {
+                    Destination::Email(typed)
+                }
+            } else {
+                Destination::Sms(phone_digits(&input.phone).ok_or_else(|| {
+                    ApiError::BadRequest("Enter a US or Canada phone number.".into())
+                })?)
+            };
         // No such customer: behave as if a code went out.
-        let customer = by_email(&state, company_id, &email).await?;
-        let to = customer
-            .as_ref()
-            .and_then(|c| c.email.clone())
-            .unwrap_or_else(|| email.clone());
+        let (to, customer) = match to {
+            Destination::Email(email) => {
+                if !valid_email(&email) {
+                    return Err(ApiError::BadRequest("Email is required".into()));
+                }
+                let customer = by_email(&state, company_id, &email).await?;
+                let to = customer
+                    .as_ref()
+                    .and_then(|c| c.email.clone())
+                    .unwrap_or(email);
+                (Destination::Email(to), customer)
+            }
+            Destination::Sms(digits) => {
+                // Refused alike for everyone, so it reveals nobody.
+                if !can_text(&state, company_id).await? {
+                    return Err(ApiError::Conflict(
+                        "Codes cannot be texted right now. Please use email.".into(),
+                    ));
+                }
+                let customer = by_phone(&state, company_id, &digits).await?;
+                (Destination::Sms(digits), customer)
+            }
+        };
         send_code(&state, &mut visitor, company_id, &to, customer.as_ref()).await?;
         Ok(StatusCode::NO_CONTENT)
     }
@@ -1197,7 +1425,7 @@ pub struct OpenedView {
 
 /// Enter an account sign-in code
 ///
-/// Verifies the code sent to the account's address (8 attempts at most);
+/// Verifies the code sent to the account's address or phone (8 attempts at most);
 /// answers the page it unlocks.
 #[crate::openapi::path(
     post,
@@ -1226,7 +1454,7 @@ pub async fn verify_login_code(
 
 /// Drop a pending code
 ///
-/// So the visitor can sign in with another email.
+/// So the visitor can sign in with another email or phone.
 #[crate::openapi::path(
     delete,
     path = "/v1/public/customer-view/login",
@@ -1251,9 +1479,21 @@ mod tests {
     #[test]
     fn visits_belong_to_the_project_sold_by_their_day() {
         let sales = [
-            Sold { id: 1, at: Some(at("2026-03-01")), cancelled: false },
-            Sold { id: 2, at: Some(at("2026-06-01")), cancelled: false },
-            Sold { id: 3, at: Some(at("2026-07-01")), cancelled: true },
+            Sold {
+                id: 1,
+                at: Some(at("2026-03-01")),
+                cancelled: false,
+            },
+            Sold {
+                id: 2,
+                at: Some(at("2026-06-01")),
+                cancelled: false,
+            },
+            Sold {
+                id: 3,
+                at: Some(at("2026-07-01")),
+                cancelled: true,
+            },
         ];
         // Its own sale wins.
         assert_eq!(project_of(Some(1), at("2026-08-01"), &sales), Some(1));
@@ -1264,7 +1504,11 @@ mod tests {
         // A visit before any sale: the first one. A sale of someone else: ignored.
         assert_eq!(project_of(None, at("2026-01-01"), &sales), Some(1));
         assert_eq!(project_of(Some(99), at("2026-04-10"), &sales), Some(1));
-        let cancelled = [Sold { id: 3, at: Some(at("2026-07-01")), cancelled: true }];
+        let cancelled = [Sold {
+            id: 3,
+            at: Some(at("2026-07-01")),
+            cancelled: true,
+        }];
         assert_eq!(project_of(None, at("2026-09-01"), &cancelled), None);
     }
 
@@ -1278,6 +1522,28 @@ mod tests {
         );
         assert!(valid_email("a@b.co"));
         assert!(!valid_email("a@b"));
+    }
+
+    #[test]
+    fn phones_are_masked_and_keyed() {
+        assert_eq!(
+            phone_digits("(317) 555-0188").as_deref(),
+            Some("3175550188")
+        );
+        assert_eq!(
+            phone_digits("+1 317 555 0188").as_deref(),
+            Some("3175550188")
+        );
+        assert_eq!(phone_digits("555-0188"), None);
+        assert_eq!(mask_phone("3175550188"), "***-***-0188");
+        let text = Destination::Sms("3175550188".into());
+        assert_eq!(text.key(), "sms:3175550188");
+        assert_eq!(Destination::from_key("sms:3175550188"), text);
+        assert_eq!(
+            Destination::from_key("a@b.co"),
+            Destination::Email("a@b.co".into())
+        );
+        assert_eq!(text.masked(), "***-***-0188");
     }
 
     #[test]

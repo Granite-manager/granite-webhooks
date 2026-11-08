@@ -2502,7 +2502,7 @@ fn own(value: Option<&str>) -> Option<&str> {
 /// texts through it and the Scheduling Manager has a line there; then the
 /// company's provider first; with both set up, the other one when the office
 /// manager only has a line there. Else why there is nobody.
-async fn sms_sender(
+pub async fn sms_sender(
     pool: &MySqlPool,
     company_id: i32,
 ) -> Result<Result<(SmsProvider, OfficeManager, Seat), &'static str>, sqlx::Error> {
