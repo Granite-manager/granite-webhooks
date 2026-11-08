@@ -72,6 +72,53 @@ async fn version(pool: &MySqlPool, id: i32) -> i32 {
 }
 
 #[test_db::test(seed)]
+async fn a_columns_manual_order_is_saved_for_production_only(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let id = projects_of_8002(&pool).await[0];
+    run(
+        &pool,
+        &format!("UPDATE projects SET position = 5 WHERE id = {id}"),
+    )
+    .await;
+    let reorder = |session: &'static str, ids: Value| {
+        let pool = pool.clone();
+        async move {
+            server(pool)
+                .post("/v1/projects/reorder")
+                .with_session(session)
+                .json(&json!({ "ids": ids }))
+                .await
+        }
+    };
+    let before = version(&pool, id).await;
+
+    reorder(sessions::REP, json!([id]))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    reorder(sessions::ADMIN, json!([id, 999_999]))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    reorder(sessions::ADMIN, json!([]))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    let position = || async {
+        sqlx::query_scalar::<_, i32>("SELECT position FROM projects WHERE id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(position().await, 5);
+
+    reorder(sessions::ADMIN, json!([id]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(position().await, 0);
+    assert_eq!(version(&pool, id).await, before);
+}
+
+#[test_db::test(seed)]
 async fn projects_need_no_switch_and_a_win_adds_none_until_project_on_a_sale(pool: MySqlPool) {
     assert!(ids(&board(&pool, sessions::ADMIN).await).is_empty());
     win_8002(&pool).await;

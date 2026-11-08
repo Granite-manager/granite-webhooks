@@ -251,6 +251,13 @@ pub struct ProjectWorkspace {
     pub user_id: i32,
 }
 
+/// Body of `POST /v1/projects/reorder`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ReorderProjects {
+    /// One column's projects, in their new order.
+    pub ids: Vec<i32>,
+}
+
 /// Body of `POST /v1/projects/{id}/actions`. `version` is the project's as
 /// the page has it: a stale page gets a 409.
 #[derive(Debug, Deserialize, ToSchema)]
