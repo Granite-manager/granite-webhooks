@@ -130,7 +130,7 @@ async fn main() -> Result<(), sqlx::Error> {
 
     let pool = sqlx::mysql::MySqlPoolOptions::new()
         .max_connections(1)
-        .connect(&url)
+        .connect_with(common::db::connect_options(&url)?)
         .await?;
     let mut tx = pool.begin().await?;
     let (mut moved, mut done, mut unreadable) = (0usize, 0usize, Vec::new());

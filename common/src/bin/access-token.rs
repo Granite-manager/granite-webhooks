@@ -175,7 +175,8 @@ async fn connect() -> Result<MySqlPool, String> {
         .or_else(|_| std::env::var("DATABASE_URL"))
         .map_err(|_| "set ACCESS_TOKEN_DATABASE_URL (or DATABASE_URL)".to_string())?;
     eprintln!("database: {}", redacted(&url));
-    MySqlPool::connect(&url)
+    let options = common::db::connect_options(&url).map_err(|error| format!("bad url: {error}"))?;
+    MySqlPool::connect_with(options)
         .await
         .map_err(|error| format!("cannot connect: {error}"))
 }

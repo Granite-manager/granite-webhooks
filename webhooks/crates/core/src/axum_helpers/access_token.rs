@@ -5,9 +5,9 @@
 //!   403 (a good token that may not call this route).
 //! - [`Transitional`]: the lead forms only, so no lead is ever lost. A
 //!   working token is accepted. Without one (or with one that does not work)
-//!   the route's old check ([`LegacyAuth`]) decides, and `PostHog` hears
-//!   about it (`webhook_legacy_auth`, `webhook_access_token_rejected`), so we
-//!   can see who still has to switch.
+//!   the route's old check ([`LegacyAuth`]) decides, every such request is
+//!   logged as an error, and `PostHog` hears about it (`webhook_legacy_auth`,
+//!   `webhook_access_token_rejected`), so we can see who still has to switch.
 //!
 //! The token is read from `Authorization` (`Bearer gmk_...` or the bare
 //! token), else from the headers the providers that cannot set
@@ -255,6 +255,16 @@ where
             }
         }
         let check = L::check(&parts.headers);
+        // Logged on every request (unlike the throttled `PostHog` event), so
+        // each caller that still has to switch to a token shows up.
+        tracing::error!(
+            route = %report.route,
+            company_id = ?report.company_id,
+            user_agent = %report.user_agent,
+            legacy = L::NAME,
+            result = check.as_str(),
+            "Request without a working access token: let in by the old check, switch the caller to a token"
+        );
         report.legacy(L::NAME, check).await;
         match check {
             LegacyCheck::Valid | LegacyCheck::Unverified => Ok(Self::new(None)),
