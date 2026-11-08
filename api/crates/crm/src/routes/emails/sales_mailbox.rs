@@ -298,7 +298,7 @@ pub async fn thread(
     };
     let (deal_id, customer) = thread_customer(pool, &thread_id, &mailbox).await?;
     let (messages, participants) =
-        thread_contents(pool, &state.storage, &thread_id, false, None).await?;
+        thread_contents(pool, &state.storage, &thread_id, None, false, None).await?;
     Ok(Json(ThreadDetail {
         thread_id: thread_id.clone(),
         deal_id,

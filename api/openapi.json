@@ -21044,6 +21044,16 @@
               }
             }
           },
+          "404": {
+            "description": "`thread_id` is a conversation of another company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Database error, or sent but not recorded",
             "content": {

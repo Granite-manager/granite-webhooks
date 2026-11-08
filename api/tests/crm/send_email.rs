@@ -275,6 +275,37 @@ async fn reply_threads_after_the_conversation(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn another_companys_conversation_is_refused(pool: MySqlPool) {
+    let setup = setup(&pool, Reply::Sent).await;
+    let res = setup
+        .send(
+            DINA,
+            json!({ "to": ["someone@example.com"], "body": "Hi", "thread_id": T1 }),
+        )
+        .await;
+    res.assert_status(StatusCode::NOT_FOUND);
+    assert!(setup.sent().is_empty());
+    let res = setup
+        .server
+        .get(&format!("/v1/emails/threads/{T1}"))
+        .with_session(DINA)
+        .await;
+    res.assert_status(StatusCode::NOT_FOUND);
+    // A new conversation id is still the caller's to start.
+    let res = setup
+        .send(
+            DINA,
+            json!({
+                "to": ["someone@example.com"],
+                "body": "Hi",
+                "thread_id": "bbbbbbbb-2222-4000-8000-000000000002"
+            }),
+        )
+        .await;
+    res.assert_status_ok();
+}
+
+#[test_db::test(seed)]
 async fn deal_customer_gets_new_recipient_addresses_only(pool: MySqlPool) {
     let setup = setup(&pool, Reply::Sent).await;
     setup

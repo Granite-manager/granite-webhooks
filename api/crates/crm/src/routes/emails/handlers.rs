@@ -285,12 +285,13 @@ pub async fn read_thread(
         return Err(ApiError::NotFound);
     }
     let received = received_message(user.id);
-    let mut args: Vec<Arg> = vec![thread_id.into()];
+    let mut args: Vec<Arg> = vec![thread_id.into(), user.company_id.into()];
     args.extend(received.args);
     Sql::new(
         format!(
             "UPDATE emails SET employee_read_at = NOW()
-             WHERE deleted_at IS NULL AND thread_id = ? AND employee_read_at IS NULL AND {}",
+             WHERE deleted_at IS NULL AND thread_id = ? AND (company_id = ? OR company_id IS NULL)
+               AND employee_read_at IS NULL AND {}",
             received.sql
         ),
         args,
@@ -334,10 +335,12 @@ async fn update_threads(
     let mut args: Vec<Arg> = ids.iter().map(|id| Arg::from(id.clone())).collect();
     let extra = extra.unwrap_or_default();
     args.extend(extra.args);
+    args.push(user.company_id.into());
     args.extend(owned.args);
     Sql::new(
         format!(
-            "UPDATE emails SET {set} WHERE thread_id IN ({marks}){} AND {}",
+            "UPDATE emails SET {set} WHERE thread_id IN ({marks}){}
+               AND (company_id = ? OR company_id IS NULL) AND {}",
             extra.sql, owned.sql
         ),
         args,
@@ -511,12 +514,14 @@ pub async fn purge(
     let owned = own_threads("e.thread_id", &mailbox(&user));
     let marks = vec!["?"; ids.len()].join(",");
     let mut args: Vec<Arg> = ids.iter().map(|id| Arg::from(id.clone())).collect();
+    args.push(user.company_id.into());
     args.extend(owned.args);
     let mut tx = state.pool.begin().await?;
     let rows: Vec<(i32, Option<String>)> = Sql::new(
         format!(
             "SELECT e.id, e.message_id FROM emails e
-             WHERE e.thread_id IN ({marks}) AND e.deleted_at IS NOT NULL AND {}",
+             WHERE e.thread_id IN ({marks}) AND e.deleted_at IS NOT NULL
+               AND (e.company_id = ? OR e.company_id IS NULL) AND {}",
             owned.sql
         ),
         args,
