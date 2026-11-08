@@ -86,11 +86,7 @@ fn project_key(sale: &CustomerSale) -> String {
 /// its location; a customer with one project lends it only when the event or
 /// the sales have no street to compare. Otherwise none: a builder's other
 /// jobs are not this event's.
-fn event_project(
-    own_sale: Option<i32>,
-    location: Option<&str>,
-    sales: &[CustomerSale],
-) -> Vec<i32> {
+fn event_project(own_sale: Option<i32>, location: Option<&str>, sales: &[CustomerSale]) -> Vec<i32> {
     let of_project = |key: &str| -> Vec<i32> {
         sales
             .iter()
@@ -116,12 +112,9 @@ fn event_project(
     };
     let key = project_key(first);
     let one_project = sales.iter().all(|sale| project_key(sale) == key);
-    let no_street = sales.iter().all(|sale| {
-        sale.project_address
-            .as_deref()
-            .and_then(street_key)
-            .is_none()
-    });
+    let no_street = sales
+        .iter()
+        .all(|sale| sale.project_address.as_deref().and_then(street_key).is_none());
     if one_project && (event_key.is_none() || no_street) {
         of_project(&key)
     } else {
@@ -131,7 +124,11 @@ fn event_project(
 
 /// The event's project sales, newest first (see [`event_project`]); empty
 /// when it has none, 404 when the event is not the company's.
-async fn find_event_sales(pool: &MySqlPool, company_id: i32, event_id: i32) -> ApiResult<Vec<i32>> {
+async fn find_event_sales(
+    pool: &MySqlPool,
+    company_id: i32,
+    event_id: i32,
+) -> ApiResult<Vec<i32>> {
     let event: Option<(Option<i32>, Option<i32>, Option<String>)> = sqlx::query_as(
         "SELECT e.sale_id, e.customer_id, e.location
            FROM events e JOIN users u ON e.created_user_id = u.id
@@ -367,18 +364,9 @@ mod tests {
 
     #[test]
     fn street_key_ignores_format_and_direction() {
-        assert_eq!(
-            street_key("647 Overpeck Rd, Mooresville, IN 46158").as_deref(),
-            Some("647 overpeck")
-        );
-        assert_eq!(
-            street_key("647 Overpeck Road").as_deref(),
-            Some("647 overpeck")
-        );
-        assert_eq!(
-            street_key("4622 S Walcott St Indianapolis, IN").as_deref(),
-            Some("4622 walcott")
-        );
+        assert_eq!(street_key("647 Overpeck Rd, Mooresville, IN 46158").as_deref(), Some("647 overpeck"));
+        assert_eq!(street_key("647 Overpeck Road").as_deref(), Some("647 overpeck"));
+        assert_eq!(street_key("4622 S Walcott St Indianapolis, IN").as_deref(), Some("4622 walcott"));
         assert_eq!(street_key("Carmel, IN 46033, USA"), None);
         assert_eq!(street_key("46220"), None);
     }
@@ -386,21 +374,9 @@ mod tests {
     #[test]
     fn builder_event_at_an_unsold_address_has_no_project() {
         let sales = [
-            sale(
-                5,
-                Some("13636 Frenchman's Creek, Carmel, IN 46032"),
-                "2026-10-05",
-            ),
-            sale(
-                4,
-                Some("13636 Frenchman's Creek, Carmel, IN 46032"),
-                "2026-10-05",
-            ),
-            sale(
-                3,
-                Some("12792 Ford Dr, Fishers, IN 46038, USA"),
-                "2025-12-05",
-            ),
+            sale(5, Some("13636 Frenchman's Creek, Carmel, IN 46032"), "2026-10-05"),
+            sale(4, Some("13636 Frenchman's Creek, Carmel, IN 46032"), "2026-10-05"),
+            sale(3, Some("12792 Ford Dr, Fishers, IN 46038, USA"), "2025-12-05"),
         ];
         let location = Some("11716 Shadowwood Ct, Zionsville, IN 46077");
         assert!(event_project(None, location, &sales).is_empty());
@@ -410,21 +386,9 @@ mod tests {
     #[test]
     fn every_sale_at_the_address_is_the_project() {
         let sales = [
-            sale(
-                5,
-                Some("13636 Frenchman's Creek, Carmel, IN 46032"),
-                "2026-10-05",
-            ),
-            sale(
-                4,
-                Some("13636 Frenchman's Creek, Carmel, IN 46032"),
-                "2026-10-05",
-            ),
-            sale(
-                3,
-                Some("12792 Ford Dr, Fishers, IN 46038, USA"),
-                "2025-12-05",
-            ),
+            sale(5, Some("13636 Frenchman's Creek, Carmel, IN 46032"), "2026-10-05"),
+            sale(4, Some("13636 Frenchman's Creek, Carmel, IN 46032"), "2026-10-05"),
+            sale(3, Some("12792 Ford Dr, Fishers, IN 46038, USA"), "2025-12-05"),
         ];
         let location = Some("13636 Frenchman's Creek, Carmel, IN 46032");
         assert_eq!(event_project(None, location, &sales), vec![5, 4]);
@@ -438,9 +402,6 @@ mod tests {
         assert_eq!(event_project(None, None, &sold), vec![7]);
         assert!(event_project(None, Some("3424 Ralston Ave"), &sold).is_empty());
         let vague = [sale(8, Some("Muncie, IN"), "2026-09-01")];
-        assert_eq!(
-            event_project(None, Some("2931 Applewood Ct Muncie"), &vague),
-            vec![8]
-        );
+        assert_eq!(event_project(None, Some("2931 Applewood Ct Muncie"), &vague), vec![8]);
     }
 }
