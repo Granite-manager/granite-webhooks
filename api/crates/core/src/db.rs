@@ -10,7 +10,7 @@ use std::time::Duration;
 ///   that carries CORS headers. Connecting at startup made the container
 ///   exit, and API Gateway's bare 502 reached the browser as "Failed to fetch".
 /// - One connection: a container serves one request at a time, and every
-///   Lambda container counts against the database's limit (60), so the
+///   Lambda container counts against the database's limit (90), so the
 ///   connection count tracks the number of warm containers. No handler queries
 ///   the pool while holding a transaction or a streaming query, and the
 ///   `tokio::join!`s just run one after another.

@@ -42,7 +42,7 @@
 //!
 //! The server is the one in `DATABASE_URL` (see `.cargo/config.toml`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::future::Future;
 use std::str::FromStr;
@@ -150,6 +150,8 @@ struct Plan {
     tables: HashMap<String, Option<i64>>,
     /// Each table's `CREATE TABLE`, for a copy whose table a test dropped.
     create_table: HashMap<String, String>,
+    /// Each table's `INSERT ... SELECT` from the template.
+    copy_rows: HashMap<String, String>,
     /// `(table, constraint, referenced table)` of every foreign key, sorted.
     foreign_keys: Vec<(String, String, String)>,
 }
@@ -326,8 +328,8 @@ async fn restore(
             schema_changed = true;
             write!(
                 script,
-                "{}; INSERT INTO `{table}` SELECT * FROM `{}`.`{table}`;",
-                plan.create_table[table], plan.template
+                "{}; {};",
+                plan.create_table[table], plan.copy_rows[table]
             )
             .expect("write to String");
             continue;
@@ -336,12 +338,8 @@ async fn restore(
             continue;
         }
         dirty = true;
-        write!(
-            script,
-            "DELETE FROM `{table}`; INSERT INTO `{table}` SELECT * FROM `{}`.`{table}`;",
-            plan.template
-        )
-        .expect("write to String");
+        write!(script, "DELETE FROM `{table}`; {};", plan.copy_rows[table])
+            .expect("write to String");
     }
     if dirty || schema_changed {
         script.push_str("SET FOREIGN_KEY_CHECKS = 1;");
@@ -445,20 +443,28 @@ async fn build_plan(server: &MySqlConnectOptions, template: Template) -> Result<
     .fetch_all(&mut conn)
     .await?;
     let foreign_keys = foreign_keys(&mut conn, &name).await?;
+    let stored_columns = stored_columns_of_generated_tables(&mut conn, &name).await?;
     conn.close().await?;
 
     let mut script = String::from("SET FOREIGN_KEY_CHECKS = 0;\n");
     let mut tables = HashMap::with_capacity(rows.len());
     let mut create_table = HashMap::with_capacity(rows.len());
+    let mut copy_rows = HashMap::with_capacity(rows.len());
     for (table, ddl, checksum) in rows {
+        // A generated column takes no value: such a table copies the others.
+        let copy = match stored_columns.get(&table) {
+            Some(columns) => {
+                format!(
+                    "INSERT INTO `{table}` ({columns}) SELECT {columns} FROM `{name}`.`{table}`"
+                )
+            }
+            None => format!("INSERT INTO `{table}` SELECT * FROM `{name}`.`{table}`"),
+        };
         writeln!(script, "{ddl};").expect("write to String");
-        writeln!(
-            script,
-            "INSERT INTO `{table}` SELECT * FROM `{name}`.`{table}`;"
-        )
-        .expect("write to String");
+        writeln!(script, "{copy};").expect("write to String");
         tables.insert(table.clone(), checksum);
-        create_table.insert(table, ddl);
+        create_table.insert(table.clone(), ddl);
+        copy_rows.insert(table, copy);
     }
     script.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
 
@@ -467,8 +473,44 @@ async fn build_plan(server: &MySqlConnectOptions, template: Template) -> Result<
         script,
         tables,
         create_table,
+        copy_rows,
         foreign_keys,
     })
+}
+
+/// For each table of `database` with a generated column (`emails`), its other
+/// columns, quoted and comma-separated in table order. A column with an
+/// expression default (`DEFAULT CURRENT_TIMESTAMP`, extra `DEFAULT_GENERATED`)
+/// is not generated: it is copied.
+async fn stored_columns_of_generated_tables(
+    conn: &mut MySqlConnection,
+    database: &str,
+) -> Result<HashMap<String, String>, sqlx::Error> {
+    let rows: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT table_name, column_name, CAST(generation_expression <> '' AS SIGNED) FROM information_schema.columns
+         WHERE table_schema = ? ORDER BY table_name, ordinal_position",
+    )
+    .bind(database)
+    .fetch_all(&mut *conn)
+    .await?;
+    let generated: HashSet<&str> = rows
+        .iter()
+        .filter(|(_, _, generated)| *generated != 0)
+        .map(|(table, _, _)| table.as_str())
+        .collect();
+    let mut columns: HashMap<String, Vec<String>> = HashMap::new();
+    for (table, column, is_generated) in &rows {
+        if generated.contains(table.as_str()) && *is_generated == 0 {
+            columns
+                .entry(table.clone())
+                .or_default()
+                .push(format!("`{column}`"));
+        }
+    }
+    Ok(columns
+        .into_iter()
+        .map(|(table, columns)| (table, columns.join(", ")))
+        .collect())
 }
 
 /// Creates the template database unless a finished one with this name
