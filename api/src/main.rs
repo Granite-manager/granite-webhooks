@@ -15,7 +15,7 @@ async fn main() -> Result<(), Error> {
         set_var("AWS_LAMBDA_HTTP_IGNORE_STAGE_IN_PATH", "true");
     }
     let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
-    let pool = lambda_pool(url.parse()?);
+    let pool = lambda_pool(common::db::connect_options(&url)?);
     // The PostHog auto-fix settings live in a crate above `AppState`'s.
     let state = AppState::from_env(pool)?.with_extension(Autofix::from_env());
     // The same API behind a Function URL in RESPONSE_STREAM mode, for the

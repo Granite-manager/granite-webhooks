@@ -18,6 +18,6 @@ pub async fn create_db_pool() -> Result<MySqlPool, sqlx::Error> {
         .acquire_timeout(Duration::from_secs(10))
         .idle_timeout(Duration::from_secs(60))
         .max_lifetime(Duration::from_secs(600))
-        .connect(&database_url)
+        .connect_with(crate::db::connect_options(&database_url)?)
         .await
 }
