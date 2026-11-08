@@ -388,6 +388,7 @@ pub async fn get(
     Ok(Json(ProjectWorkspace {
         project,
         tasks,
+        task_times: super::tasks::task_times(&mut conn, company).await?,
         notes,
         files,
         history,
