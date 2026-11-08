@@ -567,3 +567,45 @@ async fn a_project_moved_back_stays_there_until_moved_forward(pool: MySqlPool) {
     .assert_status_ok();
     assert_eq!(stage().await, "templated");
 }
+
+#[test_db::test(seed)]
+async fn the_page_shows_the_crews_job_photos(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let id = projects_of_8002(&pool).await[0];
+    run(
+        &pool,
+        "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (9881, 100, 'Installations', 'red', 'installations');",
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO events (id, title, start_date, end_date, all_day, unscheduled,
+                             created_user_id, assigned_user_id, calendar_id, project_id)
+         VALUES (9871, 'Install', NOW(), NOW(), 1, 0, 102, 101, 9881, ?)",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // A job photo, a comment picture only the team sees, and a deleted photo.
+    run(
+        &pool,
+        "INSERT INTO event_images (event_id, company_id, url, created_by, for_customer, deleted_at) VALUES
+           (9871, 100, 'https://cdn.example/job.jpg', 101, 1, NULL),
+           (9871, 100, 'https://cdn.example/comment.jpg', 101, 0, NULL),
+           (9871, 100, 'https://cdn.example/gone.jpg', 101, 1, NOW());",
+    )
+    .await;
+    let page: Value = server(pool.clone())
+        .get(&format!("/v1/projects/{id}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    let photos = page["job_photos"].as_array().unwrap();
+    assert_eq!(photos.len(), 1, "{photos:?}");
+    assert_eq!(photos[0]["url"], "https://cdn.example/job.jpg");
+    assert_eq!(photos[0]["event_id"], 9871);
+    assert_eq!(photos[0]["kind"], "installations");
+    assert_eq!(photos[0]["author"], "Mark Manager");
+}

@@ -182,6 +182,24 @@ pub struct ProjectFile {
     pub created_at: String,
 }
 
+/// A job photo the crew took on one of the project's appointments (the job
+/// card's Job photos, which the customer also sees on their page).
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct ProjectJobPhoto {
+    /// Its id.
+    pub id: i32,
+    /// The appointment it was taken on.
+    pub event_id: i32,
+    /// `templates` or `installations`; null for another calendar.
+    pub kind: Option<String>,
+    /// A URL the browser can open.
+    pub url: String,
+    /// Who took it.
+    pub author: Option<String>,
+    /// When it was added, UTC ISO.
+    pub created_at: String,
+}
+
 /// A line of a project's history.
 #[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
 pub struct StageChange {
@@ -258,6 +276,8 @@ pub struct ProjectWorkspace {
     pub notes: Vec<ProjectNote>,
     /// Its files.
     pub files: Vec<ProjectFile>,
+    /// The crew's job photos from its appointments, newest first.
+    pub job_photos: Vec<ProjectJobPhoto>,
     /// What happened, newest first.
     pub history: Vec<StageChange>,
     /// Transactions to link (empty once one is linked).
