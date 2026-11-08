@@ -1,8 +1,8 @@
 use super::access::{STAGE_SQL, Stage, Viewer};
 use super::schemas::{
     BoardQuery, Calendar, ConvertedDeal, DealProject, LinkableSale, Person, Project, ProjectAction,
-    ProjectAppointment, ProjectFile, ProjectNote, ProjectTask, ProjectWorkspace, ProjectsBoard,
-    ReorderProjects, StageChange,
+    ProjectAppointment, ProjectFile, ProjectJobPhoto, ProjectNote, ProjectTask, ProjectWorkspace,
+    ProjectsBoard, ReorderProjects, StageChange,
 };
 use super::service::{self, project_select, visible_project};
 use crate::auth::EmployeeUser;
@@ -319,6 +319,29 @@ pub async fn get(
             .readable_url(&file.url, Some(file.content_type.as_str()))
             .await;
     }
+    // The crew's job photos, from its appointments (the same ones as the
+    // Completed lines of the history below).
+    let job_photos: Vec<ProjectJobPhoto> = sqlx::query_as(
+        "SELECT ei.id, ei.event_id,
+                CASE WHEN cal.slug IN ('templates', 'installations') THEN cal.slug END AS kind,
+                ei.url, u.name AS author,
+                DATE_FORMAT(ei.created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at
+           FROM projects p
+           JOIN events e ON e.deleted_date IS NULL
+                        AND (e.project_id = p.id
+                             OR (e.project_id IS NULL AND e.customer_id = p.customer_id
+                                 AND e.created_date >= p.created_at - INTERVAL 1 DAY))
+           JOIN event_images ei ON ei.event_id = e.id AND ei.company_id = p.company_id
+                               AND ei.for_customer = 1 AND ei.deleted_at IS NULL
+           LEFT JOIN calendars cal ON cal.id = e.calendar_id
+           LEFT JOIN users u ON u.id = ei.created_by
+          WHERE p.id = ? AND p.company_id = ?
+          ORDER BY ei.created_at DESC, ei.id DESC LIMIT 200",
+    )
+    .bind(id)
+    .bind(company)
+    .fetch_all(&mut *conn)
+    .await?;
     // Stage moves, and the template maker's and installer's Completed (the
     // jobs that move it on their own, see `STAGE_SQL`).
     let history: Vec<StageChange> = sqlx::query_as(
@@ -391,6 +414,7 @@ pub async fn get(
         task_times: super::tasks::task_times(&mut conn, company).await?,
         notes,
         files,
+        job_photos,
         history,
         sales,
         people: people(&mut conn, company).await?,
