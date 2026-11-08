@@ -18,6 +18,10 @@ name = "sign_session"
 path = "examples/sign_session.rs"
 test = false
 
+[[example]]
+name = "rotate_aes_key"
+path = "examples/rotate_aes_key.rs"
+
 [features]
 # Generates the OpenAPI document from the route annotations with utoipa, for
 # `make api-openapi` and the spec tests (`--features openapi`). utoipa is a
