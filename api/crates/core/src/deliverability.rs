@@ -7,6 +7,7 @@
 //! `deliverability.provider.server.ts` and `domainReputation.server.ts`.
 
 use crate::openapi::ToSchema;
+use hickory_resolver::proto::rr::RData;
 use regex::Regex;
 use serde::Serialize;
 use sqlx::MySqlPool;
@@ -116,11 +117,11 @@ impl SystemDns {
         let options = builder.options_mut();
         options.timeout = std::time::Duration::from_secs(2);
         options.attempts = 1;
-        Some(Self(builder.build()))
+        builder.build().ok().map(Self)
     }
 }
 
-fn lookup_error(error: &hickory_resolver::ResolveError) -> Lookup {
+fn lookup_error(error: &hickory_resolver::net::NetError) -> Lookup {
     if error.is_nx_domain() || error.is_no_records_found() {
         Lookup::NotFound
     } else {
@@ -132,10 +133,14 @@ impl Dns for SystemDns {
     async fn mx(&self, host: &str) -> Result<Vec<(String, u16)>, Lookup> {
         let answer = self.0.mx_lookup(host).await.map_err(|e| lookup_error(&e))?;
         Ok(answer
+            .answers()
             .iter()
-            .map(|mx| {
-                let exchange = mx.exchange().to_utf8();
-                (exchange.trim_end_matches('.').to_string(), mx.preference())
+            .filter_map(|record| match &record.data {
+                RData::MX(mx) => {
+                    let exchange = mx.exchange.to_utf8();
+                    Some((exchange.trim_end_matches('.').to_string(), mx.preference))
+                }
+                _ => None,
             })
             .collect())
     }
@@ -147,12 +152,16 @@ impl Dns for SystemDns {
             .await
             .map_err(|e| lookup_error(&e))?;
         Ok(answer
+            .answers()
             .iter()
-            .map(|txt| {
-                txt.txt_data()
-                    .iter()
-                    .map(|part| String::from_utf8_lossy(part).into_owned())
-                    .collect::<String>()
+            .filter_map(|record| match &record.data {
+                RData::TXT(txt) => Some(
+                    txt.txt_data
+                        .iter()
+                        .map(|part| String::from_utf8_lossy(part).into_owned())
+                        .collect::<String>(),
+                ),
+                _ => None,
             })
             .collect())
     }
@@ -163,7 +172,14 @@ impl Dns for SystemDns {
             .ipv4_lookup(host)
             .await
             .map_err(|e| lookup_error(&e))?;
-        Ok(answer.iter().map(|a| a.0).collect())
+        Ok(answer
+            .answers()
+            .iter()
+            .filter_map(|record| match &record.data {
+                RData::A(a) => Some(a.0),
+                _ => None,
+            })
+            .collect())
     }
 
     async fn cname(&self, host: &str) -> Vec<String> {
@@ -172,8 +188,12 @@ impl Dns for SystemDns {
             .await
             .map(|answer| {
                 answer
+                    .answers()
                     .iter()
-                    .filter_map(|data| data.as_cname().map(|c| c.0.to_utf8()))
+                    .filter_map(|record| match &record.data {
+                        RData::CNAME(c) => Some(c.0.to_utf8()),
+                        _ => None,
+                    })
                     .map(|name| name.trim_end_matches('.').to_string())
                     .collect()
             })
