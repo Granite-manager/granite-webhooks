@@ -795,6 +795,106 @@ async fn a_new_contact_is_mine_with_an_open_deal(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn a_new_contact_takes_the_customer_forms_more_details(pool: MySqlPool) {
+    add_session(&pool, 49, 100, 100).await;
+    sql(
+        &pool,
+        "INSERT INTO customer_sources (company_id, source_key, label, is_system)
+         VALUES (100, 'Home show', 'Home show', 0)",
+    )
+    .await;
+    let (server, _) = phone_server(pool.clone()).await;
+    let create = |body: Value| {
+        server
+            .post("/v1/phone/contacts")
+            .add_header(HEADER, token(49))
+            .json(&body)
+    };
+    let response = create(json!({
+        "name": "Full Form", "phone": "317-555-0190", "phone2": "(317) 555-0191",
+        "email": "full@form.test", "moreEmails": ["", " second@form.test "],
+        "source": "Home show", "salesRep": 101, "notes": "  Wants a quartz island. ",
+    }))
+    .await;
+    response.assert_status(StatusCode::CREATED);
+    let body: Value = response.json();
+    let id = body["id"].as_i64().unwrap();
+    assert_eq!(body["phones"], json!(["3175550190", "3175550191"]));
+    assert_eq!((body["repId"].clone(), body["mine"].clone()), (json!(101), json!(false)));
+    let row: (Option<String>, String, i32, Option<String>) = sqlx::query_as(
+        "SELECT phone_2, source, sales_rep, your_message FROM customers WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        row,
+        (
+            Some("317-555-0191".into()),
+            "Home show".into(),
+            101,
+            Some("Wants a quartz island.".into())
+        )
+    );
+    let emails: Vec<String> = sqlx::query_scalar(
+        "SELECT email FROM customers_emails WHERE customer_id = ? ORDER BY created_at, id",
+    )
+    .bind(id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(emails, ["full@form.test", "second@form.test"]);
+    let deal_rep: Option<i32> = sqlx::query_scalar(
+        "SELECT user_id FROM deals WHERE customer_id = ? AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(deal_rep, Some(101));
+    let history: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT reassigned_by, reassigned_to FROM customers_history WHERE customer_id = ?",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(history, (Some("Rita Rep".into()), Some("Mark Manager".into())));
+    // Calls from phone 2 find them at once.
+    let found: Value = server
+        .post("/v1/phone/contacts/lookup")
+        .add_header(HEADER, token(49))
+        .json(&json!({ "numbers": ["+13175550191"] }))
+        .await
+        .json();
+    assert_eq!(found["matches"][0]["contact"]["id"].as_i64(), Some(id));
+    for (body, error) in [
+        (
+            json!({ "name": "Y", "phone": "3175550192", "phone2": "555" }),
+            "invalid_phone2",
+        ),
+        (
+            json!({ "name": "Y", "phone": "3175550192", "source": "Billboard" }),
+            "Select a valid source.",
+        ),
+        // A deleted user, or another company's.
+        (
+            json!({ "name": "Y", "phone": "3175550192", "salesRep": 105 }),
+            "Unknown sales rep",
+        ),
+        (
+            json!({ "name": "Y", "phone": "3175550192", "moreEmails": ["nope"] }),
+            "Enter a valid email.",
+        ),
+    ] {
+        let response = create(body).await;
+        response.assert_status(StatusCode::BAD_REQUEST);
+        assert_eq!(response.json::<Value>(), json!({ "error": error }));
+    }
+}
+
+#[test_db::test(seed)]
 async fn numbers_fill_phone_then_phone_2_and_ask_before_replacing(pool: MySqlPool) {
     sql(
         &pool,
