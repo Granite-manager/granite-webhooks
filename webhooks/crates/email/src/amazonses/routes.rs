@@ -15,8 +15,20 @@ use crate::amazonses::schemas::{S3Event, SesEvent};
 use crate::amazonses::unprocessed::{PostHogUnprocessedEmailReporter, UnprocessedEmailReporter};
 use crate::crud::email::{create_email_read, email_exists, get_full_message_id};
 use crate::crud::email_claims::{EmailClaim, claim_email_processing, release_email_processing};
-use crate::libs::constants::{BAD_REQUEST, OK_RESPONSE, internal_error};
+use crate::libs::constants::{BAD_REQUEST, FORBIDDEN_RESPONSE, OK_RESPONSE, internal_error};
 use crate::libs::types::BasicResponse;
+
+/// The buckets SES receipt rules write inbound email to. An event naming any
+/// other bucket is refused before anything is read.
+const INBOUND_EMAIL_BUCKETS: [&str; 3] = [
+    "granite-ses-inbound-emails",
+    "granite-ses-inbound-emails-lexington",
+    "granite-ses-inbound-emails-test",
+];
+
+fn is_inbound_email_bucket(bucket: &str) -> bool {
+    INBOUND_EMAIL_BUCKETS.contains(&bucket)
+}
 
 fn is_missing_s3_object(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
@@ -105,6 +117,14 @@ where
 {
     let bucket = &event.detail.bucket.name;
     let key = &event.detail.object.key;
+
+    if !is_inbound_email_bucket(bucket) {
+        tracing::warn!(
+            bucket = bucket,
+            "Refusing an S3 event from an unexpected bucket"
+        );
+        return FORBIDDEN_RESPONSE;
+    }
 
     // SES writes this test object when a receipt rule is set up. It is not an
     // email, so reading it would only fail and be retried forever.
@@ -314,6 +334,34 @@ mod local_tests {
                 .await;
             assert_eq!(response.status_code(), StatusCode::FORBIDDEN, "{route}");
         }
+    }
+
+    #[test]
+    fn only_inbound_email_buckets_are_accepted() {
+        for bucket in INBOUND_EMAIL_BUCKETS {
+            assert!(is_inbound_email_bucket(bucket), "{bucket}");
+        }
+        for bucket in [
+            "gd-email-attachments",
+            "granite-ses-inbound-emails-other",
+            "",
+        ] {
+            assert!(!is_inbound_email_bucket(bucket), "{bucket}");
+        }
+    }
+
+    /// An event naming another bucket is refused without reading S3.
+    #[test_db::test]
+    async fn event_from_another_bucket_is_refused(pool: MySqlPool) {
+        let mock_client = MockClient::new("src/tests/data/does_not_exist.eml");
+        let reporter = MockUnprocessedReporter::default();
+        let mut data: S3Event = ses_received_json();
+        data.detail.bucket.name = "gd-email-attachments".to_string();
+
+        let response = process_ses_received_event_with(&pool, mock_client, &data, &reporter).await;
+
+        assert_eq!(response, FORBIDDEN_RESPONSE);
+        assert!(reporter.reports().is_empty());
     }
 
     #[test]
