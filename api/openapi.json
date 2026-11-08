@@ -42497,8 +42497,8 @@
         "tags": [
           "schedule"
         ],
-        "summary": "Save the On my way message",
-        "description": "What the customer gets when the crew taps On my way: a text, or an email\nwhen the company cannot text. An empty message turns it off.",
+        "summary": "Save the installer's On my way message",
+        "description": "What the customer gets when the installer taps On my way (any job not on\nthe Templates calendar): a text, or an email when the company cannot\ntext. An empty message turns it off. The template technician's message is\nsaved with `PUT /v1/schedule/notifications/on-my-way/technician`.",
         "operationId": "set_on_my_way_message",
         "requestBody": {
           "content": {
@@ -42536,6 +42536,325 @@
           },
           "403": {
             "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/schedule/notifications/on-my-way/technician": {
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Save the template technician's On my way message",
+        "description": "What the customer gets when the template technician taps On my way (a\nTemplates calendar job): a text, or an email when the company cannot\ntext. An empty message turns it off. The installer's message is saved\nwith `PUT /v1/schedule/notifications/on-my-way`.",
+        "operationId": "set_technician_on_my_way_message",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OnMyWayMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Too long",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/schedule/notifications/lists": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Add a list of customer messages",
+        "description": "A list groups the company's reminders and scheduling texts under Customer\nmessages (e.g. \"Reminders\"); it sends nothing itself. It goes last. Put a\ntemplate in it with `list_id` on `POST`/`PUT /v1/schedule/notifications/templates`.",
+        "operationId": "create_schedule_notification_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Created"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Name missing or too long",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/schedule/notifications/lists/{id}": {
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Rename a list of customer messages",
+        "description": "Its templates stay in it.",
+        "operationId": "update_schedule_notification_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "List id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Name missing or too long",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such list in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Delete a list of customer messages",
+        "description": "Refused while it still holds templates: delete them or move them to\nanother list first, so no message is lost.",
+        "operationId": "delete_schedule_notification_list",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "List id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "400": {
+            "description": "It still holds templates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such list in the caller's company",
             "content": {
               "application/json": {
                 "schema": {
@@ -88264,6 +88583,44 @@
           "billing"
         ]
       },
+      "NotificationList": {
+        "type": "object",
+        "description": "One of the company's own lists under Customer messages (e.g.\n\"Reminders\"): it groups reminders and scheduling texts; it sends nothing\nitself.",
+        "required": [
+          "id",
+          "name",
+          "position"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "List id."
+          },
+          "name": {
+            "type": "string",
+            "description": "What admins call it, e.g. \"Reminders\"."
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Place in the order: lower first (oldest first)."
+          }
+        }
+      },
+      "NotificationListInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/schedule/notifications/lists` and `PUT …/lists/{id}`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1 to 100 characters."
+          }
+        }
+      },
       "NotificationPreferences": {
         "type": "object",
         "description": "Which Telegram alerts the user wants from the notifications bot.",
@@ -88352,8 +88709,10 @@
         "required": [
           "templates",
           "flows",
+          "lists",
           "sms_enabled",
           "on_my_way",
+          "on_my_way_technician",
           "scheduling"
         ],
         "properties": {
@@ -88371,13 +88730,24 @@
             },
             "description": "Flows, oldest first."
           },
+          "lists": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotificationList"
+            },
+            "description": "The company's own lists of Customer messages, in order."
+          },
           "sms_enabled": {
             "type": "boolean",
             "description": "The company texts through `CloudTalk` or `RingCentral`."
           },
           "on_my_way": {
             "$ref": "#/components/schemas/OnMyWayMessage",
-            "description": "What the customer gets when the crew taps On my way."
+            "description": "What the customer gets when the installer (any job not on the\nTemplates calendar) taps On my way."
+          },
+          "on_my_way_technician": {
+            "$ref": "#/components/schemas/OnMyWayMessage",
+            "description": "What the customer gets when the template technician (a Templates\ncalendar job) taps On my way."
           },
           "scheduling": {
             "$ref": "#/components/schemas/SchedulingSettings",
@@ -88449,6 +88819,14 @@
                 "type": "null"
               }
             ]
+          },
+          "list_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The company's list (`lists` of `GET /v1/schedule/notifications`) it is\nshown in under Customer messages; null when it is in none."
           }
         }
       },
@@ -88512,6 +88890,14 @@
                 "type": "null"
               }
             ]
+          },
+          "list_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The company's list it goes in (Customer messages), or null for none.\nLeft out: none for a new template, unchanged on edit."
           }
         }
       },

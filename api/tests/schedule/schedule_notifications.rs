@@ -1146,3 +1146,147 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
     assert_eq!(body["answers_read"], 0);
     assert_eq!(sent.texts.lock().unwrap().len(), 2);
 }
+
+#[test_db::test(seed)]
+async fn admins_group_messages_in_their_own_lists(pool: MySqlPool) {
+    let (server, _) = server(&pool).await;
+    let settings = || async {
+        server
+            .get("/v1/schedule/notifications")
+            .with_session(sessions::ADMIN)
+            .await
+            .json::<Value>()
+    };
+    assert_eq!(settings().await["lists"], json!([]));
+    server
+        .post("/v1/schedule/notifications/lists")
+        .with_session(sessions::REP)
+        .json(&json!({ "name": "Reminders" }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    server
+        .post("/v1/schedule/notifications/lists")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": " " }))
+        .await
+        .assert_status_bad_request();
+    let reminders = server
+        .post("/v1/schedule/notifications/lists")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": " Reminders " }))
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    let other = server
+        .post("/v1/schedule/notifications/lists")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "Other" }))
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    assert_eq!(
+        settings().await["lists"],
+        json!([
+            { "id": reminders, "name": "Reminders", "position": 1 },
+            { "id": other, "name": "Other", "position": 2 },
+        ])
+    );
+
+    // A template goes in a list; one left out of `list_id` keeps its list.
+    let mut body = email_template();
+    body["list_id"] = json!(reminders);
+    let template = server
+        .post("/v1/schedule/notifications/templates")
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    let plain = server
+        .post("/v1/schedule/notifications/templates")
+        .with_session(sessions::ADMIN)
+        .json(&email_template())
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    server
+        .put(&format!("/v1/schedule/notifications/templates/{template}"))
+        .with_session(sessions::ADMIN)
+        .json(&email_template())
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let templates = settings().await["templates"].clone();
+    let list_of = |id: i64| {
+        templates
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == id)
+            .unwrap()["list_id"]
+            .clone()
+    };
+    assert_eq!(list_of(template), json!(reminders));
+    assert_eq!(list_of(plain), Value::Null);
+
+    // Another company's list is refused.
+    let theirs: u64 = sqlx::query(
+        "INSERT INTO schedule_notification_lists (company_id, name) VALUES (101, 'Theirs')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap()
+    .last_insert_id();
+    body["list_id"] = json!(theirs);
+    server
+        .put(&format!("/v1/schedule/notifications/templates/{template}"))
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status_bad_request();
+
+    // Renamed; a list with messages can't be deleted, an empty one can.
+    server
+        .put(&format!("/v1/schedule/notifications/lists/{reminders}"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "Before the job" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    server
+        .delete(&format!("/v1/schedule/notifications/lists/{reminders}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status_bad_request();
+    server
+        .delete(&format!("/v1/schedule/notifications/lists/{other}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    server
+        .delete(&format!("/v1/schedule/notifications/lists/{theirs}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status_not_found();
+    assert_eq!(
+        settings().await["lists"],
+        json!([{ "id": reminders, "name": "Before the job", "position": 1 }])
+    );
+
+    // Moved out of the list (null), the list can go.
+    body["list_id"] = Value::Null;
+    server
+        .put(&format!("/v1/schedule/notifications/templates/{template}"))
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    server
+        .delete(&format!("/v1/schedule/notifications/lists/{reminders}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(settings().await["lists"], json!([]));
+}
