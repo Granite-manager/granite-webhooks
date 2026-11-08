@@ -1104,7 +1104,7 @@ async fn admins_add_events_a_sold_quote_puts_on_the_schedule(pool: MySqlPool) {
         "option": 0,
         "extra_events": [
             { "template_id": electric },
-            { "template_id": plumbing, "notes": " Shut-off under the sink " },
+            { "template_id": plumbing, "notes": " Shut-off under the sink ", "urgent": true },
             { "template_id": 999_999 },
         ],
     });
@@ -1138,6 +1138,14 @@ async fn admins_add_events_a_sold_quote_puts_on_the_schedule(pool: MySqlPool) {
             ),
         ]
     );
+    // Only the flagged extra is urgent.
+    let urgent: Vec<String> =
+        sqlx::query_scalar("SELECT title FROM events WHERE quote_id = ? AND urgent <> 0")
+            .bind(id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(urgent, ["Ostrom Kitchen - Plumbing".to_string()]);
     // Undo sale deletes them; selling again adds them anew, without a
     // deleted template's event.
     server

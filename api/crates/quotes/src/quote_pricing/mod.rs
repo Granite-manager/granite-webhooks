@@ -693,11 +693,21 @@ pub struct SaleJobs {
     /// The event templates the seller ticked (Mark as Sold › Extra events),
     /// each with its notes.
     pub extra_events: Vec<ExtraEventPick>,
+    /// Red flags from Mark as Sold: these jobs must be scheduled fast.
+    pub template_urgent: bool,
+    /// Red flag on the installation job.
+    pub installation_urgent: bool,
+    /// Red flag on the FH Backsplash template job.
+    pub fh_backsplash_template_urgent: bool,
+    /// Red flag on the FH Backsplash installation job.
+    pub fh_backsplash_installation_urgent: bool,
 }
 
 /// An event template ticked in Mark as Sold, and the notes for its event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtraEventPick {
+    /// Red flag from Mark as Sold: it must be scheduled fast.
+    pub urgent: bool,
     /// `quote_sale_event_templates.id`.
     pub template_id: i32,
     /// Notes on the event.
@@ -911,7 +921,7 @@ async fn add_waiting_jobs(
     );
     // The template and installation jobs, then the event templates' events.
     let mut events = built_in_jobs(&calendars, jobs, &title);
-    events.extend(extra.into_iter().map(|(template, notes)| NewJob {
+    events.extend(extra.into_iter().map(|(template, notes, urgent)| NewJob {
         calendar_id: template.calendar_id,
         title: sale_event_title(
             template.title_variable,
@@ -922,6 +932,7 @@ async fn add_waiting_jobs(
         ),
         notes,
         ready: false,
+        urgent,
     }));
     for job in events {
         insert_job(pool, quote, creator, address.as_deref(), &job).await?;
@@ -972,6 +983,12 @@ fn built_in_jobs(calendars: &[(i32, bool)], jobs: &SaleJobs, title: &str) -> Vec
                     .filter(|n| !n.is_empty())
                     .map(str::to_string),
                 ready: jobs.template_ready && template && !fh,
+                urgent: match (template, fh) {
+                    (true, false) => jobs.template_urgent,
+                    (false, false) => jobs.installation_urgent,
+                    (true, true) => jobs.fh_backsplash_template_urgent,
+                    (false, true) => jobs.fh_backsplash_installation_urgent,
+                },
             }
         })
         .collect()
@@ -983,7 +1000,7 @@ async fn picked_extra_events(
     pool: &MySqlPool,
     company_id: i32,
     picks: &[ExtraEventPick],
-) -> Result<Vec<(QuoteSaleEvent, Option<String>)>, sqlx::Error> {
+) -> Result<Vec<(QuoteSaleEvent, Option<String>, bool)>, sqlx::Error> {
     if picks.is_empty() {
         return Ok(Vec::new());
     }
@@ -998,7 +1015,7 @@ async fn picked_extra_events(
                 .map(str::trim)
                 .filter(|n| !n.is_empty())
                 .map(str::to_string);
-            Some((template, notes))
+            Some((template, notes, pick.urgent))
         })
         .collect())
 }
@@ -1015,8 +1032,9 @@ async fn insert_job(
     let assignee = sole_template_maker(pool, job.calendar_id).await?;
     let id = sqlx::query(
         "INSERT INTO events (title, location, notes, start_date, end_date, all_day, unscheduled,
-            color, status, created_user_id, assigned_user_id, customer_id, calendar_id, quote_id)
-         VALUES (?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, 1, 'blue', ?, ?, ?, ?, ?, ?)",
+            color, status, created_user_id, assigned_user_id, customer_id, calendar_id, urgent,
+            quote_id)
+         VALUES (?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, 1, 'blue', ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&job.title)
     .bind(address)
@@ -1026,6 +1044,7 @@ async fn insert_job(
     .bind(assignee)
     .bind(quote.customer_id)
     .bind(job.calendar_id)
+    .bind(job.urgent)
     .bind(quote.id)
     .execute(pool)
     .await?
@@ -1044,6 +1063,7 @@ struct NewJob {
     title: String,
     notes: Option<String>,
     ready: bool,
+    urgent: bool,
 }
 
 /// Undo sale: deletes the jobs and events the sale added (see

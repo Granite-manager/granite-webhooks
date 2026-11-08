@@ -748,6 +748,7 @@ struct FoundRow {
     contact_email: Option<String>,
     contact_phone_2: Option<String>,
     contact_email_2: Option<String>,
+    urgent: bool,
     /// 0 for the caller's customer or assigned to them, 1 only made by them, 2 else.
     owner_rank: i64,
     /// The crew finished the job.
@@ -872,6 +873,8 @@ pub struct FoundEvent {
     pub contact_phone: Option<String>,
     /// Email for this event only; null uses the customer's.
     pub contact_email: Option<String>,
+    /// Red flag: it must be scheduled fast.
+    pub urgent: bool,
     /// A second phone for this event.
     pub contact_phone_2: Option<String>,
     /// A second email for this event.
@@ -965,7 +968,7 @@ pub async fn search(
                 e.color, e.status, e.calendar_id, e.rrule,
                 e.recurrence_until, e.created_user_id, e.assigned_user_id, e.sale_id,
                 e.customer_id, c.name AS customer_name, e.contact_phone, e.contact_email,
-                e.contact_phone_2, e.contact_email_2,
+                e.contact_phone_2, e.contact_email_2, e.urgent <> 0 AS urgent,
                 CAST(CASE WHEN e.assigned_user_id = ? OR c.sales_rep = ?
                                OR EXISTS (SELECT 1 FROM deals mine
                                            WHERE mine.customer_id = e.customer_id AND mine.user_id = ?
@@ -1067,6 +1070,7 @@ pub async fn search(
                 customer_name: row.customer_name,
                 contact_phone: row.contact_phone,
                 contact_email: row.contact_email,
+                urgent: row.urgent,
                 contact_phone_2: row.contact_phone_2,
                 contact_email_2: row.contact_email_2,
             })

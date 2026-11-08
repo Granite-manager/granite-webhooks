@@ -17916,6 +17916,88 @@
         ]
       }
     },
+    "/v1/projects/{id}/task-times/reset": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Forget a task's remembered time",
+        "description": "Its earlier uses stop counting; the next one starts the average again.",
+        "operationId": "reset_project_task_time",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskTimeReset"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Forgotten"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{id}/notes": {
       "post": {
         "tags": [
@@ -71512,6 +71594,26 @@
               "type": "string"
             },
             "description": "The waiting statuses to plan (`ready`, `called`, `not_ready`)."
+          },
+          "skip_event_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Waiting events to leave out of this plan."
+          },
+          "best_day": {
+            "type": "boolean",
+            "description": "Answer with the one best day: a day that already has stops near the\nwaiting jobs, and only then an empty day."
+          },
+          "done_days": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Days already reviewed, left out with `best_day`."
           }
         }
       },
@@ -81604,6 +81706,13 @@
             ],
             "description": "Default `scheduled`."
           },
+          "urgent": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Red flag: it must be scheduled fast. Leave out to keep it (a new\nevent: not urgent)."
+          },
           "all_day": {
             "type": "boolean",
             "description": "All-day event."
@@ -83285,7 +83394,8 @@
           "end_date",
           "all_day",
           "unscheduled",
-          "created_user_id"
+          "created_user_id",
+          "urgent"
         ],
         "properties": {
           "id": {
@@ -83422,6 +83532,10 @@
               "null"
             ],
             "description": "Email for this event only; null uses the customer's."
+          },
+          "urgent": {
+            "type": "boolean",
+            "description": "Red flag: it must be scheduled fast."
           },
           "contact_phone_2": {
             "type": [
@@ -91810,6 +91924,10 @@
           "longer_than_day": {
             "type": "boolean",
             "description": "The job is longer than a work day: it fills the day (check the sale)."
+          },
+          "approximate": {
+            "type": "boolean",
+            "description": "The length is an estimate: the job has no sale and no length of its own."
           }
         }
       },
@@ -94930,6 +95048,7 @@
         "required": [
           "project",
           "tasks",
+          "task_times",
           "notes",
           "files",
           "history",
@@ -94951,6 +95070,13 @@
               "$ref": "#/components/schemas/ProjectTask"
             },
             "description": "Its tasks, open and done."
+          },
+          "task_times": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskTime"
+            },
+            "description": "The company's remembered task times, to fill in the due date."
           },
           "notes": {
             "type": "array",
@@ -98779,6 +98905,22 @@
               "$ref": "#/components/schemas/SaleExtraEvent"
             },
             "description": "Extra events to add (Mark as Sold › Extra events): the event templates\nticked (`GET /v1/quote-sale-events`), each with optional notes. Each\nadds one unscheduled, `not_ready` event on its template's calendar,\nwhether or not the company adds template and installation jobs. Left\nout or empty: none. Unknown template ids are skipped."
+          },
+          "template_urgent": {
+            "type": "boolean",
+            "description": "Red flag on the template job: it must be scheduled fast."
+          },
+          "installation_urgent": {
+            "type": "boolean",
+            "description": "Red flag on the installation job."
+          },
+          "fh_backsplash_template_urgent": {
+            "type": "boolean",
+            "description": "Red flag on the FH Backsplash template job."
+          },
+          "fh_backsplash_installation_urgent": {
+            "type": "boolean",
+            "description": "Red flag on the FH Backsplash installation job."
           }
         },
         "additionalProperties": false
@@ -98888,6 +99030,10 @@
           "template_id"
         ],
         "properties": {
+          "urgent": {
+            "type": "boolean",
+            "description": "Red flag: the event must be scheduled fast."
+          },
           "template_id": {
             "type": "integer",
             "format": "int32",
@@ -99885,6 +100031,7 @@
           "start_date",
           "end_date",
           "all_day",
+          "urgent",
           "created_user_id",
           "customer_told",
           "automated"
@@ -99938,6 +100085,10 @@
               "null"
             ],
             "description": "Status."
+          },
+          "urgent": {
+            "type": "boolean",
+            "description": "Red flag: it must be scheduled fast (Mark as Sold or its edit form)."
           },
           "notes": {
             "type": [
@@ -104921,6 +105072,43 @@
               "null"
             ],
             "description": "When it was last closed (UTC, ISO 8601): a skip, unless completed since."
+          }
+        }
+      },
+      "TaskTime": {
+        "type": "object",
+        "description": "How long a task is usually given: the average of its earlier uses.",
+        "required": [
+          "name",
+          "minutes",
+          "has_time"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The task's name, as last written."
+          },
+          "minutes": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Average minutes from giving it to its due date."
+          },
+          "has_time": {
+            "type": "boolean",
+            "description": "Whether its last use had a time of day, not just a date."
+          }
+        }
+      },
+      "TaskTimeReset": {
+        "type": "object",
+        "description": "Body of `POST /v1/projects/{id}/task-times/reset`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The task whose remembered time to forget."
           }
         }
       },

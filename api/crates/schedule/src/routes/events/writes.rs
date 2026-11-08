@@ -47,6 +47,10 @@ pub struct EventInput {
     /// Default `scheduled`.
     #[serde(default)]
     pub status: Option<String>,
+    /// Red flag: it must be scheduled fast. Leave out to keep it (a new
+    /// event: not urgent).
+    #[serde(default)]
+    pub urgent: Option<bool>,
     /// All-day event.
     #[serde(default)]
     pub all_day: bool,
@@ -457,6 +461,7 @@ pub struct StoredEvent {
     pub unscheduled: bool,
     pub color: Option<String>,
     pub status: Option<String>,
+    pub urgent: bool,
     pub notes: Option<String>,
     pub calendar_id: Option<i32>,
     pub rrule: Option<String>,
@@ -473,8 +478,8 @@ pub async fn company_event(
     sqlx::query_as(
         "SELECT e.title, e.description, e.location, e.start_date, e.end_date,
                 COALESCE(e.all_day, 0) <> 0 AS all_day, e.unscheduled <> 0 AS unscheduled,
-                e.color, e.status, e.notes, e.calendar_id, e.rrule, e.recurrence_until,
-                e.created_user_id, e.customer_id
+                e.color, e.status, e.urgent <> 0 AS urgent, e.notes, e.calendar_id, e.rrule,
+                e.recurrence_until, e.created_user_id, e.customer_id
            FROM events e JOIN users u ON u.id = e.created_user_id
           WHERE e.id = ? AND u.company_id = ? AND e.deleted_date IS NULL",
     )
@@ -536,8 +541,8 @@ pub async fn create(
         "INSERT INTO events (title, description, location, start_date, end_date, all_day,
             unscheduled, color, status, notes, created_user_id, assigned_user_id, sale_id,
             customer_id, calendar_id, rrule, recurrence_until, contact_phone, contact_email,
-            contact_phone_2, contact_email_2, project_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            contact_phone_2, contact_email_2, project_id, urgent)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(event.title)
     .bind(event.description)
@@ -561,6 +566,7 @@ pub async fn create(
     .bind(event.contact_phone_2.flatten())
     .bind(event.contact_email_2.flatten())
     .bind(project)
+    .bind(input.urgent.unwrap_or(false))
     .execute(pool)
     .await?
     .last_insert_id();
@@ -590,6 +596,7 @@ pub async fn create(
 fn change_messages(
     event: &Checked<'_>,
     unscheduled: bool,
+    urgent: Option<bool>,
     customer: Option<Option<i32>>,
     existing: &StoredEvent,
 ) -> Vec<String> {
@@ -621,6 +628,16 @@ fn change_messages(
     }
     if Some(event.status) != existing.status.as_deref() {
         messages.push(format!("Status changed to {}", event.status));
+    }
+    if let Some(urgent) = urgent.filter(|urgent| *urgent != existing.urgent) {
+        messages.push(
+            if urgent {
+                "Marked urgent"
+            } else {
+                "No longer urgent"
+            }
+            .into(),
+        );
     }
     if Some(event.calendar_id) != existing.calendar_id {
         messages.push("Calendar changed".into());
@@ -674,7 +691,8 @@ pub async fn update(
             recurrence_until = ?, contact_phone = IF(?, ?, contact_phone),
             contact_email = IF(?, ?, contact_email),
             contact_phone_2 = IF(?, ?, contact_phone_2),
-            contact_email_2 = IF(?, ?, contact_email_2), updated_date = CURRENT_TIMESTAMP
+            contact_email_2 = IF(?, ?, contact_email_2), urgent = IF(?, ?, urgent),
+            updated_date = CURRENT_TIMESTAMP
           WHERE id = ?",
     )
     .bind(event.title)
@@ -702,6 +720,8 @@ pub async fn update(
     .bind(event.contact_phone_2.flatten())
     .bind(event.contact_email_2.is_some())
     .bind(event.contact_email_2.flatten())
+    .bind(input.urgent.is_some())
+    .bind(input.urgent.unwrap_or(false))
     .bind(id)
     .execute(pool)
     .await?;
@@ -732,7 +752,7 @@ pub async fn update(
     for action in actions {
         record(pool, &History::new(id, user.company_id, action, by)).await;
     }
-    for message in change_messages(&event, input.unscheduled, customer, &existing) {
+    for message in change_messages(&event, input.unscheduled, input.urgent, customer, &existing) {
         record(
             pool,
             &History::new(id, user.company_id, "updated", by).message(&message),
