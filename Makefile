@@ -47,6 +47,9 @@ build:
 	@test -n "$(APP)" || { echo "Usage: make build <$(APPS)>" >&2; exit 1; }
 	GIT_SHA=$$(git rev-parse --short HEAD) $(BUILD_BASE) -p $(APP) --bin $(APP)
 
+# Deploy first checks that the environment's database has every migration
+# (scripts/check-migrations.sh): code deployed before its migration answers
+# 500 until the migration runs.
 # Deploy exports credentials because cargo-lambda does not support AWS login_session profiles.
 # It updates the code only: environment variables set on the Lambda are kept.
 # An app's Lambdas (api has two) are deployed at once, each from its own copy
@@ -57,6 +60,7 @@ build:
 deploy:
 	@test -n "$(APP)" -a -n "$(ENV)" || { echo "Usage: make deploy <$(APPS)> <$(ENVS)>" >&2; exit 1; }
 	@test -n "$(FUNCTION)" || { echo "$(APP) has no $(ENV) Lambda" >&2; exit 1; }
+	@scripts/check-migrations.sh $(ENV)
 	$(MAKE) build APP=$(APP) ENV=$(ENV)
 	@eval "$$(aws configure export-credentials --profile $(AWS_DEPLOY_PROFILE) --format env)" && \
 	unset AWS_PROFILE && \
@@ -105,6 +109,7 @@ build-time-triggered:
 
 .PHONY: deploy-time-triggered
 deploy-time-triggered: build-time-triggered
+	@scripts/check-migrations.sh prod
 	@eval "$$(aws configure export-credentials --profile $(AWS_DEPLOY_PROFILE) --format env)" && \
 	unset AWS_PROFILE && \
 	$(CARGO_LAMBDA) lambda deploy \

@@ -155,6 +155,18 @@ jobs:
             sleep 1
           done
 
+      # Code deployed before its migration answers 500 "Unknown column" until
+      # the migration runs, so a deploy stops here unless the environment's
+      # database (prod: main, dev: duplicate) has every file of migrations/.
+      # Read through a user that can only SELECT _sqlx_migrations, with the
+      # MySQL client of the build database's container.
+      - name: Check the target database has every migration
+        if: inputs.deploy
+        env:
+          MIGRATION_CHECK_DATABASE_URL: ${{ secrets.MIGRATION_CHECK_DATABASE_URL }}
+          MYSQL_CLIENT: docker exec -i -e MYSQL_PWD mysql mysql
+        run: scripts/check-migrations.sh "$DEPLOY_ENV"
+
       # Dev builds without --release. Its binary is stripped and has no debug
       # info, or it would not fit in a Lambda: as is, the api's is 284 MB and
       # zips to 58 MB, over the 250 MB unzipped and the 50 MB zip that

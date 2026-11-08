@@ -8,6 +8,17 @@ mysqldump -u root -p test --no-data > schema_only.sql
 
 ## Deploying
 
+Apply the migrations first: `make deploy` and the Deploy Lambda workflow stop
+unless the environment's database (prod: `main`, dev: `duplicate`) has every
+file in `migrations/` (`scripts/check-migrations.sh prod|dev`; the workflow
+reads it as the read-only `migration_check` user from the
+`MIGRATION_CHECK_DATABASE_URL` secret).
+
+```
+sqlx migrate run --source migrations --database-url 'mysql://...@<rds>/main?ssl-mode=required'
+make deploy api prod
+```
+
 uvx cargo-lambda lambda build --release
 uvx cargo-lambda lambda deploy --iam-role arn:aws:iam::741448943665:role/cargo-lambda-role-2ed5069c-8882-460d-bdc8-192d9b724756
 
