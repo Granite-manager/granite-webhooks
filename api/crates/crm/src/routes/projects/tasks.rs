@@ -32,7 +32,7 @@ pub const TASK_DONE: &str = "project_task_done";
 /// Date-only deadlines are reminded at this store time on the day.
 const DATE_ONLY_REMINDER: &str = "09:00:00";
 
-fn clip(text: &str, max: usize) -> String {
+pub(super) fn clip(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 

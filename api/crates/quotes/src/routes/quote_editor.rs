@@ -1889,6 +1889,9 @@ pub struct Sale {
     /// Notes on the installation job it adds to Unscheduled.
     #[serde(default)]
     pub install_notes: Option<String>,
+    /// A note for the project the sale starts (Project on a sale).
+    #[serde(default)]
+    pub project_notes: Option<String>,
     /// Full Height Backsplash (higher than 15"): also adds a "FH Backsplash"
     /// template and installation job, both `not_ready`.
     #[serde(default)]
@@ -1994,6 +1997,7 @@ pub async fn mark_sold(
             template_ready,
             template_notes: input.template_notes,
             install_notes: input.install_notes,
+            project_notes: input.project_notes,
             full_height_backsplash: input.full_height_backsplash,
             fh_backsplash_template: input.fh_backsplash_template,
             fh_backsplash_installation: input.fh_backsplash_installation,

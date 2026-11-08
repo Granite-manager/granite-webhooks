@@ -3,6 +3,7 @@
 
 use super::access::{STAGE_SQL, Stage, Viewer, check_transition, job_date_sql};
 use super::schemas::{Project, ProjectAction};
+use super::tasks::clip;
 use crate::error::{ApiError, ApiResult};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use lambda_http::tracing;
@@ -800,14 +801,16 @@ pub async fn convert_deal(
 }
 
 /// A deal was won (deals board, sold quote): its project starts when
-/// Admin › Quotes › Automation "Project on a sale" is on. Logged, never returned: the win is already saved.
+/// Admin › Quotes › Automation "Project on a sale" is on, and `note` (Mark as
+/// Sold's Project notes) goes on it. Logged, never returned: the win is already saved.
 pub async fn start_for_won_deal(
     pool: &MySqlPool,
     company_id: i32,
     deal_id: i64,
     actor_id: Option<i32>,
+    note: Option<&str>,
 ) {
-    if let Err(error) = try_start(pool, company_id, deal_id, actor_id).await {
+    if let Err(error) = try_start(pool, company_id, deal_id, actor_id, note).await {
         tracing::error!(?error, deal_id, "could not start the won deal's project");
     }
 }
@@ -817,6 +820,7 @@ async fn try_start(
     company_id: i32,
     deal_id: i64,
     actor_id: Option<i32>,
+    note: Option<&str>,
 ) -> ApiResult<()> {
     let automatic: Option<bool> =
         sqlx::query_scalar("SELECT COALESCE(auto_project, 0) <> 0 FROM company WHERE id = ?")
@@ -835,10 +839,24 @@ async fn try_start(
     .bind(company_id)
     .fetch_optional(&mut *tx)
     .await?;
-    if won != Some(true) || deal_project(&mut tx, company_id, deal_id).await?.is_some() {
+    if won != Some(true) {
         return Ok(());
     }
-    create_project(&mut tx, company_id, deal_id, actor_id).await?;
+    let project = match deal_project(&mut tx, company_id, deal_id).await? {
+        Some(id) => id,
+        None => create_project(&mut tx, company_id, deal_id, actor_id).await?,
+    };
+    if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
+        sqlx::query(
+            "INSERT INTO project_notes (project_id, company_id, content, created_by)
+             SELECT id, company_id, ?, COALESCE(?, created_by) FROM projects WHERE id = ?",
+        )
+        .bind(clip(note, 20_000))
+        .bind(actor_id)
+        .bind(project)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     Ok(())
 }

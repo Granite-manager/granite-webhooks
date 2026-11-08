@@ -675,6 +675,8 @@ pub struct SaleJobs {
     pub template_notes: Option<String>,
     /// Notes on the installation job.
     pub install_notes: Option<String>,
+    /// A note for the project the sale starts (Project on a sale).
+    pub project_notes: Option<String>,
     /// Full Height Backsplash (higher than 15"): also a "FH Backsplash"
     /// template and installation job.
     pub full_height_backsplash: bool,
@@ -809,6 +811,7 @@ pub async fn mark_quote_sold(
             quote.company_id,
             deal_id,
             user_id.or(quote.salesperson_id),
+            jobs.project_notes.as_deref(),
         )
         .await;
     }
