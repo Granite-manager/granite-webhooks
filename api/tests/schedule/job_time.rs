@@ -289,6 +289,75 @@ async fn auto_plan_fills_one_templaters_days_by_drive_time(pool: MySqlPool) {
     .unwrap();
     assert_eq!(waiting, 4);
 
+    // A customer skipped in the review is left out of the plan.
+    let mut skipping = request(json!(102));
+    skipping["skip_event_ids"] = json!([9820]);
+    let without = server
+        .post("/v1/schedule/auto-plan")
+        .json(&skipping)
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<Value>();
+    let ids: Vec<i64> = without["placements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|placement| placement["event_id"].as_i64().unwrap())
+        .collect();
+    assert!(!ids.contains(&9820), "{ids:?}");
+    assert!(ids.contains(&9821), "{ids:?}");
+
+    // The best day is one day; a day already reviewed is not offered again.
+    let mut best = request(json!(102));
+    best["best_day"] = json!(true);
+    let first = server
+        .post("/v1/schedule/auto-plan")
+        .json(&best)
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<Value>();
+    let dates = |plan: &Value| -> Vec<String> {
+        let mut dates: Vec<String> = plan["placements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|placement| placement["start_date"].as_str().unwrap()[..10].to_string())
+            .collect();
+        dates.dedup();
+        dates
+    };
+    let first_day = dates(&first);
+    assert_eq!(first_day.len(), 1, "{first_day:?}");
+    best["done_days"] = json!([first_day[0]]);
+    let next = server
+        .post("/v1/schedule/auto-plan")
+        .json(&best)
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<Value>();
+    let next_day = dates(&next);
+    assert_eq!(next_day.len(), 1, "{next_day:?}");
+    assert_ne!(next_day, first_day);
+
+    // No sale and no length: 40 sq ft at 3 minutes, marked approximate.
+    let mut estimate = request(json!(102));
+    estimate["best_day"] = json!(true);
+    estimate["skip_event_ids"] = json!([9820, 9821, 9825]);
+    let estimated = server
+        .post("/v1/schedule/auto-plan")
+        .json(&estimate)
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<Value>();
+    assert_eq!(estimated["placements"][0]["event_id"], 9823);
+    assert_eq!(estimated["placements"][0]["minutes"], 120);
+    assert_eq!(estimated["placements"][0]["approximate"], true);
+    assert_eq!(
+        estimated["placements"][0]["job"],
+        "Approximately 40 sq ft (no sale)"
+    );
+    assert_eq!(estimated["skipped"], json!([]));
+
     // Mark is at Stop A until 15:00 on Monday: the 2-hour job there fills
     // the rest of his day (no drive), and the others go to Tuesday.
     let mark = server
