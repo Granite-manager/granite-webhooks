@@ -433,6 +433,14 @@ fn place_read(method: &Method, path: &str) -> bool {
             .is_some_and(|id| !id.is_empty() && !id.contains('/'))
 }
 
+/// `GET /v1/sales/{id}`: a sale's rooms and notes, the Project of an event in
+/// the app (and what an installer or template maker keeps on the phone for
+/// places without service). The sales list and every change stay with the CRM
+/// session.
+fn sale_read(method: &Method, path: &str) -> bool {
+    method == Method::GET && path.strip_prefix("/v1/sales/").is_some_and(is_id)
+}
+
 /// The changes the app's native sale form and invoice editor make with the
 /// device token, exactly these: the sale (`POST /v1/sales`, which needs the
 /// Sell slabs skill, [`skills`]), Add New Color's stone with its slabs (`POST
@@ -499,6 +507,7 @@ fn device_route(method: &Method, path: &str) -> bool {
         || quote_print_and_templates(method, path)
         || (method == Method::GET && DEVICE_SALE_READS.contains(&path))
         || place_read(method, path)
+        || sale_read(method, path)
         || sale_and_invoice_write(method, path)
         || own_invoice(method, path)
 }
@@ -1091,6 +1100,8 @@ mod tests {
             (Method::GET, "/v1/customers/7/qbo-invoices/9/pdf"),
             (Method::GET, "/v1/quotes/7/invoice-sync"),
             (Method::GET, "/v1/quotes/inventory-slabs"),
+            // A sale's rooms and notes: an event's Project.
+            (Method::GET, "/v1/sales/7"),
         ] {
             assert!(device_route(&method, path), "{method} {path}");
         }
@@ -1099,6 +1110,8 @@ mod tests {
             (Method::PUT, "/v1/sales/7"),
             (Method::POST, "/v1/sales/7/unsell"),
             (Method::GET, "/v1/sales"),
+            (Method::GET, "/v1/sales/7/contract"),
+            (Method::GET, "/v1/sales/abc"),
             (Method::POST, "/v1/salesx"),
             (Method::POST, "/v1/sinks"),
             (Method::PUT, "/v1/sinks/3"),
