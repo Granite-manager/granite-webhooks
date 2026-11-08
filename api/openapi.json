@@ -16990,6 +16990,15 @@
             }
           },
           {
+            "name": "employee",
+            "in": "query",
+            "description": "Asked from the employee side, where being an admin counts for nothing.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
             "name": "page",
             "in": "query",
             "description": "1-based page of 100.",
@@ -17364,6 +17373,86 @@
           },
           "409": {
             "description": "Changed since the page loaded, or not possible now (the message says why)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/reorder": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save a column's manual order",
+        "description": "Numbers the projects sent from 0, in the order sent. Only the order\nchanges, so a page already open can still act on them. Every project must\nbelong to the company, otherwise nothing is saved.",
+        "operationId": "reorder_projects",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReorderProjects"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "No projects, or more than a page of them",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's position can't move projects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "A project is not one of the company's",
             "content": {
               "application/json": {
                 "schema": {
@@ -97771,6 +97860,23 @@
             "type": "integer",
             "format": "int32",
             "description": "Order inside that stage."
+          }
+        }
+      },
+      "ReorderProjects": {
+        "type": "object",
+        "description": "Body of `POST /v1/projects/reorder`.",
+        "required": [
+          "ids"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "One column's projects, in their new order."
           }
         }
       },
