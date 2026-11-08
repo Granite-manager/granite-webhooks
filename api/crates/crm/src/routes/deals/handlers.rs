@@ -593,6 +593,7 @@ pub async fn set_outcome(
                 user.company_id,
                 id,
                 Some(user.id),
+                None,
             )
             .await;
         }

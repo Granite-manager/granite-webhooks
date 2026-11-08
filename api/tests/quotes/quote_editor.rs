@@ -1199,3 +1199,38 @@ async fn mark_as_sold_adds_a_project_only_when_project_on_a_sale_is_on(pool: MyS
     // No company Projects switch: "Project on a sale" alone decides.
     assert_eq!(added, [0, 1]);
 }
+
+#[test_db::test(seed)]
+async fn mark_as_sold_puts_project_notes_on_the_project_it_starts(pool: MySqlPool) {
+    let (server, _) = server(&pool).await;
+    price_list(&server, &pool).await;
+    sqlx::query("UPDATE company SET auto_project = 1 WHERE id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let id = create(&server, json!({ "customer_id": 1004 })).await;
+    let path = format!("/v1/quotes/{id}");
+    server
+        .put(&format!("{path}/drawing"))
+        .with_session(sessions::REP)
+        .json(&json!({ "doc": doc("Ubatuba") }))
+        .await
+        .assert_status_ok();
+    server
+        .post(&format!("{path}/sale"))
+        .with_session(sessions::REP)
+        .json(&json!({ "option": 0, "project_notes": " Gate code 1234 " }))
+        .await
+        .assert_status_ok();
+    let notes: Vec<String> = sqlx::query_scalar(
+        "SELECT n.content FROM project_notes n
+           JOIN projects p ON p.id = n.project_id
+           JOIN quotes q ON q.deal_id = p.source_deal_id
+          WHERE q.id = ? AND n.deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(notes, ["Gate code 1234"]);
+}
