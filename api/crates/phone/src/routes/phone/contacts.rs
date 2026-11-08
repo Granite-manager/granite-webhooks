@@ -14,7 +14,8 @@ use crate::phone::customer_index;
 use crate::phone::numbers::{is_nanp, last10, to_e164};
 use crate::routes::customers::phones::storage_format;
 use crate::routes::customers::service::{
-    audit_name, open_deal_in, record_reassignment, refuse_taken_phones, start_drips, sync_emails,
+    audit_name, open_deal_in, record_reassignment, refuse_taken_phones, source_allowed,
+    start_drips, sync_emails, user_name,
 };
 use crate::routes::me::account::valid_email;
 use crate::state::AppState;
@@ -384,6 +385,7 @@ fn stored_phone(typed: &str) -> Option<String> {
 
 /// Body of `POST /v1/phone/contacts`.
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct NewContact {
     /// The customer's name (1 to 255 characters).
     pub name: String,
@@ -399,6 +401,27 @@ pub struct NewContact {
     /// Their street address, as typed; null or empty for none.
     #[serde(default)]
     pub address: Option<String>,
+    /// Their second phone (E.164 or 10 digits, US or Canada); null or empty
+    /// for none. The same number as `phone` is ignored.
+    #[serde(default)]
+    pub phone2: Option<String>,
+    /// More email addresses after `email`, in order; empty ones are skipped.
+    #[serde(default)]
+    pub more_emails: Vec<String>,
+    /// Lead source: a built-in key (`call-in`, `check-in`, `leads`, `other`)
+    /// or a `sourceKey` of `GET /v1/customer-sources`. Null or empty for
+    /// `call-in`.
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The sales rep (a live user id of the caller's company, as listed by
+    /// `GET /v1/users/sales-reps`); null for the caller. They get the open
+    /// deal.
+    #[serde(default)]
+    pub sales_rep: Option<i32>,
+    /// Notes about the customer (the CRM's customer Notes); null or empty for
+    /// none. At most 5000 characters are kept.
+    #[serde(default)]
+    pub notes: Option<String>,
 }
 
 /// A trimmed optional text: None when empty, else at most `max` characters.
@@ -411,12 +434,14 @@ fn optional_text(value: Option<&str>, max: usize) -> Option<String> {
 
 /// Create a contact
 ///
-/// Creates a customer with this name, phone, company, email and address,
-/// with the caller as the sales rep (source `call-in`) and an open deal, and
-/// returns them as an index contact; calls from the number match them at
-/// once. 400 `invalid_phone` unless a US or Canada number; 400 for an empty
-/// or too long name or an invalid email; 409 when another customer of the
-/// company has the phone or email. Device token only.
+/// Creates a customer with this name, phone, company, emails, address and,
+/// optionally, a second phone, source, sales rep and notes (the CRM's
+/// customer form). The sales rep defaults to the caller and the source to
+/// `call-in`; the rep gets an open deal. Returns them as an index contact;
+/// calls from either number match them at once. 400 `invalid_phone` (or
+/// `invalid_phone2`) unless a US or Canada number; 400 for an empty or too
+/// long name, an invalid email, an unknown source or sales rep; 409 when
+/// another customer of the company has a phone or email. Device token only.
 #[crate::openapi::path(
     post,
     path = "/v1/phone/contacts",
@@ -425,8 +450,8 @@ fn optional_text(value: Option<&str>, max: usize) -> Option<String> {
     request_body = NewContact,
     responses(
         (status = 201, description = "Created", body = IndexContact),
-        (status = 400, description = "`invalid_phone`, the name is empty or too long, or the email is invalid", body = ErrorBody),
-        (status = 409, description = "Another customer of the company has this phone or email", body = ErrorBody),
+        (status = 400, description = "`invalid_phone`, `invalid_phone2`, the name is empty or too long, an email is invalid, or the source or sales rep is unknown", body = ErrorBody),
+        (status = 409, description = "Another customer of the company has a phone or email", body = ErrorBody),
         (status = 401, description = "No valid device token", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
@@ -448,25 +473,70 @@ pub async fn create_contact(
     let phone = stored_phone(&input.phone).ok_or_else(|| bad_request("invalid_phone"))?;
     let company = optional_text(input.company.as_deref(), 255);
     let email = optional_text(input.email.as_deref(), 255);
-    if email.as_deref().is_some_and(|email| !valid_email(email)) {
+    let more_emails: Vec<String> = input
+        .more_emails
+        .iter()
+        .filter_map(|email| optional_text(Some(email), 255))
+        .collect();
+    if email
+        .iter()
+        .chain(&more_emails)
+        .any(|email| !valid_email(email))
+    {
         return Err(ApiError::BadRequest("Enter a valid email.".into()));
     }
+    let emails: Vec<String> = email.into_iter().chain(more_emails).collect();
     let address = optional_text(input.address.as_deref(), 255);
+    let phone2 = match optional_text(input.phone2.as_deref(), 64) {
+        Some(typed) => Some(stored_phone(&typed).ok_or_else(|| bad_request("invalid_phone2"))?),
+        None => None,
+    }
+    .filter(|phone2| last10(phone2) != last10(&phone));
+    let source = optional_text(input.source.as_deref(), 255).unwrap_or_else(|| "call-in".into());
+    if !source_allowed(pool, user.company_id, &source, None).await? {
+        return Err(ApiError::BadRequest("Select a valid source.".into()));
+    }
+    let rep = input.sales_rep.unwrap_or(user.id);
+    let rep_name = if rep == user.id {
+        audit_name(user.name.as_deref())
+    } else {
+        let live: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM users WHERE id = ? AND company_id = ? AND is_deleted = 0",
+        )
+        .bind(rep)
+        .bind(user.company_id)
+        .fetch_optional(pool)
+        .await?;
+        if live.is_none() {
+            return Err(ApiError::BadRequest("Unknown sales rep".into()));
+        }
+        audit_name(user_name(pool, Some(rep)).await?.as_deref())
+    };
+    let notes = optional_text(input.notes.as_deref(), 5000);
     let created_by = audit_name(user.name.as_deref());
     // The customer, its audit line and its open deal together, or nothing.
     let mut tx = pool.begin().await?;
-    refuse_taken_phones(&mut tx, user.company_id, 0, &[Some(phone.as_str())]).await?;
+    refuse_taken_phones(
+        &mut tx,
+        user.company_id,
+        0,
+        &[Some(phone.as_str()), phone2.as_deref()],
+    )
+    .await?;
     let id = sqlx::query(
-        "INSERT INTO customers (name, phone, company_id, company_name, address, source,
-                                sales_rep, assigned_date, created_by)
-         VALUES (?, ?, ?, ?, ?, 'call-in', ?, NOW(), ?)",
+        "INSERT INTO customers (name, phone, phone_2, company_id, company_name, address,
+                                your_message, source, sales_rep, assigned_date, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?)",
     )
     .bind(name)
     .bind(&phone)
+    .bind(&phone2)
     .bind(user.company_id)
     .bind(&company)
     .bind(&address)
-    .bind(user.id)
+    .bind(&notes)
+    .bind(&source)
+    .bind(rep)
     .bind(&created_by)
     .execute(&mut *tx)
     .await?
@@ -479,20 +549,32 @@ pub async fn create_contact(
             "customer id clashes with the sample".into(),
         ));
     }
-    if let Some(email) = &email {
-        sync_emails(&mut tx, id, std::slice::from_ref(email), user.id).await?;
+    if !emails.is_empty() {
+        sync_emails(&mut tx, id, &emails, user.id).await?;
     }
     record_reassignment(
         &mut *tx,
         id,
         created_by.as_deref(),
-        created_by.as_deref(),
+        rep_name.as_deref(),
         None,
     )
     .await?;
-    let deal = open_deal_in(&mut tx, id, user.company_id, user.id).await?;
-    // Calls from the number find the new customer at once.
-    customer_index::index_new_customer(&mut tx, user.company_id, id, &phone).await?;
+    let deal = open_deal_in(&mut tx, id, user.company_id, rep).await?;
+    // Calls from the numbers find the new customer at once.
+    match &phone2 {
+        None => customer_index::index_new_customer(&mut tx, user.company_id, id, &phone).await?,
+        Some(phone2) => {
+            customer_index::reindex_customer(
+                &mut tx,
+                user.company_id,
+                id,
+                Some(&phone),
+                Some(phone2),
+            )
+            .await?;
+        }
+    }
     tx.commit().await?;
     if let Some(list_id) = deal.new_in_list {
         start_drips(pool, deal.id, list_id).await;

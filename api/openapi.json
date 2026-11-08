@@ -58379,7 +58379,7 @@
           "phone"
         ],
         "summary": "Create a contact",
-        "description": "Creates a customer with this name, phone, company, email and address,\nwith the caller as the sales rep (source `call-in`) and an open deal, and\nreturns them as an index contact; calls from the number match them at\nonce. 400 `invalid_phone` unless a US or Canada number; 400 for an empty\nor too long name or an invalid email; 409 when another customer of the\ncompany has the phone or email. Device token only.",
+        "description": "Creates a customer with this name, phone, company, emails, address and,\noptionally, a second phone, source, sales rep and notes (the CRM's\ncustomer form). The sales rep defaults to the caller and the source to\n`call-in`; the rep gets an open deal. Returns them as an index contact;\ncalls from either number match them at once. 400 `invalid_phone` (or\n`invalid_phone2`) unless a US or Canada number; 400 for an empty or too\nlong name, an invalid email, an unknown source or sales rep; 409 when\nanother customer of the company has a phone or email. Device token only.",
         "operationId": "create_phone_contact",
         "requestBody": {
           "content": {
@@ -58403,7 +58403,7 @@
             }
           },
           "400": {
-            "description": "`invalid_phone`, the name is empty or too long, or the email is invalid",
+            "description": "`invalid_phone`, `invalid_phone2`, the name is empty or too long, an email is invalid, or the source or sales rep is unknown",
             "content": {
               "application/json": {
                 "schema": {
@@ -58423,7 +58423,7 @@
             }
           },
           "409": {
-            "description": "Another customer of the company has this phone or email",
+            "description": "Another customer of the company has a phone or email",
             "content": {
               "application/json": {
                 "schema": {
@@ -87667,6 +87667,42 @@
               "null"
             ],
             "description": "Their street address, as typed; null or empty for none."
+          },
+          "phone2": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their second phone (E.164 or 10 digits, US or Canada); null or empty\nfor none. The same number as `phone` is ignored."
+          },
+          "moreEmails": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "More email addresses after `email`, in order; empty ones are skipped."
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Lead source: a built-in key (`call-in`, `check-in`, `leads`, `other`)\nor a `sourceKey` of `GET /v1/customer-sources`. Null or empty for\n`call-in`."
+          },
+          "salesRep": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The sales rep (a live user id of the caller's company, as listed by\n`GET /v1/users/sales-reps`); null for the caller. They get the open\ndeal."
+          },
+          "notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Notes about the customer (the CRM's customer Notes); null or empty for\nnone. At most 5000 characters are kept."
           }
         }
       },
