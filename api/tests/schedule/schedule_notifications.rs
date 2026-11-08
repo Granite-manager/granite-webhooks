@@ -1078,7 +1078,7 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
     assert!(
         history(&pool, install)
             .await
-            .contains(&"Status changed to Called: the customer was texted".to_string())
+            .contains(&"Status changed to Awaiting confirmation: the customer was texted".to_string())
     );
     let run = || async {
         server

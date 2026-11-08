@@ -2729,7 +2729,7 @@ async fn mark_called(
         record(
             pool,
             &History::new(event_id, company_id, "updated", user_name)
-                .message("Status changed to Called: the customer was texted"),
+                .message("Status changed to Awaiting confirmation: the customer was texted"),
         )
         .await;
     }
@@ -3033,6 +3033,8 @@ struct Waiting {
     event_status: String,
     customer_id: Option<i32>,
     ai_ready: bool,
+    /// The one "did you mean YES or NO?" text already went out.
+    clarified: bool,
 }
 
 /// A text of the customer's conversation.
@@ -3353,6 +3355,51 @@ async fn send_followup(
     Ok(true)
 }
 
+/// Sent once per auto-confirm text when the customer's reply is neither a
+/// clear yes nor a clear no; after it, they text with the company as usual.
+pub const CLARIFY_TEXT: &str = "Thanks for your reply! Just to make sure we got it right: does {{appointment.date}}, {{appointment.time_range}} work for you? Please reply YES to confirm, or NO and we'll find another time.";
+
+/// Asks the customer once whether their unclear reply meant yes or no. It is
+/// marked as asked even when it fails, so it is never sent twice.
+async fn send_clarification(state: &AppState, wait: &Waiting) -> Result<(), sqlx::Error> {
+    let pool = &state.pool;
+    sqlx::query("UPDATE schedule_text_answers SET clarified = 1, followup_due_at = NULL WHERE id = ?")
+        .bind(wait.id)
+        .execute(pool)
+        .await?;
+    let event = appointment(pool, wait.event_id).await?;
+    let Some(customer_id) = event.customer_id else {
+        return Ok(());
+    };
+    let message = Outgoing {
+        company_id: wait.company_id,
+        channel: Channel::Sms,
+        subject: None,
+        body: CLARIFY_TEXT,
+        idempotency_key: Some(format!("schedule-clarify-{}", wait.id)),
+    };
+    let outcome = match deliver_sent(state, &message, &event, customer_id).await {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::error!(error = %err, answer_id = wait.id, "scheduling clarification failed");
+            Err("send_error")
+        }
+    };
+    let line = match outcome {
+        Ok(_) => "Asked the customer to reply YES or NO (their reply was unclear)".to_string(),
+        Err(code) => format!(
+            "YES-or-NO question not sent: {}",
+            failure_text(code).unwrap_or("the text failed to send")
+        ),
+    };
+    record(
+        pool,
+        &History::new(wait.event_id, wait.company_id, "updated", None).message(&line),
+    )
+    .await;
+    Ok(())
+}
+
 /// Goes over the scheduling texts waiting for an answer: with the company's
 /// AI switch on, reads new replies and marks the job Ready when the customer
 /// surely agreed; with no reply at all, sends the due follow-up within the
@@ -3368,7 +3415,7 @@ pub async fn check_answers(state: &AppState) -> Result<AnswerRun, sqlx::Error> {
                 COALESCE(e.all_day, 0) <> 0 AS all_day, e.deleted_date IS NOT NULL AS deleted,
                 COALESCE(e.status, '') AS event_status,
                 CAST(COALESCE(tc.id, sc.id) AS SIGNED) AS customer_id,
-                co.schedule_ai_ready <> 0 AS ai_ready
+                co.schedule_ai_ready <> 0 AS ai_ready, a.clarified <> 0 AS clarified
            FROM schedule_text_answers a
            JOIN events e ON e.id = a.event_id
            JOIN users r ON r.id = e.created_user_id
@@ -3452,6 +3499,10 @@ pub async fn check_answers(state: &AppState) -> Result<AnswerRun, sqlx::Error> {
             }
             "declined" => settle(pool, wait.id, "not_agreed", Some(&evidence)).await?,
             _ => {
+                // Unclear (e.g. "ues"): ask once whether it was a yes or a no.
+                if !wait.clarified {
+                    send_clarification(state, &wait).await?;
+                }
                 sqlx::query("UPDATE schedule_text_answers SET checked_through = ? WHERE id = ?")
                     .bind(newest)
                     .bind(wait.id)
