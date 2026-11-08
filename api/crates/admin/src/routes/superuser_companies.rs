@@ -539,6 +539,7 @@ pub async fn create_company(
             .execute(&mut *tx)
             .await?;
     }
+    crate::routes::schedule::notifications::seed_auto_confirm(&mut tx, id).await?;
     for template in DEFAULT_TEMPLATES.iter() {
         sqlx::query(
             "INSERT INTO email_templates (template_name, template_subject, template_body, company_id, user_id)

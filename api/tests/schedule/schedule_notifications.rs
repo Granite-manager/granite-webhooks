@@ -1124,9 +1124,9 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(status, "ready");
+    assert_eq!(status, "confirmed");
     assert!(history(&pool, install).await.contains(
-        &"Status changed to Ready by AI: the customer agreed: “Yes that works”".to_string()
+        &"Status changed to Confirmed by AI: the customer agreed: “Yes that works”".to_string()
     ));
     let told: Vec<(i32, String)> = sqlx::query_as(
         "SELECT user_id, message FROM notifications WHERE notification_type = 'schedule_ai_ready'",
@@ -1138,7 +1138,7 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
         told,
         [(
             100,
-            "1000 is Ready: the customer agreed to the date (AI)".to_string()
+            "1000 is Confirmed: the customer agreed to the date (AI)".to_string()
         )]
     );
     // Settled: nothing more is read or sent.

@@ -246,6 +246,79 @@ pub struct Followup {
 /// Longest wait before a follow-up.
 const MAX_FOLLOWUP_HOURS: i32 = 7 * 24;
 
+/// Auto-confirm's default texts, which every company starts with (also
+/// written by `20261124180000_auto-confirm-defaults.sql`): (name, built-in
+/// calendar slugs, body).
+pub const AUTO_CONFIRM_TEMPLATE: (&str, &[&str], &str) = (
+    "Template confirmation",
+    &["templates"],
+    "Hi {{customer.first_name}}, this is {{company.name}}. Our technician is scheduled to measure for your countertops on {{appointment.date}}, arriving between {{appointment.time}} and {{appointment.end_time}}. Does this time work for you? Reply YES to confirm, or NO and we'll find another time that suits you.",
+);
+pub const AUTO_CONFIRM_INSTALL: (&str, &[&str], &str) = (
+    "Installation confirmation",
+    &["installations"],
+    "Hi {{customer.first_name}}, this is {{company.name}}. Our installation team is scheduled to install your countertops on {{appointment.date}}, arriving between {{appointment.time}} and {{appointment.end_time}}. Does this time work for you? Reply YES to confirm, or NO and we'll find another time that suits you.",
+);
+/// Sent 24 hours after either confirmation when the customer has not replied.
+pub const AUTO_CONFIRM_REMINDER: (&str, &[&str], &str) = (
+    "Confirmation reminder",
+    &["templates", "installations"],
+    "Hi {{customer.first_name}}, just following up from {{company.name}}. Does {{appointment.date}} between {{appointment.time}} and {{appointment.end_time}} still work for you? Reply YES to confirm, or NO and we'll find another time.",
+);
+/// Hours before the reminder follows a confirmation.
+pub const AUTO_CONFIRM_REMINDER_HOURS: i32 = 24;
+
+/// Adds Auto-confirm's default texts to a new company (after its built-in
+/// calendars): the template and installation confirmations, each followed
+/// 24 hours later by the reminder when the customer has not replied.
+pub async fn seed_auto_confirm(
+    conn: &mut sqlx::MySqlConnection,
+    company_id: i32,
+) -> Result<(), sqlx::Error> {
+    let mut ids = Vec::new();
+    for (name, slugs, body) in [AUTO_CONFIRM_TEMPLATE, AUTO_CONFIRM_INSTALL, AUTO_CONFIRM_REMINDER] {
+        let id = sqlx::query(
+            "INSERT INTO schedule_notification_templates
+               (company_id, name, kind, channel, body, position)
+             SELECT ?, ?, 'question', 'sms', ?, COALESCE(MAX(position), 0) + 1
+               FROM schedule_notification_templates
+              WHERE company_id = ? AND deleted_at IS NULL",
+        )
+        .bind(company_id)
+        .bind(name)
+        .bind(body)
+        .bind(company_id)
+        .execute(&mut *conn)
+        .await?
+        .last_insert_id();
+        for slug in slugs {
+            sqlx::query(
+                "INSERT INTO schedule_notification_template_calendars (template_id, calendar_id)
+                 SELECT ?, id FROM calendars
+                  WHERE company_id = ? AND slug = ? AND deleted_at IS NULL",
+            )
+            .bind(id)
+            .bind(company_id)
+            .bind(slug)
+            .execute(&mut *conn)
+            .await?;
+        }
+        ids.push(id);
+    }
+    sqlx::query(
+        "UPDATE schedule_notification_templates
+            SET followup_template_id = ?, followup_after_hours = ?
+          WHERE id IN (?, ?)",
+    )
+    .bind(ids[2])
+    .bind(AUTO_CONFIRM_REMINDER_HOURS)
+    .bind(ids[0])
+    .bind(ids[1])
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// A template of a flow, sent at a time before or after the appointment.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct FlowStep {
@@ -2645,7 +2718,7 @@ async fn mark_called(
     let changed = sqlx::query(
         "UPDATE events SET status = 'called'
           WHERE id = ? AND deleted_date IS NULL
-            AND COALESCE(status, '') NOT IN ('called', 'ready')",
+            AND COALESCE(status, '') NOT IN ('called', 'ready', 'confirmed')",
     )
     .bind(event_id)
     .execute(pool)
@@ -3110,14 +3183,14 @@ async fn read_answer(
     Some((answer, evidence))
 }
 
-/// The customer agreed: the job turns Ready (unless it already is, or it
+/// The customer replied YES: the job turns Confirmed (unless it already is, or it
 /// moved) and the Scheduling Managers hear about it.
-async fn mark_ready(state: &AppState, wait: &Waiting, evidence: &str) -> Result<bool, sqlx::Error> {
+async fn mark_confirmed(state: &AppState, wait: &Waiting, evidence: &str) -> Result<bool, sqlx::Error> {
     let pool = &state.pool;
     let changed = sqlx::query(
-        "UPDATE events SET status = 'ready'
+        "UPDATE events SET status = 'confirmed'
           WHERE id = ? AND start_date = ? AND deleted_date IS NULL
-            AND COALESCE(status, '') <> 'ready'",
+            AND COALESCE(status, '') <> 'confirmed'",
     )
     .bind(wait.event_id)
     .bind(wait.start_date)
@@ -3134,7 +3207,7 @@ async fn mark_ready(state: &AppState, wait: &Waiting, evidence: &str) -> Result<
     } else {
         format!(": “{evidence}”")
     };
-    let line = format!("Status changed to Ready by AI: the customer agreed{quote}");
+    let line = format!("Status changed to Confirmed by AI: the customer agreed{quote}");
     record(
         pool,
         &History::new(wait.event_id, wait.company_id, "updated", Some("AI")).message(&line),
@@ -3146,7 +3219,7 @@ async fn mark_ready(state: &AppState, wait: &Waiting, evidence: &str) -> Result<
             .fetch_optional(pool)
             .await?;
     let title = title.flatten().unwrap_or_else(|| "A job".into());
-    let message: String = format!("{title} is Ready: the customer agreed to the date (AI)")
+    let message: String = format!("{title} is Confirmed: the customer agreed to the date (AI)")
         .chars()
         .take(255)
         .collect();
@@ -3312,7 +3385,7 @@ pub async fn check_answers(state: &AppState) -> Result<AnswerRun, sqlx::Error> {
         let stale = now.naive_utc() - wait.last_sent_at > Duration::days(ANSWER_DAYS);
         if wait.deleted
             || wait.event_start != wait.start_date
-            || wait.event_status == "ready"
+            || wait.event_status == "confirmed"
             || effective_start(wait.event_start, wait.all_day) <= now
             || stale
         {
@@ -3373,7 +3446,7 @@ pub async fn check_answers(state: &AppState) -> Result<AnswerRun, sqlx::Error> {
         };
         match answer.as_str() {
             "agreed" => {
-                if mark_ready(state, &wait, &evidence).await? {
+                if mark_confirmed(state, &wait, &evidence).await? {
                     run.ready += 1;
                 }
             }
