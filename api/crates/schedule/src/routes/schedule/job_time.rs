@@ -16,6 +16,7 @@ use super::MAX_ROUTE_STOPS;
 use crate::auth::{AdminUser, EmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::{JsonBody, MultiQuery};
+use crate::maps::Point;
 use crate::openapi::{IntoParams, ToSchema};
 use crate::state::AppState;
 use axum::Json;
@@ -35,6 +36,13 @@ const TEMPLATE: i32 = 11;
 const ROUND_TO: u32 = 15;
 /// Most work days one Auto-plan may fill.
 const MAX_PLAN_DAYS: u32 = 30;
+/// The size assumed for a template with no sale and no length of its own.
+const TYPICAL_SQFT: f64 = 40.0;
+/// A waiting job this close to one of a day's stops can join that day.
+const NEAR_MILES: f64 = 25.0;
+/// Booked days, then empty days, tried for one best-day answer.
+const MAX_BOOKED_DAY_TRIES: usize = 4;
+const MAX_EMPTY_DAY_TRIES: usize = 3;
 const MINUTES_PER_DAY: u32 = 24 * 60;
 
 /// The two calendars whose jobs have a length rule.
@@ -888,6 +896,16 @@ pub struct AutoPlanInput {
     pub days: u32,
     /// The waiting statuses to plan (`ready`, `called`, `not_ready`).
     pub statuses: Vec<String>,
+    /// Waiting events to leave out of this plan.
+    #[serde(default)]
+    pub skip_event_ids: Vec<i32>,
+    /// Answer with the one best day: a day that already has stops near the
+    /// waiting jobs, and only then an empty day.
+    #[serde(default)]
+    pub best_day: bool,
+    /// Days already reviewed, left out with `best_day`.
+    #[serde(default)]
+    pub done_days: Vec<NaiveDate>,
 }
 
 /// A proposed time for an unscheduled event.
@@ -916,10 +934,13 @@ pub struct Placement {
     pub job: Option<String>,
     /// The job is longer than a work day: it fills the day (check the sale).
     pub longer_than_day: bool,
+    /// The length is an estimate: the job has no sale and no length of its own.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub approximate: bool,
 }
 
 /// An unscheduled event the plan left out.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct Skipped {
     /// The event.
     pub event_id: i32,
@@ -1020,11 +1041,7 @@ pub async fn auto_plan(
     let company_id = user.company_id;
     let kind = calendar_kind(pool, company_id, input.calendar_id)
         .await?
-        .ok_or_else(|| {
-            ApiError::BadRequest(
-                "Auto-plan works on the Templates calendar.".into(),
-            )
-        })?;
+        .ok_or_else(|| ApiError::BadRequest("Auto-plan works on the Templates calendar.".into()))?;
     // Templates only for now: installations are scheduled by hand.
     if kind != JobKind::Templates {
         return Err(ApiError::BadRequest(
@@ -1064,7 +1081,6 @@ pub async fn auto_plan(
     let person = input.user_id;
     let rules = load_rules(pool, company_id, kind).await?;
     let days = work_days(&rules, input.start_date, input.days);
-    let window = (rules.day_start_minute, rules.day_end_minute);
 
     let waiting: Vec<WaitingRow> = sqlx::query_as(
         "SELECT e.id, e.title, NULLIF(TRIM(e.location), '') AS location,
@@ -1089,6 +1105,7 @@ pub async fn auto_plan(
         .filter(|event| {
             let status = event.status.as_deref().unwrap_or("not_ready");
             input.statuses.iter().any(|wanted| wanted == status)
+                && !input.skip_event_ids.contains(&event.id)
         })
         .collect();
 
@@ -1129,9 +1146,14 @@ pub async fn auto_plan(
             None
         };
         let own = u32::try_from((event.end_date - event.start_date).num_minutes()).unwrap_or(0);
+        let mut estimated = false;
         let minutes = match &time {
             Some(time) if time.minutes > 0 => time.minutes,
             _ if !event.all_day && (ROUND_TO..MINUTES_PER_DAY).contains(&own) => own,
+            _ if input.best_day && typical_minutes(&rules) > 0 => {
+                estimated = true;
+                typical_minutes(&rules)
+            }
             _ => {
                 skipped.push(Skipped {
                     event_id: event.id,
@@ -1145,9 +1167,78 @@ pub async fn auto_plan(
                 continue;
             }
         };
+        let time = if estimated {
+            Some(JobTime {
+                minutes,
+                sale_id: 0,
+                summary: format!("Approximately {TYPICAL_SQFT:.0} sq ft (no sale)"),
+                lines: Vec::new(),
+            })
+        } else {
+            time
+        };
         sized.insert(event.id, time);
         jobs.push((event, minutes));
     }
+
+    let scope = PlanScope {
+        state: &state,
+        company_id,
+        person,
+        rules: &rules,
+        sized: &sized,
+    };
+    let busy: Vec<&BusyRow> = busy.iter().collect();
+    if !input.best_day {
+        return Ok(Json(plan_days(&scope, &days, &jobs, &busy, skipped).await?));
+    }
+    let candidates = best_day_candidates(&scope, &days, &input.done_days, &jobs, &busy).await?;
+    for (date, picked) in candidates {
+        let chosen: Vec<(&WaitingRow, u32)> = picked.iter().map(|&index| jobs[index]).collect();
+        let day_busy: Vec<&BusyRow> = busy
+            .iter()
+            .copied()
+            .filter(|row| minutes_of_day(date, row.start_date, row.end_date).is_some())
+            .collect();
+        let plan = plan_days(&scope, &[date], &chosen, &day_busy, skipped.clone()).await?;
+        if !plan.placements.is_empty() {
+            return Ok(Json(plan));
+        }
+    }
+    Ok(Json(AutoPlan {
+        placements: Vec::new(),
+        skipped,
+        drive_note: None,
+    }))
+}
+
+/// What every planned day shares.
+#[derive(Clone, Copy)]
+struct PlanScope<'a> {
+    state: &'a AppState,
+    company_id: i32,
+    person: Option<i32>,
+    rules: &'a TimeRules,
+    sized: &'a HashMap<i32, Option<JobTime>>,
+}
+
+/// Places `jobs` on `days` around `busy`, with Google drive times.
+async fn plan_days(
+    scope: &PlanScope<'_>,
+    days: &[NaiveDate],
+    jobs: &[(&WaitingRow, u32)],
+    busy: &[&BusyRow],
+    mut skipped: Vec<Skipped>,
+) -> ApiResult<AutoPlan> {
+    let PlanScope {
+        state,
+        company_id,
+        person,
+        rules,
+        sized,
+    } = *scope;
+    let pool = &state.pool;
+    let window = (rules.day_start_minute, rules.day_end_minute);
 
     // Drive-time points: the waiting jobs first, then the person's events.
     let addresses: Vec<Option<&str>> = jobs
@@ -1218,7 +1309,7 @@ pub async fn auto_plan(
     let slots = plan(&plan_jobs, &mut day_stops, window, &drives);
 
     let mut placements = Vec::new();
-    for (job, (event, _)) in plan_jobs.iter().zip(&jobs) {
+    for (job, (event, _)) in plan_jobs.iter().zip(jobs) {
         let Some(slot) = slots.get(&job.id) else {
             skipped.push(Skipped {
                 event_id: job.id,
@@ -1247,14 +1338,188 @@ pub async fn auto_plan(
                 .and_then(Option::as_ref)
                 .map(|time| time.summary.clone()),
             longer_than_day: job.minutes > window.1 - window.0,
+            approximate: sized
+                .get(&job.id)
+                .and_then(Option::as_ref)
+                .is_some_and(|time| time.sale_id == 0),
         });
     }
     placements.sort_by(|first, second| first.start_date.cmp(&second.start_date));
-    Ok(Json(AutoPlan {
+    Ok(AutoPlan {
         placements,
         skipped,
         drive_note,
-    }))
+    })
+}
+
+/// The minutes of a template of the typical size, rounded up like any job.
+fn typical_minutes(rules: &TimeRules) -> u32 {
+    // A few hundred minutes at most: the cast is safe.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let minutes = (TYPICAL_SQFT * rules.per_sqft_minutes).ceil() as u32;
+    minutes.div_ceil(ROUND_TO) * ROUND_TO
+}
+
+/// Where a waiting job is, and how long it takes.
+#[derive(Debug, Clone, Copy)]
+pub struct WaitingSpot {
+    pub minutes: u32,
+    pub point: Option<Point>,
+    /// Miles from the shop.
+    pub from_shop: f64,
+}
+
+/// A day that already has stops, and its free minutes.
+#[derive(Debug, Clone)]
+pub struct BookedDay {
+    pub free: u32,
+    pub stops: Vec<Point>,
+}
+
+/// Gives each job (oldest first) the booked day with room whose stop is
+/// closest, when that stop is near it or nearer than the shop. Answers the
+/// days that got jobs, best first: the smallest average distance, then the
+/// earliest. `reserve` is kept free per job for its drive.
+pub fn assign_to_booked_days(
+    jobs: &[WaitingSpot],
+    days: &[BookedDay],
+    reserve: u32,
+) -> Vec<(usize, Vec<usize>)> {
+    let mut free: Vec<u32> = days.iter().map(|day| day.free).collect();
+    let mut given: Vec<(Vec<usize>, f64)> = vec![(Vec::new(), 0.0); days.len()];
+    for (index, job) in jobs.iter().enumerate() {
+        let Some(point) = job.point else {
+            continue;
+        };
+        let best = days
+            .iter()
+            .enumerate()
+            .filter(|(day, _)| free[*day] >= job.minutes + reserve)
+            .filter_map(|(day, booked)| {
+                let miles = booked
+                    .stops
+                    .iter()
+                    .map(|stop| point.miles_to(*stop))
+                    .fold(f64::INFINITY, f64::min);
+                (miles <= NEAR_MILES || miles <= job.from_shop).then_some((day, miles))
+            })
+            .min_by(|first, second| first.1.total_cmp(&second.1));
+        if let Some((day, miles)) = best {
+            free[day] -= job.minutes + reserve;
+            given[day].0.push(index);
+            given[day].1 += miles;
+        }
+    }
+    let mut ranked: Vec<(usize, Vec<usize>, f64)> = given
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (picked, _))| !picked.is_empty())
+        .map(|(day, (picked, miles))| {
+            #[allow(clippy::cast_precision_loss)]
+            let average = miles / picked.len() as f64;
+            (day, picked, average)
+        })
+        .collect();
+    ranked.sort_by(|first, second| first.2.total_cmp(&second.2));
+    ranked
+        .into_iter()
+        .map(|(day, picked, _)| (day, picked))
+        .collect()
+}
+
+/// The days to try, best first, each with its jobs: days that already have
+/// stops near the waiting jobs, then empty days.
+async fn best_day_candidates(
+    scope: &PlanScope<'_>,
+    days: &[NaiveDate],
+    done_days: &[NaiveDate],
+    jobs: &[(&WaitingRow, u32)],
+    busy: &[&BusyRow],
+) -> ApiResult<Vec<(NaiveDate, Vec<usize>)>> {
+    let state = scope.state;
+    let (open, close) = (scope.rules.day_start_minute, scope.rules.day_end_minute);
+    let open_days: Vec<NaiveDate> = days
+        .iter()
+        .copied()
+        .filter(|date| !done_days.contains(date))
+        .collect();
+    let mut addresses: Vec<String> = jobs
+        .iter()
+        .filter_map(|(event, _)| event.location.clone())
+        .chain(busy.iter().filter_map(|row| row.location.clone()))
+        .collect();
+    addresses.sort();
+    addresses.dedup();
+    let found = state.maps.geocode_all(&addresses).await;
+    let points: HashMap<&str, Option<Point>> =
+        addresses.iter().map(String::as_str).zip(found).collect();
+    let point_of = |address: &Option<String>| {
+        address
+            .as_deref()
+            .and_then(|text| points.get(text).copied().flatten())
+    };
+    let shop = match super::company_address(&state.pool, scope.company_id).await? {
+        Some(address) => state.maps.geocode(&address).await,
+        None => None,
+    };
+    let spots: Vec<WaitingSpot> = jobs
+        .iter()
+        .map(|(event, minutes)| {
+            let point = point_of(&event.location);
+            WaitingSpot {
+                minutes: *minutes,
+                point,
+                from_shop: point
+                    .zip(shop)
+                    .map_or(0.0, |(point, shop)| point.miles_to(shop)),
+            }
+        })
+        .collect();
+    let mut booked = Vec::new();
+    let mut booked_dates = Vec::new();
+    let mut empty_dates = Vec::new();
+    for date in open_days {
+        let rows: Vec<(&BusyRow, (u32, u32))> = busy
+            .iter()
+            .filter_map(|row| {
+                minutes_of_day(date, row.start_date, row.end_date).map(|span| (*row, span))
+            })
+            .collect();
+        if rows.is_empty() {
+            empty_dates.push(date);
+            continue;
+        }
+        let stops: Vec<Point> = rows
+            .iter()
+            .filter_map(|(row, _)| point_of(&row.location))
+            .collect();
+        if stops.is_empty() {
+            continue;
+        }
+        let taken: u32 = rows
+            .iter()
+            .map(|(_, (start, end))| (*end).min(close).saturating_sub((*start).max(open)))
+            .sum();
+        booked.push(BookedDay {
+            free: close.saturating_sub(open).saturating_sub(taken),
+            stops,
+        });
+        booked_dates.push(date);
+    }
+    let mut candidates: Vec<(NaiveDate, Vec<usize>)> =
+        assign_to_booked_days(&spots, &booked, scope.rules.travel_minutes)
+            .into_iter()
+            .take(MAX_BOOKED_DAY_TRIES)
+            .map(|(day, picked)| (booked_dates[day], picked))
+            .collect();
+    let everyone: Vec<usize> = (0..jobs.len()).collect();
+    candidates.extend(
+        empty_dates
+            .into_iter()
+            .take(MAX_EMPTY_DAY_TRIES)
+            .map(|date| (date, everyone.clone())),
+    );
+    Ok(candidates)
 }
 
 #[cfg(test)]
@@ -1394,6 +1659,59 @@ mod tests {
             earliest_start(&at_b, day, &job(1, 600, None), &drives),
             None
         );
+    }
+
+    #[test]
+    fn jobs_join_the_booked_day_closest_to_them() {
+        let point = |lat: f64| Point { lat, lng: -86.0 };
+        let spot = |minutes: u32, lat: f64| WaitingSpot {
+            minutes,
+            point: Some(point(lat)),
+            from_shop: 50.0,
+        };
+        let days = [
+            BookedDay {
+                free: 300,
+                stops: vec![point(39.0)],
+            },
+            BookedDay {
+                free: 300,
+                stops: vec![point(40.0)],
+            },
+        ];
+        // One degree of latitude is about 69 miles: each job goes to its own
+        // neighbor, and the day with the closer job is offered first.
+        assert_eq!(
+            assign_to_booked_days(&[spot(60, 40.2), spot(60, 39.02)], &days, 30),
+            vec![(0, vec![1]), (1, vec![0])]
+        );
+        // The closest day is full: the next closest takes it.
+        let full = [
+            BookedDay {
+                free: 60,
+                stops: vec![point(39.0)],
+            },
+            BookedDay {
+                free: 300,
+                stops: vec![point(39.3)],
+            },
+        ];
+        assert_eq!(
+            assign_to_booked_days(&[spot(60, 39.0)], &full, 30),
+            vec![(1, vec![0])]
+        );
+        // Far from every stop, and nearer to the shop: it waits for an empty day.
+        let far = WaitingSpot {
+            from_shop: 5.0,
+            ..spot(60, 42.0)
+        };
+        assert!(assign_to_booked_days(&[far], &days, 30).is_empty());
+        // No address: it cannot be matched.
+        let unknown = WaitingSpot {
+            point: None,
+            ..spot(60, 39.0)
+        };
+        assert!(assign_to_booked_days(&[unknown], &days, 30).is_empty());
     }
 
     #[test]
