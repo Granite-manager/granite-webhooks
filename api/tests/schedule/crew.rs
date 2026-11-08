@@ -527,3 +527,66 @@ async fn admins_see_where_the_crew_last_was(pool: MySqlPool) {
         .await
         .assert_status(StatusCode::FORBIDDEN);
 }
+
+#[test_db::test(seed)]
+async fn the_template_technician_has_their_own_on_my_way(pool: MySqlPool) {
+    jobs(&pool).await;
+    let today = store_today();
+    sqlx::query(
+        "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (9891, 100, 'Templates', 'green', 'templates')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO events (id, title, location, start_date, end_date, all_day,
+                             created_user_id, assigned_user_id, calendar_id, customer_id)
+         VALUES (9903, 'Template', '1 Job Rd', ?, ?, 1, 100, 101, 9891, 1000)",
+    )
+    .bind(today.and_hms_opt(0, 0, 0).unwrap())
+    .bind(today.and_hms_opt(23, 59, 59).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (server, emails) = server(&pool).await;
+    for (path, message) in [
+        ("on-my-way", "Installer on the way"),
+        ("on-my-way/technician", "Technician on the way"),
+    ] {
+        server
+            .put(&format!("/v1/schedule/notifications/{path}"))
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "message": message, "subject": null }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    }
+    let settings: Value = server
+        .get("/v1/schedule/notifications")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(settings["on_my_way"]["message"], "Installer on the way");
+    assert_eq!(
+        settings["on_my_way_technician"]["message"],
+        "Technician on the way"
+    );
+
+    for id in [9903, 9900] {
+        server
+            .post(&format!("/v1/events/{id}/crew-status"))
+            .with_session(sessions::MANAGER)
+            .json(&json!({ "status": "on_my_way" }))
+            .await
+            .assert_status_ok();
+    }
+    let sent = emails.lock().unwrap();
+    let bodies: Vec<&str> = sent.iter().map(|email| email.body.as_str()).collect();
+    assert_eq!(
+        bodies,
+        [
+            "<p>Technician on the way</p>",
+            "<p>Installer on the way</p>"
+        ]
+    );
+}

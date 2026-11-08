@@ -11,8 +11,12 @@
 //! - `POST /v1/schedule/notifications/templates`, `PUT`/`DELETE …/templates/{id}`
 //! - `PUT /v1/schedule/notifications/templates/order` → the admin's drag order
 //! - `POST /v1/schedule/notifications/flows`, `PUT`/`DELETE …/flows/{id}`
+//! - `POST /v1/schedule/notifications/lists`, `PUT`/`DELETE …/lists/{id}` →
+//!   the company's own lists that group its reminders and scheduling texts
+//!   (Customer messages)
 //! - `PUT /v1/schedule/notifications/on-my-way` → what the customer gets when
-//!   the crew taps On my way (sent by `send_on_my_way`)
+//!   the installer taps On my way, `PUT …/on-my-way/technician` when the
+//!   template technician does (both sent by `send_on_my_way`)
 //! - `GET /v1/schedule/notifications/active` → the event form's flows. The
 //!   calendar's default flow goes on each of its events unless the event
 //!   turns it off (`event_notification_skips`); the others only go on events
@@ -230,6 +234,29 @@ pub struct NotificationTemplate {
     /// AI texts: what the customer gets when they have not replied; null for
     /// nothing.
     pub followup: Option<Followup>,
+    /// The company's list (`lists` of `GET /v1/schedule/notifications`) it is
+    /// shown in under Customer messages; null when it is in none.
+    pub list_id: Option<i32>,
+}
+
+/// One of the company's own lists under Customer messages (e.g.
+/// "Reminders"): it groups reminders and scheduling texts; it sends nothing
+/// itself.
+#[derive(Debug, Clone, Serialize, ToSchema, sqlx::FromRow)]
+pub struct NotificationList {
+    /// List id.
+    pub id: i32,
+    /// What admins call it, e.g. "Reminders".
+    pub name: String,
+    /// Place in the order: lower first (oldest first).
+    pub position: i32,
+}
+
+/// Body of `POST /v1/schedule/notifications/lists` and `PUT …/lists/{id}`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct NotificationListInput {
+    /// 1 to 100 characters.
+    pub name: String,
 }
 
 /// An AI text's follow-up: sent when the customer has not replied
@@ -365,10 +392,16 @@ pub struct NotificationSettings {
     pub templates: Vec<NotificationTemplate>,
     /// Flows, oldest first.
     pub flows: Vec<NotificationFlow>,
+    /// The company's own lists of Customer messages, in order.
+    pub lists: Vec<NotificationList>,
     /// The company texts through `CloudTalk` or `RingCentral`.
     pub sms_enabled: bool,
-    /// What the customer gets when the crew taps On my way.
+    /// What the customer gets when the installer (any job not on the
+    /// Templates calendar) taps On my way.
     pub on_my_way: OnMyWayMessage,
+    /// What the customer gets when the template technician (a Templates
+    /// calendar job) taps On my way.
+    pub on_my_way_technician: OnMyWayMessage,
     /// The AI texts tab's switch and texting hours.
     pub scheduling: SchedulingSettings,
 }
@@ -428,6 +461,11 @@ pub struct NotificationTemplateInput {
     #[serde(default, deserialize_with = "present")]
     #[schema(value_type = Option<Followup>)]
     pub followup: Option<Option<Followup>>,
+    /// The company's list it goes in (Customer messages), or null for none.
+    /// Left out: none for a new template, unchanged on edit.
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<i32>)]
+    pub list_id: Option<Option<i32>>,
 }
 
 /// A field that is there, even as null, is `Some`; left out it stays `None`.
@@ -504,12 +542,13 @@ struct TemplateRow {
     position: i32,
     followup_template_id: Option<i32>,
     followup_after_hours: Option<i32>,
+    list_id: Option<i32>,
 }
 
 /// `TemplateRow`'s columns of `schedule_notification_templates`.
 const TEMPLATE_COLUMNS: &str = "id, name, CAST(kind AS CHAR) AS kind,
     CAST(channel AS CHAR) AS channel, subject, body, position, followup_template_id,
-    followup_after_hours";
+    followup_after_hours, list_id";
 
 impl TemplateRow {
     fn followup(&self) -> Option<Followup> {
@@ -531,6 +570,7 @@ impl TemplateRow {
             position: self.position,
             calendar_ids,
             followup,
+            list_id: self.list_id,
         }
     }
 }
@@ -869,6 +909,193 @@ async fn save_extras(
     tx.commit().await
 }
 
+/// The company's lists, in order.
+async fn load_lists(
+    pool: &MySqlPool,
+    company_id: i32,
+) -> Result<Vec<NotificationList>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT id, name, position FROM schedule_notification_lists
+          WHERE company_id = ? AND deleted_at IS NULL
+          ORDER BY position, id",
+    )
+    .bind(company_id)
+    .fetch_all(pool)
+    .await
+}
+
+/// A template's list, checked to be the company's: `None` keeps what is saved.
+async fn check_list(
+    pool: &MySqlPool,
+    company_id: i32,
+    list_id: Option<Option<i32>>,
+) -> ApiResult<Option<Option<i32>>> {
+    if let Some(Some(id)) = list_id {
+        let found: Option<i32> = sqlx::query_scalar(
+            "SELECT id FROM schedule_notification_lists
+              WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
+        )
+        .bind(id)
+        .bind(company_id)
+        .fetch_optional(pool)
+        .await?;
+        if found.is_none() {
+            return Err(bad("List not found"));
+        }
+    }
+    Ok(list_id)
+}
+
+/// Saves the checked list; `None` leaves it as it is.
+async fn save_list(
+    pool: &MySqlPool,
+    template_id: i32,
+    list_id: Option<Option<i32>>,
+) -> Result<(), sqlx::Error> {
+    if let Some(list_id) = list_id {
+        sqlx::query("UPDATE schedule_notification_templates SET list_id = ? WHERE id = ?")
+            .bind(list_id)
+            .bind(template_id)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
+/// Add a list of customer messages
+///
+/// A list groups the company's reminders and scheduling texts under Customer
+/// messages (e.g. "Reminders"); it sends nothing itself. It goes last. Put a
+/// template in it with `list_id` on `POST`/`PUT /v1/schedule/notifications/templates`.
+#[crate::openapi::path(
+    post,
+    path = "/v1/schedule/notifications/lists",
+    operation_id = "create_schedule_notification_list",
+    tag = "schedule",
+    request_body = NotificationListInput,
+    responses(
+        (status = 201, description = "Added", body = Created),
+        (status = 400, description = "Name missing or too long", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn create_list(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    JsonBody(input): JsonBody<NotificationListInput>,
+) -> ApiResult<(StatusCode, Json<Created>)> {
+    let name = check_name(&input.name)?;
+    let id = sqlx::query(
+        "INSERT INTO schedule_notification_lists (company_id, name, position)
+         SELECT ?, ?, COALESCE(MAX(position), 0) + 1
+           FROM schedule_notification_lists
+          WHERE company_id = ? AND deleted_at IS NULL",
+    )
+    .bind(user.company_id)
+    .bind(name)
+    .bind(user.company_id)
+    .execute(&state.pool)
+    .await?
+    .last_insert_id();
+    Ok((StatusCode::CREATED, Json(Created { id })))
+}
+
+/// Rename a list of customer messages
+///
+/// Its templates stay in it.
+#[crate::openapi::path(
+    put,
+    path = "/v1/schedule/notifications/lists/{id}",
+    operation_id = "update_schedule_notification_list",
+    tag = "schedule",
+    params(("id" = i32, Path, description = "List id")),
+    request_body = NotificationListInput,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "Name missing or too long", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such list in the caller's company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn update_list(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(id): Path<i32>,
+    JsonBody(input): JsonBody<NotificationListInput>,
+) -> ApiResult<StatusCode> {
+    find(
+        &state.pool,
+        "schedule_notification_lists",
+        user.company_id,
+        id,
+    )
+    .await?;
+    let name = check_name(&input.name)?;
+    sqlx::query("UPDATE schedule_notification_lists SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Delete a list of customer messages
+///
+/// Refused while it still holds templates: delete them or move them to
+/// another list first, so no message is lost.
+#[crate::openapi::path(
+    delete,
+    path = "/v1/schedule/notifications/lists/{id}",
+    operation_id = "delete_schedule_notification_list",
+    tag = "schedule",
+    params(("id" = i32, Path, description = "List id")),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 400, description = "It still holds templates", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such list in the caller's company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn delete_list(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(id): Path<i32>,
+) -> ApiResult<StatusCode> {
+    find(
+        &state.pool,
+        "schedule_notification_lists",
+        user.company_id,
+        id,
+    )
+    .await?;
+    let held: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schedule_notification_templates
+          WHERE list_id = ? AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await?;
+    if held > 0 {
+        return Err(bad(
+            "This list still has messages. Delete them or move them to another list first.",
+        ));
+    }
+    sqlx::query("UPDATE schedule_notification_lists SET deleted_at = NOW() WHERE id = ?")
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// The step's send time, checked; the template is the company's.
 async fn check_step(
     pool: &MySqlPool,
@@ -1074,8 +1301,10 @@ pub async fn list(
     Ok(Json(NotificationSettings {
         templates: load_templates(pool, user.company_id, sms_enabled).await?,
         flows: load_flows(pool, user.company_id, sms_enabled, false).await?,
+        lists: load_lists(pool, user.company_id).await?,
         sms_enabled,
-        on_my_way: on_my_way_message(pool, user.company_id).await?,
+        on_my_way: on_my_way_message(pool, user.company_id, Crew::Installer).await?,
+        on_my_way_technician: on_my_way_message(pool, user.company_id, Crew::Technician).await?,
         scheduling: scheduling_settings(pool, user.company_id).await?,
     }))
 }
@@ -1162,14 +1391,43 @@ pub async fn set_scheduling(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Who taps On my way: each has its own message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Crew {
+    /// The installer: any job not on the Templates calendar.
+    Installer,
+    /// The template technician: a Templates calendar job.
+    Technician,
+}
+
+impl Crew {
+    /// The `company` columns of this crew's message: subject, then message.
+    const fn columns(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Installer => ("on_my_way_subject", "on_my_way_message"),
+            Self::Technician => ("on_my_way_tech_subject", "on_my_way_tech_message"),
+        }
+    }
+
+    /// The crew of a job on the calendar with this slug.
+    fn of_calendar(slug: Option<&str>) -> Self {
+        if slug == Some("templates") {
+            Self::Technician
+        } else {
+            Self::Installer
+        }
+    }
+}
+
 async fn on_my_way_message(
     pool: &MySqlPool,
     company_id: i32,
+    crew: Crew,
 ) -> Result<OnMyWayMessage, sqlx::Error> {
-    let saved: Option<OnMyWayMessage> = sqlx::query_as(
-        "SELECT on_my_way_subject AS subject, on_my_way_message AS message
-           FROM company WHERE id = ?",
-    )
+    let (subject, message) = crew.columns();
+    let saved: Option<OnMyWayMessage> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {subject} AS subject, {message} AS message FROM company WHERE id = ?"
+    )))
     .bind(company_id)
     .fetch_optional(pool)
     .await?;
@@ -1182,10 +1440,12 @@ fn filled(text: Option<String>) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
-/// Save the On my way message
+/// Save the installer's On my way message
 ///
-/// What the customer gets when the crew taps On my way: a text, or an email
-/// when the company cannot text. An empty message turns it off.
+/// What the customer gets when the installer taps On my way (any job not on
+/// the Templates calendar): a text, or an email when the company cannot
+/// text. An empty message turns it off. The template technician's message is
+/// saved with `PUT /v1/schedule/notifications/on-my-way/technician`.
 #[crate::openapi::path(
     put,
     path = "/v1/schedule/notifications/on-my-way",
@@ -1206,10 +1466,47 @@ pub async fn set_on_my_way(
     AdminUser(user): AdminUser,
     JsonBody(input): JsonBody<OnMyWayMessage>,
 ) -> ApiResult<StatusCode> {
-    let pool = &state.pool;
+    save_on_my_way(&state.pool, user.company_id, input, Crew::Installer).await
+}
+
+/// Save the template technician's On my way message
+///
+/// What the customer gets when the template technician taps On my way (a
+/// Templates calendar job): a text, or an email when the company cannot
+/// text. An empty message turns it off. The installer's message is saved
+/// with `PUT /v1/schedule/notifications/on-my-way`.
+#[crate::openapi::path(
+    put,
+    path = "/v1/schedule/notifications/on-my-way/technician",
+    operation_id = "set_technician_on_my_way_message",
+    tag = "schedule",
+    request_body = OnMyWayMessage,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "Too long", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_technician_on_my_way(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    JsonBody(input): JsonBody<OnMyWayMessage>,
+) -> ApiResult<StatusCode> {
+    save_on_my_way(&state.pool, user.company_id, input, Crew::Technician).await
+}
+
+async fn save_on_my_way(
+    pool: &MySqlPool,
+    company_id: i32,
+    input: OnMyWayMessage,
+    crew: Crew,
+) -> ApiResult<StatusCode> {
     let message = filled(input.message);
     let subject = filled(input.subject);
-    let limit = if sms_enabled(pool, user.company_id).await? {
+    let limit = if sms_enabled(pool, company_id).await? {
         MAX_SMS
     } else {
         MAX_EMAIL
@@ -1228,25 +1525,38 @@ pub async fn set_on_my_way(
     {
         return Err(bad("The subject must be 255 characters or less"));
     }
-    sqlx::query("UPDATE company SET on_my_way_message = ?, on_my_way_subject = ? WHERE id = ?")
-        .bind(message)
-        .bind(subject)
-        .bind(user.company_id)
-        .execute(pool)
-        .await?;
+    let (subject_column, message_column) = crew.columns();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE company SET {message_column} = ?, {subject_column} = ? WHERE id = ?"
+    )))
+    .bind(message)
+    .bind(subject)
+    .bind(company_id)
+    .execute(pool)
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Tells the event's customer the crew is on the way, with the company's On
-/// my way message: a text when the company can text, else an email. The
-/// channel it went by, or the code of why it did not go.
+/// my way message for that crew (the template technician's on a Templates
+/// calendar job, else the installer's): a text when the company can text,
+/// else an email. The channel it went by, or the code of why it did not go.
 pub async fn send_on_my_way(
     state: &AppState,
     company_id: i32,
     event_id: i32,
 ) -> Result<Result<Channel, &'static str>, sqlx::Error> {
     let pool = &state.pool;
-    let saved = on_my_way_message(pool, company_id).await?;
+    let slug: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT cal.slug FROM events e
+           LEFT JOIN calendars cal ON cal.id = e.calendar_id
+          WHERE e.id = ?",
+    )
+    .bind(event_id)
+    .fetch_optional(pool)
+    .await?;
+    let crew = Crew::of_calendar(slug.flatten().as_deref());
+    let saved = on_my_way_message(pool, company_id, crew).await?;
     let Some(body) = filled(saved.message) else {
         return Ok(Err("no_message"));
     };
@@ -1312,6 +1622,7 @@ pub async fn create_template(
     let checked = check_template(&state.pool, user.company_id, &input).await?;
     let kind = input.kind.unwrap_or_default();
     let extras = check_extras(&state.pool, user.company_id, &input, kind, None).await?;
+    let list = check_list(&state.pool, user.company_id, input.list_id).await?;
     let id = sqlx::query(
         "INSERT INTO schedule_notification_templates
            (company_id, name, kind, channel, subject, body, created_by, position)
@@ -1330,7 +1641,9 @@ pub async fn create_template(
     .execute(&state.pool)
     .await?
     .last_insert_id();
-    save_extras(&state.pool, i32::try_from(id).unwrap_or_default(), extras).await?;
+    let template_id = i32::try_from(id).unwrap_or_default();
+    save_extras(&state.pool, template_id, extras).await?;
+    save_list(&state.pool, template_id, list).await?;
     Ok((StatusCode::CREATED, Json(Created { id })))
 }
 
@@ -1382,6 +1695,7 @@ pub async fn update_template(
         }
     };
     let extras = check_extras(&state.pool, user.company_id, &input, kind, Some(id)).await?;
+    let list = check_list(&state.pool, user.company_id, input.list_id).await?;
     if input.kind.is_some_and(TemplateKind::by_hand) {
         let used_by = flows_using(&state.pool, id).await?;
         if !used_by.is_empty() {
@@ -1405,6 +1719,7 @@ pub async fn update_template(
     .execute(&state.pool)
     .await?;
     save_extras(&state.pool, id, extras).await?;
+    save_list(&state.pool, id, list).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
