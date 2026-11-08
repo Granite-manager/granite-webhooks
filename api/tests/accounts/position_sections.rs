@@ -106,7 +106,7 @@ async fn the_company_changes_and_resets_a_positions_tabs(pool: MySqlPool) {
         .iter()
         .map(|p| p["position_id"].as_i64().unwrap())
         .collect();
-    assert_eq!(ids, vec![1, 2, 5, 3, 12, 13]);
+    assert_eq!(ids, vec![1, 2, 5, 3, 4, 12, 13]);
     let scheduling = &positions[6];
     assert_eq!(scheduling["customized"], false);
     assert_eq!(scheduling["sections"], json!(["customers", "schedule"]));
@@ -250,8 +250,8 @@ async fn only_managers_change_position_access_and_only_known_tabs(pool: MySqlPoo
         .json(&json!({ "sections": ["nope"] }))
         .await
         .assert_status(StatusCode::BAD_REQUEST);
-    // Shop Worker and Super Admin can't be changed.
-    for position in [4, 9] {
+    // Super Admin and the portal positions can't be changed.
+    for position in [6, 7, 8, 9, 11] {
         server
             .put(&format!("/v1/company/position-sections/{position}"))
             .with_session(sessions::ADMIN)
@@ -259,6 +259,19 @@ async fn only_managers_change_position_access_and_only_known_tabs(pool: MySqlPoo
             .await
             .assert_status(StatusCode::BAD_REQUEST);
     }
+    // Shop Worker opens only the Shop app's tabs.
+    server
+        .put("/v1/company/position-sections/4")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "sections": ["customers"] }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    server
+        .put("/v1/company/position-sections/4")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "sections": ["samples"] }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
 }
 
 /// The skills the app shell gives `session` (null: every skill).
@@ -412,7 +425,7 @@ async fn tabs_saved_without_skills_keep_the_default_skills(pool: MySqlPool) {
         .with_session(sessions::ADMIN)
         .await
         .json();
-    let scheduling = &access["positions"][5];
+    let scheduling = &access["positions"][6];
     assert_eq!(scheduling["skills"], scheduling["default_skills"]);
     server
         .put("/v1/company/position-sections/13")
