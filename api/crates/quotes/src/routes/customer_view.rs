@@ -1212,7 +1212,8 @@ pub(crate) fn no_store(response: impl IntoResponse) -> Response {
 /// List the customer's invoices
 ///
 /// Their `QuickBooks` invoices, newest first; `status` says why there are
-/// none. Needs a verified visitor.
+/// none (`missing_qbo_id` until the company links the customer to
+/// `QuickBooks`). Needs a verified visitor.
 #[crate::openapi::path(
     get,
     path = "/v1/public/customer-view/{company_id}/{view_id}/invoices",
@@ -1235,7 +1236,7 @@ pub async fn invoices(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let customer = verified_customer(&state, &headers, company_id, &view_id).await?;
-    let found = invoices_of_customer(&state, company_id, customer.id).await?;
+    let found = invoices_of_customer(&state, company_id, customer.id, false).await?;
     Ok(no_store(Json(found)))
 }
 

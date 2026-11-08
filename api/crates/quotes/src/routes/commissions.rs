@@ -1170,7 +1170,7 @@ pub async fn sync_commissions(
             if let std::collections::hash_map::Entry::Vacant(slot) =
                 invoices_by_customer.entry(quote.customer_id)
             {
-                let found = invoices_of_customer(&state, company_id, quote.customer_id).await;
+                let found = invoices_of_customer(&state, company_id, quote.customer_id, true).await;
                 let invoices = if let Ok(found) = found {
                     match found.status {
                         InvoicesStatus::Ok => Some(found.invoices),
