@@ -3,7 +3,7 @@
 //! again when it is due.
 
 use super::access::Viewer;
-use super::schemas::{NewProjectFiles, NoteInput, TaskInput, TaskUpdate};
+use super::schemas::{NewProjectFiles, NoteInput, TaskInput, TaskTime, TaskTimeReset, TaskUpdate};
 use super::service::visible_project;
 use crate::auth::EmployeeUser;
 use crate::auth::session::SessionUser;
@@ -18,9 +18,11 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use chrono::{NaiveDate, NaiveTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono_tz::America::Indiana::Indianapolis;
 use lambda_http::tracing;
 use sqlx::MySqlConnection;
+use std::collections::BTreeMap;
 
 /// The bell: a task was given to you.
 pub const TASK_ASSIGNED: &str = "project_task_assigned";
@@ -268,6 +270,103 @@ pub async fn create_task(
             id: i64::from(task_id),
         }),
     ))
+}
+
+/// How long one use gave the task: minutes, and whether it had a time of day.
+/// A date with no time counts whole store days. A deadline already past when
+/// it was set says nothing about the task.
+fn use_minutes(created: DateTime<Utc>, deadline: NaiveDateTime) -> Option<(i64, bool)> {
+    let wall = deadline.format("%Y-%m-%dT%H:%M:%S").to_string();
+    let (minutes, has_time) = match reminder_due_at(&wall) {
+        Some(due) => ((due - created).num_minutes(), true),
+        None => {
+            let given = created.with_timezone(&Indianapolis).date_naive();
+            ((deadline.date() - given).num_days() * 24 * 60, false)
+        }
+    };
+    (minutes >= 0).then_some((minutes, has_time))
+}
+
+/// One entry per task name (case aside): the average of its uses, oldest
+/// first in `uses`.
+fn average_times(uses: Vec<(String, DateTime<Utc>, NaiveDateTime)>) -> Vec<TaskTime> {
+    let mut by_name: BTreeMap<String, (String, i64, i64, bool)> = BTreeMap::new();
+    for (name, created, deadline) in uses {
+        let Some((minutes, has_time)) = use_minutes(created, deadline) else {
+            continue;
+        };
+        let entry = by_name
+            .entry(name.trim().to_lowercase())
+            .or_insert_with(|| (String::new(), 0, 0, false));
+        entry.1 += minutes;
+        entry.2 += 1;
+        entry.0 = name;
+        entry.3 = has_time;
+    }
+    by_name
+        .into_values()
+        .map(|(name, total, count, has_time)| TaskTime {
+            name,
+            minutes: (total + count / 2) / count,
+            has_time,
+        })
+        .collect()
+}
+
+/// The company's remembered task times.
+pub(super) async fn task_times(
+    conn: &mut MySqlConnection,
+    company_id: i32,
+) -> sqlx::Result<Vec<TaskTime>> {
+    let uses = sqlx::query_as(
+        "SELECT name, created_at, deadline FROM project_activities
+          WHERE company_id = ? AND deleted_at IS NULL AND deadline IS NOT NULL
+            AND counts_for_time = 1
+          ORDER BY id",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(average_times(uses))
+}
+
+/// Forget a task's remembered time
+///
+/// Its earlier uses stop counting; the next one starts the average again.
+#[crate::openapi::path(
+    post,
+    path = "/v1/projects/{id}/task-times/reset",
+    operation_id = "reset_project_task_time",
+    tag = "projects",
+    params(("id" = i32, Path, description = "Project id")),
+    request_body = TaskTimeReset,
+    responses(
+        (status = 204, description = "Forgotten"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 404, description = "No such project the caller may see", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn reset_task_time(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    Path(id): Path<i32>,
+    JsonBody(input): JsonBody<TaskTimeReset>,
+) -> ApiResult<StatusCode> {
+    let viewer = Viewer::load(&state.pool, &user).await?;
+    let mut conn = state.pool.acquire().await?;
+    visible_project(&mut conn, &viewer, id).await?;
+    sqlx::query(
+        "UPDATE project_activities SET counts_for_time = 0
+          WHERE company_id = ? AND LOWER(name) = LOWER(?)",
+    )
+    .bind(viewer.company_id)
+    .bind(input.name.trim())
+    .execute(&mut *conn)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The task, if the caller may open its project: (creator, assignee).
@@ -601,7 +700,44 @@ pub async fn delete_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_deadline, priority, reminder_time};
+    use super::{average_times, parse_deadline, priority, reminder_time};
+    use chrono::{DateTime, NaiveDateTime, Utc};
+
+    fn task_use(
+        name: &str,
+        created: &str,
+        deadline: &str,
+    ) -> (String, DateTime<Utc>, NaiveDateTime) {
+        (
+            name.into(),
+            created.parse().unwrap(),
+            NaiveDateTime::parse_from_str(deadline, "%Y-%m-%d %H:%M:%S").unwrap(),
+        )
+    }
+
+    #[test]
+    fn remembers_the_average_time_of_a_task() {
+        // 10:00 store time to 14:00, then to 18:00; the name's case is ignored.
+        let times = average_times(vec![
+            task_use("Measure", "2026-11-02T15:00:00Z", "2026-11-02 14:00:00"),
+            task_use("measure ", "2026-11-02T15:00:00Z", "2026-11-02 18:00:00"),
+        ]);
+        assert_eq!(times.len(), 1);
+        assert_eq!(times[0].name, "measure ");
+        assert_eq!(times[0].minutes, 360);
+        assert!(times[0].has_time);
+    }
+
+    #[test]
+    fn a_date_counts_whole_store_days_and_a_past_one_nothing() {
+        // 2026-11-03 02:00 UTC is still Nov 2 in the store: three days to the 5th.
+        let times = average_times(vec![
+            task_use("Order sink", "2026-11-03T02:00:00Z", "2026-11-05 00:00:00"),
+            task_use("Order sink", "2026-11-03T02:00:00Z", "2026-11-01 00:00:00"),
+        ]);
+        assert_eq!(times[0].minutes, 3 * 24 * 60);
+        assert!(!times[0].has_time);
+    }
 
     #[test]
     fn deadlines() {

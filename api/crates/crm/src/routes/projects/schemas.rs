@@ -227,6 +227,24 @@ pub struct Calendar {
     pub name: String,
 }
 
+/// How long a task is usually given: the average of its earlier uses.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TaskTime {
+    /// The task's name, as last written.
+    pub name: String,
+    /// Average minutes from giving it to its due date.
+    pub minutes: i64,
+    /// Whether its last use had a time of day, not just a date.
+    pub has_time: bool,
+}
+
+/// Body of `POST /v1/projects/{id}/task-times/reset`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct TaskTimeReset {
+    /// The task whose remembered time to forget.
+    pub name: String,
+}
+
 /// `GET /v1/projects/{id}`: a project's page.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ProjectWorkspace {
@@ -234,6 +252,8 @@ pub struct ProjectWorkspace {
     pub project: Project,
     /// Its tasks, open and done.
     pub tasks: Vec<ProjectTask>,
+    /// The company's remembered task times, to fill in the due date.
+    pub task_times: Vec<TaskTime>,
     /// Its notes, newest first.
     pub notes: Vec<ProjectNote>,
     /// Its files.

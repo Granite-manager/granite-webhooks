@@ -11,6 +11,7 @@
 //! - `POST   /v1/projects/reorder`                 → save a column's manual order
 //! - `GET`/`POST /v1/deals/{id}/project`            → a deal's project; start it by hand
 //! - `/v1/projects/{id}/tasks[/{task_id}]`         → tasks for anyone in the company (POST, PATCH, DELETE)
+//! - `POST   /v1/projects/{id}/task-times/reset`   → forget a task's remembered time
 //! - `/v1/projects/{id}/notes[/{note_id}]`         → notes (POST, DELETE)
 //! - `/v1/projects/{id}/files[/{file_id}]`         → files from `POST /v1/uploads` (POST, DELETE)
 //!
@@ -38,6 +39,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::deal_project, handlers::convert_deal))
         .routes(routes!(tasks::create_task))
         .routes(routes!(tasks::update_task, tasks::delete_task))
+        .routes(routes!(tasks::reset_task_time))
         .routes(routes!(tasks::create_note))
         .routes(routes!(tasks::delete_note))
         .routes(routes!(tasks::attach_files))
