@@ -69,7 +69,10 @@ pub async fn board(
     EmployeeUser(user): EmployeeUser,
     MultiQuery(query): MultiQuery<BoardQuery>,
 ) -> ApiResult<Json<ProjectsBoard>> {
-    let viewer = Viewer::load(&state.pool, &user).await?;
+    let mut viewer = Viewer::load(&state.pool, &user).await?;
+    if query.employee {
+        viewer = viewer.on_employee_side();
+    }
     if !viewer.has_board() {
         return Err(ApiError::Denied(
             "Projects is for managers, sales, the office and the shop. Ask an admin to add your position.".into(),

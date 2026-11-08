@@ -122,6 +122,9 @@ pub struct BoardQuery {
     /// Include archived projects.
     #[serde(default)]
     pub archived: bool,
+    /// Asked from the employee side, where being an admin counts for nothing.
+    #[serde(default)]
+    pub employee: bool,
     /// 1-based page of 100.
     pub page: Option<u32>,
 }
