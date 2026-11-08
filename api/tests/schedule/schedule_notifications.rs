@@ -1035,7 +1035,7 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
 
     event(&pool, 8830, "1000", 72, false).await;
     let install = last_event(&pool).await;
-    sqlx::query("UPDATE events SET status = 'not_ready' WHERE id = ?")
+    sqlx::query("UPDATE events SET status = 'ready' WHERE id = ?")
         .bind(install)
         .execute(&pool)
         .await
@@ -1073,7 +1073,7 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
         .await
         .assert_status_ok();
     assert_eq!(sent.texts.lock().unwrap().len(), 1);
-    // Texting the customer turns the job Called.
+    // An auto-confirm text turns even a Ready job Called.
     let status: String = sqlx::query_scalar("SELECT status FROM events WHERE id = ?")
         .bind(install)
         .fetch_one(&pool)
@@ -1081,9 +1081,9 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
         .unwrap();
     assert_eq!(status, "called");
     assert!(
-        history(&pool, install)
-            .await
-            .contains(&"Status changed to Awaiting confirmation: the customer was texted".to_string())
+        history(&pool, install).await.contains(
+            &"Status changed to Awaiting confirmation: the customer was texted".to_string()
+        )
     );
     let run = || async {
         server

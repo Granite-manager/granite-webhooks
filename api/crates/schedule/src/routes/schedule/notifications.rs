@@ -3048,7 +3048,10 @@ pub async fn send_confirmation(
     )
     .await;
     if message.channel == Channel::Sms {
-        mark_called(pool, user.company_id, id, user.name.as_deref()).await?;
+        // An auto-confirm text asks the customer for the date: even a Ready
+        // job now awaits their answer.
+        let asks = TemplateKind::parse(&template.kind) == TemplateKind::Question;
+        mark_called(pool, user.company_id, id, user.name.as_deref(), asks).await?;
     }
     if let Some(sent) = sent
         && TemplateKind::parse(&template.kind) == TemplateKind::Question
@@ -3060,20 +3063,24 @@ pub async fn send_confirmation(
     }))
 }
 
-/// The customer was texted: the job turns Called, unless it is already
-/// Called or Ready.
+/// The customer was texted: the job turns Called (Awaiting confirmation),
+/// unless it is already Called or Confirmed, or it is Ready and the text
+/// doesn't ask for the date (`asks`: an auto-confirm text).
 async fn mark_called(
     pool: &MySqlPool,
     company_id: i32,
     event_id: i32,
     user_name: Option<&str>,
+    asks: bool,
 ) -> Result<(), sqlx::Error> {
     let changed = sqlx::query(
         "UPDATE events SET status = 'called'
           WHERE id = ? AND deleted_date IS NULL
-            AND COALESCE(status, '') NOT IN ('called', 'ready', 'confirmed')",
+            AND COALESCE(status, '') NOT IN ('called', 'confirmed')
+            AND (? OR COALESCE(status, '') <> 'ready')",
     )
     .bind(event_id)
+    .bind(asks)
     .execute(pool)
     .await?
     .rows_affected()
