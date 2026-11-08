@@ -22,9 +22,9 @@ name: API tests
 # Every integration test file of api is a module of its area's test binary
 # (api/tests/<area>/main.rs, run with `--test <area>`); a filter `<file>::`
 # selects one file's tests.
+# Never on pull requests or pushes: tests do not run on GitHub unless started
+# by hand (owner, 2026-11-08); run them locally instead (`make api-test`).
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       cargo_args:
