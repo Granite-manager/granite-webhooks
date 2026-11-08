@@ -287,13 +287,13 @@ pub struct CustomerPhoneMatch {
     pub company_id: Option<i32>,
 }
 
-/// Find a customer by phone number across every company.
+/// Find a company's customer by the last 10 digits of their phone number.
 ///
-/// Used by integrations whose webhook does not carry a company id (Telnyx), so
-/// we match on the last 10 digits of the caller's phone number and return the
-/// customer together with their company for downstream attribution.
+/// Used by Telnyx, whose webhook carries no company id: the caller resolves
+/// the company from the number that was called first.
 pub async fn find_customer_by_phone(
     pool: &MySqlPool,
+    company_id: i32,
     last10: &str,
 ) -> Result<Option<CustomerPhoneMatch>, sqlx::Error> {
     if let Some(customer) = sqlx::query_as!(
@@ -302,13 +302,15 @@ pub async fn find_customer_by_phone(
         SELECT cc.customer_id, c.company_id
         FROM cloudtalk_contacts cc
         INNER JOIN customers c ON c.id = cc.customer_id AND c.deleted_at IS NULL
-        WHERE (
+        WHERE c.company_id = ?
+          AND (
             RIGHT(cc.phone_e164_1, 10) = ?
             OR RIGHT(cc.phone_e164_2, 10) = ?
-        )
+          )
         ORDER BY c.id DESC
         LIMIT 1
         "#,
+        company_id,
         last10,
         last10,
     )
@@ -324,6 +326,7 @@ pub async fn find_customer_by_phone(
         SELECT c.id AS customer_id, c.company_id
         FROM customers c
         WHERE c.deleted_at IS NULL
+          AND c.company_id = ?
           AND (
             RIGHT(REGEXP_REPLACE(COALESCE(c.phone, ''), '[^0-9]', ''), 10) = ?
             OR RIGHT(REGEXP_REPLACE(COALESCE(c.phone_2, ''), '[^0-9]', ''), 10) = ?
@@ -331,6 +334,7 @@ pub async fn find_customer_by_phone(
         ORDER BY c.id DESC
         LIMIT 1
         "#,
+        company_id,
         last10,
         last10,
     )

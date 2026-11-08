@@ -160,6 +160,8 @@ pub async fn upsert_conversation(
 pub struct TelnyxCallLookup {
     pub id: i32,
     pub from_number: Option<String>,
+    pub to_number: Option<String>,
+    pub connection_id: Option<String>,
 }
 
 /// Load the stored call row for a `call_sid`. Used after an upsert so we can
@@ -171,8 +173,43 @@ pub async fn find_call_by_sid(
 ) -> Result<Option<TelnyxCallLookup>, sqlx::Error> {
     sqlx::query_as!(
         TelnyxCallLookup,
-        "SELECT id, from_number FROM telnyx_calls WHERE call_sid = ?",
+        "SELECT id, from_number, to_number, connection_id FROM telnyx_calls WHERE call_sid = ?",
         call_sid,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// The company a call came in for: the one whose Telnyx number was called,
+/// else the one whose Telnyx app or connection carried the call.
+async fn company_of_call(
+    pool: &MySqlPool,
+    to_number: Option<&str>,
+    connection_id: Option<&str>,
+) -> Result<Option<i32>, sqlx::Error> {
+    let to10 = to_number.map(last10_digits).unwrap_or_default();
+    if to10.len() == 10
+        && let Some(company_id) = sqlx::query_scalar!(
+            "SELECT company_id FROM telnyx_numbers WHERE last10 = ? ORDER BY active DESC, id DESC LIMIT 1",
+            to10,
+        )
+        .fetch_optional(pool)
+        .await?
+    {
+        return Ok(Some(company_id));
+    }
+    let Some(connection_id) = connection_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    sqlx::query_scalar!(
+        r#"
+        SELECT company_id FROM telnyx_company_config
+        WHERE texml_app_id = ? OR credential_connection_id = ?
+        ORDER BY company_id
+        LIMIT 1
+        "#,
+        connection_id,
+        connection_id,
     )
     .fetch_optional(pool)
     .await
@@ -254,8 +291,8 @@ pub async fn mark_follow_up_reviewed(
 }
 
 /// After a call's transcript is stored, either attach it to the caller's most
-/// recent deal (known phone number) or create a follow-up (unknown phone
-/// number). Runs once per `conversation_ended` event and is idempotent.
+/// recent deal (known phone number in the called company) or create a
+/// follow-up (unknown phone number, or a call for no known company). Runs once per `conversation_ended` event and is idempotent.
 pub async fn record_inbound_follow_up(
     pool: &MySqlPool,
     event: &TelnyxEvent,
@@ -292,7 +329,22 @@ pub async fn record_inbound_follow_up(
 
     let transcript = transcript.unwrap_or_default().trim();
 
-    let customer = find_customer_by_phone(pool, &last10).await?;
+    let to_number = call.to_number.as_deref().or(event.to.as_deref());
+    let connection_id = call
+        .connection_id
+        .as_deref()
+        .or(event.connection_id.as_deref());
+    let Some(company_id) = company_of_call(pool, to_number, connection_id).await? else {
+        tracing::warn!(
+            call_sid,
+            to_number,
+            "Telnyx call is for no known company; creating follow-up instead of note"
+        );
+        insert_follow_up(pool, call.id).await?;
+        return Ok(());
+    };
+
+    let customer = find_customer_by_phone(pool, company_id, &last10).await?;
     let deal = match &customer {
         Some(customer) => get_existing_deal(pool, customer.customer_id).await?,
         None => None,
@@ -368,11 +420,27 @@ mod tests {
         .last_insert_id()
     }
 
+    /// The Telnyx number every test call is made to.
+    const LINE: &str = "+13175550100";
+
+    async fn insert_line(pool: &MySqlPool, company_id: i32) {
+        sqlx::query!(
+            "INSERT INTO telnyx_numbers (company_id, e164, last10) VALUES (?, ?, ?)",
+            company_id,
+            LINE,
+            last10_digits(LINE),
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     async fn insert_telnyx_call(pool: &MySqlPool, call_sid: &str, from_number: &str) -> i32 {
         sqlx::query!(
-            "INSERT INTO telnyx_calls (call_sid, from_number) VALUES (?, ?)",
+            "INSERT INTO telnyx_calls (call_sid, from_number, to_number) VALUES (?, ?, ?)",
             call_sid,
             from_number,
+            LINE,
         )
         .execute(pool)
         .await
@@ -438,6 +506,7 @@ mod tests {
     #[test_db::test]
     async fn known_number_adds_note_to_most_recent_deal(pool: MySqlPool) {
         let company_id = insert_company(&pool).await;
+        insert_line(&pool, company_id).await;
         let customer_id = insert_customer(&pool, company_id, Some("+13173161456")).await;
         let deal_id = insert_deal(&pool, customer_id).await;
 
@@ -465,8 +534,41 @@ mod tests {
     }
 
     #[test_db::test]
+    async fn caller_known_only_to_another_company_gets_no_note(pool: MySqlPool) {
+        let line_company = insert_company(&pool).await;
+        insert_line(&pool, line_company).await;
+        let other_company = insert_company(&pool).await;
+        let customer_id = insert_customer(&pool, other_company, Some("+13173161456")).await;
+        insert_deal(&pool, customer_id).await;
+        let call_id = insert_telnyx_call(&pool, "call-other", "+13173161456").await;
+
+        record_inbound_follow_up(&pool, &event_for("call-other", "+13173161456"), Some("Hi"))
+            .await
+            .unwrap();
+
+        assert_eq!(count_telnyx_notes(&pool).await, 0);
+        assert!(follow_up_for_call(&pool, call_id).await.is_some());
+    }
+
+    #[test_db::test]
+    async fn call_for_no_known_company_gets_no_note(pool: MySqlPool) {
+        let company_id = insert_company(&pool).await;
+        let customer_id = insert_customer(&pool, company_id, Some("+13173161456")).await;
+        insert_deal(&pool, customer_id).await;
+        let call_id = insert_telnyx_call(&pool, "call-noline", "+13173161456").await;
+
+        record_inbound_follow_up(&pool, &event_for("call-noline", "+13173161456"), Some("Hi"))
+            .await
+            .unwrap();
+
+        assert_eq!(count_telnyx_notes(&pool).await, 0);
+        assert!(follow_up_for_call(&pool, call_id).await.is_some());
+    }
+
+    #[test_db::test]
     async fn known_number_without_deal_creates_follow_up(pool: MySqlPool) {
         let company_id = insert_company(&pool).await;
+        insert_line(&pool, company_id).await;
         insert_customer(&pool, company_id, Some("+13173161456")).await;
 
         let call_id = insert_telnyx_call(&pool, "call-nodeal", "+13173161456").await;
@@ -497,6 +599,7 @@ mod tests {
     #[test_db::test]
     async fn repeated_events_do_not_duplicate_note(pool: MySqlPool) {
         let company_id = insert_company(&pool).await;
+        insert_line(&pool, company_id).await;
         let customer_id = insert_customer(&pool, company_id, Some("+13173161456")).await;
         insert_deal(&pool, customer_id).await;
 

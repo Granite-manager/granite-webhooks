@@ -7,18 +7,25 @@ use sqlx::{MySqlPool, mysql::MySqlQueryResult};
 use std::collections::HashMap;
 use uuid::Uuid;
 
+/// `%`, `_` and `\` in `term` match only themselves in `LIKE ... ESCAPE '\'`.
+fn escape_like(term: &str) -> String {
+    term.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 pub async fn get_full_message_id(
     pool: &sqlx::MySqlPool,
     message_id: &str,
 ) -> Result<Option<String>, sqlx::Error> {
-    // Create the search pattern (e.g., "abc" becomes "abc%")
-    let pattern = format!("{message_id}%");
+    // "abc" becomes "abc%"; a `%` or `_` in the id matches only itself.
+    let pattern = format!("{}%", escape_like(message_id));
 
     sqlx::query_scalar!(
         r#"
         SELECT message_id
         FROM emails
-        WHERE message_id LIKE ?
+        WHERE message_id LIKE ? ESCAPE '\\'
         LIMIT 1
         "#,
         pattern
@@ -95,13 +102,13 @@ pub async fn get_prior_email_by_message_id_prefix(
         WHERE message_id IS NOT NULL
           AND CHAR_LENGTH(message_id) >= 32
           AND (
-            message_id LIKE CONCAT(?, '%')
-            OR ? LIKE CONCAT(message_id, '%')
+            message_id LIKE CONCAT(?, '%') ESCAPE '\\'
+            OR LEFT(?, CHAR_LENGTH(message_id)) = message_id
           )
         ORDER BY sent_at DESC
         LIMIT 1
         "#,
-        message_id,
+        escape_like(message_id),
         message_id
     )
     .fetch_optional(pool)
@@ -390,6 +397,60 @@ pub async fn get_inbound_email_notify_context(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn insert_email(pool: &MySqlPool, message_id: &str, thread_id: &str) {
+        sqlx::query(
+            "INSERT INTO emails (subject, body, thread_id, message_id) VALUES ('s', 'b', ?, ?)",
+        )
+        .bind(thread_id)
+        .bind(message_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[test_db::test]
+    async fn message_id_prefix_matches_real_prefixes_only(pool: MySqlPool) {
+        let stored = "0100019a1b2c3d4e-5f6a7b8c-1111-2222-3333-444455556666-000000";
+        insert_email(&pool, stored, "thread-a").await;
+        let thread = |found: Option<PriorEmail>| found.and_then(|prior| prior.thread_id);
+
+        // A truncated stored id, and a reply carrying the full SES id.
+        let full = format!("{stored}@us-east-2.amazonses.com");
+        let found = get_prior_email_by_message_id_prefix(&pool, &full)
+            .await
+            .unwrap();
+        assert_eq!(thread(found), Some("thread-a".into()));
+        let found = get_prior_email_by_message_id_prefix(&pool, &stored[..40])
+            .await
+            .unwrap();
+        assert_eq!(thread(found), Some("thread-a".into()));
+
+        // `%` and `_` are not wildcards.
+        let wildcards = format!("0100019a{}", "_".repeat(30));
+        let found = get_prior_email_by_message_id_prefix(&pool, &wildcards)
+            .await
+            .unwrap();
+        assert!(found.is_none());
+        let found = get_prior_email_by_message_id_prefix(&pool, &"%".repeat(40))
+            .await
+            .unwrap();
+        assert!(found.is_none());
+        assert_eq!(get_full_message_id(&pool, "%").await.unwrap(), None);
+        assert_eq!(
+            get_full_message_id(&pool, &stored[..20]).await.unwrap(),
+            Some(stored.to_string())
+        );
+    }
+
+    #[test_db::test]
+    async fn stored_wildcard_message_id_is_not_a_pattern(pool: MySqlPool) {
+        insert_email(&pool, &"%".repeat(32), "thread-b").await;
+        let found = get_prior_email_by_message_id_prefix(&pool, &"x".repeat(40))
+            .await
+            .unwrap();
+        assert!(found.is_none());
+    }
 
     #[test]
     fn resolve_inbound_customer_name_prefers_database_name() {

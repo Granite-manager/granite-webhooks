@@ -4907,7 +4907,7 @@
           "customer-view"
         ],
         "summary": "List the customer's invoices",
-        "description": "Their `QuickBooks` invoices, newest first; `status` says why there are\nnone. Needs a verified visitor.",
+        "description": "Their `QuickBooks` invoices, newest first; `status` says why there are\nnone (`missing_qbo_id` until the company links the customer to\n`QuickBooks`). Needs a verified visitor.",
         "operationId": "list_customer_view_invoices",
         "parameters": [
           {
@@ -21036,6 +21036,16 @@
           },
           "403": {
             "description": "Caller is not an employee",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`thread_id` is a conversation of another company",
             "content": {
               "application/json": {
                 "schema": {

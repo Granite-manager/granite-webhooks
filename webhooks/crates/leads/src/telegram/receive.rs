@@ -6,8 +6,8 @@ use crate::crud::leads::create_deal;
 use crate::crud::leads::{assign_lead, get_default_list_id_from_company_id};
 use crate::crud::telegram_messages::list_active_manager_telegram_lead_messages;
 use crate::crud::user_position::get_user_position;
+use crate::crud::users::{CodeCheck, IssueCode, link_telegram_with_code, set_user_telegram_token};
 use crate::crud::users::{email_exists, get_user_tg_info, user_has_telegram_id};
-use crate::crud::users::{get_user_telegram_token, set_telegram_id, set_user_telegram_token};
 use crate::libs::constants::{ERR_DB, ERR_SEND_EMAIL, OK_RESPONSE};
 use crate::libs::constants::{FORBIDDEN_RESPONSE, internal_error};
 use crate::libs::phone_push::{Audience, LeadKind, push_lead, push_lead_taken};
@@ -94,6 +94,9 @@ async fn update_manager_lead_messages<T: Telegram>(
     }
 }
 
+/// The reply while a user is locked out by wrong link codes.
+const TOO_MANY_CODES: &str = "Too many wrong codes. Try again in an hour.";
+
 async fn handle_start_command<T: Telegram>(
     pool: &MySqlPool,
     bot: &T,
@@ -117,14 +120,18 @@ async fn handle_start_command<T: Telegram>(
             );
     }
     let code = gen_code();
-    let db_result = set_user_telegram_token(pool, chat_id.0, code, email).await;
-    if db_result.is_err() {
-        tracing::error!(
-            ?db_result,
-            chat_id = chat_id.0,
-            "Failed to set user telegram token"
-        );
-        return internal_error(ERR_DB);
+    match set_user_telegram_token(pool, chat_id.0, code, email).await {
+        Ok(IssueCode::Issued) => {}
+        Ok(IssueCode::Locked) => {
+            return bot
+                .send_message(chat_id, TOO_MANY_CODES)
+                .await
+                .map_or_else(|e| e, |_| (StatusCode::OK, "Too many wrong codes"));
+        }
+        Err(e) => {
+            tracing::error!(?e, chat_id = chat_id.0, "Failed to set user telegram token");
+            return internal_error(ERR_DB);
+        }
     }
     let message_result = send_message(
         &[email],
@@ -170,9 +177,15 @@ async fn handle_telegram_code<T: Telegram>(
                 |_| (StatusCode::OK, "User already has a telegram id"),
             );
     }
-    let db_code = match get_user_telegram_token(pool, chat_id.0).await {
-        Ok(Some(db_code)) => db_code,
-        Ok(None) => {
+    let (reply, status) = match link_telegram_with_code(pool, chat_id.0, code).await {
+        Ok(CodeCheck::Linked) => ("Accepted, you are now registered.", "OK"),
+        Ok(CodeCheck::Wrong) => ("Invalid code", "Invalid code"),
+        Ok(CodeCheck::Expired) => (
+            "This code has expired. Send /email <email> for a new one.",
+            "Code expired",
+        ),
+        Ok(CodeCheck::Locked) => (TOO_MANY_CODES, "Too many wrong codes"),
+        Ok(CodeCheck::NoCode) => {
             tracing::error!(
                 chat_id = chat_id.0,
                 "User does not have a confirmation token"
@@ -183,23 +196,13 @@ async fn handle_telegram_code<T: Telegram>(
             );
         }
         Err(e) => {
-            tracing::error!(?e, chat_id = chat_id.0, "Failed to get user telegram token");
+            tracing::error!(?e, chat_id = chat_id.0, "Failed to check telegram code");
             return internal_error(ERR_DB);
         }
     };
-    if db_code == code {
-        if let Err(e) = set_telegram_id(pool, chat_id.0).await {
-            tracing::error!(?e, chat_id = chat_id.0, "Failed to set telegram id");
-            return internal_error(ERR_DB);
-        }
-        return bot
-            .send_message(chat_id, "Accepted, you are now registered.")
-            .await
-            .map_or_else(|e| e, |_| OK_RESPONSE);
-    }
-    bot.send_message(chat_id, "Invalid code")
+    bot.send_message(chat_id, reply)
         .await
-        .map_or_else(|e| e, |_| (StatusCode::OK, "Invalid code"))
+        .map_or_else(|e| e, |_| (StatusCode::OK, status))
 }
 
 async fn handle_message<T: Telegram>(msg: Message, pool: &MySqlPool, bot: &T) -> BasicResponse {
@@ -348,16 +351,15 @@ async fn handle_assign_lead<T: Telegram>(
     .await;
     // The managers' phones hear who has it, as their Telegram messages did; never the one
     // who pressed the button (whatever company their account is in: an owner's may be another).
-    let assigners: Vec<i32> = sqlx::query_scalar(
-        "SELECT id FROM users WHERE telegram_id = ? AND is_deleted = 0",
-    )
-    .bind(message.chat.id.0)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_else(|error| {
-        tracing::warn!(?error, lead_id, "Assigning manager not looked up");
-        Vec::new()
-    });
+    let assigners: Vec<i32> =
+        sqlx::query_scalar("SELECT id FROM users WHERE telegram_id = ? AND is_deleted = 0")
+            .bind(message.chat.id.0)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_else(|error| {
+                tracing::warn!(?error, lead_id, "Assigning manager not looked up");
+                Vec::new()
+            });
     let except = std::iter::once(position.user_id).chain(assigners).collect();
     push_lead_taken(
         position.company_id,
@@ -698,7 +700,7 @@ mod local_tests {
             .await
             .unwrap();
         sqlx::query!(
-            "UPDATE users SET telegram_conf_code = 555, temp_telegram_id = 3 WHERE id = ?",
+            "UPDATE users SET telegram_conf_code = 555, temp_telegram_id = 3, telegram_conf_expires_at = NOW() + INTERVAL 10 MINUTE WHERE id = ?",
             user_id
         )
         .execute(&pool)
@@ -720,7 +722,7 @@ mod local_tests {
             .await
             .unwrap();
         sqlx::query!(
-            "UPDATE users SET telegram_conf_code = 999, temp_telegram_id = 4 WHERE id = ?",
+            "UPDATE users SET telegram_conf_code = 999, temp_telegram_id = 4, telegram_conf_expires_at = NOW() + INTERVAL 10 MINUTE WHERE id = ?",
             user_id
         )
         .execute(&pool)
@@ -738,6 +740,94 @@ mod local_tests {
         assert_eq!(user.telegram_id, Some(4));
         let sent = bot.sent.lock().unwrap();
         assert!(sent[0].1.contains("Accepted, you are now registered"));
+    }
+
+    #[test_db::test]
+    async fn test_code_expired(pool: MySqlPool) {
+        let bot = MockTelegram::new();
+        let user_id = create_default_user(&pool, "test@example.com")
+            .await
+            .unwrap();
+        sqlx::query!(
+            "UPDATE users SET telegram_conf_code = 999, temp_telegram_id = 5, telegram_conf_expires_at = NOW() - INTERVAL 1 MINUTE WHERE id = ?",
+            user_id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let res = handle_telegram_code(&pool, &bot, chat_id(5), 999).await;
+
+        assert_eq!(res.0, StatusCode::OK);
+        let user = sqlx::query!("SELECT telegram_id FROM users WHERE id = ?", user_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(user.telegram_id, None);
+        assert!(bot.sent.lock().unwrap()[0].1.contains("expired"));
+    }
+
+    #[test_db::test]
+    async fn test_code_locks_after_five_wrong_codes(pool: MySqlPool) {
+        let bot = MockTelegram::new();
+        let user_id = create_default_user(&pool, "lock@example.com")
+            .await
+            .unwrap();
+        handle_start_command(&pool, &bot, "lock@example.com", chat_id(6)).await;
+        let code =
+            sqlx::query_scalar!("SELECT telegram_conf_code FROM users WHERE id = ?", user_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .expect("code is stored");
+        let wrong = if code == 100_000 { 100_001 } else { 100_000 };
+        for _ in 0..5 {
+            handle_telegram_code(&pool, &bot, chat_id(6), wrong).await;
+        }
+        // The right code no longer links, and no new code is handed out.
+        handle_telegram_code(&pool, &bot, chat_id(6), code).await;
+        handle_start_command(&pool, &bot, "lock@example.com", chat_id(6)).await;
+
+        let user = sqlx::query!(
+            "SELECT telegram_id, telegram_conf_code FROM users WHERE id = ?",
+            user_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(user.telegram_id, None);
+        assert_eq!(user.telegram_conf_code, None);
+        let sent = bot.sent.lock().unwrap();
+        assert!(sent[1..5].iter().all(|m| m.1 == "Invalid code"));
+        assert_eq!(sent[5].1, TOO_MANY_CODES);
+        assert_eq!(sent.last().unwrap().1, TOO_MANY_CODES);
+    }
+
+    #[test_db::test]
+    async fn test_code_links_only_the_last_email_of_the_chat(pool: MySqlPool) {
+        let bot = MockTelegram::new();
+        let first = create_default_user(&pool, "first@example.com")
+            .await
+            .unwrap();
+        let second = create_default_user(&pool, "second@example.com")
+            .await
+            .unwrap();
+        handle_start_command(&pool, &bot, "first@example.com", chat_id(8)).await;
+        handle_start_command(&pool, &bot, "second@example.com", chat_id(8)).await;
+        let code = sqlx::query_scalar!("SELECT telegram_conf_code FROM users WHERE id = ?", second)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .expect("code is stored");
+
+        handle_telegram_code(&pool, &bot, chat_id(8), code).await;
+
+        let linked = sqlx::query_scalar!("SELECT id FROM users WHERE telegram_id = 8 ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(linked, vec![i32::try_from(second).unwrap()]);
+        assert_ne!(linked, vec![i32::try_from(first).unwrap()]);
     }
 
     // -----------------------------

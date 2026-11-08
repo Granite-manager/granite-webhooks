@@ -220,13 +220,19 @@ async fn by_name(
     access: &Access,
     name: &str,
 ) -> Result<Vec<QboCustomer>, QboError> {
+    // `%` is QuickBooks' wildcard: a name's own `%` is dropped.
+    let name = name.replace('%', "");
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(Vec::new());
+    }
     let rows = state
         .qbo
         .query(
             access,
             &format!(
                 "select Id, DisplayName, PrimaryEmailAddr from Customer where DisplayName like '%{}%' maxresults 25",
-                escape(name.trim())
+                escape(name)
             ),
             "Customer",
         )
@@ -386,23 +392,27 @@ pub async fn customer_invoices(
     Path(customer_id): Path<i32>,
 ) -> ApiResult<Json<CustomerInvoices>> {
     refuse_installer(&state, &user).await?;
-    invoices_of_customer(&state, user.company_id, customer_id)
+    invoices_of_customer(&state, user.company_id, customer_id, true)
         .await
         .map(Json)
 }
 
-/// A customer's `QuickBooks` invoices, linking the customer first when it
-/// is not linked yet (also for the customer's own view).
+/// A customer's `QuickBooks` invoices. With `link` (staff), a customer not
+/// linked yet is matched and linked first; without it (the customer's own
+/// view) only an existing link counts.
 pub async fn invoices_of_customer(
     state: &AppState,
     company_id: i32,
     customer_id: i32,
+    link: bool,
 ) -> ApiResult<CustomerInvoices> {
     let row = customer(state, company_id, customer_id).await?;
     let result = async {
         let access = state.qbo.access(&state.pool, company_id).await?;
         let qbo_id = if let Some(id) = row.qbo_id.clone() {
             id
+        } else if !link {
+            return Ok(CustomerInvoices::empty(InvoicesStatus::MissingQboId));
         } else {
             let Some(id) = resolve_qbo_id(state, &access, &row).await? else {
                 return Ok(CustomerInvoices::empty(InvoicesStatus::MissingQboId));

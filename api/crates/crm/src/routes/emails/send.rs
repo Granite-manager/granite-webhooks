@@ -51,6 +51,7 @@ const MAX_DELAY_DAYS: i64 = 90;
         (status = 400, description = "Invalid recipients, empty email, unknown deal, bad send time, an attachment the caller may not use, or an address SES refused", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an employee", body = ErrorBody),
+        (status = 404, description = "`thread_id` is a conversation of another company", body = ErrorBody),
         (status = 500, description = "Database error, or sent but not recorded", body = ErrorBody),
         (status = 502, description = "Sending failed", body = ErrorBody),
     ),
@@ -62,6 +63,11 @@ pub async fn send(
     JsonBody(request): JsonBody<SendEmailRequest>,
 ) -> ApiResult<Json<SendEmailResult>> {
     let email = Cleaned::from_request(request)?;
+    if let Some(thread_id) = email.thread_id.as_deref()
+        && !thread_open_to(&state.pool, thread_id, user.company_id).await?
+    {
+        return Err(ApiError::NotFound);
+    }
     if let Some(send_at) = email.send_at {
         schedule(&state.pool, &user, &email, send_at).await?;
         return Ok(Json(SendEmailResult {
@@ -71,6 +77,24 @@ pub async fn send(
         }));
     }
     deliver(&state, &user, &email).await.map(Json)
+}
+
+/// May the company write into this conversation: it is new (no message has
+/// its id yet) or the company may read it.
+async fn thread_open_to(
+    pool: &MySqlPool,
+    thread_id: &str,
+    company_id: i32,
+) -> Result<bool, sqlx::Error> {
+    let exists: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM emails WHERE thread_id = ? LIMIT 1")
+            .bind(thread_id)
+            .fetch_optional(pool)
+            .await?;
+    if exists.is_none() {
+        return Ok(true);
+    }
+    super::thread::readable(pool, thread_id, company_id).await
 }
 
 /// A validated request.
@@ -458,16 +482,19 @@ async fn sender(pool: &MySqlPool, user: &SessionUser) -> Result<Sender, sqlx::Er
 async fn thread_references(
     pool: &MySqlPool,
     thread_id: Option<&str>,
+    company_id: i32,
 ) -> Result<Vec<String>, sqlx::Error> {
     let Some(thread_id) = thread_id else {
         return Ok(Vec::new());
     };
     let ids: Vec<String> = sqlx::query_scalar(
         "SELECT message_id FROM emails
-         WHERE thread_id = ? AND message_id IS NOT NULL AND message_id <> ''
+         WHERE thread_id = ? AND (company_id = ? OR company_id IS NULL)
+           AND message_id IS NOT NULL AND message_id <> ''
          ORDER BY sent_at ASC",
     )
     .bind(thread_id)
+    .bind(company_id)
     .fetch_all(pool)
     .await?;
     Ok(ids
@@ -526,9 +553,11 @@ impl Envelope {
     async fn new(pool: &MySqlPool, user: &SessionUser, email: &Cleaned) -> ApiResult<Self> {
         let in_reply_to: Option<String> = match &email.thread_id {
             Some(thread_id) => sqlx::query_scalar(
-                "SELECT message_id FROM emails WHERE thread_id = ? ORDER BY sent_at DESC LIMIT 1",
+                "SELECT message_id FROM emails WHERE thread_id = ? AND (company_id = ? OR company_id IS NULL)
+                 ORDER BY sent_at DESC LIMIT 1",
             )
             .bind(thread_id)
+            .bind(user.company_id)
             .fetch_optional(pool)
             .await?
             .flatten(),
@@ -536,7 +565,8 @@ impl Envelope {
         };
         Ok(Self {
             sender: sender(pool, user).await?,
-            references: thread_references(pool, email.thread_id.as_deref()).await?,
+            references: thread_references(pool, email.thread_id.as_deref(), user.company_id)
+                .await?,
             in_reply_to,
             attachments: email
                 .attachments

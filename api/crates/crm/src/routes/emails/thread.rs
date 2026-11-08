@@ -39,13 +39,16 @@ pub async fn readable(
 async fn counterparty(
     pool: &MySqlPool,
     thread_id: &str,
-    user_email: &str,
+    mailbox: &Mailbox,
 ) -> Result<String, sqlx::Error> {
+    let user_email = mailbox.email.as_str();
     let rows: Vec<(Option<String>, Option<String>, Option<i32>)> = sqlx::query_as(
         "SELECT sender_email, receiver_email, sender_user_id FROM emails
-         WHERE thread_id = ? ORDER BY sent_at DESC, id DESC LIMIT 20",
+         WHERE thread_id = ? AND (company_id = ? OR company_id IS NULL)
+         ORDER BY sent_at DESC, id DESC LIMIT 20",
     )
     .bind(thread_id)
+    .bind(mailbox.company_id)
     .fetch_all(pool)
     .await?;
     let me = normalize_address(Some(user_email));
@@ -113,12 +116,14 @@ pub async fn thread_customer(
 ) -> Result<(Option<i64>, ThreadCustomer), sqlx::Error> {
     let deal_id: Option<i64> = sqlx::query_scalar(
         "SELECT CAST(deal_id AS SIGNED) FROM emails WHERE thread_id = ? AND deal_id IS NOT NULL
+           AND (company_id = ? OR company_id IS NULL)
          ORDER BY sent_at DESC, id DESC LIMIT 1",
     )
     .bind(thread_id)
+    .bind(mailbox.company_id)
     .fetch_optional(pool)
     .await?;
-    let other = counterparty(pool, thread_id, &mailbox.email).await?;
+    let other = counterparty(pool, thread_id, mailbox).await?;
 
     if let Some(deal_id) = deal_id {
         let customer: Option<(i32, Option<String>)> = sqlx::query_as(
@@ -322,15 +327,24 @@ pub async fn finish_attachments(
 
 /// A thread's messages (oldest first, with attachments; on a deal only its
 /// own and unassigned ones) and every non-BCC address, in header order.
+///
+/// With a `company_id`, only that company's messages (and legacy ones without
+/// a company); `None` (the shared sales mailbox) reads every message.
 pub async fn thread_contents(
     pool: &MySqlPool,
     storage: &Storage,
     thread_id: &str,
+    company_id: Option<i32>,
     trash: bool,
     deal_id: Option<i64>,
 ) -> Result<(Vec<ThreadMessage>, Vec<Participant>), sqlx::Error> {
     let deleted = if trash { "IS NOT NULL" } else { "IS NULL" };
     let mut args: Vec<Arg> = vec![thread_id.into()];
+    let company_filter = company_id.map_or(String::new(), |company_id| {
+        args.push(company_id.into());
+        " AND (e.company_id = ? OR e.company_id IS NULL)".to_string()
+    });
+    let company_args = args.clone();
     let deal_filter = deal_id.map_or(String::new(), |deal_id| {
         args.push(deal_id.into());
         " AND (e.deal_id = ? OR e.deal_id IS NULL)".to_string()
@@ -343,7 +357,7 @@ pub async fn thread_contents(
              FROM emails e
              LEFT JOIN email_reads er ON e.message_id = er.message_id AND {CLIENT_OPEN_MIN_DELAY}
              LEFT JOIN users u ON u.id = e.sender_user_id
-             WHERE e.deleted_at {deleted} AND e.thread_id = ?{deal_filter}
+             WHERE e.deleted_at {deleted} AND e.thread_id = ?{company_filter}{deal_filter}
              GROUP BY e.id
              ORDER BY e.sent_at, e.id"
         ),
@@ -354,12 +368,13 @@ pub async fn thread_contents(
     .await?;
 
     let deal_filter = deal_id.map_or(String::new(), |_| {
-        " AND (deal_id = ? OR deal_id IS NULL)".to_string()
+        " AND (e.deal_id = ? OR e.deal_id IS NULL)".to_string()
     });
     let mut attachments: Vec<Attachment> = Sql::new(
         format!(
             "SELECT id, email_id, content_type, content_subtype, filename, url, is_inline FROM email_attachments
-             WHERE email_id IN (SELECT id FROM emails WHERE deleted_at {deleted} AND thread_id = ?{deal_filter})
+             WHERE email_id IN (SELECT e.id FROM emails e
+                                WHERE e.deleted_at {deleted} AND e.thread_id = ?{company_filter}{deal_filter})
              ORDER BY id"
         ),
         args,
@@ -376,17 +391,20 @@ pub async fn thread_contents(
             .collect();
     }
 
-    let participants: Vec<Participant> = sqlx::query_as(
-        "SELECT ep.email_id, CAST(ep.type AS CHAR) AS type, ep.email, ep.display_name, ep.user_id,
-                ep.customer_id, u.name AS user_name, c.name AS customer_name
-         FROM email_participants ep
-         JOIN emails e ON e.id = ep.email_id
-         LEFT JOIN users u ON u.id = ep.user_id
-         LEFT JOIN customers c ON c.id = ep.customer_id
-         WHERE e.thread_id = ? AND ep.type <> 'bcc'
-         ORDER BY ep.email_id, ep.position, ep.id",
+    let participants: Vec<Participant> = Sql::new(
+        format!(
+            "SELECT ep.email_id, CAST(ep.type AS CHAR) AS type, ep.email, ep.display_name, ep.user_id,
+                    ep.customer_id, u.name AS user_name, c.name AS customer_name
+             FROM email_participants ep
+             JOIN emails e ON e.id = ep.email_id
+             LEFT JOIN users u ON u.id = ep.user_id
+             LEFT JOIN customers c ON c.id = ep.customer_id
+             WHERE e.thread_id = ?{company_filter} AND ep.type <> 'bcc'
+             ORDER BY ep.email_id, ep.position, ep.id"
+        ),
+        company_args,
     )
-    .bind(thread_id)
+    .query_as()
     .fetch_all(pool)
     .await?;
 
@@ -458,7 +476,7 @@ pub async fn thread_detail(
     let sending_email = sending_address(pool, mailbox.company_id, &mailbox.email).await?;
     let (deal_id, customer) = match (on_deal, deal_customer) {
         (Some(deal_id), Some((customer_id, name))) => {
-            let other = counterparty(pool, thread_id, &mailbox.email).await?;
+            let other = counterparty(pool, thread_id, mailbox).await?;
             (
                 Some(deal_id),
                 ThreadCustomer {
@@ -477,8 +495,15 @@ pub async fn thread_detail(
         None => Vec::new(),
     };
 
-    let (messages, participants) =
-        thread_contents(pool, storage, thread_id, trash, deal_id).await?;
+    let (messages, participants) = thread_contents(
+        pool,
+        storage,
+        thread_id,
+        Some(mailbox.company_id),
+        trash,
+        deal_id,
+    )
+    .await?;
 
     Ok(Some(ThreadDetail {
         thread_id: thread_id.to_string(),

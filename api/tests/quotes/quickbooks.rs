@@ -186,6 +186,32 @@ async fn server(pool: &MySqlPool, access_expires_in: i64) -> (TestServer, Arc<Mu
 }
 
 #[test_db::test(seed)]
+async fn the_customers_own_view_never_links_a_customer(pool: MySqlPool) {
+    // A live access token: no refresh, and nothing else reaches QuickBooks.
+    let (_server, _) = server(&pool, 3600).await;
+    let state = AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN).with_qbo(Qbo::new(
+        Some(KEY),
+        None,
+        "http://127.0.0.1:9",
+        "http://127.0.0.1:9/token",
+        false,
+    ));
+    let found = api::routes::quickbooks::invoices_of_customer(&state, 100, 1000, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        found.status,
+        api::routes::quickbooks::InvoicesStatus::MissingQboId
+    );
+    let linked: Option<String> =
+        sqlx::query_scalar("SELECT CAST(qbo_id AS CHAR) FROM customers WHERE id = 1000")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(linked, None);
+}
+
+#[test_db::test(seed)]
 async fn invoices_link_the_customer_and_refresh_the_token(pool: MySqlPool) {
     let (server, _) = server(&pool, 10).await;
     let body: Value = server

@@ -783,10 +783,17 @@ mod route_tests {
             ),
             StatusCode::OK
         );
-        assert_eq!(status(app.post("/internal/906").await), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status(app.post("/internal/906").await),
+            StatusCode::UNAUTHORIZED
+        );
         // The old REMIX_KEY or UUID is not a token.
         assert_eq!(
-            status(app.post("/internal/906").authorization_bearer("remix-key").await),
+            status(
+                app.post("/internal/906")
+                    .authorization_bearer("remix-key")
+                    .await
+            ),
             StatusCode::UNAUTHORIZED
         );
         assert_eq!(
