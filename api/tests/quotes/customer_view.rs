@@ -248,6 +248,40 @@ INSERT INTO crew_positions (user_id, company_id, latitude, longitude, recorded_a
   (101, 100, 39.7, -86.1, UTC_TIMESTAMP());
 ";
 
+/// A coming visit's date reaches the project's steps only once the job is
+/// Confirmed; a visit already past keeps its date.
+#[test_db::test(seed)]
+async fn a_coming_step_date_waits_for_the_job_to_be_confirmed(pool: MySqlPool) {
+    let (server, sent) = server(&pool).await;
+    sqlx::raw_sql(PROJECT_FIXTURE).execute(&pool).await.unwrap();
+    unlock(&server, &sent).await;
+    sqlx::raw_sql(
+        "UPDATE events
+            SET start_date = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 DAY),
+                end_date = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 5 DAY)
+          WHERE id = 9301",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    for (status, shown) in [
+        (None, false),
+        (Some("called"), false),
+        (Some("ready"), false),
+        (Some("confirmed"), true),
+    ] {
+        sqlx::query("UPDATE events SET status = ? WHERE id = 9301")
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let projects = server.get(&page("/projects")).await.json::<Value>();
+        assert_eq!(projects[0]["install_date"].is_string(), shown, "{status:?}");
+        assert_eq!(projects[0]["template_date"], "2026-04-18T14:00:00Z");
+    }
+}
+
 #[test_db::test(seed)]
 async fn the_page_shows_the_rep_documents_timeline_photos_and_crew(pool: MySqlPool) {
     let (server, sent) = server(&pool).await;

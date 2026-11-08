@@ -109169,14 +109169,14 @@
               "string",
               "null"
             ],
-            "description": "Its latest template visit with a date (ISO 8601, UTC), past or\ncoming. A visit belongs to a project by [`project_of`]."
+            "description": "Its latest template visit with a date (ISO 8601, UTC): past, or coming\nand Confirmed. A visit belongs to a project by [`project_of`]."
           },
           "install_date": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Its latest installation visit with a date (ISO 8601, UTC), past or\ncoming."
+            "description": "Its latest installation visit with a date (ISO 8601, UTC): past, or\ncoming and Confirmed."
           }
         }
       },

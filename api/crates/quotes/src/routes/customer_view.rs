@@ -888,12 +888,12 @@ pub struct ViewProject {
     pub slab_pictures: Option<String>,
     /// When the last slab was cut, once every slab is (ISO 8601, UTC).
     pub cut_date: Option<String>,
-    /// Its latest template visit with a date (ISO 8601, UTC), past or
-    /// coming. A visit belongs to a project by [`project_of`].
+    /// Its latest template visit with a date (ISO 8601, UTC): past, or coming
+    /// and Confirmed. A visit belongs to a project by [`project_of`].
     #[sqlx(skip)]
     pub template_date: Option<String>,
-    /// Its latest installation visit with a date (ISO 8601, UTC), past or
-    /// coming.
+    /// Its latest installation visit with a date (ISO 8601, UTC): past, or
+    /// coming and Confirmed.
     #[sqlx(skip)]
     pub install_date: Option<String>,
 }
@@ -1015,6 +1015,7 @@ pub async fn projects(
           WHERE e.customer_id = ? AND u.company_id = ? AND e.deleted_date IS NULL
             AND e.unscheduled = 0 AND NULLIF(TRIM(e.rrule), '') IS NULL
             AND cal.slug IN ('templates', 'installations')
+            AND (e.status = 'confirmed' OR e.start_date < UTC_TIMESTAMP())
           ORDER BY e.start_date, e.id",
     )
     .bind(customer.id)
