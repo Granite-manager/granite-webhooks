@@ -8,6 +8,7 @@
 //! - `GET    /v1/projects/payments`               → paid or not, from QuickBooks invoices
 //! - `GET    /v1/projects/{id}`                    → one project's page; `DELETE` deletes it (Managers, Sales Managers)
 //! - `POST   /v1/projects/{id}/actions`            → move, link, pay, hold, cancel, archive, correct
+//! - `POST   /v1/projects/reorder`                 → save a column's manual order
 //! - `GET`/`POST /v1/deals/{id}/project`            → a deal's project; start it by hand
 //! - `/v1/projects/{id}/tasks[/{task_id}]`         → tasks for anyone in the company (POST, PATCH, DELETE)
 //! - `/v1/projects/{id}/notes[/{note_id}]`         → notes (POST, DELETE)
@@ -33,6 +34,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(payments::list))
         .routes(routes!(handlers::get, handlers::delete))
         .routes(routes!(handlers::act))
+        .routes(routes!(handlers::reorder))
         .routes(routes!(handlers::deal_project, handlers::convert_deal))
         .routes(routes!(tasks::create_task))
         .routes(routes!(tasks::update_task, tasks::delete_task))

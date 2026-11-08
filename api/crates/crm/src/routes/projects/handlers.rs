@@ -2,7 +2,7 @@ use super::access::{STAGE_SQL, Stage, Viewer};
 use super::schemas::{
     BoardQuery, Calendar, ConvertedDeal, DealProject, LinkableSale, Person, Project, ProjectAction,
     ProjectAppointment, ProjectFile, ProjectNote, ProjectTask, ProjectWorkspace, ProjectsBoard,
-    StageChange,
+    ReorderProjects, StageChange,
 };
 use super::service::{self, project_select, visible_project};
 use crate::auth::EmployeeUser;
@@ -430,6 +430,64 @@ pub async fn act(
     service::apply(&state.pool, &viewer, id, action)
         .await
         .map(Json)
+}
+
+/// Save a column's manual order
+///
+/// Numbers the projects sent from 0, in the order sent. Only the order
+/// changes, so a page already open can still act on them. Every project must
+/// belong to the company, otherwise nothing is saved.
+#[crate::openapi::path(
+    post,
+    path = "/v1/projects/reorder",
+    operation_id = "reorder_projects",
+    tag = "projects",
+    request_body = ReorderProjects,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "No projects, or more than a page of them", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "The caller's position can't move projects", body = ErrorBody),
+        (status = 404, description = "A project is not one of the company's", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn reorder(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    JsonBody(body): JsonBody<ReorderProjects>,
+) -> ApiResult<axum::http::StatusCode> {
+    let viewer = Viewer::load(&state.pool, &user).await?;
+    Viewer::require(viewer.permissions.production)?;
+    if body.ids.is_empty() || body.ids.len() > PAGE as usize {
+        return Err(ApiError::BadRequest(
+            "Send one column's projects to reorder".into(),
+        ));
+    }
+    let company = viewer.company_id;
+    let mut tx = state.pool.begin().await?;
+    let mut owned = QueryBuilder::<MySql>::new("SELECT COUNT(*) FROM projects WHERE company_id = ");
+    owned.push_bind(company).push(" AND id IN (");
+    let mut list = owned.separated(", ");
+    for id in &body.ids {
+        list.push_bind(*id);
+    }
+    owned.push(")");
+    let found: i64 = owned.build_query_scalar().fetch_one(&mut *tx).await?;
+    if usize::try_from(found).ok() != Some(body.ids.len()) {
+        return Err(ApiError::NotFound);
+    }
+    for (position, id) in body.ids.iter().enumerate() {
+        sqlx::query("UPDATE projects SET position = ? WHERE id = ? AND company_id = ?")
+            .bind(i32::try_from(position).unwrap_or(i32::MAX))
+            .bind(id)
+            .bind(company)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 /// A deal's project
