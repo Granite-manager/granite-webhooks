@@ -29,11 +29,14 @@ pub const SELL_SLABS: &str = "sell_slabs";
 pub const EDIT_TRANSACTIONS: &str = "edit_transactions";
 /// Make, change, copy, sell and delete quotes.
 pub const EDIT_QUOTES: &str = "edit_quotes";
-/// The schedule's Auto plan, a day's route (reroute) and an event's Send SMS.
+/// The schedule's Auto plan and a day's route (reroute).
 pub const PLAN_SCHEDULE: &str = "plan_schedule";
-/// See each job's readiness dot (Not ready, Called, Ready) on the schedule.
+/// See each job's readiness dot (Not ready, Called, Ready, Confirmed) on the schedule.
 /// Only the app reads it; no route needs it.
 pub const SEE_READINESS: &str = "see_readiness";
+/// Text the customer from an event's details
+/// (`POST /v1/events/{id}/confirmation`).
+pub const SEND_SMS: &str = "send_sms";
 /// While a waiting job is dragged onto the month, light up the later days
 /// whose stops are closest to it (`POST /v1/schedule/best-days`).
 pub const BEST_DAYS: &str = "best_days";
@@ -51,7 +54,7 @@ pub struct Skill {
 }
 
 /// Every skill, in the Company page's order.
-pub const SKILLS: [Skill; 6] = [
+pub const SKILLS: [Skill; 7] = [
     Skill {
         key: SELL_SLABS,
         label: "Sell slabs",
@@ -70,12 +73,17 @@ pub const SKILLS: [Skill; 6] = [
     Skill {
         key: PLAN_SCHEDULE,
         label: "Plan the schedule",
-        description: "Auto plan, build a day's route and send SMS from an event.",
+        description: "Auto plan and build a day's route.",
     },
     Skill {
         key: SEE_READINESS,
         label: "See readiness",
-        description: "See each job's readiness dot (Not ready, Called, Ready) on the schedule.",
+        description: "See each job's readiness dot (Not ready, Called, Ready, Confirmed) on the schedule.",
+    },
+    Skill {
+        key: SEND_SMS,
+        label: "Send SMS from events",
+        description: "Text the customer from an event's details.",
     },
     Skill {
         key: BEST_DAYS,
@@ -93,7 +101,7 @@ pub fn skill(key: &str) -> Option<&'static Skill> {
 ///
 /// In [`SKILLS`] order: every position sells slabs and works with
 /// transactions and quotes, as before skills; only Scheduling Manager plans
-/// the schedule and sees readiness. [`BEST_DAYS`] is off until a company
+/// the schedule, sees readiness and sends SMS from events. [`BEST_DAYS`] is off until a company
 /// gives it.
 pub fn default_skills(position_id: i32) -> Vec<&'static str> {
     SKILLS
@@ -101,7 +109,7 @@ pub fn default_skills(position_id: i32) -> Vec<&'static str> {
         .map(|skill| skill.key)
         .filter(|key| {
             *key != BEST_DAYS
-                && (![PLAN_SCHEDULE, SEE_READINESS].contains(key)
+                && (![PLAN_SCHEDULE, SEE_READINESS, SEND_SMS].contains(key)
                     || position_id == SCHEDULING_MANAGER_POSITION)
         })
         .collect()
@@ -208,7 +216,7 @@ pub fn required(method: &Method, path: &str) -> Option<&'static [&'static str]> 
             "schedule",
             "auto-plan" | "optimize-route" | "route-preview",
         ] => Some(&[PLAN_SCHEDULE]),
-        ["v1", "events", id, "confirmation"] if is_id(id) => Some(&[PLAN_SCHEDULE]),
+        ["v1", "events", id, "confirmation"] if is_id(id) => Some(&[SEND_SMS]),
         ["v1", "schedule", "best-days"] => Some(&[BEST_DAYS]),
         _ => None,
     }
@@ -288,10 +296,13 @@ mod tests {
             "/v1/schedule/auto-plan",
             "/v1/schedule/optimize-route",
             "/v1/schedule/route-preview",
-            "/v1/events/8/confirmation",
         ] {
             assert_eq!(required(&post, path), Some(&[PLAN_SCHEDULE][..]), "{path}");
         }
+        assert_eq!(
+            required(&post, "/v1/events/8/confirmation"),
+            Some(&[SEND_SMS][..])
+        );
         assert_eq!(
             required(&post, "/v1/schedule/best-days"),
             Some(&[BEST_DAYS][..])
@@ -332,7 +343,8 @@ mod tests {
                 EDIT_TRANSACTIONS,
                 EDIT_QUOTES,
                 PLAN_SCHEDULE,
-                SEE_READINESS
+                SEE_READINESS,
+                SEND_SMS
             ]
         );
     }
