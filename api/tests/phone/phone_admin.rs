@@ -58,6 +58,77 @@ async fn audit_log(
         .collect()
 }
 
+/// Who has `number`: (user, by position).
+async fn holders(pool: &MySqlPool, number: i32) -> Vec<(i32, bool)> {
+    sqlx::query_as(
+        "SELECT user_id, via_position <> 0 FROM telnyx_number_users
+          WHERE number_id = ? ORDER BY user_id",
+    )
+    .bind(number)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[test_db::test(seed)]
+async fn the_scheduling_manager_number_goes_to_everyone_in_the_position(pool: MySqlPool) {
+    enable_calling(&pool, 100, "").await;
+    numbers(&pool).await;
+    sql(
+        &pool,
+        "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (101, 13, 100)",
+    )
+    .await;
+    let (server, _) = phone_server(pool.clone()).await;
+    let body = |linked: bool, assignments: Value| {
+        json!({ "label": "Scheduling", "kind": "direct", "noAnswerAction": "voicemail",
+                "active": true, "assignments": assignments, "schedulingManagers": linked })
+    };
+
+    // Rita is assigned by hand; Mark has it through the position.
+    let hand = json!([{ "userId": 100, "rings": true, "canCallFrom": true }]);
+    let saved = server
+        .put("/v1/phone/admin/numbers/9903")
+        .with_session(sessions::ADMIN)
+        .json(&body(true, hand.clone()))
+        .await;
+    saved.assert_status_ok();
+    let saved: Value = saved.json();
+    assert_eq!(saved["schedulingManagers"], true);
+    assert_eq!(saved["kind"], "shared");
+    assert_eq!(saved["assignments"], hand);
+    assert_eq!(holders(&pool, 9903).await, [(100, false), (101, true)]);
+
+    // One number per company: linking another moves it, Rita stays.
+    server
+        .put("/v1/phone/admin/numbers/9901")
+        .with_session(sessions::ADMIN)
+        .json(&body(true, json!([])))
+        .await
+        .assert_status_ok();
+    assert_eq!(holders(&pool, 9903).await, [(100, false)]);
+    assert_eq!(holders(&pool, 9901).await, [(101, true)]);
+
+    // Saving it again without the field keeps the link.
+    server
+        .put("/v1/phone/admin/numbers/9901")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "label": "Main", "kind": "main", "noAnswerAction": "voicemail",
+                       "active": true, "assignments": [] }))
+        .await
+        .assert_status_ok();
+    assert_eq!(holders(&pool, 9901).await, [(101, true)]);
+
+    // Unlinked, the position's users lose it.
+    server
+        .put("/v1/phone/admin/numbers/9901")
+        .with_session(sessions::ADMIN)
+        .json(&body(false, json!([])))
+        .await
+        .assert_status_ok();
+    assert_eq!(holders(&pool, 9901).await, []);
+}
+
 #[test_db::test(seed)]
 async fn admins_list_and_change_the_company_numbers(pool: MySqlPool) {
     enable_calling(&pool, 100, "recording_mode = 'both'").await;
@@ -71,7 +142,8 @@ async fn admins_list_and_change_the_company_numbers(pool: MySqlPool) {
     let number = |id: i32, e164: &str, label: &str, kind: &str, assignments: Value| {
         json!({ "id": id, "e164": e164, "label": label, "kind": kind, "noAnswerAction": "ai",
                 "forwardTo": null, "greeting": null, "active": true, "forwardOnly": false,
-                "forwardTextsTo": null, "assignments": assignments })
+                "forwardTextsTo": null, "assignments": assignments,
+                "schedulingManagers": false })
     };
     assert_eq!(
         listed.json::<Value>(),
@@ -144,7 +216,7 @@ async fn admins_list_and_change_the_company_numbers(pool: MySqlPool) {
     let expected = json!({
         "id": 9902, "e164": "+13175550161", "label": "Sales team", "kind": "shared",
         "noAnswerAction": "forward", "forwardTo": "+13175550188", "greeting": null, "active": true,
-        "forwardOnly": false, "forwardTextsTo": null,
+        "forwardOnly": false, "forwardTextsTo": null, "schedulingManagers": false,
         "assignments": [
             { "userId": 100, "rings": true, "canCallFrom": true },
             { "userId": 101, "rings": true, "canCallFrom": false }] });

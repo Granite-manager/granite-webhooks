@@ -956,7 +956,7 @@ async fn the_inbox_switches_between_a_users_lines(pool: MySqlPool) {
         .send(
             sessions::REP,
             json!({ "phone_digits": "3175550100", "text": "Later", "line_id": 9702,
-                    "send_at": "2099-01-01T00:00:00Z" }),
+                    "send_at": (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339() }),
         )
         .await
         .assert_status_ok();

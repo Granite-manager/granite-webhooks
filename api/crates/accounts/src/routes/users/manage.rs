@@ -395,6 +395,7 @@ pub async fn create(
         .execute(&mut *tx)
         .await?;
     }
+    crate::phone::lines::sync_position_lines(&mut tx, company_id).await?;
     tx.commit().await?;
     let id = i32::try_from(id).unwrap_or(i32::MAX);
     let invite = send_invite(&state, id).await?;
@@ -947,8 +948,9 @@ pub async fn update(
         .execute(&mut *tx)
         .await?;
     }
+    crate::phone::lines::sync_position_lines(&mut tx, existing_company).await?;
     tx.commit().await?;
-    let line10 = |phone: Option<String>| phone.map(|p| phone10(&p)).filter(|p| p.len() == 10);
+    let line10 =|phone: Option<String>| phone.map(|p| phone10(&p)).filter(|p| p.len() == 10);
     let (agent_before, phone_before, extension_before, ringcentral_before) = before;
     texting_history::follow(
         &state,
