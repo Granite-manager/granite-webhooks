@@ -293,23 +293,27 @@ pub async fn suppliers_by_phone(
     Ok(out)
 }
 
-/// Rows of the rollup query in `mode`, or none when nothing is visible.
+/// Rows of the rollup query in `mode`, or none when nothing is visible;
+/// `line` keeps only the texts on that line (last ten digits).
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn rollup<T>(
     pool: &MySqlPool,
     provider: SmsProvider,
     user: &SessionUser,
     scope: SmsScope,
     filter: Option<&str>,
+    line: Option<&str>,
     term: &str,
     mode: Mode,
 ) -> Result<Vec<T>, sqlx::Error>
 where
     T: for<'r> sqlx::FromRow<'r, sqlx::mysql::MySqlRow> + Send + Unpin,
 {
-    let narrowed = narrowing(pool, provider, user, scope, filter).await?;
+    let mut narrowed = narrowing(pool, provider, user, scope, filter).await?;
     if narrowed.is_empty() {
         return Ok(Vec::new());
     }
+    narrowed.line = line.map(str::to_string);
     let search = search(pool, user.company_id, term).await?;
     let (sql, params) = rollup_sql(provider, &narrowed, user, &search, mode);
     fetch_all(pool, sql, &params).await
@@ -321,8 +325,10 @@ pub(super) async fn unread_threads(
     user: &SessionUser,
     scope: SmsScope,
     filter: Option<&str>,
+    line: Option<&str>,
 ) -> Result<i64, sqlx::Error> {
-    let rows: Vec<(i64,)> = rollup(pool, provider, user, scope, filter, "", Mode::Count).await?;
+    let rows: Vec<(i64,)> =
+        rollup(pool, provider, user, scope, filter, line, "", Mode::Count).await?;
     Ok(rows.first().map_or(0, |row| row.0))
 }
 
@@ -365,6 +371,7 @@ pub async fn list_threads(
         &user,
         scope,
         filter.as_deref(),
+        None,
         &term,
         Mode::List { limit, offset },
     )
@@ -374,7 +381,7 @@ pub async fn list_threads(
     // badge still counts every unread thread.
     let unread_count = match rows.first() {
         Some(row) => row.total_unread,
-        None => unread_threads(pool, provider, &user, scope, filter.as_deref()).await?,
+        None => unread_threads(pool, provider, &user, scope, filter.as_deref(), None).await?,
     };
     let phones: Vec<String> = rows
         .iter()
@@ -450,7 +457,7 @@ pub async fn unread_count(
     MultiQuery(query): MultiQuery<BadgeQuery>,
 ) -> ApiResult<Json<UnreadCount>> {
     let scope = query.scope.for_user(&user);
-    let count = unread_threads(&state.pool, provider, &user, scope, None).await?;
+    let count = unread_threads(&state.pool, provider, &user, scope, None, None).await?;
     Ok(Json(UnreadCount { count }))
 }
 
@@ -518,6 +525,7 @@ pub(super) async fn provider_alerts(
         provider,
         &user,
         SmsScope::Mine,
+        None,
         None,
         "",
         Mode::Alerts { limit: 50 },

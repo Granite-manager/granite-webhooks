@@ -466,6 +466,7 @@ pub async fn send_text(
         customer_id: None,
         send_at: None,
         cancel_if_customer_messages: false,
+        line_id: None,
     };
     if let Err(token) = check(user, &request) {
         return Err(bad_request(token));

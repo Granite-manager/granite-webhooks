@@ -562,6 +562,7 @@ fn sms_from_payload(payload: &Value) -> SendSmsRequest {
         customer_id: None,
         send_at: None,
         cancel_if_customer_messages: false,
+        line_id: number(payload, "lineId"),
     }
 }
 
@@ -592,6 +593,16 @@ async fn deliver_row(
                 .await
                 .map_err(|err| err.to_string())?
                 .ok_or("agent_not_linked")?;
+            let seat = crate::routes::sms::send::seat_on_line(
+                &state.pool,
+                provider,
+                user,
+                seat,
+                request.line_id,
+            )
+            .await
+            .map_err(|err| err.to_string())?
+            .ok_or("line_not_yours")?;
             check(user, &request)?;
             match deliver_now(state, user, provider, &seat, &request).await {
                 Ok(_) => Ok(()),
