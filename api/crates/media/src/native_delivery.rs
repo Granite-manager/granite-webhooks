@@ -12,6 +12,7 @@
 use crate::native_signing::{MailReceipt, MailSnapshot, NativeSigning, sha256_hex};
 use crate::signing_pdf::{FieldKind, SignatureField, prepare_native};
 use crate::state::AppState;
+use crate::storage::StorageError;
 use chrono::{Duration, Utc};
 use serde_json::{Value, json};
 use sqlx::{MySql, Transaction};
@@ -360,7 +361,14 @@ pub async fn prepare(
         .storage
         .verify_private(bucket)
         .await
-        .map_err(|_| refused("Signature bucket must be private and block all public access"))?;
+        .map_err(|err| match err {
+            StorageError::NotPrivate => {
+                refused("Signature bucket must be private and block all public access")
+            }
+            other => refused(&format!(
+                "Could not check that the signature bucket is private ({other})"
+            )),
+        })?;
     let mut stored = Vec::with_capacity(prepared.len());
     for (document_id, pdf) in &prepared {
         let key = format!(
