@@ -248,6 +248,40 @@ async fn a_day_map_is_drawn(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn the_events_map_places_each_address(pool: MySqlPool) {
+    // Scheduling Manager (13) has the Events map skill by default.
+    sqlx::raw_sql(DAY).execute(&pool).await.unwrap();
+    let body: Value = server(pool)
+        .await
+        .post("/v1/schedule/geocode")
+        .with_session(sessions::REP)
+        .json(&json!({ "addresses": ["Near", "Lost"] }))
+        .await
+        .json();
+    assert_eq!(body["points"], json!([{ "lat": 40.0, "lng": -86.1 }, null]));
+}
+
+#[test_db::test(seed)]
+async fn the_events_map_needs_its_skill_and_a_short_list(pool: MySqlPool) {
+    let without_skill = server(pool.clone()).await;
+    without_skill
+        .post("/v1/schedule/geocode")
+        .with_session(sessions::REP)
+        .json(&json!({ "addresses": ["Near"] }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    sqlx::raw_sql(DAY).execute(&pool).await.unwrap();
+    let addresses = vec!["Near"; 51];
+    server(pool)
+        .await
+        .post("/v1/schedule/geocode")
+        .with_session(sessions::REP)
+        .json(&json!({ "addresses": addresses }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+}
+
+#[test_db::test(seed)]
 async fn best_days_measure_the_later_stops_of_a_jobs_calendar(pool: MySqlPool) {
     sqlx::raw_sql(
         "INSERT INTO calendars (id, company_id, name, color, slug) VALUES

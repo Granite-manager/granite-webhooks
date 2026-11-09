@@ -40,6 +40,9 @@ pub const SEND_SMS: &str = "send_sms";
 /// While a waiting job is dragged onto the month, light up the later days
 /// whose stops are closest to it (`POST /v1/schedule/best-days`).
 pub const BEST_DAYS: &str = "best_days";
+/// See the schedule's scheduled and unscheduled events on a map
+/// (`POST /v1/schedule/geocode`).
+pub const EVENTS_MAP: &str = "events_map";
 
 /// One skill a position may have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +57,7 @@ pub struct Skill {
 }
 
 /// Every skill, in the Company page's order.
-pub const SKILLS: [Skill; 7] = [
+pub const SKILLS: [Skill; 8] = [
     Skill {
         key: SELL_SLABS,
         label: "Sell slabs",
@@ -90,6 +93,11 @@ pub const SKILLS: [Skill; 7] = [
         label: "Best days while dragging",
         description: "Dragging a waiting job lights up the later days with stops closest to it.",
     },
+    Skill {
+        key: EVENTS_MAP,
+        label: "Events map",
+        description: "See the schedule's scheduled and unscheduled events on a map.",
+    },
 ];
 
 /// The skill with this key.
@@ -101,15 +109,15 @@ pub fn skill(key: &str) -> Option<&'static Skill> {
 ///
 /// In [`SKILLS`] order: every position sells slabs and works with
 /// transactions and quotes, as before skills; only Scheduling Manager plans
-/// the schedule, sees readiness and sends SMS from events. [`BEST_DAYS`] is off until a company
-/// gives it.
+/// the schedule, sees readiness, sends SMS from events and has the events map.
+/// [`BEST_DAYS`] is off until a company gives it.
 pub fn default_skills(position_id: i32) -> Vec<&'static str> {
     SKILLS
         .iter()
         .map(|skill| skill.key)
         .filter(|key| {
             *key != BEST_DAYS
-                && (![PLAN_SCHEDULE, SEE_READINESS, SEND_SMS].contains(key)
+                && (![PLAN_SCHEDULE, SEE_READINESS, SEND_SMS, EVENTS_MAP].contains(key)
                     || position_id == SCHEDULING_MANAGER_POSITION)
         })
         .collect()
@@ -218,6 +226,7 @@ pub fn required(method: &Method, path: &str) -> Option<&'static [&'static str]> 
         ] => Some(&[PLAN_SCHEDULE]),
         ["v1", "events", id, "confirmation"] if is_id(id) => Some(&[SEND_SMS]),
         ["v1", "schedule", "best-days"] => Some(&[BEST_DAYS]),
+        ["v1", "schedule", "geocode"] => Some(&[EVENTS_MAP]),
         _ => None,
     }
 }
@@ -307,6 +316,10 @@ mod tests {
             required(&post, "/v1/schedule/best-days"),
             Some(&[BEST_DAYS][..])
         );
+        assert_eq!(
+            required(&post, "/v1/schedule/geocode"),
+            Some(&[EVENTS_MAP][..])
+        );
         for (method, path) in [
             (Method::GET, "/v1/sales/12"),
             (Method::GET, "/v1/quotes/3"),
@@ -344,7 +357,8 @@ mod tests {
                 EDIT_QUOTES,
                 PLAN_SCHEDULE,
                 SEE_READINESS,
-                SEND_SMS
+                SEND_SMS,
+                EVENTS_MAP
             ]
         );
     }
