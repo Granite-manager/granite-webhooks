@@ -7,6 +7,8 @@
 //! - `GET /v1/schedule/crew-positions` → where the crew's phones are
 //!   (`crew_map`)
 //! - `GET /v1/schedule/day-map` → a map of the company and a day's stops
+//! - `POST /v1/schedule/geocode` → where addresses are, for the events map
+//!   (`geocode`)
 //! - `POST /v1/schedule/optimize-route` → reorder a day's stops by drive time
 //! - `POST /v1/schedule/route-preview` → the same order and new times, unsaved
 //! - `/v1/schedule/notifications` → admins' texts and emails to customers
@@ -22,6 +24,7 @@ pub mod activity;
 pub mod best_days;
 pub mod board;
 pub mod crew_map;
+pub mod geocode;
 pub mod job_time;
 pub mod notifications;
 pub mod route;
@@ -52,6 +55,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(optimize_route))
         .routes(routes!(route_preview))
         .routes(routes!(best_days::best_days))
+        .routes(routes!(geocode::geocode))
         .routes(routes!(board::events))
         .routes(routes!(board::unscheduled))
         .routes(routes!(board::my_schedule))

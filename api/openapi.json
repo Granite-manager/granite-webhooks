@@ -41734,6 +41734,73 @@
         ]
       }
     },
+    "/v1/schedule/geocode": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Place addresses on the map",
+        "description": "Where each address is, for the pins of the schedule's events map.",
+        "operationId": "schedule_geocode",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GeocodeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The places",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Geocoded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "More than 50 addresses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller lacks the Events map skill",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/schedule/events": {
       "get": {
         "tags": [
@@ -71357,7 +71424,7 @@
             "items": {
               "type": "string"
             },
-            "description": "The skills the user's positions give them (Position access):\n`sell_slabs`, `edit_transactions`, `edit_quotes`, `plan_schedule`, `see_readiness`, `send_sms`, `best_days`.\nNull when they have every skill (admins always do)."
+            "description": "The skills the user's positions give them (Position access):\n`sell_slabs`, `edit_transactions`, `edit_quotes`, `plan_schedule`, `see_readiness`, `send_sms`, `best_days`, `events_map`.\nNull when they have every skill (admins always do)."
           },
           "has_cloudtalk_api": {
             "type": "boolean",
@@ -83835,6 +83902,45 @@
               "null"
             ],
             "description": "Name."
+          }
+        }
+      },
+      "GeocodeInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/schedule/geocode`.",
+        "required": [
+          "addresses"
+        ],
+        "properties": {
+          "addresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The addresses, at most 50."
+          }
+        }
+      },
+      "Geocoded": {
+        "type": "object",
+        "description": "`POST /v1/schedule/geocode`.",
+        "required": [
+          "points"
+        ],
+        "properties": {
+          "points": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/Point"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "description": "Where each address is, in the order asked; null where Google cannot\nfind it or Google Maps is not set up."
           }
         }
       },
@@ -102439,7 +102545,7 @@
         "properties": {
           "key": {
             "type": "string",
-            "description": "Stable key (`sell_slabs`, `edit_transactions`, `edit_quotes`,\n`plan_schedule`, `see_readiness`, `send_sms`, `best_days`)."
+            "description": "Stable key (`sell_slabs`, `edit_transactions`, `edit_quotes`,\n`plan_schedule`, `see_readiness`, `send_sms`, `best_days`, `events_map`)."
           },
           "label": {
             "type": "string",
