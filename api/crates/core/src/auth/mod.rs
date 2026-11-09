@@ -189,9 +189,10 @@ pub const DEVICE_READ_ROUTES: [&str; 19] = [
 /// CRM actions the app's composer calls with its device token: exactly these
 /// paths, `POST` only (an attachment's upload URL, a text's files made ready
 /// to send, Improve message, AI reply, the suggestion that continues what the
-/// rep types and what it learns from the text they sent instead, and a
-/// template's `{{variables}}` filled for Use Template).
-pub const DEVICE_ACTIONS: [&str; 7] = [
+/// rep types and what it learns from the text they sent instead, a
+/// template's `{{variables}}` filled for Use Template, and the crew's
+/// position for the automatic On my way and Arrived).
+pub const DEVICE_ACTIONS: [&str; 8] = [
     "/v1/uploads",
     "/v1/sms/attachments",
     "/v1/ai/improve",
@@ -199,6 +200,7 @@ pub const DEVICE_ACTIONS: [&str; 7] = [
     "/v1/ai/compose/autocomplete",
     "/v1/ai/compose/learn",
     "/v1/templates/fill",
+    "/v1/me/location",
 ];
 
 /// `path` is `prefix` or under it (`/v1/emailsx` is not under `/v1/emails`).
