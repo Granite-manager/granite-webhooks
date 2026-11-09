@@ -431,7 +431,6 @@ mod local_tests {
     use crate::schemas::add_customer::NewLeadForm;
     use crate::tests::telegram::{MockTelegram, generate_message, take_sent_emails, telegram_user};
     use crate::tests::utils::{assigned_user_position, insert_user, positioned_user};
-    use crate::libs::leads::LeadSender;
     use crate::webhooks::receive::new_lead_form_inner;
     use axum::http::StatusCode;
     use chrono::{DateTime, Duration, NaiveDateTime, Utc};
@@ -541,7 +540,7 @@ mod local_tests {
             .unwrap();
         assigned_user_position(&pool, 1, 2, admin_id).await.unwrap();
 
-        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         return (response, bot);
     }

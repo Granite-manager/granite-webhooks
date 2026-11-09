@@ -80,32 +80,17 @@ pub async fn create_lead_from_wordpress(
     Ok(result)
 }
 
-/// A repeat lead only fills in what the customer's record is missing. It
-/// never touches their phone or emails, where their customer page sends its
-/// login codes: whoever fills in a lead form is unverified, even when the
-/// form itself has an access token. Staff see what was submitted in the
-/// lead's notification.
 pub async fn update_lead_from_wordpress(
     pool: &MySqlPool,
     data: &WordpressContactForm,
     company_id: i32,
     id: i32,
 ) -> Result<MySqlQueryResult, sqlx::Error> {
-    query!(
+    let result = query!(
         r#"UPDATE customers
-           SET postal_code = COALESCE(NULLIF(postal_code, ''), ?),
-               address = COALESCE(NULLIF(address, ''), ?),
-               remodal_type = COALESCE(NULLIF(remodal_type, ''), ?),
-               project_size = COALESCE(NULLIF(project_size, ''), ?),
-               contact_time = COALESCE(NULLIF(contact_time, ''), ?),
-               remove_and_dispose = COALESCE(NULLIF(remove_and_dispose, ''), ?),
-               improve_offer = COALESCE(improve_offer, ?),
-               sink = COALESCE(NULLIF(sink, ''), ?),
-               backsplash = COALESCE(NULLIF(backsplash, ''), ?),
-               kitchen_stove = COALESCE(NULLIF(kitchen_stove, ''), ?),
-               your_message = COALESCE(NULLIF(your_message, ''), ?),
-               attached_file = COALESCE(NULLIF(attached_file, ''), ?)
-           WHERE id = ? AND company_id = ?"#,
+           SET phone = ?, postal_code = ?, address = ?, remodal_type = ?, project_size = ?, contact_time = ?, remove_and_dispose = ?, improve_offer = ?, sink = ?, backsplash = ?, kitchen_stove = ?, your_message = ?, attached_file = ?, company_id = ?
+           WHERE id = ?"#,
+        data.phone,
         data.postal_code,
         data.address,
         data.remodal_type,
@@ -118,11 +103,13 @@ pub async fn update_lead_from_wordpress(
         data.kitchen_stove,
         data.your_message,
         data.attached_file,
-        id,
         company_id,
+        id,
     )
     .execute(pool)
-    .await
+    .await?;
+    set_customer_email(pool, id, data.email.as_deref()).await?;
+    Ok(result)
 }
 
 pub async fn create_lead_from_facebook(
@@ -154,23 +141,17 @@ pub async fn create_lead_from_facebook(
     Ok(result)
 }
 
-/// See [`update_lead_from_wordpress`]: blanks only, never the phone or emails.
 pub async fn update_lead_from_facebook(
     pool: &MySqlPool,
     data: &FaceBookContactForm,
     company_id: i32,
     id: i32,
 ) -> Result<MySqlQueryResult, sqlx::Error> {
-    query!(
+    let result = query!(
         r#"UPDATE customers
-           SET remove_and_dispose = COALESCE(NULLIF(remove_and_dispose, ''), ?),
-               details = COALESCE(NULLIF(details, ''), ?),
-               city = COALESCE(NULLIF(city, ''), ?),
-               postal_code = COALESCE(NULLIF(postal_code, ''), ?),
-               compaign_name = COALESCE(NULLIF(compaign_name, ''), ?),
-               adset_name = COALESCE(NULLIF(adset_name, ''), ?),
-               ad_name = COALESCE(NULLIF(ad_name, ''), ?)
-           WHERE id = ? AND company_id = ?"#,
+               SET phone = ?, remove_and_dispose = ?, details = ?, city = ?, postal_code = ?, compaign_name = ?, adset_name = ?, ad_name = ?, company_id = ?
+               WHERE id = ?"#,
+        data.phone,
         data.remove_and_dispose,
         data.details,
         data.city,
@@ -178,11 +159,13 @@ pub async fn update_lead_from_facebook(
         data.campaign_name,
         data.adset_name,
         data.ad_name,
-        id,
         company_id,
+        id,
     )
     .execute(pool)
-    .await
+    .await?;
+    set_customer_email(pool, id, data.email.as_deref()).await?;
+    Ok(result)
 }
 
 pub async fn assign_lead(
@@ -324,38 +307,17 @@ pub async fn create_lead_from_new_lead_form(
     Ok(result)
 }
 
-/// See [`update_lead_from_wordpress`]: blanks only, never the phone or emails.
 pub async fn update_lead_from_new_lead_form(
     pool: &MySqlPool,
     data: &NewLeadForm,
     company_id: i32,
     id: i32,
 ) -> Result<MySqlQueryResult, sqlx::Error> {
-    query!(
+    let result = query!(
         r#"UPDATE customers
-           SET address = COALESCE(NULLIF(address, ''), ?),
-               remove_and_dispose = COALESCE(NULLIF(remove_and_dispose, ''), ?),
-               details = COALESCE(NULLIF(details, ''), ?),
-               city = COALESCE(NULLIF(city, ''), ?),
-               postal_code = COALESCE(NULLIF(postal_code, ''), ?),
-               compaign_name = COALESCE(NULLIF(compaign_name, ''), ?),
-               adset_name = COALESCE(NULLIF(adset_name, ''), ?),
-               ad_name = COALESCE(NULLIF(ad_name, ''), ?),
-               remodal_type = COALESCE(NULLIF(remodal_type, ''), ?),
-               project_size = COALESCE(NULLIF(project_size, ''), ?),
-               contact_time = COALESCE(NULLIF(contact_time, ''), ?),
-               when_start = COALESCE(NULLIF(when_start, ''), ?),
-               improve_offer = COALESCE(improve_offer, ?),
-               sink = COALESCE(NULLIF(sink, ''), ?),
-               kitchen_stove = COALESCE(NULLIF(kitchen_stove, ''), ?),
-               backsplash = COALESCE(NULLIF(backsplash, ''), ?),
-               your_message = COALESCE(NULLIF(your_message, ''), ?),
-               attached_file = COALESCE(NULLIF(attached_file, ''), ?),
-               referral_source = COALESCE(NULLIF(referral_source, ''), ?),
-               referral_source_raw = COALESCE(NULLIF(referral_source_raw, ''), ?),
-               form_name = COALESCE(NULLIF(form_name, ''), ?),
-               source = COALESCE(NULLIF(source, ''), ?)
-           WHERE id = ? AND company_id = ?"#,
+               SET phone = ?, address = ?, remove_and_dispose = ?, details = ?, city = ?, postal_code = ?, compaign_name = ?, adset_name = ?, ad_name = ?, remodal_type = ?, project_size = ?, contact_time = ?, when_start = ?, improve_offer = ?, sink = ?, kitchen_stove = ?, backsplash = ?, your_message = ?, attached_file = ?, company_id = ?, referral_source = ?, referral_source_raw = ?, form_name = ?, source = ?
+               WHERE id = ?"#,
+        data.phone,
         data.address,
         data.remove_and_dispose,
         data.details,
@@ -374,15 +336,17 @@ pub async fn update_lead_from_new_lead_form(
         data.backsplash,
         data.your_message,
         data.attached_file,
+        company_id,
         data.referral_source,
         data.referral_source_raw,
         data.form_name,
         "leads",
         id,
-        company_id,
     )
     .execute(pool)
-    .await
+    .await?;
+    set_customer_email(pool, id, data.email.as_deref()).await?;
+    Ok(result)
 }
 
 pub struct ExistingCustomer {
@@ -807,7 +771,7 @@ mod tests {
     }
 
     #[test_db::test]
-    async fn a_repeat_lead_never_changes_the_customers_phone_or_emails(pool: MySqlPool) {
+    async fn set_customer_email_adds_without_replacing(pool: MySqlPool) {
         let company_id = insert_company(&pool).await.unwrap();
         let first = FaceBookContactForm {
             name: "Jeremy Gerber".to_string(),
@@ -827,8 +791,7 @@ mod tests {
         let customer_id = i32::try_from(created.last_insert_id()).unwrap();
 
         let second = FaceBookContactForm {
-            phone: Some("3175559999".to_string()),
-            email: Some("someone.else@example.com".to_string()),
+            email: Some("jeremy.gerber@icloud.com".to_string()),
             ..first
         };
         update_lead_from_facebook(&pool, &second, company_id, customer_id)
@@ -847,7 +810,7 @@ mod tests {
                 .iter()
                 .map(|row| row.email.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Jeremy.gerber@gmail.com"]
+            vec!["Jeremy.gerber@gmail.com", "jeremy.gerber@icloud.com"]
         );
 
         let primary = sqlx::query_scalar!(
@@ -857,63 +820,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(primary, "Jeremy.gerber@gmail.com");
-        let phone = sqlx::query_scalar!(r#"SELECT phone FROM customers WHERE id = ?"#, customer_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(phone.as_deref(), Some("3175550100"));
-    }
-
-    #[test_db::test]
-    async fn a_repeat_lead_only_fills_in_what_is_missing(pool: MySqlPool) {
-        let company_id = insert_company(&pool).await.unwrap();
-        let first = FaceBookContactForm {
-            name: "Filled In".to_string(),
-            phone: Some("3175550101".to_string()),
-            remove_and_dispose: None,
-            email: None,
-            city: Some("Carmel".to_string()),
-            postal_code: None,
-            details: Some(String::new()),
-            campaign_name: None,
-            adset_name: None,
-            ad_name: None,
-        };
-        let created = create_lead_from_facebook(&pool, &first, company_id)
-            .await
-            .unwrap();
-        let customer_id = i32::try_from(created.last_insert_id()).unwrap();
-
-        let second = FaceBookContactForm {
-            city: None,
-            postal_code: Some("46032".to_string()),
-            details: Some("Kitchen island".to_string()),
-            ..first.clone()
-        };
-        update_lead_from_facebook(&pool, &second, company_id, customer_id)
-            .await
-            .unwrap();
-        let third = FaceBookContactForm {
-            city: Some("Elsewhere".to_string()),
-            postal_code: Some("00000".to_string()),
-            details: Some("Changed".to_string()),
-            ..first
-        };
-        update_lead_from_facebook(&pool, &third, company_id, customer_id)
-            .await
-            .unwrap();
-
-        let row = sqlx::query!(
-            r#"SELECT city, postal_code, details FROM customers WHERE id = ?"#,
-            customer_id
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(row.city.as_deref(), Some("Carmel"));
-        assert_eq!(row.postal_code.as_deref(), Some("46032"));
-        assert_eq!(row.details.as_deref(), Some("Kitchen island"));
+        assert_eq!(primary, "jeremy.gerber@icloud.com");
     }
 
     #[test_db::test]

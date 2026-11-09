@@ -514,57 +514,38 @@ async fn send_code(
     .bind(CODE_EXPIRY_MINUTES)
     .execute(&mut *tx)
     .await?;
-    // Committed before sending: a text needs the pool, and the Lambda's pool
-    // has one connection, which this transaction would still be holding.
-    tx.commit().await?;
-    let delivered = match (&code, to) {
-        (Some(code), Destination::Sms(digits)) => text_code(state, company_id, digits, code).await,
-        (Some(code), Destination::Email(_)) => email_code(state, company_id, email, code).await,
-        (None, _) => Ok(()),
-    };
-    if let Err(error) = delivered {
-        // Nothing went out: no code to guess at, and no send counted against the address.
-        if let Err(error) = sqlx::query("DELETE FROM customer_view_codes WHERE token = ?")
-            .bind(&token)
-            .execute(&state.pool)
-            .await
-        {
-            tracing::warn!(
-                ?error,
-                company_id,
-                "could not forget an unsent customer view code"
-            );
+    match (&code, to) {
+        (Some(code), Destination::Sms(digits)) => {
+            text_code(state, company_id, digits, code).await?;
         }
-        return Err(error);
+        (Some(code), Destination::Email(_)) => {
+            let message = OutgoingEmail {
+                from_name: None,
+                from_address: "noreply@granite-manager.com".into(),
+                to: vec![email.to_string()],
+                cc: Vec::new(),
+                bcc: Vec::new(),
+                subject: "Your customer login code".into(),
+                body: code_email_html(code),
+                signature: None,
+                reply_to: Vec::new(),
+                in_reply_to: None,
+                references: Vec::new(),
+                attachments: Vec::new(),
+                transactional: true,
+            };
+            if let Err(error) = state.webhooks.send_email(&message).await {
+                tracing::warn!(?error, company_id, "customer view code email failed");
+                return Err(ApiError::Upstream(
+                    "We could not send the email. Please try again.".into(),
+                ));
+            }
+        }
+        (None, _) => {}
     }
+    tx.commit().await?;
     visitor.clear_pending();
     visitor.set(PENDING, json!(token));
-    Ok(())
-}
-
-/// Emails `code` to `email`.
-async fn email_code(state: &AppState, company_id: i32, email: &str, code: &str) -> ApiResult<()> {
-    let message = OutgoingEmail {
-        from_name: None,
-        from_address: "noreply@granite-manager.com".into(),
-        to: vec![email.to_string()],
-        cc: Vec::new(),
-        bcc: Vec::new(),
-        subject: "Your customer login code".into(),
-        body: code_email_html(code),
-        signature: None,
-        reply_to: Vec::new(),
-        in_reply_to: None,
-        references: Vec::new(),
-        attachments: Vec::new(),
-        transactional: true,
-    };
-    if let Err(error) = state.webhooks.send_email(&message).await {
-        tracing::warn!(?error, company_id, "customer view code email failed");
-        return Err(ApiError::Upstream(
-            "We could not send the email. Please try again.".into(),
-        ));
-    }
     Ok(())
 }
 
@@ -1395,10 +1376,13 @@ pub async fn send_login_code(
             if input.phone.trim().is_empty() {
                 let typed = parse_email(&input.email);
                 if typed.is_empty() {
-                    visitor.pending(&state, company_id).await?.map_or_else(
-                        || Destination::Email(String::new()),
-                        |code| Destination::from_key(&code.email),
-                    )
+                    visitor
+                        .pending(&state, company_id)
+                        .await?
+                        .map_or_else(
+                            || Destination::Email(String::new()),
+                            |code| Destination::from_key(&code.email),
+                        )
                 } else {
                     Destination::Email(typed)
                 }

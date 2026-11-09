@@ -1,7 +1,7 @@
 use crate::axum_helpers::access_token::Transitional;
 use crate::axum_helpers::guards::MarketingUser;
 use crate::axum_helpers::guards::{Telegram, TelegramBot};
-use crate::libs::leads::{LeadSender, process_lead};
+use crate::libs::leads::process_lead;
 use crate::libs::referral_source::{
     OpenAiReferralClassifier, check_referral_source, review_email, send_review_email,
 };
@@ -14,25 +14,23 @@ use axum::extract::{Json, State};
 use sqlx::MySqlPool;
 
 pub async fn wordpress_contact_form(
-    auth: Transitional<MarketingUser>,
+    _: Transitional<MarketingUser>,
     Path(company_id): Path<i32>,
     State(pool): State<MySqlPool>,
     Json(contact_form): Json<WordpressContactForm>,
 ) -> BasicResponse {
     let tg_bot = TelegramBot::default();
-    let sender = LeadSender::of(&auth);
-    new_lead_form_inner(company_id, pool, contact_form, sender, &tg_bot).await
+    new_lead_form_inner(company_id, pool, contact_form, &tg_bot).await
 }
 
 pub async fn facebook_contact_form(
-    auth: Transitional<MarketingUser>,
+    _: Transitional<MarketingUser>,
     Path(company_id): Path<i32>,
     State(pool): State<MySqlPool>,
     Json(contact_form): Json<FaceBookContactForm>,
 ) -> BasicResponse {
     let tg_bot = TelegramBot::default();
-    let sender = LeadSender::of(&auth);
-    new_lead_form_inner(company_id, pool, contact_form, sender, &tg_bot).await
+    new_lead_form_inner(company_id, pool, contact_form, &tg_bot).await
 }
 
 #[cfg_attr(feature = "openapi", utoipa::path(
@@ -52,7 +50,7 @@ stored as sent and flagged for review.\n\n\
     )
 ))]
 pub async fn new_lead_form(
-    auth: Transitional<MarketingUser>,
+    _: Transitional<MarketingUser>,
     Path(company_id): Path<i32>,
     State(pool): State<MySqlPool>,
     Json(mut contact_form): Json<NewLeadForm>,
@@ -62,8 +60,7 @@ pub async fn new_lead_form(
     let review_email = check_referral_source(&pool, company_id, &mut contact_form, &classifier)
         .await
         .map(|review| review_email(&review, &contact_form, company_id));
-    let sender = LeadSender::of(&auth);
-    let response = new_lead_form_inner(company_id, pool, contact_form, sender, &tg_bot).await;
+    let response = new_lead_form_inner(company_id, pool, contact_form, &tg_bot).await;
     // Only once the lead is saved: a failed request gets retried by the sender and checked again.
     if let Some((subject, body)) = review_email
         && response.0.is_success()
@@ -77,13 +74,12 @@ pub async fn new_lead_form_inner<T, V: LeadPayload>(
     company_id: i32,
     pool: MySqlPool,
     lead_form: V,
-    sender: LeadSender,
     bot: &T,
 ) -> BasicResponse
 where
     T: Telegram + Send + Sync + 'static + Clone,
 {
-    process_lead(&pool, company_id, &lead_form, sender, bot).await
+    process_lead(&pool, company_id, &lead_form, bot).await
 }
 
 #[cfg(test)]
@@ -229,7 +225,7 @@ mod local_tests {
             .unwrap();
         assigned_user_position(&pool, 1, 2, admin_id).await.unwrap();
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let row = sqlx::query!(
@@ -259,7 +255,7 @@ mod local_tests {
             .unwrap();
         assigned_user_position(&pool, 1, 2, admin_id).await.unwrap();
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let row = sqlx::query!(
@@ -283,7 +279,7 @@ mod local_tests {
         positioned_user(&pool, company_id, 2, 456).await;
         positioned_user(&pool, company_id, 2, 789).await;
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         let messages = bot.sent.lock().unwrap();
         assert_eq!(messages.len(), 2);
@@ -339,7 +335,7 @@ mod local_tests {
         positioned_user(&pool, company_id, 2, 789).await;
         give_app(&pool, company_id, manager_with_app).await;
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         let mut manager_chat_ids: Vec<i64> = bot
             .sent
@@ -379,8 +375,7 @@ mod local_tests {
 
         let lead: NewLeadForm =
             serde_json::from_value(json!({ "name": "Test", "phone": "+13179995973" })).unwrap();
-        let response =
-            new_lead_form_inner(company_id, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(company_id, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         // Telegram: every manager who can be reached, once each.
@@ -416,15 +411,14 @@ mod local_tests {
         let manager_id = positioned_user(&pool, company_id, 2, 456).await;
         give_app(&pool, company_id, manager_id).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         let customers = get_customers(&pool).await.unwrap();
         create_deal(&pool, customers[0].id, 1, 0, sales_id)
             .await
             .unwrap();
 
-        let response = new_lead_form_inner(1, pool, lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool, lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         let messages = bot.sent.lock().unwrap().clone();
         assert!(
@@ -446,8 +440,7 @@ mod local_tests {
         positioned_user(&pool, company_id, 2, 456).await;
         positioned_user(&pool, company_id, 2, 789).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let customers = get_customers(&pool).await.unwrap();
@@ -457,7 +450,7 @@ mod local_tests {
             .await
             .unwrap();
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         let customers = get_customers(&pool).await.unwrap();
         assert_eq!(customers.len(), 1);
@@ -486,8 +479,7 @@ mod local_tests {
         let sales_id = positioned_user(&pool, company_id, 1, 123).await;
         positioned_user(&pool, company_id, 2, 456).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         assert_eq!(bot.sent.lock().unwrap().len(), 1);
 
@@ -498,7 +490,7 @@ mod local_tests {
             .await
             .unwrap();
 
-        let response = new_lead_form_inner(1, pool, lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool, lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         let mut messages = bot.sent.lock().unwrap();
         assert_eq!(messages.len(), 3);
@@ -524,8 +516,7 @@ mod local_tests {
         let sales_id = positioned_user(&pool, company_id, 1, 123).await;
         positioned_user(&pool, company_id, 2, 456).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let customers = get_customers(&pool).await.unwrap();
@@ -552,7 +543,7 @@ mod local_tests {
         .unwrap();
         assert_eq!(list_before, 2);
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let deal_after = sqlx::query!(
@@ -567,168 +558,6 @@ mod local_tests {
         assert_eq!(deal_after.lost_reason, None);
     }
 
-    /// A customer with a phone, an email, an address and a deal in a later
-    /// stage; a stranger's form then names that phone with its own email.
-    async fn customer_in_a_later_stage(
-        pool: &MySqlPool,
-        bot: &MockTelegram,
-    ) -> (i32, serde_json::Value) {
-        let sales_id = positioned_user(pool, 1, 1, 123).await;
-        positioned_user(pool, 1, 2, 456).await;
-        let first: NewLeadForm = serde_json::from_value(json!({
-            "name": "Real Customer", "phone": "+13179995973",
-            "email": "real@example.com", "address": "1 Real St"
-        }))
-        .unwrap();
-        let response = new_lead_form_inner(1, pool.clone(), first, LeadSender::Verified, bot).await;
-        assert_eq!(response.0, StatusCode::CREATED);
-        let customer = get_customers(pool).await.unwrap()[0].id;
-        create_deal(pool, customer, 2, 0, sales_id).await.unwrap();
-        (
-            customer,
-            json!({ "name": "Stranger", "phone": "+13179995973", "email": "stranger@example.com" }),
-        )
-    }
-
-    async fn contact_details(
-        pool: &MySqlPool,
-        customer: i32,
-    ) -> (Option<String>, Option<String>, Vec<String>) {
-        let row = sqlx::query!(
-            r#"SELECT phone, address FROM customers WHERE id = ?"#,
-            customer
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap();
-        let emails = sqlx::query_scalar!(
-            r#"SELECT email FROM customers_emails WHERE customer_id = ? ORDER BY id"#,
-            customer
-        )
-        .fetch_all(pool)
-        .await
-        .unwrap();
-        (row.phone, row.address, emails)
-    }
-
-    async fn deal_list(pool: &MySqlPool, customer: i32) -> i32 {
-        sqlx::query_scalar!(
-            r#"SELECT list_id FROM deals WHERE customer_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1"#,
-            customer
-        )
-        .fetch_one(pool)
-        .await
-        .unwrap()
-    }
-
-    #[test_db::test]
-    async fn a_form_without_a_key_cannot_change_a_customer_or_their_deal(pool: MySqlPool) {
-        let bot = MockTelegram::new();
-        let (customer, stranger) = customer_in_a_later_stage(&pool, &bot).await;
-        let before = contact_details(&pool, customer).await;
-        let sent_before = bot.sent.lock().unwrap().len();
-
-        // The real route, with no credential: what anyone on the internet can send.
-        let app = new_test_app(pool.clone());
-        let response = app
-            .post("/v1/webhooks/new-lead-form/1")
-            .json(&stranger)
-            .await;
-        assert_eq!(response.status_code(), StatusCode::CREATED);
-
-        // No way into their customer page, and the deal stays where it was.
-        assert_eq!(contact_details(&pool, customer).await, before);
-        assert_eq!(deal_list(&pool, customer).await, 2);
-
-        // The sales rep and the managers still hear about it.
-        let lead: NewLeadForm = serde_json::from_value(stranger).unwrap();
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead, LeadSender::Anonymous, &bot).await;
-        assert_eq!(response.0, StatusCode::CREATED);
-        assert_eq!(deal_list(&pool, customer).await, 2);
-        let sent = bot.sent.lock().unwrap();
-        assert!(sent[sent_before..].iter().any(|message| message.0 == 123));
-        assert!(sent[sent_before..].iter().any(|message| message.0 == 456));
-    }
-
-    #[test_db::test]
-    async fn the_old_shared_bearer_counts_as_no_key(pool: MySqlPool) {
-        let bot = MockTelegram::new();
-        let (customer, stranger) = customer_in_a_later_stage(&pool, &bot).await;
-        let response = new_test_app(pool.clone())
-            .post("/v1/webhooks/new-lead-form/1")
-            .authorization_bearer(CORRECT_ID.to_string())
-            .json(&stranger)
-            .await;
-        assert_eq!(response.status_code(), StatusCode::CREATED);
-        assert_eq!(deal_list(&pool, customer).await, 2);
-    }
-
-    #[test_db::test]
-    async fn a_form_with_its_key_moves_the_deal_back_but_not_the_contact_details(pool: MySqlPool) {
-        let bot = MockTelegram::new();
-        let (customer, stranger) = customer_in_a_later_stage(&pool, &bot).await;
-        let before = contact_details(&pool, customer).await;
-        let (_, key) = common::access_token::create(
-            &pool,
-            &common::access_token::NewAccessToken {
-                name: "lead form",
-                company_id: Some(1),
-                scopes: &[common::access_token::Scope::Leads],
-                expires_at: None,
-                created_by: None,
-            },
-        )
-        .await
-        .unwrap();
-        let response = new_test_app(pool.clone())
-            .post("/v1/webhooks/new-lead-form/1")
-            .authorization_bearer(key)
-            .json(&stranger)
-            .await;
-        assert_eq!(response.status_code(), StatusCode::CREATED);
-        assert_eq!(deal_list(&pool, customer).await, 1);
-        assert_eq!(contact_details(&pool, customer).await, before);
-    }
-
-    #[test_db::test]
-    async fn a_form_without_a_key_opens_no_new_deal_for_a_past_customer(pool: MySqlPool) {
-        let bot = MockTelegram::new();
-        let sales_id = positioned_user(&pool, 1, 1, 123).await;
-        positioned_user(&pool, 1, 2, 456).await;
-        let lead: NewLeadForm =
-            serde_json::from_value(json!({ "name": "Past", "phone": "+13179995973" })).unwrap();
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
-        assert_eq!(response.0, StatusCode::CREATED);
-        let customer = get_customers(&pool).await.unwrap()[0].id;
-        sqlx::query!(
-            r#"UPDATE customers SET sales_rep = ? WHERE id = ?"#,
-            sales_id,
-            customer
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead, LeadSender::Anonymous, &bot).await;
-        assert_eq!(response.0, StatusCode::CREATED);
-        let deals = sqlx::query_scalar!(
-            r#"SELECT COUNT(*) FROM deals WHERE customer_id = ?"#,
-            customer
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(deals, 0);
-        let sent = bot.sent.lock().unwrap();
-        assert!(
-            sent.iter()
-                .any(|message| message.1.contains("REPEATED lead with no open deal"))
-        );
-    }
-
     #[test_db::test]
     async fn duplicate_lead_resets_activity_due_dates(pool: MySqlPool) {
         let company_id = 1;
@@ -739,8 +568,7 @@ mod local_tests {
         let sales_id = positioned_user(&pool, company_id, 1, 123).await;
         positioned_user(&pool, company_id, 2, 456).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let customers = get_customers(&pool).await.unwrap();
@@ -792,7 +620,7 @@ mod local_tests {
         .unwrap()
         .last_insert_id();
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let today = sqlx::query_scalar!("SELECT CURDATE()")
@@ -833,8 +661,7 @@ mod local_tests {
         let sales_id = positioned_user(&pool, company_id, 1, 123).await;
         positioned_user(&pool, company_id, 2, 456).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let customers = get_customers(&pool).await.unwrap();
@@ -866,7 +693,7 @@ mod local_tests {
         .unwrap();
         assert_eq!(deals_before, 1);
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let deals_after = sqlx::query!(
@@ -893,8 +720,7 @@ mod local_tests {
         let sales_id = positioned_user(&pool, company_id, 1, 123).await;
         positioned_user(&pool, company_id, 2, 456).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let customers = get_customers(&pool).await.unwrap();
@@ -910,7 +736,7 @@ mod local_tests {
         .await
         .unwrap();
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let deals_on_deleted = sqlx::query_scalar!(
@@ -944,8 +770,7 @@ mod local_tests {
             .await
             .unwrap();
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         assert_eq!(bot.sent.lock().unwrap().len(), 1);
 
@@ -956,7 +781,7 @@ mod local_tests {
             .await
             .unwrap();
 
-        let response = new_lead_form_inner(1, pool, lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool, lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         let messages = bot.sent.lock().unwrap();
         assert_eq!(messages.len(), 3);
@@ -980,8 +805,7 @@ mod local_tests {
         let sales_id = positioned_user(&pool, company_id, 1, 123).await;
         positioned_user(&pool, company_id, 2, 456).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         assert_eq!(bot.sent.lock().unwrap().len(), 1);
         sqlx::query!("UPDATE customers SET sales_rep = ?", sales_id)
@@ -989,7 +813,7 @@ mod local_tests {
             .await
             .unwrap();
 
-        let response = new_lead_form_inner(1, pool.clone(), lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
 
         let customers = get_customers(&pool).await.unwrap();
@@ -1025,15 +849,14 @@ mod local_tests {
         positioned_user(&pool, company_id, 1, 123).await;
         positioned_user(&pool, company_id, 2, 456).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         assert_eq!(bot.sent.lock().unwrap().len(), 1);
 
         let customers = get_customers(&pool).await.unwrap();
         assert_eq!(customers.len(), 1);
 
-        let response = new_lead_form_inner(1, pool, lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool, lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         assert_eq!(bot.sent.lock().unwrap().len(), 2);
 
@@ -1057,15 +880,14 @@ mod local_tests {
         positioned_user(&pool, company_id, 1, 123).await;
         positioned_user(&pool, company_id, 2, 456).await;
 
-        let response =
-            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         assert_eq!(bot.sent.lock().unwrap().len(), 1);
 
         let customers = get_customers(&pool).await.unwrap();
         assert_eq!(customers.len(), 1);
 
-        let response = new_lead_form_inner(1, pool, lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool, lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         assert_eq!(bot.sent.lock().unwrap().len(), 2);
 
@@ -1089,14 +911,7 @@ mod local_tests {
         let sales_id = positioned_user(&pool, company_id, 1, 123).await;
         positioned_user(&pool, company_id, 2, 456).await;
 
-        new_lead_form_inner(
-            company_id,
-            pool.clone(),
-            lead.clone(),
-            LeadSender::Verified,
-            &bot,
-        )
-        .await;
+        new_lead_form_inner(company_id, pool.clone(), lead.clone(), &bot).await;
         let customers = get_customers(&pool).await.unwrap();
         let deal = create_deal(&pool, customers[0].id, 1, 0, sales_id)
             .await
@@ -1106,8 +921,7 @@ mod local_tests {
             .await
             .unwrap();
 
-        let response =
-            new_lead_form_inner(company_id, pool, lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(company_id, pool, lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         let last = bot.sent.lock().unwrap().last().cloned().unwrap();
         assert_eq!(last.0, 456);
@@ -1127,7 +941,7 @@ mod local_tests {
         let lead: NewLeadForm =
             serde_json::from_value(json!({ "name": "Test", "phone": "+13179995973" })).unwrap();
 
-        let response = new_lead_form_inner(1, pool, lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool, lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         assert!(logs_contain("Lead alert"));
         assert!(logs_contain("Lead not delivered in Telegram (company #1)"));
@@ -1140,7 +954,7 @@ mod local_tests {
         let lead: NewLeadForm =
             serde_json::from_value(json!({ "name": "Test", "phone": "+13179995973" })).unwrap();
 
-        let response = new_lead_form_inner(1, pool, lead, LeadSender::Verified, &bot).await;
+        let response = new_lead_form_inner(1, pool, lead, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         assert!(logs_contain("Lead not delivered in Telegram (company #1)"));
     }

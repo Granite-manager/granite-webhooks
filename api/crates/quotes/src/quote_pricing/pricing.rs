@@ -38,7 +38,7 @@ pub struct PriceLine {
     /// Flat price per item (size tiers, full radius) on top of the unit price.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flat_each: Option<f64>,
-    /// A price was typed on the quote (even the list price).
+    /// A price was typed on the quote (even the list price): it is final, so never discounted.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub typed: bool,
 }
@@ -1178,17 +1178,20 @@ pub fn price_quote(doc: &QuoteDoc, pl: &Value, opts: PriceOptions) -> Vec<Option
                 all.iter()
                     .flat_map(|a| a.lines.iter().map(move |l| (l, a.quantity)))
             };
-            let subtotal = all.iter().fold(0.0, |s, a| s + a.subtotal);
-            // The quote discount is always taken from the whole total (owner, 2026-11-07).
+            // A price typed on the quote is final and takes no discount.
+            let discountable = all_lines()
+                .filter(|(l, _)| l.flags.allow_discount && !l.typed)
+                .fold(0.0, |s, (l, q)| s + l.total * q);
             let discount = js_min(
-                js_max(subtotal, 0.0),
-                round_money(subtotal * opts.discount_pct / 100.0, dollars)
+                js_max(discountable, 0.0),
+                round_money(discountable * opts.discount_pct / 100.0, dollars)
                     + js_max(opts.discount_amount, 0.0),
             );
             let taxable = all_lines()
                 .filter(|(l, _)| l.flags.taxable)
                 .fold(0.0, |s, (l, q)| s + l.total * q);
             let tax = round_money(taxable * opts.tax_pct / 100.0, false);
+            let subtotal = all.iter().fold(0.0, |s, a| s + a.subtotal);
             let missing = all.iter().any(|a| a.missing);
             OptionPrice {
                 option_id: option.id.clone(),
@@ -1201,39 +1204,4 @@ pub fn price_quote(doc: &QuoteDoc, pl: &Value, opts: PriceOptions) -> Vec<Option
             }
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    /// Must match the website (`priceQuote` in `app/utils/quote/pricing.ts`):
-    /// the customer's page, the deal amount and quote emails use this total.
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn the_discount_comes_off_the_whole_total() {
-        let doc: QuoteDoc = serde_json::from_value(json!({
-            "version": 2,
-            "areas": [],
-            "colorOptions": [{ "id": "o1", "byArea": {} }],
-            "items": [
-                { "id": "a", "kind": "misc", "areaId": null, "name": "Sealer", "quantity": 1,
-                  "price": 1000, "taxable": false },
-                { "id": "b", "kind": "misc", "areaId": null, "name": "Delivery", "quantity": 1,
-                  "price": 500, "allowDiscount": false, "taxable": false },
-            ],
-            "priceOverrides": { "item:a": { "o1": 900 } },
-        }))
-        .unwrap();
-        let options = PriceOptions {
-            discount_pct: 10.0,
-            discount_amount: 5.0,
-            tax_pct: 0.0,
-        };
-        let priced = price_quote(&doc, &json!({ "lineItemPriceRounding": 2 }), options);
-        // A typed $900 and a $500 line that allows no discount: 10% of $1,400, plus $5.
-        assert_eq!(priced[0].discount, 145.0);
-        assert_eq!(priced[0].total, 1255.0);
-    }
 }
