@@ -86,7 +86,12 @@ The `api` Lambda uses one token for everything (`WEBHOOKS_KEY`, see
 The lead forms (`/wordpress-contact-form`, `/facebook-contact-form`,
 `/v1/webhooks/new-lead-form`) use `Transitional<MarketingUser>`
 (`webhooks/crates/core/src/axum_helpers/access_token.rs`) so that no lead is
-ever lost: everyone still gets in, and PostHog shows who sends no token yet:
+ever lost: everyone still gets in. A new lead is saved either way. For a
+customer already in the CRM, a form only fills in their blank fields and never
+changes their phone or emails; without a working token it also leaves their
+deal alone (no move to the first stage, no restarted to-dos or emails, no new
+deal) and only tells the sales rep and the managers. PostHog shows who sends no
+token yet:
 
 - `webhook_legacy_auth`: a lead let in without a working token, with `route`,
   `company_id`, `legacy` and `result`.
