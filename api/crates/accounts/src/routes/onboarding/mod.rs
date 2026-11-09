@@ -1,7 +1,10 @@
 //! Guided tours: the first-run journey, feature tours and their points.
 //!
 //! - `GET  /v1/me/onboarding`        → the saved progress
-//! - `POST /v1/me/onboarding/events` → apply progress events
+//! - `POST /v1/me/onboarding/events` → apply progress events (including
+//!   `task.sighted`, saved as `state.sightings`)
+//! - `POST /v1/me/onboarding/usage`  → report a use of a feature only the app
+//!   can see (see [`usage`])
 //! - `POST /v1/me/onboarding/reset`  → restart the first-run journey
 //! - `GET  /v1/me/onboarding/setup`  → the dashboard widget: profile, setup
 //!   checklist, and credit for setup already done
@@ -16,6 +19,7 @@
 pub mod manifest;
 pub mod store;
 pub mod team;
+pub mod usage;
 
 use crate::auth::ShopOrEmployeeUser;
 use crate::auth::session::SessionUser;
@@ -23,6 +27,7 @@ use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
 use crate::openapi::{OpenApiRouter, routes};
+use crate::routes::company::queries::company_features;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -34,6 +39,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(progress))
         .routes(routes!(events))
+        .routes(routes!(record_usage))
         .routes(routes!(reset))
         .routes(routes!(setup))
         .routes(routes!(claim))
@@ -59,6 +65,14 @@ async fn home_actor(state: &AppState, user_id: i32) -> ApiResult<Actor> {
 ///
 /// The first-run journey, feature tours and points saved for the signed-in
 /// user (their home company's journey). `has_row` is false before any.
+/// `usage` lists the features the user already uses (check id -> first use):
+/// the app never starts those tours by itself and offers them only as
+/// 0-point replays. Data checks run here (positives are cached); it is empty
+/// while the company's guided tours are off. `account_created_at` dates the
+/// account (new-user pacing of tours). `state.sightings` holds, per task id,
+/// when the user first met a tour's opening control on its page before the
+/// tour ever ran; the app starts that tour by itself only on a later local
+/// day. Sightings at or before the user's feature-tour reset are left out.
 #[crate::openapi::path(
     get,
     path = "/v1/me/onboarding",
@@ -76,8 +90,71 @@ pub async fn progress(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
 ) -> ApiResult<Json<OnboardingRecord>> {
+    let pool = &state.pool;
     let actor = home_actor(&state, user.id).await?;
-    Ok(Json(store::load_record(&state.pool, actor.user_id).await?))
+    let mut record = store::load_record(pool, actor.user_id).await?;
+    if company_features(pool, actor.company_id).await?.onboarding {
+        record.usage = usage::evaluate(pool, actor, &manifest::usage_checks()).await?;
+    }
+    record.account_created_at = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT DATE_FORMAT(created_date, {}) FROM users WHERE id = ?",
+        store::ISO
+    )))
+    .bind(actor.user_id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+    Ok(Json(record))
+}
+
+/// Body of `POST /v1/me/onboarding/usage`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UsageInput {
+    /// The usage check the user just passed. Only checks the app may report
+    /// itself are accepted (the event and both checks in `usage.rs`, such as
+    /// `quote_views_opened`); checks the server reads only from its own data
+    /// are refused.
+    pub check_id: String,
+}
+
+/// Report a feature use
+///
+/// Records that the signed-in user used a feature only the app can see (a
+/// panel opened in the browser), so its guided tour is treated as already
+/// used: the first report stamps the time, later ones change nothing. Ignored
+/// (still 204) while the home company's guided tours are off. Read the result
+/// in `usage` of `GET /v1/me/onboarding`.
+#[crate::openapi::path(
+    post,
+    path = "/v1/me/onboarding/usage",
+    operation_id = "report_my_onboarding_usage",
+    tag = "me",
+    request_body = UsageInput,
+    responses(
+        (status = 204, description = "Recorded, or ignored while guided tours are off"),
+        (status = 400, description = "Not a check the app reports itself", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Not an employee or shop user", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn record_usage(
+    State(state): State<AppState>,
+    ShopOrEmployeeUser(user): ShopOrEmployeeUser,
+    JsonBody(input): JsonBody<UsageInput>,
+) -> ApiResult<StatusCode> {
+    if !usage::is_event_check(&input.check_id) {
+        return Err(ApiError::BadRequest("Unknown usage check".into()));
+    }
+    let actor = home_actor(&state, user.id).await?;
+    if company_features(&state.pool, actor.company_id)
+        .await?
+        .onboarding
+    {
+        usage::record_event(&state.pool, actor, &input.check_id).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Body of `POST /v1/me/onboarding/events`.
@@ -87,10 +164,15 @@ pub struct EventsInput {
     /// `journey.position` (`moduleId`, `stepKey`), `journey.module_step`,
     /// `journey.module_completed`, `journey.module_reopened` (`moduleId`),
     /// `journey.dismissed`, `journey.resumed`, `journey.completed`,
-    /// `journey.feedback_dismissed`, `task.position` and `task.closed`
-    /// (`taskId`, `version`, `stepKey`), `task.step_done` (`taskId`,
+    /// `journey.feedback_dismissed`, `task.position` (`taskId`, `version`,
+    /// `stepKey`, optional `usageSkipped`: true when the tour is a replay of a
+    /// feature the user already uses, which then pays 0 points; optional
+    /// `trigger`: `auto` | `user` | `gesture`, what started the tour) and
+    /// `task.closed` (`taskId`, `version`, `stepKey`), `task.step_done` (`taskId`,
     /// `version`, `steps`: step key → `action` | `manual`), `task.completed`
-    /// (`taskId`, `version`).
+    /// (`taskId`, `version`), `task.sighted` (`taskId`: the user met the tour's
+    /// opening control on its own page before the tour ever ran; the first one
+    /// is kept, replays change nothing, and it creates no tour progress).
     #[schema(value_type = Vec<Object>)]
     pub events: Vec<OnboardingEvent>,
 }
@@ -381,7 +463,7 @@ pub enum CreditOutcome {
     NothingPending,
     Applied {
         credited: Vec<String>,
-        state: OnboardingState,
+        state: Box<OnboardingState>,
         enabled: bool,
     },
 }
@@ -448,7 +530,7 @@ pub async fn credit_done(
         .collect();
     Ok(CreditOutcome::Applied {
         credited,
-        state: record.state,
+        state: Box::new(record.state),
         enabled: feature_tasks_enabled,
     })
 }
@@ -495,7 +577,7 @@ pub async fn setup(
             credited, state, ..
         }) if !credited.is_empty() => Some(Credit {
             task_ids: credited,
-            state,
+            state: *state,
         }),
         // Best effort: the widget renders without the credit.
         Ok(_) | Err(_) => None,
@@ -591,7 +673,7 @@ pub async fn claim(
                 enabled,
             } => {
                 if credited.iter().any(|task| task == task_id) {
-                    result("credited", Some(task_id.to_string()), Some(state))
+                    result("credited", Some(task_id.to_string()), Some(*state))
                 } else if enabled {
                     result("not-done", None, None)
                 } else {
