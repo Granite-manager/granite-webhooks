@@ -42,6 +42,27 @@ async fn tabs(server: &TestServer, session: &str) -> Value {
 }
 
 #[test_db::test(seed)]
+async fn a_number_linked_to_the_position_opens_its_texts(pool: MySqlPool) {
+    seat(&pool, 13).await;
+    let server = server(pool.clone());
+    assert_eq!(
+        tabs(&server, sessions::VIEWER).await,
+        json!(["customers", "schedule"])
+    );
+    sqlx::query(
+        "INSERT INTO telnyx_numbers (id, company_id, e164, last10, label, kind, position_id)
+         VALUES (9950, 100, '+13175550150', '3175550150', 'Scheduling', 'shared', 13)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let open = tabs(&server, sessions::VIEWER).await;
+    let open = open.as_array().unwrap();
+    assert!(open.contains(&json!("sms")));
+    assert!(open.contains(&json!("schedule")));
+}
+
+#[test_db::test(seed)]
 async fn a_scheduling_manager_sees_only_customers_and_the_schedule(pool: MySqlPool) {
     seat(&pool, 13).await;
     let server = server(pool);

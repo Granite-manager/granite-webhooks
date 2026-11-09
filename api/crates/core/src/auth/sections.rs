@@ -423,7 +423,39 @@ pub async fn user_tabs(
         return Ok(None);
     }
     let company = company_tabs(pool, user.company_id).await?;
-    Ok(tabs_for(&held, user.is_admin, &company))
+    let mut tabs = tabs_for(&held, user.is_admin, &company);
+    if let Some(open) = tabs.as_mut()
+        && !open.contains(&SMS_TAB)
+        && holds_linked_number(pool, user.company_id, &held).await?
+    {
+        *open = TABS
+            .iter()
+            .map(|tab| tab.key)
+            .filter(|key| *key == SMS_TAB || open.contains(key))
+            .collect();
+    }
+    Ok(tabs)
+}
+
+/// The tab that reads a company number's texts.
+const SMS_TAB: &str = "sms";
+
+/// Whether a number is linked to one of the positions `held`: everyone in
+/// that position reads its texts, whatever tabs the position has.
+async fn holds_linked_number(
+    pool: &MySqlPool,
+    company_id: i32,
+    held: &[i32],
+) -> Result<bool, ApiError> {
+    let linked: Vec<i32> = sqlx::query_scalar(
+        "SELECT position_id FROM telnyx_numbers
+          WHERE company_id = ? AND position_id IS NOT NULL
+            AND released_at IS NULL AND active <> 0",
+    )
+    .bind(company_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(linked.iter().any(|position| held.contains(position)))
 }
 
 /// [`user_tabs`] for someone holding the configured positions `held`, with
