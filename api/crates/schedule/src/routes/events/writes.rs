@@ -6,11 +6,11 @@ use crate::auth::ShopOrEmployeeUser;
 use crate::auth::session::SessionUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
-use crate::openapi::ToSchema;
+use crate::openapi::{IntoParams, ToSchema};
 use crate::routes::schedule::{board, notifications};
 use crate::state::AppState;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use chrono::{NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -781,17 +781,44 @@ pub async fn update(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Delete an event
+/// Which repeats `DELETE /v1/events/{id}` deletes.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct DeleteEventQuery {
+    /// `all` (the default): the event and, if it repeats, every repeat.
+    /// `one`: only the repeat on `date`. `following`: the repeat that starts
+    /// at `start` and every later one. On an event that does not repeat,
+    /// every scope deletes the whole event.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// With `scope=one`: the repeat's day, `YYYY-MM-DD`, as the calendar shows
+    /// it (the shop's wall-clock date, like `recurrence_exdates`).
+    #[serde(default)]
+    pub date: Option<String>,
+    /// With `scope=following`: the repeat's start, UTC ISO 8601 (the
+    /// `start_date` of that repeat). The repeat at or before the first one
+    /// deletes the whole event.
+    #[serde(default)]
+    pub start: Option<String>,
+}
+
+/// Delete an event, or some repeats of a repeating one
 ///
-/// Hides the event and cancels its pending appointment reminders.
+/// `scope=all` (the default) hides the event and cancels its pending
+/// appointment reminders. For a repeating event (`rrule` set), `scope=one`
+/// with `date` skips that one repeat (it is added to `recurrence_exdates`),
+/// and `scope=following` with `start` ends the repeats just before that one
+/// (`recurrence_until`); both keep the event and its earlier repeats. The
+/// schedule (`GET /v1/schedule/events`) then shows the change.
 #[crate::openapi::path(
     delete,
     path = "/v1/events/{id}",
     operation_id = "delete_event",
     tag = "schedule",
-    params(("id" = i32, Path, description = "Event id")),
+    params(("id" = i32, Path, description = "Event id"), DeleteEventQuery),
     responses(
         (status = 204, description = "Deleted"),
+        (status = 400, description = "Unknown scope, or a missing or unreadable `date` / `start`", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an employee, admin or shop manager or worker", body = ErrorBody),
         (status = 404, description = "No such event in the caller's company", body = ErrorBody),
@@ -803,11 +830,78 @@ pub async fn delete(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
     Path(id): Path<i32>,
+    Query(query): Query<DeleteEventQuery>,
 ) -> ApiResult<StatusCode> {
     let pool = &state.pool;
-    company_event(pool, user.company_id, id)
+    let event = company_event(pool, user.company_id, id)
         .await?
         .ok_or_else(not_found)?;
+    let repeats = event
+        .rrule
+        .as_deref()
+        .is_some_and(|rule| !rule.trim().is_empty());
+    let by = user.name.as_deref();
+    match query.scope.as_deref().unwrap_or("all") {
+        "one" if repeats => {
+            let day = query
+                .date
+                .as_deref()
+                .and_then(|text| NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d").ok())
+                .ok_or_else(|| ApiError::BadRequest("`date` must be YYYY-MM-DD.".into()))?;
+            let saved: Option<String> =
+                sqlx::query_scalar("SELECT recurrence_exdates FROM events WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(pool)
+                    .await?;
+            let exdates = with_exdate(saved.as_deref(), day);
+            sqlx::query("UPDATE events SET recurrence_exdates = ? WHERE id = ?")
+                .bind(&exdates)
+                .bind(id)
+                .execute(pool)
+                .await?;
+            let line = format!("Repeat on {} deleted", day.format("%b %-d, %Y"));
+            record(
+                pool,
+                &History::new(id, user.company_id, "updated", by).message(&line),
+            )
+            .await;
+            return Ok(StatusCode::NO_CONTENT);
+        }
+        "following" if repeats => {
+            let from = query
+                .start
+                .as_deref()
+                .and_then(parse_event_time)
+                .ok_or_else(|| ApiError::BadRequest("`start` must be a date and time.".into()))?;
+            if from > event.start_date {
+                // The last repeat kept starts before this one.
+                let until = from - chrono::Duration::seconds(1);
+                let until = event
+                    .recurrence_until
+                    .map_or(until, |saved| saved.min(until));
+                sqlx::query("UPDATE events SET recurrence_until = ? WHERE id = ?")
+                    .bind(until)
+                    .bind(id)
+                    .execute(pool)
+                    .await?;
+                let line = format!("Repeats from {} on deleted", from.format("%b %-d, %Y"));
+                record(
+                    pool,
+                    &History::new(id, user.company_id, "updated", by).message(&line),
+                )
+                .await;
+                return Ok(StatusCode::NO_CONTENT);
+            }
+        }
+        // The whole event: asked for, a repeat of an event that doesn't
+        // repeat, or from its first repeat on.
+        "all" | "one" | "following" => {}
+        _ => {
+            return Err(ApiError::BadRequest(
+                "`scope` must be all, one or following.".into(),
+            ));
+        }
+    }
     sqlx::query("UPDATE events SET deleted_date = CURRENT_TIMESTAMP WHERE id = ?")
         .bind(id)
         .execute(pool)
@@ -816,9 +910,40 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `recurrence_exdates` with `day` added: comma-separated `YYYY-MM-DD`, sorted,
+/// each day once.
+fn with_exdate(saved: Option<&str>, day: NaiveDate) -> String {
+    let mut days: Vec<String> = saved
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned)
+        .collect();
+    days.push(day.format("%Y-%m-%d").to_string());
+    days.sort();
+    days.dedup();
+    days.join(",")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_event_time;
+    use super::{parse_event_time, with_exdate};
+    use chrono::NaiveDate;
+
+    #[test]
+    fn a_skipped_repeat_is_added_once_in_order() {
+        let day = |text| NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap();
+        assert_eq!(with_exdate(None, day("2026-11-16")), "2026-11-16");
+        assert_eq!(
+            with_exdate(Some("2026-11-23, 2026-11-09"), day("2026-11-16")),
+            "2026-11-09,2026-11-16,2026-11-23"
+        );
+        assert_eq!(
+            with_exdate(Some("2026-11-16"), day("2026-11-16")),
+            "2026-11-16"
+        );
+    }
 
     #[test]
     fn event_times_read_like_the_remix_route() {

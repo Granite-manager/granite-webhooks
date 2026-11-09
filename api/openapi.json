@@ -39720,8 +39720,8 @@
         "tags": [
           "schedule"
         ],
-        "summary": "Delete an event",
-        "description": "Hides the event and cancels its pending appointment reminders.",
+        "summary": "Delete an event, or some repeats of a repeating one",
+        "description": "`scope=all` (the default) hides the event and cancels its pending\nappointment reminders. For a repeating event (`rrule` set), `scope=one`\nwith `date` skips that one repeat (it is added to `recurrence_exdates`),\nand `scope=following` with `start` ends the repeats just before that one\n(`recurrence_until`); both keep the event and its earlier repeats. The\nschedule (`GET /v1/schedule/events`) then shows the change.",
         "operationId": "delete_event",
         "parameters": [
           {
@@ -39733,11 +39733,48 @@
               "type": "integer",
               "format": "int32"
             }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`all` (the default): the event and, if it repeats, every repeat.\n`one`: only the repeat on `date`. `following`: the repeat that starts\nat `start` and every later one. On an event that does not repeat,\nevery scope deletes the whole event.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date",
+            "in": "query",
+            "description": "With `scope=one`: the repeat's day, `YYYY-MM-DD`, as the calendar shows\nit (the shop's wall-clock date, like `recurrence_exdates`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "With `scope=following`: the repeat's start, UTC ISO 8601 (the\n`start_date` of that repeat). The repeat at or before the first one\ndeletes the whole event.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "204": {
             "description": "Deleted"
+          },
+          "400": {
+            "description": "Unknown scope, or a missing or unreadable `date` / `start`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "401": {
             "description": "No valid session",

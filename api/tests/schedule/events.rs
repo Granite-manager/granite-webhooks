@@ -680,3 +680,77 @@ async fn search_puts_word_starts_open_and_upcoming_first_and_allows_a_typo(pool:
     // ago), the finished job, then "contains", then the typo; "Plonk" no
     assert_eq!(ids, [8984, 8980, 8983, 8982, 8981, 8985]);
 }
+
+const WEEKLY: &str = "
+INSERT INTO calendars (id, company_id, name, color) VALUES (8804, 100, 'Crew', 'teal');
+INSERT INTO events (id, title, start_date, end_date, created_user_id, calendar_id, rrule, recurrence_exdates) VALUES
+  (8970, 'Team meeting', '2026-11-02 15:00:00', '2026-11-02 16:00:00', 101, 8804, 'FREQ=WEEKLY', '2026-11-23'),
+  (8971, 'Once', '2026-11-02 15:00:00', '2026-11-02 16:00:00', 101, 8804, NULL, NULL);
+";
+
+async fn repeat_state(pool: &MySqlPool, id: i64) -> (Option<String>, Option<String>, bool) {
+    sqlx::query_as(
+        "SELECT recurrence_exdates, CAST(recurrence_until AS CHAR), deleted_date IS NOT NULL
+           FROM events WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test_db::test(seed)]
+async fn a_repeating_event_deletes_one_repeat_the_following_or_all(pool: MySqlPool) {
+    sqlx::raw_sql(WEEKLY).execute(&pool).await.unwrap();
+    let server = server(pool.clone());
+    let delete = |query: &str| {
+        let request = server
+            .delete(&format!("/v1/events/8970?{query}"))
+            .with_session(sessions::REP);
+        async move { request.await }
+    };
+    for bad in ["scope=some", "scope=one", "scope=one&date=16/11", "scope=following"] {
+        delete(bad).await.assert_status(StatusCode::BAD_REQUEST);
+    }
+
+    // This event: the day joins the skipped ones, the series stays.
+    delete("scope=one&date=2026-11-16")
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(
+        repeat_state(&pool, 8970).await,
+        (Some("2026-11-16,2026-11-23".into()), None, false)
+    );
+
+    // This and following: the repeats end just before that one.
+    delete("scope=following&start=2026-11-30T15:00:00.000Z")
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(
+        repeat_state(&pool, 8970).await,
+        (
+            Some("2026-11-16,2026-11-23".into()),
+            Some("2026-11-30 14:59:59".into()),
+            false
+        )
+    );
+    assert!(
+        history(&pool, 8970)
+            .await
+            .contains(&"Repeats from Nov 30, 2026 on deleted".to_string())
+    );
+
+    // From the first repeat on: the whole event.
+    delete("scope=following&start=2026-11-02T15:00:00.000Z")
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert!(repeat_state(&pool, 8970).await.2);
+
+    // An event that doesn't repeat: any scope deletes it.
+    server
+        .delete("/v1/events/8971?scope=one&date=2026-11-02")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert!(repeat_state(&pool, 8971).await.2);
+}
