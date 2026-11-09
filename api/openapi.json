@@ -78778,6 +78778,18 @@
               "null"
             ],
             "description": "The driving route from the company through the stops (Google encoded\npolyline); null when there is none."
+          },
+          "drives": {
+            "type": "array",
+            "items": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int32",
+              "minimum": 0
+            },
+            "description": "Minutes driving to each asked stop from the found stop before it;\nnull for the first stop or without a route. Empty when there is none."
           }
         }
       },
@@ -107945,6 +107957,18 @@
             "type": "integer",
             "format": "int32",
             "description": "When it ends, in minutes after midnight (shop time).",
+            "minimum": 0
+          },
+          "lunch_start_minute": {
+            "type": "integer",
+            "format": "int32",
+            "description": "When lunch starts, in minutes after midnight (shop time).",
+            "minimum": 0
+          },
+          "lunch_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long lunch is; 0 means no lunch. The Auto-plan keeps it free.",
             "minimum": 0
           },
           "work_days": {

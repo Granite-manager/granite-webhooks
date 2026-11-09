@@ -126,6 +126,10 @@ pub struct DayMap {
     /// The driving route from the company through the stops (Google encoded
     /// polyline); null when there is none.
     pub route: Option<String>,
+    /// Minutes driving to each asked stop from the found stop before it;
+    /// null for the first stop or without a route. Empty when there is none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub drives: Vec<Option<u32>>,
 }
 
 /// Map a day's stops
@@ -162,6 +166,7 @@ pub async fn day_map(
         home: day.home,
         stops: day.stops,
         route: day.line,
+        drives: day.drives,
     }))
 }
 
