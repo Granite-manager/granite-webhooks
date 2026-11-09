@@ -177,7 +177,7 @@ async fn dial_customer(state: &AppState, hook: &Hook, call_id: i64) -> ApiResult
     };
     let base = &hook.base;
     let record = records_outbound(&hook.config);
-    // The user turned the recording voice off (My Account): recorded, no notice.
+    // The user's recording voice is off (Phone page): recorded, no notice.
     let voice = match call.user_id {
         Some(user_id) if record => {
             settings::says_recording_notice(&state.pool, user_id, call.company_id).await

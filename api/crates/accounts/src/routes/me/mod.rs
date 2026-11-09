@@ -30,7 +30,6 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(handlers::me))
         .routes(routes!(account::account, account::update_account))
-        .routes(routes!(account::set_recording_voice))
         .routes(routes!(ringcentral::start))
         .routes(routes!(ringcentral::finish, ringcentral::disconnect))
         .routes(routes!(handlers::positions))

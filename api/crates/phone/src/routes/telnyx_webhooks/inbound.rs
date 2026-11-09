@@ -38,7 +38,8 @@ use chrono::Utc;
 /// call is logged (`ringing`; the customer is the company's newest live
 /// customer with the caller's number; `spamLikely` when the caller-ID check
 /// says so) and answered with TeXML: "This call may be recorded." when the
-/// company records incoming calls, then a `<Dial>` ringing every signed-in
+/// company records incoming calls (unless every user the number rings
+/// turned the recording voice off), then a `<Dial>` ringing every signed-in
 /// phone of the users whose part of the call is to ring (not Do not
 /// disturb, no forward of all calls, their first matching incoming call
 /// rule, else their working hours; the main line only while the company is
@@ -278,7 +279,7 @@ async fn answer(state: &AppState, hook: &Hook, line: &Line) -> ApiResult<Respons
     // A forwarded call is not recorded: no notice.
     let record = records_inbound(config) && forwarded.is_none();
     let mut response = Texml::new();
-    if record {
+    if record && routing::says_inbound_notice(pool, config.company_id, line.id).await {
         response = response.say(NOTICE);
     }
     let options = ring_options(line, ringers, caller_e164.is_none());

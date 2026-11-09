@@ -195,66 +195,6 @@
         ]
       }
     },
-    "/v1/me/recording-voice": {
-      "put": {
-        "tags": [
-          "me"
-        ],
-        "summary": "Turn the recording voice of my calls on or off",
-        "description": "My Account > Phone lines > Granite Manager. Off: the user's outgoing\nGranite Phone calls, Call via my cell calls and the Record button record\nwithout saying \"This call is being recorded.\" (some states require\ntelling the other side). Incoming calls keep their notice. 403 when the\nhome company does not call through Granite Phone.",
-        "operationId": "set_my_recording_voice",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecordingVoiceSwitch"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "204": {
-            "description": "Saved"
-          },
-          "401": {
-            "description": "No valid session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not an employee or of the shop, or the company has no Granite Phone",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Database error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          }
-        ]
-      }
-    },
     "/v1/me/ringcentral/start": {
       "post": {
         "tags": [
@@ -61881,6 +61821,88 @@
         ]
       }
     },
+    "/v1/phone/admin/users/{id}/recording-voice": {
+      "put": {
+        "tags": [
+          "phone"
+        ],
+        "summary": "Turn a user's recording notice on or off",
+        "description": "The Phone page's switch per user. Off: their outgoing calls record\nwithout the notice, and callers\nof a number skip it once every user the number rings has it off. Which\ncalls are recorded is `PUT /v1/phone/admin/recording`. 404 when the user\nis not one of the company's phone users. Written to the phone audit log.\nCompany admins (and super admins, superusers) only.",
+        "operationId": "set_phone_admin_user_recording_voice",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The user",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserRecordingVoice"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not one of the company's phone users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/phone/admin/connect": {
       "post": {
         "tags": [
@@ -67238,7 +67260,7 @@
           "telnyx-webhooks"
         ],
         "summary": "Answer an incoming call",
-        "description": "Telnyx's TeXML app voice URL, fetched when someone calls one of the\ncompany's numbers (`To`). First the company's spam and blocked numbers\n(`GET /v1/phone/admin/call-blocking`): a trusted number is never\nblocked; a hidden number (when the company blocks those), a blocked\nnumber or area code, or likely spam (STIR/SHAKEN validation failed, or\nTelnyx's call screening says `SPAM LIKELY`; when the company blocks spam\nor sends it to voicemail) is logged as blocked and hears the\nannouncement then a hang-up, is rejected, or goes to voicemail without\nringing anyone; blocked calls get no missed-call push. Otherwise the\ncall is logged (`ringing`; the customer is the company's newest live\ncustomer with the caller's number; `spamLikely` when the caller-ID check\nsays so) and answered with TeXML: \"This call may be recorded.\" when the\ncompany records incoming calls, then a `<Dial>` ringing every signed-in\nphone of the users whose part of the call is to ring (not Do not\ndisturb, no forward of all calls, their first matching incoming call\nrule, else their working hours; the main line only while the company is\nopen), with `dial-result` as its action, a `leg-status` callback per\nphone, the `whisper` announcement for users who turned it on, and the\nnumber called as the caller ID when every one of them chose to see it.\nOn a user's own direct line their forward, voicemail or message rule\ntakes the whole call (no missed-call push). A forward-only number rings\nnobody: the call goes straight to its forward number (no recording\nnotice, no missed-call push; voicemail when the number has none). When no phone can ring it\ngoes straight on: the cells of users with cell fallback on, else the\nnumber's no-answer action (AI Assistant, voicemail or forward) and a\n`missed_call` push. A repeated request answers the same call again. An\ninternal error answers the fallback TeXML (`<Redirect>`). 403 when the\nnumber, account or connection is not the token's company's.",
+        "description": "Telnyx's TeXML app voice URL, fetched when someone calls one of the\ncompany's numbers (`To`). First the company's spam and blocked numbers\n(`GET /v1/phone/admin/call-blocking`): a trusted number is never\nblocked; a hidden number (when the company blocks those), a blocked\nnumber or area code, or likely spam (STIR/SHAKEN validation failed, or\nTelnyx's call screening says `SPAM LIKELY`; when the company blocks spam\nor sends it to voicemail) is logged as blocked and hears the\nannouncement then a hang-up, is rejected, or goes to voicemail without\nringing anyone; blocked calls get no missed-call push. Otherwise the\ncall is logged (`ringing`; the customer is the company's newest live\ncustomer with the caller's number; `spamLikely` when the caller-ID check\nsays so) and answered with TeXML: \"This call may be recorded.\" when the\ncompany records incoming calls (unless every user the number rings\nturned the recording voice off), then a `<Dial>` ringing every signed-in\nphone of the users whose part of the call is to ring (not Do not\ndisturb, no forward of all calls, their first matching incoming call\nrule, else their working hours; the main line only while the company is\nopen), with `dial-result` as its action, a `leg-status` callback per\nphone, the `whisper` announcement for users who turned it on, and the\nnumber called as the caller ID when every one of them chose to see it.\nOn a user's own direct line their forward, voicemail or message rule\ntakes the whole call (no missed-call push). A forward-only number rings\nnobody: the call goes straight to its forward number (no recording\nnotice, no missed-call push; voicemail when the number has none). When no phone can ring it\ngoes straight on: the cells of users with cell fallback on, else the\nnumber's no-answer action (AI Assistant, voicemail or forward) and a\n`missed_call` push. A repeated request answers the same call again. An\ninternal error answers the fallback TeXML (`<Redirect>`). 403 when the\nnumber, account or connection is not the token's company's.",
         "operationId": "answer_telnyx_inbound_call",
         "parameters": [
           {
@@ -69319,8 +69341,7 @@
           "has_onboarding_feedback",
           "feedback_dismissed",
           "has_granite_phone",
-          "granite_phone_numbers",
-          "recording_voice"
+          "granite_phone_numbers"
         ],
         "properties": {
           "user_id": {
@@ -69425,10 +69446,6 @@
               "type": "string"
             },
             "description": "The Granite Phone numbers the user can call from (E.164); an admin\nassigns them on the Phone page."
-          },
-          "recording_voice": {
-            "type": "boolean",
-            "description": "The user's calls say \"This call is being recorded.\" to both sides when\ntheir recording starts (`PUT /v1/me/recording-voice`)."
           }
         }
       },
@@ -91480,7 +91497,8 @@
         "description": "A user of the company who may be given a number.",
         "required": [
           "id",
-          "name"
+          "name",
+          "recordingVoice"
         ],
         "properties": {
           "id": {
@@ -91491,6 +91509,10 @@
           "name": {
             "type": "string",
             "description": "Their name, else their email."
+          },
+          "recordingVoice": {
+            "type": "boolean",
+            "description": "Their calls say the recording notice (`recording_voice`; on by default)."
           }
         }
       },
@@ -98047,19 +98069,6 @@
           "Inbound",
           "Both"
         ]
-      },
-      "RecordingVoiceSwitch": {
-        "type": "object",
-        "description": "Body of `PUT /v1/me/recording-voice`.",
-        "required": [
-          "on"
-        ],
-        "properties": {
-          "on": {
-            "type": "boolean",
-            "description": "Say the recording notice on my calls."
-          }
-        }
       },
       "Redirect": {
         "type": "object",
@@ -109343,6 +109352,19 @@
               "null"
             ],
             "description": "Display name."
+          }
+        }
+      },
+      "UserRecordingVoice": {
+        "type": "object",
+        "description": "Body of `PUT /v1/phone/admin/users/{id}/recording-voice`.",
+        "required": [
+          "on"
+        ],
+        "properties": {
+          "on": {
+            "type": "boolean",
+            "description": "True: the user's calls say the recording notice."
           }
         }
       },

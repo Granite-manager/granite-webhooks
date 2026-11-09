@@ -18,6 +18,7 @@ use crate::phone::lines::{NumberKind, sync_position_lines};
 use crate::phone::numbers::{is_nanp, last10, to_e164};
 use crate::phone::revoke::{RevokeReason, revoke_device_session};
 use crate::phone::routing::{NoAnswerAction, PHONE_USER};
+use crate::phone::settings;
 use crate::routes::device_sessions::DevicePlatform;
 use crate::routes::sms::moves::{self, Kind};
 use crate::routes::sms::provider::SmsProvider;
@@ -116,11 +117,14 @@ struct AssignmentRow {
 
 /// A user of the company who may be given a number.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, FromRow, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct PhoneAdminUser {
     /// User id.
     pub id: i32,
     /// Their name, else their email.
     pub name: String,
+    /// Their calls say the recording notice (`recording_voice`; on by default).
+    pub recording_voice: bool,
 }
 
 /// The company's calling status.
@@ -334,8 +338,10 @@ pub async fn list_admin_numbers(
     let pool = &state.pool;
     let numbers = company_numbers(pool, user.company_id).await?;
     let users = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT u.id, COALESCE(NULLIF(TRIM(u.name), ''), u.email) AS name
+        "SELECT u.id, COALESCE(NULLIF(TRIM(u.name), ''), u.email) AS name,
+                COALESCE(s.recording_voice, 1) <> 0 AS recording_voice
            FROM users u
+           LEFT JOIN phone_user_settings s ON s.user_id = u.id AND s.company_id = u.company_id
           WHERE u.company_id = ? AND u.is_deleted = 0 AND {PHONE_USER}
           ORDER BY name, u.id"
     )))
@@ -1181,4 +1187,66 @@ pub async fn save_admin_recording(
     .await?;
     tx.commit().await?;
     Ok(Json(recording))
+}
+
+/// Body of `PUT /v1/phone/admin/users/{id}/recording-voice`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UserRecordingVoice {
+    /// True: the user's calls say the recording notice.
+    pub on: bool,
+}
+
+/// Turn a user's recording notice on or off
+///
+/// The Phone page's switch per user. Off: their outgoing calls record
+/// without the notice, and callers
+/// of a number skip it once every user the number rings has it off. Which
+/// calls are recorded is `PUT /v1/phone/admin/recording`. 404 when the user
+/// is not one of the company's phone users. Written to the phone audit log.
+/// Company admins (and super admins, superusers) only.
+#[crate::openapi::path(
+    put,
+    path = "/v1/phone/admin/users/{id}/recording-voice",
+    operation_id = "set_phone_admin_user_recording_voice",
+    tag = "phone",
+    params(("id" = i32, Path, description = "The user")),
+    request_body = UserRecordingVoice,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "Not one of the company's phone users", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_admin_user_recording_voice(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(id): Path<i32>,
+    JsonBody(input): JsonBody<UserRecordingVoice>,
+) -> ApiResult<StatusCode> {
+    let pool = &state.pool;
+    let found: Option<i32> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT u.id FROM users u
+          WHERE u.id = ? AND u.company_id = ? AND u.is_deleted = 0 AND {PHONE_USER}"
+    )))
+    .bind(id)
+    .bind(user.company_id)
+    .fetch_optional(pool)
+    .await?;
+    if found.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    settings::set_recording_voice(pool, id, user.company_id, input.on).await?;
+    audit(
+        pool,
+        user.company_id,
+        user.id,
+        "recording_voice_saved",
+        &format!("user:{id}"),
+        &json!({ "on": input.on }),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }

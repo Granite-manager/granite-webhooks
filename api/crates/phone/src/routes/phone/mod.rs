@@ -177,6 +177,7 @@ pub fn router() -> OpenApiRouter<AppState> {
             admin::get_admin_recording,
             admin::save_admin_recording
         ))
+        .routes(routes!(admin::set_admin_user_recording_voice))
         .routes(routes!(connect::connect_telnyx))
         .routes(routes!(connect::search_numbers))
         .routes(routes!(connect::buy_number))

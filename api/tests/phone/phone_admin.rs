@@ -157,8 +157,8 @@ async fn admins_list_and_change_the_company_numbers(pool: MySqlPool) {
                     { "userId": 100, "rings": true, "canCallFrom": true }])),
             ],
             "users": [
-                { "id": 102, "name": "Ada Admin" }, { "id": 107, "name": "Dina Dealer" },
-                { "id": 101, "name": "Mark Manager" }, { "id": 100, "name": "Rita Rep" }],
+                { "id": 102, "name": "Ada Admin", "recordingVoice": true }, { "id": 107, "name": "Dina Dealer", "recordingVoice": true },
+                { "id": 101, "name": "Mark Manager", "recordingVoice": true }, { "id": 100, "name": "Rita Rep", "recordingVoice": true }],
             "config": { "enabled": true, "recordingMode": "both", "configured": true }
         })
     );
@@ -191,7 +191,7 @@ async fn admins_list_and_change_the_company_numbers(pool: MySqlPool) {
     assert_eq!(other["numbers"][0]["id"], 9904);
     assert_eq!(
         other["users"],
-        json!([{ "id": 106, "name": "Olga Other" }, { "id": 103, "name": "Sam Super" }])
+        json!([{ "id": 106, "name": "Olga Other", "recordingVoice": true }, { "id": 103, "name": "Sam Super", "recordingVoice": true }])
     );
     assert_eq!(
         other["config"],
@@ -1091,4 +1091,50 @@ async fn company_admins_choose_what_is_recorded(pool: MySqlPool) {
         (&Some(102), "recording_saved", Some("company:100"))
     );
     assert_eq!(log[0].3, expected);
+}
+
+#[test_db::test(seed)]
+async fn admins_turn_the_recording_voice_off_per_user(pool: MySqlPool) {
+    let (server, _) = phone_server(pool.clone()).await;
+    let path = "/v1/phone/admin/users/100/recording-voice";
+    let voice_of_100 = |page: serde_json::Value| {
+        page["users"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|user| user["id"] == 100)
+            .unwrap()["recordingVoice"]
+            .clone()
+    };
+    let page = server
+        .get("/v1/phone/admin/numbers")
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(voice_of_100(page), json!(true));
+    server
+        .put(path)
+        .with_session(sessions::REP)
+        .json(&json!({ "on": false }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    server
+        .put(path)
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "on": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let page = server
+        .get("/v1/phone/admin/numbers")
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(voice_of_100(page), json!(false));
+    // Another company's user.
+    server
+        .put("/v1/phone/admin/users/106/recording-voice")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "on": false }))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
 }
