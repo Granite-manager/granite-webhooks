@@ -882,10 +882,12 @@ async fn events_get_the_default_flow_or_the_ones_they_pick(pool: MySqlPool) {
 async fn a_confirmation_goes_out_right_away(pool: MySqlPool) {
     sqlx::raw_sql(CALENDARS).execute(&pool).await.unwrap();
     // Ryan (100) also is a Scheduling Manager (13): "Send SMS from events".
-    sqlx::query("INSERT INTO users_positions (user_id, position_id, company_id) VALUES (100, 13, 100)")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (100, 13, 100)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let template = sqlx::query(
         "INSERT INTO schedule_notification_templates (company_id, name, channel, subject, body)
          VALUES (100, 'Confirmation', 'email', 'Booked, {{customer.first_name}}',
@@ -1058,6 +1060,19 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
             .as_str()
             .unwrap()
             .starts_with("Hi Alice, can we install ")
+    );
+    // A planned time fills the text without being saved.
+    let planned: Value = server
+        .get(&format!(
+            "/v1/events/{install}/scheduling-texts?start=2031-03-04%2015:00:00&end=2031-03-04%2016:00:00&all_day=false"
+        ))
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(planned["problem"], Value::Null);
+    assert_ne!(
+        planned["templates"][0]["text"],
+        texts["templates"][0]["text"]
     );
     let other: Value = server
         .get(&format!("/v1/events/{estimate}/scheduling-texts"))
