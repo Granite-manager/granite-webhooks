@@ -544,7 +544,9 @@ pub struct InvalidInput {
 /// Mark a lead invalid
 ///
 /// Records why the lead is invalid, unassigns it and hides its live deals
-/// (each deletion audited). Admins and sales managers only.
+/// (each deletion audited). The sales managers' Telegram lead alerts end with
+/// "Lead marked invalid: {reason}" and lose their rep buttons. Admins and
+/// sales managers only.
 #[crate::openapi::path(
     put,
     path = "/v1/customers/{id}/invalid",
@@ -616,6 +618,14 @@ pub async fn mark_invalid(
         }
     }
     tx.commit().await?;
+    // The managers' Telegram lead alerts say so, their rep buttons gone.
+    super::service::update_manager_lead_messages(
+        &state,
+        user.company_id,
+        id,
+        &super::service::invalid_label(reason),
+    )
+    .await;
     // It leaves the lead inbox of every phone.
     push_leads_changed_logged(&state, user.company_id, &[]).await;
     Ok(StatusCode::NO_CONTENT)

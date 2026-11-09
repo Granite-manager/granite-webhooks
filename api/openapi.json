@@ -2970,7 +2970,7 @@
           "customers"
         ],
         "summary": "Mark a lead invalid",
-        "description": "Records why the lead is invalid, unassigns it and hides its live deals\n(each deletion audited). Admins and sales managers only.",
+        "description": "Records why the lead is invalid, unassigns it and hides its live deals\n(each deletion audited). The sales managers' Telegram lead alerts end with\n\"Lead marked invalid: {reason}\" and lose their rep buttons. Admins and\nsales managers only.",
         "operationId": "mark_customer_invalid",
         "parameters": [
           {
