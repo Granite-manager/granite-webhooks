@@ -44,6 +44,8 @@ const METERS_PER_MILE: f64 = 1609.344;
 /// A day's stops on the map; see [`Maps::day_map`].
 #[derive(Debug, Default)]
 pub struct DayRoute {
+    /// Minutes to each stop from the found stop before it; empty without a route.
+    pub drives: Vec<Option<u32>>,
     /// Where the home address is.
     pub home: Option<Point>,
     /// Where each stop is, in the order asked; `None` where Google cannot find it.
@@ -368,7 +370,21 @@ impl Maps {
             return route;
         }
         if points.len() >= 2 {
-            route.line = self.driving_line(key, &points).await;
+            if let Some((line, legs)) = self.driving_line(key, &points).await {
+                route.line = Some(line);
+                let mut found = 0_usize;
+                route.drives = route
+                    .stops
+                    .iter()
+                    .map(|stop| {
+                        stop.as_ref()?;
+                        found += 1;
+                        found
+                            .checked_sub(2)
+                            .and_then(|leg| legs.get(leg).copied().flatten())
+                    })
+                    .collect();
+            }
         }
         route.image = self.static_map(key, &route, &points).await;
         route
@@ -431,7 +447,11 @@ impl Maps {
     }
 
     /// The driving route through `points` in order, as an encoded polyline.
-    async fn driving_line(&self, key: &str, points: &[Point]) -> Option<String> {
+    async fn driving_line(
+        &self,
+        key: &str,
+        points: &[Point],
+    ) -> Option<(String, Vec<Option<u32>>)> {
         let (first, rest) = points.split_first()?;
         let (last, middle) = rest.split_last()?;
         let waypoint = |point: &Point| json!({ "location": { "latLng": { "latitude": point.lat, "longitude": point.lng } } });
@@ -439,7 +459,10 @@ impl Maps {
             .http
             .post(&*self.routes_url)
             .header("X-Goog-Api-Key", key)
-            .header("X-Goog-FieldMask", "routes.polyline.encodedPolyline")
+            .header(
+                "X-Goog-FieldMask",
+                "routes.polyline.encodedPolyline,routes.legs.duration",
+            )
             .json(&json!({
                 "origin": waypoint(first),
                 "destination": waypoint(last),
@@ -454,10 +477,22 @@ impl Maps {
             .json()
             .await
             .ok()?;
-        body["routes"][0]["polyline"]["encodedPolyline"]
+        let route = &body["routes"][0];
+        let line = route["polyline"]["encodedPolyline"]
             .as_str()
-            .filter(|line| !line.is_empty())
-            .map(String::from)
+            .filter(|line| !line.is_empty())?
+            .to_string();
+        // Drives take minutes to hours: the cast is safe.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let legs = route["legs"]
+            .as_array()
+            .map(|legs| {
+                legs.iter()
+                    .map(|leg| seconds(&leg["duration"]).map(|time| (time / 60.0).ceil() as u32))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some((line, legs))
     }
 
     /// Driving seconds between the home address (point 0) and the stops

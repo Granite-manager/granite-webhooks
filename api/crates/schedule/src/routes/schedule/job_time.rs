@@ -102,8 +102,18 @@ pub struct TimeRules {
     pub day_start_minute: u32,
     /// When it ends, in minutes after midnight (shop time).
     pub day_end_minute: u32,
+    /// When lunch starts, in minutes after midnight (shop time).
+    #[serde(default = "default_lunch_start")]
+    pub lunch_start_minute: u32,
+    /// How long lunch is; 0 means no lunch. The Auto-plan keeps it free.
+    #[serde(default)]
+    pub lunch_minutes: u32,
     /// Days people work: 0 Sunday ... 6 Saturday.
     pub work_days: Vec<u8>,
+}
+
+const fn default_lunch_start() -> u32 {
+    12 * 60
 }
 
 impl Default for TimeRules {
@@ -120,6 +130,8 @@ impl Default for TimeRules {
             travel_minutes: 30,
             day_start_minute: 9 * 60,
             day_end_minute: 17 * 60,
+            lunch_start_minute: default_lunch_start(),
+            lunch_minutes: 0,
             work_days: vec![1, 2, 3, 4, 5],
         }
     }
@@ -136,6 +148,18 @@ impl TimeRules {
             || self.per_backsplash_minutes > 0
             || self.per_full_backsplash_minutes > 0
             || self.per_tear_out_minutes > 0
+    }
+
+    /// Lunch as a stop on the day; `None` without one.
+    const fn lunch(&self) -> Option<DayStop> {
+        if self.lunch_minutes == 0 {
+            return None;
+        }
+        Some(DayStop {
+            start: self.lunch_start_minute,
+            end: self.lunch_start_minute + self.lunch_minutes,
+            place: Some(LUNCH),
+        })
     }
 
     fn work_day_mask(&self) -> u8 {
@@ -183,6 +207,8 @@ struct RulesRow {
     travel_minutes: i64,
     day_start_minute: i64,
     day_end_minute: i64,
+    lunch_start_minute: i64,
+    lunch_minutes: i64,
     work_days: i64,
 }
 
@@ -204,6 +230,8 @@ impl From<RulesRow> for TimeRules {
             travel_minutes: minutes(row.travel_minutes),
             day_start_minute: minutes(row.day_start_minute),
             day_end_minute: minutes(row.day_end_minute),
+            lunch_start_minute: minutes(row.lunch_start_minute),
+            lunch_minutes: minutes(row.lunch_minutes),
             work_days: (0..7u8)
                 .filter(|day| row.work_days & (1 << day) != 0)
                 .collect(),
@@ -240,6 +268,8 @@ async fn load_all_rules(
                 CAST(travel_minutes AS SIGNED) AS travel_minutes,
                 CAST(day_start_minute AS SIGNED) AS day_start_minute,
                 CAST(day_end_minute AS SIGNED) AS day_end_minute,
+                CAST(lunch_start_minute AS SIGNED) AS lunch_start_minute,
+                CAST(lunch_minutes AS SIGNED) AS lunch_minutes,
                 CAST(work_days AS SIGNED) AS work_days
            FROM schedule_time_rules WHERE company_id = ?",
     )
@@ -302,6 +332,12 @@ fn check_rules(rules: &TimeRules) -> Result<(), ApiError> {
     if rules.day_start_minute >= rules.day_end_minute || rules.day_end_minute > MINUTES_PER_DAY {
         return bad("The work day must end after it starts.");
     }
+    if rules.lunch_minutes > 0
+        && (rules.lunch_start_minute < rules.day_start_minute
+            || rules.lunch_start_minute + rules.lunch_minutes > rules.day_end_minute)
+    {
+        return bad("Lunch must be inside the work day.");
+    }
     if rules.work_day_mask() == 0 {
         return bad("Pick at least one work day.");
     }
@@ -338,8 +374,8 @@ pub async fn set_time_rules(
            (company_id, kind, base_minutes, per_sqft_minutes, per_waterfall_minutes,
             per_sink_minutes, per_cooktop_minutes, per_backsplash_minutes,
             per_full_backsplash_minutes, per_tear_out_minutes, travel_minutes,
-            day_start_minute, day_end_minute, work_days)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            day_start_minute, day_end_minute, lunch_start_minute, lunch_minutes, work_days)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE base_minutes = VALUES(base_minutes),
            per_sqft_minutes = VALUES(per_sqft_minutes),
            per_waterfall_minutes = VALUES(per_waterfall_minutes),
@@ -351,6 +387,8 @@ pub async fn set_time_rules(
            travel_minutes = VALUES(travel_minutes),
            day_start_minute = VALUES(day_start_minute),
            day_end_minute = VALUES(day_end_minute),
+           lunch_start_minute = VALUES(lunch_start_minute),
+           lunch_minutes = VALUES(lunch_minutes),
            work_days = VALUES(work_days)",
     )
     .bind(user.company_id)
@@ -366,6 +404,8 @@ pub async fn set_time_rules(
     .bind(rules.travel_minutes)
     .bind(rules.day_start_minute)
     .bind(rules.day_end_minute)
+    .bind(rules.lunch_start_minute)
+    .bind(rules.lunch_minutes)
     .bind(rules.work_day_mask())
     .execute(&state.pool)
     .await?;
@@ -688,6 +728,12 @@ pub async fn job_time_for(
 
 /// The company's address: point 0 of the drive times.
 pub const SHOP: usize = 0;
+/// The `place` of a day's lunch: it takes time, but nobody drives to it.
+pub const LUNCH: usize = usize::MAX;
+
+const fn is_lunch(stop: &DayStop) -> bool {
+    matches!(stop.place, Some(LUNCH))
+}
 
 /// Something on a person's day: its minutes and where it is (a point of
 /// the drive times; `None` without an address).
@@ -724,6 +770,7 @@ pub struct Drives {
 impl Drives {
     pub fn between(&self, from: Option<usize>, to: Option<usize>) -> u32 {
         match (from, to) {
+            (Some(LUNCH), _) | (_, Some(LUNCH)) => 0,
             (Some(from), Some(to)) if from == to => 0,
             (Some(from), Some(to)) => self
                 .minutes
@@ -756,12 +803,23 @@ const fn round_up(minute: u32) -> u32 {
 /// stop to stop; the job must end in time to drive to the next stop and by
 /// the end of the work day. A job longer than the work day only fits a free
 /// day, from its start.
+///
+/// Lunch stays free, unless the job fits a day with nothing else on it only
+/// by running through lunch.
 pub fn earliest_start(
     stops: &[DayStop],
     window: (u32, u32),
     job: &PlanJob,
     drives: &Drives,
 ) -> Option<u32> {
+    first_fit(stops, window, job, drives).or_else(|| {
+        (!stops.is_empty() && stops.iter().all(is_lunch))
+            .then(|| first_fit(&[], window, job, drives))
+            .flatten()
+    })
+}
+
+fn first_fit(stops: &[DayStop], window: (u32, u32), job: &PlanJob, drives: &Drives) -> Option<u32> {
     let (open, close) = window;
     if job.minutes > close.saturating_sub(open) {
         return stops.is_empty().then_some(open);
@@ -779,7 +837,9 @@ pub fn earliest_start(
         }
         if stop.end >= free_from {
             free_from = stop.end;
-            at = stop.place;
+            if !is_lunch(&stop) {
+                at = stop.place;
+            }
         }
     }
     let start = round_up(free_from + drives.between(at, job.place));
@@ -799,7 +859,7 @@ pub fn plan(
     let mut waiting: Vec<&PlanJob> = jobs.iter().collect();
     let mut placed = HashMap::new();
     for (day, stops) in days.iter_mut().enumerate() {
-        let mut opening = stops.is_empty();
+        let mut opening = stops.iter().all(is_lunch);
         loop {
             let fits = waiting.iter().enumerate().filter_map(|(rank, job)| {
                 earliest_start(stops, window, job, drives).map(|start| (rank, start))
@@ -831,7 +891,7 @@ pub fn plan(
 fn drive_to(stops: &[DayStop], start: u32, place: Option<usize>, drives: &Drives) -> u32 {
     let before = stops
         .iter()
-        .filter(|stop| stop.end <= start && stop.start < start)
+        .filter(|stop| !is_lunch(stop) && stop.end <= start && stop.start < start)
         .max_by_key(|stop| stop.end)
         .map_or(Some(SHOP), |stop| stop.place);
     drives.between(before, place)
@@ -1306,6 +1366,11 @@ async fn plan_days(
             }
         }
     }
+    if let Some(lunch) = rules.lunch() {
+        for stops in &mut day_stops {
+            stops.push(lunch);
+        }
+    }
     let slots = plan(&plan_jobs, &mut day_stops, window, &drives);
 
     let mut placements = Vec::new();
@@ -1501,7 +1566,10 @@ async fn best_day_candidates(
             .map(|(_, (start, end))| (*end).min(close).saturating_sub((*start).max(open)))
             .sum();
         booked.push(BookedDay {
-            free: close.saturating_sub(open).saturating_sub(taken),
+            free: close
+                .saturating_sub(open)
+                .saturating_sub(taken)
+                .saturating_sub(scope.rules.lunch_minutes),
             stops,
         });
         booked_dates.push(date);
@@ -1520,6 +1588,88 @@ async fn best_day_candidates(
             .map(|date| (date, everyone.clone())),
     );
     Ok(candidates)
+}
+
+#[cfg(test)]
+mod lunch_tests {
+    use super::*;
+
+    const DAY: (u32, u32) = (540, 1020);
+    const LUNCH_STOP: DayStop = DayStop {
+        start: 720,
+        end: 750,
+        place: Some(LUNCH),
+    };
+
+    fn job(minutes: u32) -> PlanJob {
+        PlanJob {
+            id: 1,
+            minutes,
+            place: Some(1),
+        }
+    }
+
+    fn drives() -> Drives {
+        Drives {
+            minutes: vec![vec![Some(0), Some(15)], vec![Some(15), Some(0)]],
+            fallback: 30,
+        }
+    }
+
+    #[test]
+    fn a_job_that_would_cross_lunch_waits_until_after_it() {
+        let booked = DayStop {
+            start: 540,
+            end: 630,
+            place: Some(1),
+        };
+        assert_eq!(
+            earliest_start(&[booked, LUNCH_STOP], DAY, &job(120), &drives()),
+            Some(750)
+        );
+    }
+
+    #[test]
+    fn a_job_that_ends_by_lunch_stays_before_it() {
+        assert_eq!(
+            earliest_start(&[LUNCH_STOP], DAY, &job(120), &drives()),
+            Some(555)
+        );
+    }
+
+    #[test]
+    fn only_a_free_day_lets_a_long_job_run_through_lunch() {
+        assert_eq!(
+            earliest_start(&[LUNCH_STOP], DAY, &job(420), &drives()),
+            Some(555)
+        );
+        assert_eq!(
+            earliest_start(&[LUNCH_STOP], DAY, &job(600), &drives()),
+            Some(540)
+        );
+        let booked = DayStop {
+            start: 960,
+            end: 1020,
+            place: Some(1),
+        };
+        assert_eq!(
+            earliest_start(&[LUNCH_STOP, booked], DAY, &job(420), &drives()),
+            None
+        );
+    }
+
+    #[test]
+    fn lunch_is_not_where_the_next_drive_starts() {
+        let stops = [
+            DayStop {
+                start: 540,
+                end: 700,
+                place: Some(SHOP),
+            },
+            LUNCH_STOP,
+        ];
+        assert_eq!(drive_to(&stops, 780, Some(1), &drives()), 15);
+    }
 }
 
 #[cfg(test)]

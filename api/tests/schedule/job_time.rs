@@ -59,6 +59,8 @@ fn install_rules() -> Value {
         "travel_minutes": 30,
         "day_start_minute": 540,
         "day_end_minute": 1020,
+        "lunch_start_minute": 720,
+        "lunch_minutes": 0,
         "work_days": [1, 2, 3, 4, 5],
     })
 }
