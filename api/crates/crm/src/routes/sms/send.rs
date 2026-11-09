@@ -86,6 +86,9 @@ pub struct SendSmsRequest {
     /// A scheduled text is dropped if the customer writes first.
     #[serde(default)]
     pub cancel_if_customer_messages: bool,
+    /// The caller's Telnyx line to send from (a `number_id` of
+    /// `/v1/sms/mine/lines`); without one, their default line.
+    pub line_id: Option<i32>,
 }
 
 /// What `POST /v1/sms/{provider}/messages` answers.
@@ -279,6 +282,28 @@ pub async fn seat(
     }))
 }
 
+/// `seat` sending from the Telnyx line `line_id`; `None` when that line is
+/// not `user`'s. Other providers, and no `line_id`, keep the seat as it is.
+pub async fn seat_on_line(
+    pool: &MySqlPool,
+    provider: SmsProvider,
+    user: &SessionUser,
+    seat: Seat,
+    line_id: Option<i32>,
+) -> Result<Option<Seat>, sqlx::Error> {
+    let Some(line_id) = line_id.filter(|_| provider == SmsProvider::Telnyx) else {
+        return Ok(Some(seat));
+    };
+    Ok(
+        crate::phone::texting::own_line(pool, user.company_id, user.id, line_id)
+            .await?
+            .map(|line| Seat {
+                line: Some(line),
+                ..seat
+            }),
+    )
+}
+
 /// The provider `user` texts through: Telnyx when the company texts
 /// through Telnyx and the user has a line there; else the company's own
 /// (`RingCentral`, then `CloudTalk`); else Telnyx when the company texts
@@ -410,6 +435,7 @@ async fn schedule(
         "text": request.text.trim(),
         "attachments": attachments,
         "templateId": request.template_id.map(|id| id.to_string()),
+        "lineId": request.line_id,
     });
     sqlx::query(
         "INSERT INTO delayed_sms (company_id, user_id, customer_id, phone_digits, provider, send_at,
@@ -568,6 +594,10 @@ pub async fn send(
 ) -> ApiResult<Response> {
     let Some(seat) = seat(&state.pool, provider, &user).await? else {
         return Ok(refuse(StatusCode::FORBIDDEN, "agent_not_linked"));
+    };
+    let Some(seat) = seat_on_line(&state.pool, provider, &user, seat, request.line_id).await?
+    else {
+        return Ok(refuse(StatusCode::FORBIDDEN, "line_not_yours"));
     };
     if let Some(send_at) = request.send_at {
         if request.phone_digits.trim().is_empty() {

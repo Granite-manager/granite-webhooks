@@ -10,7 +10,7 @@
 use super::provider::{SmsProvider, phone10};
 use super::send::{
     SendSmsRequest, SentSms, SmsFile, SmsSendError, Undelivered, check, deliver_now,
-    failure_response, refuse, seat, take_send_slot, user_provider,
+    failure_response, refuse, seat, seat_on_line, take_send_slot, user_provider,
 };
 use super::thread::message_by_id;
 use crate::auth::EmployeeUser;
@@ -183,6 +183,19 @@ pub async fn retry(
     let Some(row) = failed_row(pool, provider, user.company_id, user.id, id).await? else {
         return Err(ApiError::NotFound);
     };
+    // Again from the line it failed on, while that line is still the caller's.
+    let failed_line: Option<i32> = if provider == SmsProvider::Telnyx {
+        sqlx::query_scalar("SELECT number_id FROM telnyx_sms WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .flatten()
+    } else {
+        None
+    };
+    let seat = seat_on_line(pool, via, &user, seat.clone(), failed_line)
+        .await?
+        .unwrap_or(seat);
     let request = SendSmsRequest {
         phone_digits: row.phone_digits,
         text: row.text,
@@ -191,6 +204,7 @@ pub async fn retry(
         customer_id: None,
         send_at: None,
         cancel_if_customer_messages: false,
+        line_id: None,
     };
     if let Err(token) = check(&user, &request) {
         return Ok(refuse(StatusCode::BAD_REQUEST, token));

@@ -259,6 +259,10 @@ pub fn rollup_sql(
     // Unread: plain inbound rows newer than both the read marker and our last
     // response — a lookup of one thread, never company-wide.
     let mut params: Vec<Param> = vec![user.company_id.into()];
+    let unread_line = narrowing.line.as_ref().map_or("", |line| {
+        params.push(line.into());
+        " AND u.recipient10 = ?"
+    });
     let unread_search = search.sql("u").map_or_else(String::new, |sql| {
         params.extend(search.params.iter().cloned());
         format!(" AND {sql}")
@@ -282,7 +286,7 @@ pub fn rollup_sql(
                          WHERE u.company_id = ? AND u.is_echo = 0
                            AND u.phone_digits = a.phone_digits
                            AND u.direction = 'inbound'
-                           AND u.sender10 = u.phone_digits
+                           AND u.sender10 = u.phone_digits{unread_line}
                            AND u.created_date > GREATEST(COALESCE(r.last_read_at, {EPOCH}),
                                                          COALESCE(a.last_rep_at, {EPOCH})){unread_search})
                 END AS SIGNED) AS unread

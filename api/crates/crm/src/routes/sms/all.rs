@@ -8,8 +8,8 @@
 use super::provider::{SAMPLE_PHONES, SmsProvider, phone_variants, phone10};
 use super::rollup::Mode;
 use super::schemas::{
-    DesktopAlert, DesktopAlerts, Direction, SalesRep, ThreadDetail, ThreadList, ThreadQuery,
-    ThreadSummary, ThreadsQuery, UnreadCount,
+    DesktopAlert, DesktopAlerts, Direction, SalesRep, SmsLine, ThreadDetail, ThreadList,
+    ThreadQuery, ThreadSummary, ThreadsQuery, UnreadCount,
 };
 use super::scope::{SmsScope, has_own, thread_access};
 use super::send::seat;
@@ -112,7 +112,59 @@ pub async fn list_threads(
         .agent_id
         .as_deref()
         .is_some_and(|rep| !rep.trim().is_empty());
-    merged_threads(&state, &user, &query, &sources, SmsScope::All, one_rep).await
+    merged_threads(&state, &user, &query, &sources, SmsScope::All, one_rep, None).await
+}
+
+/// The last ten digits of `line_id` when it is a line of the caller's; a
+/// line they lost or never had filters nothing.
+async fn my_line(
+    pool: &MySqlPool,
+    user: &SessionUser,
+    line_id: Option<i32>,
+) -> Result<Option<String>, sqlx::Error> {
+    let Some(line_id) = line_id else {
+        return Ok(None);
+    };
+    Ok(
+        crate::phone::texting::own_line(pool, user.company_id, user.id, line_id)
+            .await?
+            .map(|line| phone10(&line.e164)),
+    )
+}
+
+/// List the lines I text from
+///
+/// The Telnyx lines the caller may text from, for switching the inbox and
+/// the line a text goes out from; empty when the company does not text
+/// through Telnyx.
+#[crate::openapi::path(
+    get,
+    path = "/v1/sms/mine/lines",
+    operation_id = "list_my_sms_lines",
+    tag = "sms",
+    responses(
+        (status = 200, description = "The lines", body = [SmsLine]),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn my_lines(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+) -> ApiResult<Json<Vec<SmsLine>>> {
+    let lines = crate::phone::texting::own_lines(&state.pool, user.company_id, user.id).await?;
+    Ok(Json(
+        lines
+            .into_iter()
+            .map(|line| SmsLine {
+                number_id: line.number_id,
+                e164: line.e164,
+                label: line.label,
+            })
+            .collect(),
+    ))
 }
 
 /// List my conversations over every provider
@@ -122,6 +174,7 @@ pub async fn list_threads(
 /// extension, a Telnyx line), merged by phone: unread first, then latest.
 /// Each provider's part is what its own inbox shows the caller. A search
 /// matches phone digits, message text and customer or supplier names.
+/// `line_id` keeps only the texts on that line.
 #[crate::openapi::path(
     get,
     path = "/v1/sms/mine/threads",
@@ -146,7 +199,17 @@ pub async fn list_my_threads(
         .into_iter()
         .map(|provider| (provider, None))
         .collect();
-    merged_threads(&state, &user, &query, &sources, SmsScope::Mine, true).await
+    let line = my_line(&state.pool, &user, query.line_id).await?;
+    merged_threads(
+        &state,
+        &user,
+        &query,
+        &sources,
+        SmsScope::Mine,
+        true,
+        line.as_deref(),
+    )
+    .await
 }
 
 /// The providers holding texts of the caller's: by an id or number they have
@@ -186,7 +249,7 @@ async fn sendable_providers(
 }
 
 /// A page of `sources`' conversations merged by phone: `scope` per
-/// provider, unread first when `one_rep`.
+/// provider, unread first when `one_rep`, only the texts on `line` with one.
 async fn merged_threads(
     state: &AppState,
     user: &SessionUser,
@@ -194,6 +257,7 @@ async fn merged_threads(
     sources: &[(SmsProvider, Option<String>)],
     scope: SmsScope,
     one_rep: bool,
+    line: Option<&str>,
 ) -> ApiResult<Json<ThreadList>> {
     let pool = &state.pool;
     let user = user.clone();
@@ -215,6 +279,7 @@ async fn merged_threads(
             &user,
             scope,
             agent.as_deref(),
+            line,
             &term,
             Mode::List {
                 limit: window,
@@ -230,7 +295,7 @@ async fn merged_threads(
             }
             None => {
                 unread_count +=
-                    unread_threads(pool, *provider, &user, scope, agent.as_deref()).await?;
+                    unread_threads(pool, *provider, &user, scope, agent.as_deref(), line).await?;
             }
         }
         for row in rows {
@@ -381,7 +446,7 @@ pub async fn get_thread(
     MultiQuery(query): MultiQuery<ThreadQuery>,
 ) -> ApiResult<Json<ThreadDetail>> {
     let sources = sources(&state.pool, user.company_id, query.agent_id.as_deref()).await?;
-    merged_thread(&state, &user, &phone, &query, &sources, SmsScope::All).await
+    merged_thread(&state, &user, &phone, &query, &sources, SmsScope::All, None).await
 }
 
 /// Get my conversation over every provider
@@ -394,7 +459,7 @@ pub async fn get_thread(
 /// through: the one of the latest message the caller can text through,
 /// else the first they can; `canSend` is false when they can text through
 /// none. Opening it in the caller's own inbox marks it read (`unreadCount`
-/// is 0).
+/// is 0). `line_id` keeps only the texts on that line.
 #[crate::openapi::path(
     get,
     path = "/v1/sms/mine/threads/{phone}",
@@ -425,8 +490,17 @@ pub async fn get_my_thread(
         .into_iter()
         .map(|provider| (provider, None))
         .collect();
-    let Json(mut thread) =
-        merged_thread(&state, &user, &phone, &query, &sources, SmsScope::Mine).await?;
+    let line = my_line(&state.pool, &user, query.line_id).await?;
+    let Json(mut thread) = merged_thread(
+        &state,
+        &user,
+        &phone,
+        &query,
+        &sources,
+        SmsScope::Mine,
+        line.as_deref(),
+    )
+    .await?;
     let sendable = sendable_providers(&state.pool, &user).await?;
     let latest = thread
         .messages
@@ -508,8 +582,8 @@ async fn mark_mine(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// One phone's messages through `sources`, merged oldest first; never
-/// sendable (the caller decides).
+/// One phone's messages through `sources`, merged oldest first, only those
+/// on `line` with one; never sendable (the caller decides).
 async fn merged_thread(
     state: &AppState,
     user: &SessionUser,
@@ -517,6 +591,7 @@ async fn merged_thread(
     query: &ThreadQuery,
     sources: &[(SmsProvider, Option<String>)],
     scope: SmsScope,
+    line: Option<&str>,
 ) -> ApiResult<Json<ThreadDetail>> {
     let pool = &state.pool;
     let phone = phone.to_string();
@@ -530,6 +605,7 @@ async fn merged_thread(
         before_id: None,
         scope,
         agent_id: None,
+        line_id: None,
     };
     let mut all = Vec::new();
     let mut has_older = false;
@@ -541,6 +617,10 @@ async fn merged_thread(
         let access = thread_access(pool, provider, user, scope, agent.as_deref(), &digits).await?;
         let Some(access) = access else {
             continue;
+        };
+        let access = match line {
+            Some(line) => access.on_line(line),
+            None => access,
         };
         seen = true;
         let (rows, older) =
@@ -666,7 +746,7 @@ pub async fn my_unread_count(
 ) -> ApiResult<Json<UnreadCount>> {
     let mut count = 0;
     for provider in own_providers(&state.pool, &user).await? {
-        count += unread_threads(&state.pool, provider, &user, SmsScope::Mine, None).await?;
+        count += unread_threads(&state.pool, provider, &user, SmsScope::Mine, None, None).await?;
     }
     Ok(Json(UnreadCount { count }))
 }

@@ -880,6 +880,99 @@ fn phones(list: &Value) -> Vec<&str> {
 }
 
 #[test_db::test(seed)]
+async fn the_inbox_switches_between_a_users_lines(pool: MySqlPool) {
+    let setup = setup(&pool).await;
+    // Alice texted Rita's own line, then the shared one; Bob only the shared one.
+    for (id, from, to, text) in [
+        ("in-a", "+13175550100", "+13175550151", "Mine"),
+        ("in-a2", "+13175550100", "+13175550152", "Shared"),
+        ("in-b", "+13175550102", "+13175550152", "Hi showroom"),
+    ] {
+        setup
+            .hook(&inbound(id, from, to, text, json!([])))
+            .await
+            .assert_status_ok();
+    }
+    let lines = setup.get("/v1/sms/mine/lines", sessions::REP).await;
+    let ids: Vec<i64> = lines
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|line| line["number_id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, [9701, 9702]);
+    assert_eq!(lines[1]["e164"], "+13175550152");
+
+    // Every line, then one at a time.
+    let all = setup.get("/v1/sms/mine/threads", sessions::REP).await;
+    assert_eq!(phones(&all).len(), 2);
+    let own = setup
+        .get("/v1/sms/mine/threads?line_id=9701", sessions::REP)
+        .await;
+    assert_eq!(phones(&own), ["3175550100"]);
+    assert_eq!(own["threads"][0]["last_message_text"], "Mine");
+    assert_eq!(own["threads"][0]["unread_count"], 1);
+    let shared = setup
+        .get("/v1/sms/mine/threads?line_id=9702", sessions::REP)
+        .await;
+    assert_eq!(phones(&shared).len(), 2);
+
+    // The conversation shows only that line's texts.
+    let thread = setup
+        .get("/v1/sms/mine/threads/3175550100?line_id=9702", sessions::REP)
+        .await;
+    let texts: Vec<&str> = thread["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, ["Shared"]);
+
+    // Ada's line is not Rita's: it filters nothing and cannot send.
+    let foreign = setup
+        .get("/v1/sms/mine/threads?line_id=9703", sessions::REP)
+        .await;
+    assert_eq!(phones(&foreign).len(), 2);
+    let refused = setup
+        .send(
+            sessions::REP,
+            json!({ "phone_digits": "3175550100", "text": "No", "line_id": 9703 }),
+        )
+        .await;
+    refused.assert_status(StatusCode::FORBIDDEN);
+    assert_eq!(refused.json::<Value>()["error"], "line_not_yours");
+
+    // A text goes out from the picked line, now or scheduled.
+    setup
+        .send(
+            sessions::REP,
+            json!({ "phone_digits": "3175550100", "text": "From shared", "line_id": 9702 }),
+        )
+        .await
+        .assert_status_ok();
+    assert_eq!(setup.stub.messages()[0]["from"], "+13175550152");
+    setup
+        .send(
+            sessions::REP,
+            json!({ "phone_digits": "3175550100", "text": "Later", "line_id": 9702,
+                    "send_at": "2099-01-01T00:00:00Z" }),
+        )
+        .await
+        .assert_status_ok();
+    let payload: String = sqlx::query_scalar(
+        "SELECT payload_json FROM delayed_sms WHERE user_id = 100 ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&payload).unwrap()["lineId"],
+        9702
+    );
+}
+
+#[test_db::test(seed)]
 async fn a_users_inbox_is_the_threads_of_their_lines(pool: MySqlPool) {
     let setup = setup(&pool).await;
     // Alice texted Rita's line; Bob the shared line; Carol (1002) Ada's line.

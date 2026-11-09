@@ -92,6 +92,8 @@ pub struct Narrowing {
     pub company_lines: Vec<String>,
     /// One rep's inbox (unread first), not the company's.
     pub one_rep: bool,
+    /// Only the texts on this line (last ten digits).
+    pub line: Option<String>,
 }
 
 /// A rep's own rows: tagged with an agent id of theirs, or sent by them.
@@ -385,6 +387,7 @@ pub async fn narrowing(
             own: None,
             company_lines,
             one_rep: false,
+            line: None,
         });
     }
     if provider == SmsProvider::Telnyx {
@@ -405,6 +408,7 @@ pub async fn narrowing(
             own: None,
             company_lines,
             one_rep: true,
+            line: None,
         });
     }
     let ids = rep_ids(pool, provider, user, scope, filter_agent, &company_lines).await?;
@@ -436,6 +440,7 @@ pub async fn narrowing(
         one_rep: own.is_some(),
         own,
         company_lines,
+        line: None,
     })
 }
 
@@ -470,6 +475,11 @@ impl Narrowing {
     pub fn row_filter(&self, company_id: i32) -> (String, Vec<Param>) {
         let mut parts = vec!["s.company_id = ?".to_string(), "s.is_echo = 0".to_string()];
         let mut params: Vec<Param> = vec![company_id.into()];
+        if let Some(line) = &self.line {
+            let (on_line, line_params) = on_lines(std::slice::from_ref(line));
+            parts.push(on_line);
+            params.extend(line_params);
+        }
         let Some(phones) = &self.phones else {
             parts.push(format!(
                 "s.phone_digits NOT IN ({})",
@@ -510,6 +520,24 @@ pub struct ThreadAccess {
     /// Extra predicate over `s` and its binds, e.g.
     /// `(s.agent IN (?) OR s.sender_user_id = ? OR s.agent IS NULL)`.
     pub clause: Option<(String, Vec<Param>)>,
+}
+
+impl ThreadAccess {
+    /// The same access, narrowed to the texts on `line` (last ten digits).
+    #[must_use]
+    pub fn on_line(self, line: &str) -> Self {
+        let (on_line, line_params) = on_lines(&[line.to_string()]);
+        let clause = match self.clause {
+            Some((clause, mut params)) => {
+                params.extend(line_params);
+                (format!("{clause} AND {on_line}"), params)
+            }
+            None => (on_line, line_params),
+        };
+        Self {
+            clause: Some(clause),
+        }
+    }
 }
 
 async fn exists(pool: &MySqlPool, sql: String, params: &[Param]) -> Result<bool, sqlx::Error> {

@@ -29,6 +29,20 @@ pub struct ThreadsQuery {
     pub scope: SmsScope,
     /// With `scope=all`, one rep's conversations (their agent id).
     pub agent_id: Option<String>,
+    /// `/v1/sms/mine/threads`: only the texts on this line of the caller's
+    /// (a `number_id` of `/v1/sms/mine/lines`; any other id filters nothing).
+    pub line_id: Option<i32>,
+}
+
+/// A Telnyx line the caller can switch their inbox to and text from.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SmsLine {
+    /// Filter value for `line_id`.
+    pub number_id: i32,
+    /// The number, E.164.
+    pub e164: String,
+    /// Its label; may be empty.
+    pub label: String,
 }
 
 /// One conversation in the inbox.
@@ -130,6 +144,9 @@ pub struct ThreadQuery {
     pub scope: SmsScope,
     /// With `scope=all`, read as one rep (their agent id).
     pub agent_id: Option<String>,
+    /// `/v1/sms/mine/threads/{phone}`: only the texts on this line of the
+    /// caller's (any other id filters nothing).
+    pub line_id: Option<i32>,
 }
 
 /// A file sent with a message.

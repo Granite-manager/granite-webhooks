@@ -120,6 +120,31 @@ pub async fn user_line(
     lines::user_line(pool, company_id, user_id).await
 }
 
+/// Every line `user_id` may text from, when the company texts through Telnyx.
+pub async fn own_lines(
+    pool: &MySqlPool,
+    company_id: i32,
+    user_id: i32,
+) -> sqlx::Result<Vec<CallerId>> {
+    if texting_setup(pool, company_id).await?.is_none() {
+        return Ok(Vec::new());
+    }
+    lines::caller_ids(pool, company_id, user_id).await
+}
+
+/// The line `number_id` when `user_id` may text from it.
+pub async fn own_line(
+    pool: &MySqlPool,
+    company_id: i32,
+    user_id: i32,
+    number_id: i32,
+) -> sqlx::Result<Option<CallerId>> {
+    Ok(own_lines(pool, company_id, user_id)
+        .await?
+        .into_iter()
+        .find(|line| line.number_id == number_id))
+}
+
 /// The last ten digits of every active number `user_id` may call from: the
 /// threads of these lines are the user's Telnyx inbox.
 pub async fn inbox_lines(
