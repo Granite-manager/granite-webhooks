@@ -42336,7 +42336,7 @@
           "schedule"
         ],
         "summary": "Get the schedule settings",
-        "description": "The day the caller's schedule starts its weeks on (their own choice, else\nthe company's: Sunday unless an admin picked Monday), whether they show\n24-hour times, the calendar estimates are booked on, and the label color\nthey use most.",
+        "description": "The day the caller's schedule starts its weeks on (their own choice, else\nthe company's: Sunday unless an admin picked Monday), whether they show\n24-hour times, the maps app their addresses open in (null: the device's\nown), whether the Schedule already asked them for those two, the calendar estimates are booked on, and the label color\nthey use most.",
         "operationId": "get_schedule_settings",
         "responses": {
           "200": {
@@ -42451,7 +42451,7 @@
           "schedule"
         ],
         "summary": "Set my schedule settings",
-        "description": "Saves the day the caller's own schedule starts its weeks on and whether\nit shows 24-hour times. Only the caller sees them.",
+        "description": "Saves the day the caller's own schedule starts its weeks on, whether it\nshows 24-hour times, the maps app their addresses open in, and that the\nSchedule asked them for those (`prefs_asked`). Only the caller sees them.",
         "operationId": "set_my_schedule_settings",
         "requestBody": {
           "content": {
@@ -42468,7 +42468,7 @@
             "description": "Saved"
           },
           "400": {
-            "description": "Not `sunday` or `monday`",
+            "description": "Not `sunday` or `monday`, or not `google` or `apple`",
             "content": {
               "application/json": {
                 "schema": {
@@ -87609,6 +87609,14 @@
           }
         }
       },
+      "MapsApp": {
+        "type": "string",
+        "description": "The maps app a user's addresses and directions open in.",
+        "enum": [
+          "google",
+          "apple"
+        ]
+      },
       "MarketingCompany": {
         "type": "object",
         "description": "A company the user does marketing for.",
@@ -88076,6 +88084,24 @@
               "null"
             ],
             "description": "Show times as 13:00 rather than 1:00 PM."
+          },
+          "maps_app": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MapsApp",
+                "description": "The maps app the caller's addresses and directions open in."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prefs_asked": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "`true`: the Schedule asked the caller for their times and maps app\n(answered or closed), so it does not ask again. `false` is ignored."
           }
         }
       },
@@ -100761,6 +100787,7 @@
           "week_starts_on",
           "company_week_starts_on",
           "time_24h",
+          "prefs_asked",
           "notify_rep_on_install_complete"
         ],
         "properties": {
@@ -100775,6 +100802,21 @@
           "time_24h": {
             "type": "boolean",
             "description": "The caller shows times as 13:00 rather than 1:00 PM."
+          },
+          "maps_app": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MapsApp",
+                "description": "The maps app the caller's addresses and directions open in; null when\nthey have not picked one (the device's own: Apple Maps on Apple\ndevices)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prefs_asked": {
+            "type": "boolean",
+            "description": "The Schedule already asked the caller for their 12/24-hour times and\nmaps app (answered or closed): it does not ask again."
           },
           "estimates_calendar_id": {
             "type": [
