@@ -11,6 +11,7 @@ use crate::crud::users::{SalesUser, get_sales_users};
 use crate::libs::constants::{
     ERR_DB, ERR_SEND_TELEGRAM, OK_RESPONSE, SALES_MANAGER, SALES_WORKER, internal_error,
 };
+use crate::libs::shop_distance::shop_distance_line;
 use crate::libs::types::BasicResponse;
 
 use common::crud::phone_app::users_with_app;
@@ -212,9 +213,13 @@ where
         );
         return Err(internal_error(ERR_DB));
     }
+    let mut text = data.to_string();
+    if let Some(line) = shop_distance_line(pool, company_id, customer_id).await {
+        text = format!("{}\n{line}", text.trim_end());
+    }
     let new_bot = Arc::new(bot.clone());
     let send_message = send_lead_manager_message_to_all(
-        &data.to_string(),
+        &text,
         customer_id,
         telegram_ids.clone(),
         &candidates,
