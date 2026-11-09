@@ -39,8 +39,9 @@ pub struct CallerId {
 
 /// Gives each number linked to a position (`telnyx_numbers.position_id`) to
 /// exactly the company's users with that position: it rings them and they
-/// call and text from it. Users assigned by hand are left alone. Runs after
-/// a number's link or a user's positions change.
+/// call and text from it. A user assigned by hand keeps that assignment, but
+/// someone in the position can always call and text from it. Runs after a
+/// number's link or a user's positions change.
 pub async fn sync_position_lines(
     conn: &mut sqlx::MySqlConnection,
     company_id: i32,
@@ -60,12 +61,13 @@ pub async fn sync_position_lines(
     .execute(&mut *conn)
     .await?;
     sqlx::query(
-        "INSERT IGNORE INTO telnyx_number_users (number_id, user_id, rings, can_call_from, via_position)
+        "INSERT INTO telnyx_number_users (number_id, user_id, rings, can_call_from, via_position)
          SELECT DISTINCT n.id, up.user_id, n.forward_only = 0, 1, 1
            FROM telnyx_numbers n
            JOIN users_positions up ON up.position_id = n.position_id AND up.company_id = n.company_id
            JOIN users u ON u.id = up.user_id AND u.company_id = n.company_id AND u.is_deleted = 0
-          WHERE n.company_id = ? AND n.position_id IS NOT NULL AND n.released_at IS NULL",
+          WHERE n.company_id = ? AND n.position_id IS NOT NULL AND n.released_at IS NULL
+         ON DUPLICATE KEY UPDATE can_call_from = 1",
     )
     .bind(company_id)
     .execute(&mut *conn)

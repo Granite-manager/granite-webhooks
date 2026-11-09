@@ -127,6 +127,24 @@ async fn the_scheduling_manager_number_goes_to_everyone_in_the_position(pool: My
         .await
         .assert_status_ok();
     assert_eq!(holders(&pool, 9901).await, []);
+
+    // Everyone in the position calls and texts from it, whatever their row said.
+    server
+        .put("/v1/phone/admin/numbers/9901")
+        .with_session(sessions::ADMIN)
+        .json(&body(
+            true,
+            json!([{ "userId": 101, "rings": false, "canCallFrom": false }]),
+        ))
+        .await
+        .assert_status_ok();
+    let can_call: bool = sqlx::query_scalar(
+        "SELECT can_call_from <> 0 FROM telnyx_number_users WHERE number_id = 9901 AND user_id = 101",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(can_call);
 }
 
 #[test_db::test(seed)]
