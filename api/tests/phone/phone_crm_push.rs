@@ -390,9 +390,28 @@ async fn a_lead_assigned_from_the_phone_reaches_the_rep_in_the_app_and_in_telegr
 
 #[test_db::test(seed)]
 async fn a_manager_marks_a_lead_invalid_from_the_phone(pool: MySqlPool) {
-    let (server, _) = phone_server(pool.clone()).await;
+    use api::telegram::TelegramBots;
+    let (telegram, chats) = telegram_stub().await;
+    let (server, _) = phone_common::phone_server_with(pool.clone(), |state| {
+        state.with_telegram(TelegramBots::new(
+            Some("111:leads"),
+            Some("222:notes"),
+            &telegram,
+        ))
+    })
+    .await;
     add_phone(&pool, 1, 100, 100).await;
     add_phone(&pool, 2, 101, 100).await;
+    // Mark, the sales manager, got the lead in Telegram: once with its text
+    // kept, once before texts were kept.
+    sql(&pool, "UPDATE users SET telegram_id = 7771 WHERE id = 101").await;
+    sql(
+        &pool,
+        "INSERT INTO telegram_lead_messages (customer_id, company_id, chat_id, message_id, text)
+         VALUES (1001, 100, 7771, 41, 'New lead: Bob Unassigned\nChoose a salesperson.'),
+                (1001, 100, 7771, 42, NULL)",
+    )
+    .await;
     let mark = |n: u32| {
         server
             .put("/v1/customers/1001/invalid")
@@ -416,6 +435,29 @@ async fn a_manager_marks_a_lead_invalid_from_the_phone(pool: MySqlPool) {
     .await
     .unwrap();
     assert_eq!(live, 0);
+
+    // Mark's Telegram messages say so, their rep buttons gone.
+    let sent = chats.lock().unwrap().clone();
+    let edited = sent
+        .iter()
+        .find(|(path, _)| path == "bot111:leads/editMessageText")
+        .expect("the kept text is edited");
+    assert_eq!(edited.1["chat_id"], 7771);
+    assert_eq!(edited.1["message_id"], 41);
+    assert_eq!(
+        edited.1["text"],
+        "New lead: Bob Unassigned\nChoose a salesperson.\n\nLead marked invalid: Looking for unrelated service"
+    );
+    assert!(edited.1.get("reply_markup").is_none(), "{edited:?}");
+    let relabeled = sent
+        .iter()
+        .find(|(path, _)| path == "bot111:leads/editMessageReplyMarkup")
+        .expect("the older message's buttons are replaced");
+    assert_eq!(relabeled.1["message_id"], 42);
+    assert_eq!(
+        relabeled.1["reply_markup"]["inline_keyboard"][0][0]["text"],
+        "Lead marked invalid: Looking for unrelated service"
+    );
 }
 
 #[test_db::test(seed)]
@@ -731,7 +773,11 @@ async fn a_lead_given_or_taken_back_on_the_website_or_a_phone_refreshes_every_ph
 async fn a_walk_in_given_a_rep_is_no_news_for_the_managers(pool: MySqlPool) {
     use crate::common::{WithSession, sessions};
     let (server, stubs) = waiting_lead(&pool).await;
-    sql(&pool, "UPDATE customers SET source = 'check-in' WHERE id = 1001").await;
+    sql(
+        &pool,
+        "UPDATE customers SET source = 'check-in' WHERE id = 1001",
+    )
+    .await;
     server
         .put("/v1/customers/1001/sales-rep")
         .with_session(sessions::ADMIN)

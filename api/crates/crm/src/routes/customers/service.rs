@@ -384,11 +384,10 @@ pub async fn record_lead_manager_assignment(
     .await
 }
 
-/// What the managers' lead message says once the lead has a rep: its text,
-/// then "Lead assigned to …", as the webhooks Lambda edits it when a manager
-/// presses a rep's button in Telegram.
-pub fn assigned_text(base: &str, rep_name: &str) -> String {
-    format!("{base}\n\nLead assigned to {rep_name}")
+/// The line the managers' lead message ends with once the lead is marked
+/// invalid with `reason`.
+pub fn invalid_label(reason: &str) -> String {
+    format!("Lead marked invalid: {reason}")
 }
 
 /// What the leads bot tells the rep, word for word as when a manager
@@ -447,7 +446,13 @@ pub async fn notify_assigned_rep(
         .map(str::trim)
         .filter(|name| !name.is_empty())
         .unwrap_or("Unknown");
-    update_manager_lead_messages(state, company_id, customer_id, rep_name).await;
+    update_manager_lead_messages(
+        state,
+        company_id,
+        customer_id,
+        &format!("Lead assigned to {rep_name}"),
+    )
+    .await;
     let mut managers = match sales_managers(&state.pool, company_id).await {
         Ok(managers) => managers,
         Err(error) => {
@@ -548,14 +553,15 @@ pub async fn notify_assigned_rep(
 }
 
 /// Edits the sales managers' Telegram lead messages about `customer_id` (the
-/// new lead's, a repeat's) to their text and "Lead assigned to {rep_name}",
-/// buttons gone, as a Telegram assignment does. A message saved before
-/// texts were kept keeps its text; its buttons become one saying who has it.
-async fn update_manager_lead_messages(
+/// new lead's, a repeat's) to their text and `label` ("Lead assigned to …",
+/// "Lead marked invalid: …"), buttons gone, as a Telegram assignment does. A
+/// message saved before texts were kept keeps its text; its buttons become one
+/// showing `label`. Best effort: failures are logged.
+pub async fn update_manager_lead_messages(
     state: &AppState,
     company_id: i32,
     customer_id: i32,
-    rep_name: &str,
+    label: &str,
 ) {
     let messages: Result<Vec<(i64, i32, Option<String>)>, sqlx::Error> = sqlx::query_as(
         "SELECT DISTINCT tlm.chat_id, tlm.message_id, tlm.text
@@ -575,12 +581,11 @@ async fn update_manager_lead_messages(
             tracing::warn!(
                 ?error,
                 customer_id,
-                "assigned lead: Telegram messages not read"
+                "lead update: Telegram messages not read"
             );
             return;
         }
     };
-    let label = format!("Lead assigned to {rep_name}");
     for (chat_id, message_id, text) in messages {
         let message_id = i64::from(message_id);
         match text.as_deref() {
@@ -591,7 +596,7 @@ async fn update_manager_lead_messages(
                         Bot::Leads,
                         chat_id,
                         message_id,
-                        &assigned_text(text, rep_name),
+                        &format!("{text}\n\n{label}"),
                     )
                     .await;
             }
