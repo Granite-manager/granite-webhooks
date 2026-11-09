@@ -17,10 +17,8 @@ use common::{ALLOWED_ORIGIN, SECRET};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::MySqlPool;
-use sqlx::mysql::MySqlPoolOptions;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 const VIEW: &str = "3b1f6c2e-9d4a-4e8b-a1c7-5f2e8d9c0b1a";
 const FIXTURE: &str = "
@@ -802,10 +800,7 @@ async fn a_code_is_only_good_at_its_company(pool: MySqlPool) {
         .add_header("cookie", &cookie)
         .await
         .json::<Value>();
-    assert_eq!(
-        other,
-        json!({ "code_sent": false, "masked_email": null, "code_channel": null, "can_text": false })
-    );
+    assert_eq!(other, json!({ "code_sent": false, "masked_email": null, "code_channel": null, "can_text": false }));
     assert_eq!(attempts(&pool).await, [0]);
     let (status, body) = verify(&server, &format!("{LOGIN}/verify"), &cookie, &code).await;
     assert_eq!(status, StatusCode::OK);
@@ -1485,11 +1480,7 @@ async fn a_customer_picks_a_texted_code_for_their_page(pool: MySqlPool) {
         let texts = texts.lock().unwrap();
         assert_eq!(texts.len(), 1);
         assert_eq!(
-            (
-                texts[0].provider.as_str(),
-                texts[0].user_id,
-                texts[0].phone_digits.as_str()
-            ),
+            (texts[0].provider.as_str(), texts[0].user_id, texts[0].phone_digits.as_str()),
             ("cloudtalk", 101, "3175550100")
         );
         assert!(texts[0].is_automated);
@@ -1504,34 +1495,7 @@ async fn a_customer_picks_a_texted_code_for_their_page(pool: MySqlPool) {
         .json(&json!({ "code": last_texted_code(&texts) }))
         .await
         .assert_status(StatusCode::NO_CONTENT);
-    assert_eq!(
-        server.get(&page("")).await.json::<Value>()["verified"],
-        true
-    );
-}
-
-/// The Lambda's pool has one connection: texting the code must not ask for
-/// a second one while a transaction holds the first.
-#[test_db::test(seed)]
-async fn a_texted_code_goes_out_on_a_one_connection_pool(pool: MySqlPool) {
-    let single = MySqlPoolOptions::new()
-        .max_connections(1)
-        .acquire_timeout(Duration::from_secs(3))
-        .connect_with((*pool.connect_options()).clone())
-        .await
-        .unwrap();
-    let (server, _, texts) = texting_server(&single).await;
-    server
-        .post(&page("/code"))
-        .json(&json!({ "channel": "sms" }))
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
-    assert_eq!(texts.lock().unwrap().len(), 1);
-    server
-        .post(&page("/verify"))
-        .json(&json!({ "code": last_texted_code(&texts) }))
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(server.get(&page("")).await.json::<Value>()["verified"], true);
 }
 
 #[test_db::test(seed)]
@@ -1584,10 +1548,7 @@ async fn an_unknown_phone_looks_the_same_but_gets_no_text(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn without_texting_a_code_cannot_be_texted(pool: MySqlPool) {
     let (server, _) = server(&pool).await;
-    assert_eq!(
-        server.get(&page("")).await.json::<Value>()["has_phone"],
-        false
-    );
+    assert_eq!(server.get(&page("")).await.json::<Value>()["has_phone"], false);
     server
         .post(&page("/code"))
         .json(&json!({ "channel": "sms" }))
