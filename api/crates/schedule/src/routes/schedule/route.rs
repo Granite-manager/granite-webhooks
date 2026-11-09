@@ -112,10 +112,122 @@ pub fn solve_open_route(cost: &[Vec<f64>]) -> Vec<usize> {
     }
 }
 
-/// The stops (1..n) for a day that starts far out and works back toward point 0 (the shop):
-/// the one farthest from it first, then the order that ends nearest it (templates: owner,
-/// 2026-11-07). The best open route on the reversed drive times, walked backwards.
+/// Drive time of one leg; a leg Google was not asked for (a stop back to the
+/// shop) takes the other direction's time.
+fn leg(cost: &[Vec<f64>], from: usize, to: usize) -> f64 {
+    let time = cost[from][to];
+    if time.is_finite() {
+        time
+    } else {
+        cost[to][from]
+    }
+}
+
+/// Total drive time of the whole day: from point 0 (the shop) through `order`
+/// and back to the shop.
+pub fn loop_cost(cost: &[Vec<f64>], order: &[usize]) -> f64 {
+    let mut previous = 0;
+    let mut total = 0.0;
+    for &point in order {
+        total += leg(cost, previous, point);
+        previous = point;
+    }
+    total + order.last().map_or(0.0, |&last| leg(cost, last, 0))
+}
+
+/// The stops (1..n) in the order with the least driving from the shop and
+/// back: exact for small days, else nearest-next improved by reversing runs.
+fn solve_loop(cost: &[Vec<f64>]) -> Vec<usize> {
+    let stops = cost.len().saturating_sub(1);
+    if stops == 0 {
+        return Vec::new();
+    }
+    if stops <= EXACT_SOLVE_LIMIT {
+        let full = (1usize << stops) - 1;
+        let mut best = vec![vec![f64::INFINITY; stops]; full + 1];
+        let mut parent = vec![vec![usize::MAX; stops]; full + 1];
+        for stop in 0..stops {
+            best[1 << stop][stop] = leg(cost, 0, stop + 1);
+        }
+        for mask in 1..=full {
+            for last in 0..stops {
+                let current = best[mask][last];
+                if mask & (1 << last) == 0 || current.is_infinite() {
+                    continue;
+                }
+                for next in 0..stops {
+                    if mask & (1 << next) != 0 {
+                        continue;
+                    }
+                    let next_mask = mask | (1 << next);
+                    let candidate = current + leg(cost, last + 1, next + 1);
+                    if candidate < best[next_mask][next] {
+                        best[next_mask][next] = candidate;
+                        parent[next_mask][next] = last;
+                    }
+                }
+            }
+        }
+        // The last stop counts the drive back to the shop.
+        let mut last = 0;
+        for stop in 1..stops {
+            if best[full][stop] + leg(cost, stop + 1, 0) < best[full][last] + leg(cost, last + 1, 0)
+            {
+                last = stop;
+            }
+        }
+        let mut order = Vec::with_capacity(stops);
+        let mut mask = full;
+        loop {
+            order.push(last + 1);
+            let previous = parent[mask][last];
+            mask &= !(1 << last);
+            if previous == usize::MAX {
+                break;
+            }
+            last = previous;
+        }
+        order.reverse();
+        return order;
+    }
+    let mut order = solve_heuristic(cost, stops);
+    let mut best = loop_cost(cost, &order);
+    let mut improved = true;
+    while improved {
+        improved = false;
+        for start in 0..order.len().saturating_sub(1) {
+            for end in start + 1..order.len() {
+                let mut candidate = order.clone();
+                candidate[start..=end].reverse();
+                let candidate_cost = loop_cost(cost, &candidate);
+                if candidate_cost < best {
+                    order = candidate;
+                    best = candidate_cost;
+                    improved = true;
+                }
+            }
+        }
+    }
+    order
+}
+
+/// The stops (1..n) for a day, in the order with the least driving from the
+/// shop and back. Starting at the stop farthest from the shop and working
+/// back toward it (templates: owner, 2026-11-07) is kept only when it drives
+/// no more than that; the goal is the most efficient day (owner, 2026-11-08).
 pub fn solve_route_back_home(cost: &[Vec<f64>]) -> Vec<usize> {
+    let far_first = solve_far_first(cost);
+    let shortest = solve_loop(cost);
+    if loop_cost(cost, &far_first) <= loop_cost(cost, &shortest) {
+        far_first
+    } else {
+        shortest
+    }
+}
+
+/// The one farthest from the shop first, then the order that ends nearest it:
+/// the best open route on the reversed drive times, walked backwards.
+fn solve_far_first(cost: &[Vec<f64>]) -> Vec<usize> {
     let points = cost.len();
     // The farthest from the shop always comes first.
     let Some(far) = (1..points).max_by(|a, b| cost[0][*a].total_cmp(&cost[0][*b])) else {
@@ -234,6 +346,22 @@ mod tests {
             row[0] = f64::INFINITY;
         }
         assert_eq!(solve_route_back_home(&cost), vec![2, 4, 3, 1]);
+    }
+
+    #[test]
+    fn skips_farthest_first_when_it_drives_more() {
+        // The shop in the middle: A is farthest (10) but lies between B and C,
+        // 6 each from the shop. Farthest first drives 10 + 5 + 12 + 6 = 33;
+        // B, A, C drives 6 + 5 + 5 + 6 = 22.
+        let cost = vec![
+            vec![0.0, 10.0, 6.0, 6.0],
+            vec![10.0, 0.0, 5.0, 5.0],
+            vec![6.0, 5.0, 0.0, 12.0],
+            vec![6.0, 5.0, 12.0, 0.0],
+        ];
+        let order = solve_route_back_home(&cost);
+        assert!((loop_cost(&cost, &order) - 22.0).abs() < 1e-9, "{order:?}");
+        assert_eq!(order[1], 1);
     }
 
     #[test]
