@@ -362,14 +362,21 @@ impl Access {
 /// the request acts in, or none when they keep the whole app (a superuser,
 /// or a Super Admin there).
 pub fn configured_positions(user: &SessionUser, positions: &[UserPositionRow]) -> Vec<i32> {
-    if user.is_superuser {
-        return Vec::new();
-    }
     let here: Vec<i32> = positions
         .iter()
         .filter(|row| row.company_id == user.company_id)
         .map(|row| row.position_id)
         .collect();
+    configured_positions_held(user.is_superuser, &here)
+}
+
+/// [`configured_positions`] from the position ids someone holds in the
+/// company (`here`) and their super user flag (the onboarding team view
+/// reads other users' this way).
+pub fn configured_positions_held(is_superuser: bool, here: &[i32]) -> Vec<i32> {
+    if is_superuser {
+        return Vec::new();
+    }
     if here.contains(&SUPER_ADMIN_POSITION) {
         return Vec::new();
     }
@@ -416,6 +423,20 @@ pub async fn user_tabs(
         return Ok(None);
     }
     let company = company_tabs(pool, user.company_id).await?;
+    Ok(tabs_for(&held, user.is_admin, &company))
+}
+
+/// [`user_tabs`] for someone holding the configured positions `held`, with
+/// the admin flag `is_admin` and the company's tabs `company` (see
+/// [`company_tabs`]).
+pub fn tabs_for(
+    held: &[i32],
+    is_admin: bool,
+    company: &[(i32, Vec<&'static str>, bool)],
+) -> Option<Vec<&'static str>> {
+    if held.is_empty() {
+        return None;
+    }
     let open: Vec<&'static str> = TABS
         .iter()
         .map(|tab| tab.key)
@@ -429,12 +450,12 @@ pub async fn user_tabs(
         .iter()
         .filter(|tab| !tab.admin)
         .all(|tab| open.contains(&tab.key));
-    let adds_admin = !user.is_admin && open.iter().any(|key| tab(key).is_some_and(|t| t.admin));
-    Ok(if every_main && !adds_admin {
+    let adds_admin = !is_admin && open.iter().any(|key| tab(key).is_some_and(|t| t.admin));
+    if every_main && !adds_admin {
         None
     } else {
         Some(open)
-    })
+    }
 }
 
 /// What `user` reaches in the company the request acts in. Admins keep the
