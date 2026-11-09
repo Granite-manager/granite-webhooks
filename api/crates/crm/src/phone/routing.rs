@@ -33,6 +33,7 @@ use super::numbers::{is_nanp, last10, to_e164};
 use super::settings::{self, DEFAULT_RING_TIMEOUT_SECS, RING_TIMEOUT_SECS, UserSettings};
 use super::wire_enum;
 use chrono::{DateTime, Utc};
+use lambda_http::tracing;
 use sqlx::{FromRow, MySqlPool, QueryBuilder};
 
 /// What callers hear before leaving a voicemail when the number has no
@@ -220,6 +221,32 @@ pub async fn route(
         }
     }
     Ok(route)
+}
+
+/// Callers of the number hear "This call may be recorded." unless every
+/// user it rings turned the recording voice off (`recording_voice`); a
+/// number that rings nobody keeps it, and so does a failed read (the law's
+/// safe side).
+pub async fn says_inbound_notice(pool: &MySqlPool, company_id: i32, number_id: i32) -> bool {
+    let counts: sqlx::Result<(i64, i64)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*), CAST(COALESCE(SUM(COALESCE(s.recording_voice, 1) <> 0), 0) AS SIGNED)
+           FROM telnyx_number_users nu
+           JOIN telnyx_numbers n ON n.id = nu.number_id
+           JOIN users u ON u.id = nu.user_id AND u.company_id = n.company_id AND u.is_deleted = 0
+           LEFT JOIN phone_user_settings s ON s.user_id = u.id AND s.company_id = n.company_id
+          WHERE nu.number_id = ? AND n.company_id = ? AND nu.rings <> 0 AND {PHONE_USER}"
+    )))
+    .bind(number_id)
+    .bind(company_id)
+    .fetch_one(pool)
+    .await;
+    match counts {
+        Ok((users, voiced)) => users == 0 || voiced > 0,
+        Err(err) => {
+            tracing::warn!(number_id, error = %err, "recording voice of the line not read; saying the notice");
+            true
+        }
+    }
 }
 
 /// The users a call to `line` from `caller` rings at `now`, by id.

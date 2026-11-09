@@ -190,7 +190,7 @@ pub async fn set_live_call_recording(
         // The app's and the browser's calls: Call Control on our leg.
         (Some(leg), false) => {
             let done = if input.recording {
-                // The user turned the recording voice off (My Account): no notice.
+                // The user's recording voice is off (Phone page): no notice.
                 let voice =
                     settings::says_recording_notice(pool, user.id, user.company_id).await;
                 let notice = match config.recording_notice_url.as_deref() {

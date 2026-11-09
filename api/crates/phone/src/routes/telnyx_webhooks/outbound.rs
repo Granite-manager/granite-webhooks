@@ -675,7 +675,7 @@ async fn approve(
         tracing::warn!(call_id = id, error = %err, "event not linked to its call");
     }
     let record = plan.emergency.is_none() && records_outbound(config);
-    // The user turned the recording voice off (My Account): recorded from the
+    // The user's recording voice is off (Phone page): recorded from the
     // answer with no notice.
     let voice = match &plan.user {
         Some(user) if record => settings::says_recording_notice(pool, user.id, config.company_id).await,

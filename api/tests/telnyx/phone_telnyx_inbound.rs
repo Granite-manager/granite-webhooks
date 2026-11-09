@@ -602,3 +602,24 @@ async fn signed_requests_must_check_out(pool: MySqlPool) {
     // checked by the token and the account.
     post(&[]).await.assert_status_ok();
 }
+
+#[test_db::test(seed)]
+async fn the_notice_stops_only_when_everyone_the_number_rings_turned_it_off(pool: MySqlPool) {
+    enable_calling(&pool, 100, "").await;
+    lines(&pool).await;
+    add_phone(&pool, 1, 100, 100).await;
+    add_phone(&pool, 2, 101, 100).await;
+    let (server, _) = phone_server(pool.clone()).await;
+    // Rita off, Mark still on: the sales line says it.
+    set_settings(&pool, 100, 100, "recording_voice = 0").await;
+    let res = inbound(&server, 100, "v3:v-1", "+13175550100", "+13175550152").await;
+    assert!(res.text().contains(NOTICE));
+    // Rita's own line says nothing, and is still recorded.
+    let res = inbound(&server, 100, "v3:v-2", "+13175550100", "+13175550151").await;
+    assert!(!res.text().contains(NOTICE));
+    assert!(res.text().contains("record-from-answer-dual"));
+    // Mark off too: the sales line is silent.
+    set_settings(&pool, 101, 100, "recording_voice = 0").await;
+    let res = inbound(&server, 100, "v3:v-3", "+13175550100", "+13175550152").await;
+    assert!(!res.text().contains(NOTICE));
+}
