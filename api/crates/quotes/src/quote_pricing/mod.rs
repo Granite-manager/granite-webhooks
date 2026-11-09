@@ -1034,11 +1034,13 @@ async fn insert_job(
         "INSERT INTO events (title, location, notes, start_date, end_date, all_day, unscheduled,
             color, status, created_user_id, assigned_user_id, customer_id, calendar_id, urgent,
             quote_id)
-         VALUES (?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, 1, 'blue', ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&job.title)
     .bind(address)
     .bind(job.notes.as_deref())
+    // No one on the job yet: black, the color of unassigned events.
+    .bind(if assignee.is_some() { "blue" } else { "black" })
     .bind(if job.ready { "ready" } else { "not_ready" })
     .bind(creator)
     .bind(assignee)
