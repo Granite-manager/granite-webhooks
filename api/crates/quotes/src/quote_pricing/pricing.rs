@@ -47,7 +47,7 @@ pub struct PriceLine {
 #[serde(rename_all = "camelCase")]
 pub struct AreaPrice {
     pub area_id: Option<String>,
-    /// The area's name ("Other Items" for lines outside any area).
+    /// The area's name ("Custom Items" for lines outside any area).
     pub name: String,
     pub quantity: f64,
     pub lines: Vec<PriceLine>,
@@ -814,7 +814,7 @@ fn drawing_lines(
                 "{} {}",
                 num_str(o.count),
                 if o.name.is_empty() {
-                    "Other Cutout"
+                    "Custom Cutout"
                 } else {
                     o.name.as_str()
                 }
@@ -1167,7 +1167,7 @@ pub fn price_quote(doc: &QuoteDoc, pl: &Value, opts: PriceOptions) -> Vec<Option
             item_lines(&mut ob, pl, &others, None);
             let other = AreaPrice {
                 area_id: None,
-                name: "Other Items".into(),
+                name: "Custom Items".into(),
                 quantity: 1.0,
                 subtotal: sum_totals(&ob.lines),
                 missing: ob.lines.iter().any(|l| l.missing),
