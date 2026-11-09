@@ -180,12 +180,16 @@ pub async fn board(
             next.build_query_as().fetch_all(&mut *conn).await?;
         (tasks, appointments)
     };
+    let process_steps = super::process::company_steps(&mut conn, viewer.company_id).await?;
+    let done_steps = super::process::done_steps(&mut conn, &ids).await?;
     Ok(Json(ProjectsBoard {
         projects,
         stages: Stage::ALL.to_vec(),
         owners,
         appointments,
         tasks,
+        process_steps,
+        done_steps,
         permissions: viewer.permissions,
         page,
         has_next,
@@ -408,6 +412,8 @@ pub async fn get(
             .bind(id)
             .fetch_all(&mut *conn)
             .await?;
+    let process_steps = super::process::company_steps(&mut conn, company).await?;
+    let done_steps = super::process::done_steps(&mut conn, &[id]).await?;
     Ok(Json(ProjectWorkspace {
         project,
         tasks,
@@ -420,6 +426,8 @@ pub async fn get(
         people: people(&mut conn, company).await?,
         calendars,
         appointments,
+        process_steps,
+        done_steps,
         permissions: viewer.permissions,
         user_id: viewer.user_id,
     }))

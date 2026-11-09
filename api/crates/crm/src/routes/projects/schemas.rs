@@ -142,12 +142,73 @@ pub struct ProjectsBoard {
     pub appointments: Vec<ProjectAppointment>,
     /// Their open tasks, the most urgent first.
     pub tasks: Vec<ProjectTask>,
+    /// The company's own steps in the process.
+    pub process_steps: Vec<ProcessStep>,
+    /// Which of those steps these projects have done.
+    pub done_steps: Vec<DoneStep>,
     /// What the caller may do.
     pub permissions: Permissions,
     /// This page, from 1.
     pub page: u32,
     /// Another page follows.
     pub has_next: bool,
+}
+
+/// A step a company added to a stage of its process.
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct ProcessStep {
+    /// Its id.
+    pub id: i32,
+    /// The stage it belongs to.
+    #[sqlx(try_from = "String")]
+    pub stage_code: Stage,
+    /// What to do, e.g. "Confirm a file".
+    pub name: String,
+    /// Its place in the stage.
+    pub position: i32,
+}
+
+/// A process step a project has done.
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct DoneStep {
+    /// The project.
+    pub project_id: i32,
+    /// The step.
+    pub step_id: i32,
+    /// Who checked it off.
+    pub done_by: Option<String>,
+    /// When (UTC ISO).
+    pub done_at: String,
+}
+
+/// A new process step.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ProcessStepInput {
+    /// The stage to add it to.
+    pub stage: Stage,
+    /// What to do.
+    pub name: String,
+}
+
+/// A process step's new name.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ProcessStepName {
+    /// What to do.
+    pub name: String,
+}
+
+/// A stage's steps, in their new order.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ProcessStepOrder {
+    /// Step ids, first to last.
+    pub ids: Vec<i32>,
+}
+
+/// Whether a project has done a step.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct StepDone {
+    /// Done, or undone.
+    pub done: bool,
 }
 
 /// A note on a project.
@@ -288,6 +349,10 @@ pub struct ProjectWorkspace {
     pub calendars: Vec<Calendar>,
     /// Every appointment of the project, newest first.
     pub appointments: Vec<ProjectAppointment>,
+    /// The company's own steps in the process.
+    pub process_steps: Vec<ProcessStep>,
+    /// Which of those steps this project has done.
+    pub done_steps: Vec<DoneStep>,
     /// What the caller may do.
     pub permissions: Permissions,
     /// The caller's user id (to show which tasks and notes are theirs).
