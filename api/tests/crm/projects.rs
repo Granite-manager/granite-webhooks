@@ -163,9 +163,16 @@ async fn each_position_sees_its_part_of_the_board(pool: MySqlPool) {
     let id = projects_of_8002(&pool).await[0];
     let only = [i64::from(id)];
 
-    // Rita sold it. Mark, the Sales Manager, has no task on it yet.
+    // Rita sold it. Mark, the Sales Manager, sees every project, in the
+    // employee app too.
     assert_eq!(ids(&board(&pool, sessions::REP).await), only);
-    assert!(ids(&board(&pool, sessions::MANAGER).await).is_empty());
+    assert_eq!(ids(&board(&pool, sessions::MANAGER).await), only);
+    let employee_side = server(pool.clone())
+        .get("/v1/projects?employee=true")
+        .with_session(sessions::MANAGER)
+        .await
+        .json::<Value>();
+    assert_eq!(ids(&employee_side), only);
     assert_eq!(
         board(&pool, sessions::MANAGER).await["stages"],
         json!(["new", "templated", "fabrication", "installed", "completed"])
@@ -184,31 +191,33 @@ async fn each_position_sees_its_part_of_the_board(pool: MySqlPool) {
         .await
         .assert_status(StatusCode::NOT_FOUND);
 
-    // An Inventory Manager sees it once given a task, and keeps it when done.
+    // An Inventory Manager sees every project too.
     run(
         &pool,
         "UPDATE users_positions SET position_id = 12 WHERE user_id = 101 AND company_id = 100",
     )
     .await;
-    assert!(ids(&board(&pool, sessions::MANAGER).await).is_empty());
+    assert_eq!(ids(&board(&pool, sessions::MANAGER).await), only);
+
+    // A rep sees another rep's project once given a task, and keeps it when done.
     let created = server(pool.clone())
         .post(&format!("/v1/projects/{id}/tasks"))
         .with_session(sessions::ADMIN)
-        .json(&json!({ "name": "Make the layout", "assignedUserId": 101 }))
+        .json(&json!({ "name": "Make the layout", "assignedUserId": 100 }))
         .await;
     created.assert_status(StatusCode::CREATED);
     let task = created.json::<Value>()["id"].as_i64().unwrap();
-    assert_eq!(ids(&board(&pool, sessions::MANAGER).await), only);
+    assert_eq!(ids(&board(&pool, sessions::REP).await), only);
     server(pool.clone())
         .patch(&format!("/v1/projects/{id}/tasks/{task}"))
-        .with_session(sessions::MANAGER)
+        .with_session(sessions::REP)
         .json(&json!({ "completed": true }))
         .await
         .assert_status(StatusCode::NO_CONTENT);
-    assert_eq!(ids(&board(&pool, sessions::MANAGER).await), only);
+    assert_eq!(ids(&board(&pool, sessions::REP).await), only);
     server(pool.clone())
         .get(&format!("/v1/projects/{id}"))
-        .with_session(sessions::MANAGER)
+        .with_session(sessions::REP)
         .await
         .assert_status_ok();
 
