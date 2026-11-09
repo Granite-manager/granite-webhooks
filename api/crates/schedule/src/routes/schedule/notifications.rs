@@ -38,7 +38,7 @@ use crate::routes::events::history::{History, record, record_customer_message};
 use crate::routes::events::notify::{
     OfficeManager, customer_email, customer_phone, escape_html, office_manager, sender_for,
 };
-use crate::routes::events::writes::company_event;
+use crate::routes::events::writes::{company_event, parse_event_time};
 use crate::routes::sms::provider::{SmsProvider, phone10};
 use crate::routes::sms::send::Seat;
 use crate::state::AppState;
@@ -2380,6 +2380,9 @@ struct Appointment {
     contact_phone_2: Option<String>,
     #[sqlx(default)]
     contact_email_2: Option<String>,
+    /// A previewed text names this person instead of the saved one.
+    #[sqlx(default)]
+    preview_crew: Option<String>,
 }
 
 /// Records how the send went; `false` when another run already has it.
@@ -2462,6 +2465,7 @@ async fn render(
     .fetch_optional(pool)
     .await?;
     let (calendar, crew) = names.unwrap_or_default();
+    let crew = event.preview_crew.clone().or(crew);
     let slot = Slot {
         start: event.start_date,
         end: event.end_date,
@@ -3249,7 +3253,7 @@ pub struct SchedulingTexts {
     path = "/v1/events/{id}/scheduling-texts",
     operation_id = "list_event_scheduling_texts",
     tag = "schedule",
-    params(("id" = i32, Path, description = "Event id")),
+    params(("id" = i32, Path, description = "Event id"), TextsPreview),
     responses(
         (status = 200, description = "The texts", body = SchedulingTexts),
         (status = 401, description = "No valid session", body = ErrorBody),
@@ -3263,6 +3267,7 @@ pub async fn scheduling_texts(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
     Path(id): Path<i32>,
+    Query(preview): Query<TextsPreview>,
 ) -> ApiResult<Json<SchedulingTexts>> {
     let pool = &state.pool;
     let company_id = user.company_id;
@@ -3287,10 +3292,11 @@ pub async fn scheduling_texts(
                         .is_some_and(|calendar| template.calendar_ids.contains(&calendar)))
         })
         .collect();
-    let event = appointment(pool, id).await?;
+    let mut event = appointment(pool, id).await?;
+    let planned = apply_preview(pool, company_id, &mut event, &preview).await?;
     let problem = if !sms_enabled {
         Some("Texting is not set up for this company")
-    } else if stored.unscheduled {
+    } else if stored.unscheduled && !planned {
         Some("Put the event on the calendar before texting the customer")
     } else if event.customer_id.is_none() {
         Some("Pick the customer in the event first")
@@ -3353,6 +3359,54 @@ pub async fn scheduling_texts(
         problem: problem.map(str::to_string),
         ai_ready: settings.ai_ready,
     }))
+}
+
+/// `GET /v1/events/{id}/scheduling-texts`: fills the texts for a day and
+/// time that isn't saved yet. Nothing is stored.
+#[derive(Debug, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct TextsPreview {
+    /// The planned start, as an event's `start_date`.
+    #[serde(default)]
+    pub start: Option<String>,
+    /// The planned end, as an event's `end_date`.
+    #[serde(default)]
+    pub end: Option<String>,
+    /// Whether the planned time is all day.
+    #[serde(default)]
+    pub all_day: Option<bool>,
+    /// The person who would get the job.
+    #[serde(default)]
+    pub assigned_user_id: Option<i32>,
+}
+
+/// Puts a planned day and time on `event`; true when there is one.
+async fn apply_preview(
+    pool: &MySqlPool,
+    company_id: i32,
+    event: &mut Appointment,
+    preview: &TextsPreview,
+) -> Result<bool, sqlx::Error> {
+    let start = preview.start.as_deref().and_then(parse_event_time);
+    let end = preview.end.as_deref().and_then(parse_event_time);
+    let (Some(start), Some(end)) = (start, end) else {
+        return Ok(false);
+    };
+    event.start_date = start;
+    event.end_date = end;
+    event.all_day = preview.all_day.unwrap_or(event.all_day);
+    if let Some(user_id) = preview.assigned_user_id {
+        event.preview_crew = sqlx::query_scalar(
+            "SELECT NULLIF(TRIM(name), '') FROM users
+              WHERE id = ? AND company_id = ? AND is_deleted = 0",
+        )
+        .bind(user_id)
+        .bind(company_id)
+        .fetch_optional(pool)
+        .await?
+        .flatten();
+    }
+    Ok(true)
 }
 
 /// Most follow-ups one wait sends.
