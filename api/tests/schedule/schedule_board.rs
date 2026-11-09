@@ -387,6 +387,48 @@ async fn each_user_picks_their_own_week_start_and_clock(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn the_schedule_asks_once_for_the_clock_and_the_maps_app(pool: MySqlPool) {
+    let server = server(pool);
+    let settings = |session: &'static str| {
+        let request = server.get("/v1/schedule/settings").with_session(session);
+        async move { request.await.json::<Value>() }
+    };
+    let rep = settings(sessions::REP).await;
+    assert_eq!(rep["maps_app"], Value::Null);
+    assert_eq!(rep["prefs_asked"], false);
+    server
+        .put("/v1/schedule/settings/me")
+        .with_session(sessions::REP)
+        .json(&json!({ "maps_app": "waze" }))
+        .await
+        .assert_status_bad_request();
+    server
+        .put("/v1/schedule/settings/me")
+        .with_session(sessions::REP)
+        .json(&json!({ "time_24h": true, "maps_app": "google", "prefs_asked": true }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let rep = settings(sessions::REP).await;
+    assert_eq!(rep["time_24h"], true);
+    assert_eq!(rep["maps_app"], "google");
+    assert_eq!(rep["prefs_asked"], true);
+    // Changing it later in the settings keeps it asked.
+    server
+        .put("/v1/schedule/settings/me")
+        .with_session(sessions::REP)
+        .json(&json!({ "maps_app": "apple", "prefs_asked": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let rep = settings(sessions::REP).await;
+    assert_eq!(rep["maps_app"], "apple");
+    assert_eq!(rep["prefs_asked"], true);
+    // Only the caller's own.
+    let admin = settings(sessions::ADMIN).await;
+    assert_eq!(admin["maps_app"], Value::Null);
+    assert_eq!(admin["prefs_asked"], false);
+}
+
+#[test_db::test(seed)]
 async fn settings_name_the_color_a_user_adds_most(pool: MySqlPool) {
     let server = server(pool.clone());
     let favorite = |session: &'static str| {

@@ -2,8 +2,8 @@
 //! own (the schedule's settings button).
 //!
 //! - `GET /v1/schedule/settings` → the day the caller's weeks start on, their
-//!   12- or 24-hour times, the calendar the Schedule estimate button books on
-//!   and the label color they use most
+//!   12- or 24-hour times, their maps app, the calendar the Schedule estimate
+//!   button books on and the label color they use most
 //! - `PUT /v1/schedule/settings` → an admin changes the company's
 //! - `PUT /v1/schedule/settings/me` → a user changes their own
 
@@ -15,6 +15,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
@@ -24,6 +25,33 @@ use sqlx::MySqlPool;
 pub enum WeekStart {
     Sunday,
     Monday,
+}
+
+/// The maps app a user's addresses and directions open in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MapsApp {
+    /// Google Maps.
+    Google,
+    /// Apple Maps.
+    Apple,
+}
+
+impl MapsApp {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Google => "google",
+            Self::Apple => "apple",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "google" => Some(Self::Google),
+            "apple" => Some(Self::Apple),
+            _ => None,
+        }
+    }
 }
 
 /// `GET /v1/schedule/settings`.
@@ -36,6 +64,13 @@ pub struct ScheduleSettings {
     pub company_week_starts_on: WeekStart,
     /// The caller shows times as 13:00 rather than 1:00 PM.
     pub time_24h: bool,
+    /// The maps app the caller's addresses and directions open in; null when
+    /// they have not picked one (the device's own: Apple Maps on Apple
+    /// devices).
+    pub maps_app: Option<MapsApp>,
+    /// The Schedule already asked the caller for their 12/24-hour times and
+    /// maps app (answered or closed): it does not ask again.
+    pub prefs_asked: bool,
     /// The calendar the deal page's Schedule estimate button books on: the
     /// one an admin picked, else the built-in Estimates calendar (null when
     /// there is neither).
@@ -94,11 +129,32 @@ async fn favorite_color(pool: &MySqlPool, user_id: i32) -> Result<Option<String>
     .await
 }
 
+/// The caller's maps app and whether the Schedule asked them yet. Before the
+/// columns exist (the API deployed ahead of its migration) it reads as no
+/// maps app, asked: nobody is asked a question whose answer cannot be saved.
+async fn maps_and_asked(pool: &MySqlPool, user_id: i32) -> (Option<MapsApp>, bool) {
+    let row: Result<Option<(Option<String>, bool)>, sqlx::Error> = sqlx::query_as(
+        "SELECT maps_app, schedule_prefs_asked_at IS NOT NULL FROM users WHERE id = ?",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await;
+    match row {
+        Ok(Some((maps_app, asked))) => (maps_app.as_deref().and_then(MapsApp::parse), asked),
+        Ok(None) => (None, true),
+        Err(error) => {
+            tracing::warn!(?error, user_id, "schedule settings: maps app not read");
+            (None, true)
+        }
+    }
+}
+
 /// Get the schedule settings
 ///
 /// The day the caller's schedule starts its weeks on (their own choice, else
 /// the company's: Sunday unless an admin picked Monday), whether they show
-/// 24-hour times, the calendar estimates are booked on, and the label color
+/// 24-hour times, the maps app their addresses open in (null: the device's
+/// own), whether the Schedule already asked them for those two, the calendar estimates are booked on, and the label color
 /// they use most.
 #[crate::openapi::path(
     get,
@@ -131,6 +187,7 @@ pub async fn settings(
     .fetch_optional(&state.pool)
     .await?;
     let (own_monday, time_24h) = own.unwrap_or((None, false));
+    let (maps_app, prefs_asked) = maps_and_asked(&state.pool, user.id).await;
     let week_start = |monday: bool| {
         if monday {
             WeekStart::Monday
@@ -142,6 +199,8 @@ pub async fn settings(
         week_starts_on: week_start(own_monday.unwrap_or(company_monday)),
         company_week_starts_on: week_start(company_monday),
         time_24h,
+        maps_app,
+        prefs_asked,
         estimates_calendar_id: estimates_calendar_id(&state.pool, user.company_id).await?,
         favorite_color: favorite_color(&state.pool, user.id).await?,
         notify_rep_on_install_complete,
@@ -216,12 +275,20 @@ pub struct MyScheduleSettingsInput {
     /// Show times as 13:00 rather than 1:00 PM.
     #[serde(default)]
     pub time_24h: Option<bool>,
+    /// The maps app the caller's addresses and directions open in.
+    #[serde(default)]
+    pub maps_app: Option<MapsApp>,
+    /// `true`: the Schedule asked the caller for their times and maps app
+    /// (answered or closed), so it does not ask again. `false` is ignored.
+    #[serde(default)]
+    pub prefs_asked: Option<bool>,
 }
 
 /// Set my schedule settings
 ///
-/// Saves the day the caller's own schedule starts its weeks on and whether
-/// it shows 24-hour times. Only the caller sees them.
+/// Saves the day the caller's own schedule starts its weeks on, whether it
+/// shows 24-hour times, the maps app their addresses open in, and that the
+/// Schedule asked them for those (`prefs_asked`). Only the caller sees them.
 #[crate::openapi::path(
     put,
     path = "/v1/schedule/settings/me",
@@ -230,7 +297,7 @@ pub struct MyScheduleSettingsInput {
     request_body = MyScheduleSettingsInput,
     responses(
         (status = 204, description = "Saved"),
-        (status = 400, description = "Not `sunday` or `monday`", body = ErrorBody),
+        (status = 400, description = "Not `sunday` or `monday`, or not `google` or `apple`", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
@@ -254,6 +321,22 @@ pub async fn set_my_settings(
             .bind(user.id)
             .execute(&state.pool)
             .await?;
+    }
+    if let Some(maps_app) = input.maps_app {
+        sqlx::query("UPDATE users SET maps_app = ? WHERE id = ?")
+            .bind(maps_app.as_str())
+            .bind(user.id)
+            .execute(&state.pool)
+            .await?;
+    }
+    if input.prefs_asked == Some(true) {
+        sqlx::query(
+            "UPDATE users SET schedule_prefs_asked_at = COALESCE(schedule_prefs_asked_at, UTC_TIMESTAMP())
+              WHERE id = ?",
+        )
+        .bind(user.id)
+        .execute(&state.pool)
+        .await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }
