@@ -40206,6 +40206,9 @@
         },
         "security": [
           {
+            "device_token": []
+          },
+          {
             "session_cookie": []
           }
         ]

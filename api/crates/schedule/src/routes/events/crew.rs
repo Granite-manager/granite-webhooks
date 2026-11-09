@@ -584,7 +584,7 @@ fn store_day_range(day: NaiveDate) -> (NaiveDateTime, NaiveDateTime) {
         (status = 403, description = "Not an installer or template maker", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
-    security(("session_cookie" = []))
+    security(("device_token" = []), ("session_cookie" = []))
 )]
 #[allow(clippy::too_many_lines)]
 pub async fn location(
