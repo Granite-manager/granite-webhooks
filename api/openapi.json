@@ -23463,6 +23463,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "line_id",
+            "in": "query",
+            "description": "`/v1/sms/mine/threads`: only the texts on this line of the caller's\n(a `number_id` of `/v1/sms/mine/lines`; any other id filters nothing).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
           }
         ],
         "responses": {
@@ -23573,6 +23583,16 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "line_id",
+            "in": "query",
+            "description": "`/v1/sms/mine/threads/{phone}`: only the texts on this line of the\ncaller's (any other id filters nothing).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
             }
           }
         ],
@@ -23705,13 +23725,73 @@
         ]
       }
     },
+    "/v1/sms/mine/lines": {
+      "get": {
+        "tags": [
+          "sms"
+        ],
+        "summary": "List the lines I text from",
+        "description": "The Telnyx lines the caller may text from, for switching the inbox and\nthe line a text goes out from; empty when the company does not text\nthrough Telnyx.",
+        "operationId": "list_my_sms_lines",
+        "responses": {
+          "200": {
+            "description": "The lines",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SmsLine"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/sms/mine/threads": {
       "get": {
         "tags": [
           "sms"
         ],
         "summary": "List my conversations over every provider",
-        "description": "The caller's own SMS conversations through every provider they text\nthrough or have texted through (a `CloudTalk` agent id, a `RingCentral`\nextension, a Telnyx line), merged by phone: unread first, then latest.\nEach provider's part is what its own inbox shows the caller. A search\nmatches phone digits, message text and customer or supplier names.",
+        "description": "The caller's own SMS conversations through every provider they text\nthrough or have texted through (a `CloudTalk` agent id, a `RingCentral`\nextension, a Telnyx line), merged by phone: unread first, then latest.\nEach provider's part is what its own inbox shows the caller. A search\nmatches phone digits, message text and customer or supplier names.\n`line_id` keeps only the texts on that line.",
         "operationId": "list_my_sms_threads",
         "parameters": [
           {
@@ -23764,6 +23844,16 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "line_id",
+            "in": "query",
+            "description": "`/v1/sms/mine/threads`: only the texts on this line of the caller's\n(a `number_id` of `/v1/sms/mine/lines`; any other id filters nothing).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
             }
           }
         ],
@@ -23822,7 +23912,7 @@
           "sms"
         ],
         "summary": "Get my conversation over every provider",
-        "description": "The newest messages with one phone through every provider the caller\ntexts through (as `GET /v1/sms/mine/threads`), oldest first, each with\nthe provider that carried it (page back by raising `limit`;\n`before_id` is ignored); the customer or supplier it belongs to and the\nSMS flow running on it. `replyProvider` is the provider to answer\nthrough: the one of the latest message the caller can text through,\nelse the first they can; `canSend` is false when they can text through\nnone. Opening it in the caller's own inbox marks it read (`unreadCount`\nis 0).",
+        "description": "The newest messages with one phone through every provider the caller\ntexts through (as `GET /v1/sms/mine/threads`), oldest first, each with\nthe provider that carried it (page back by raising `limit`;\n`before_id` is ignored); the customer or supplier it belongs to and the\nSMS flow running on it. `replyProvider` is the provider to answer\nthrough: the one of the latest message the caller can text through,\nelse the first they can; `canSend` is false when they can text through\nnone. Opening it in the caller's own inbox marks it read (`unreadCount`\nis 0). `line_id` keeps only the texts on that line.",
         "operationId": "get_my_sms_thread",
         "parameters": [
           {
@@ -23875,6 +23965,16 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "line_id",
+            "in": "query",
+            "description": "`/v1/sms/mine/threads/{phone}`: only the texts on this line of the\ncaller's (any other id filters nothing).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
             }
           }
         ],
@@ -24289,6 +24389,16 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "line_id",
+            "in": "query",
+            "description": "`/v1/sms/mine/threads`: only the texts on this line of the caller's\n(a `number_id` of `/v1/sms/mine/lines`; any other id filters nothing).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
           }
         ],
         "responses": {
@@ -24629,6 +24739,16 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "line_id",
+            "in": "query",
+            "description": "`/v1/sms/mine/threads/{phone}`: only the texts on this line of the\ncaller's (any other id filters nothing).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
             }
           }
         ],
@@ -70305,7 +70425,8 @@
           "noAnswerAction",
           "active",
           "forwardOnly",
-          "assignments"
+          "assignments",
+          "schedulingManagers"
         ],
         "properties": {
           "id": {
@@ -70363,7 +70484,11 @@
             "items": {
               "$ref": "#/components/schemas/NumberAssignment"
             },
-            "description": "Who it rings and who may call from it, by user id (users of the\ncompany only)."
+            "description": "Who it rings and who may call from it, by user id (users of the\ncompany only); users who have it through a position are not listed."
+          },
+          "schedulingManagers": {
+            "type": "boolean",
+            "description": "The company's Scheduling Manager number: everyone with that position\nhas it."
           }
         }
       },
@@ -89308,6 +89433,13 @@
               "$ref": "#/components/schemas/NumberAssignment"
             },
             "description": "Who it rings and who may call from it: replaces the current list.\nEvery user must be a live user of the company, once each; users with\nneither flag on are left out."
+          },
+          "schedulingManagers": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True: this becomes the company's one Scheduling Manager number (a\ndirect line turns shared); false: it stops being it; left out: no\nchange."
           }
         }
       },
@@ -100803,6 +100935,14 @@
           "cancel_if_customer_messages": {
             "type": "boolean",
             "description": "A scheduled text is dropped if the customer writes first."
+          },
+          "line_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The caller's Telnyx line to send from (a `number_id` of\n`/v1/sms/mine/lines`); without one, their default line."
           }
         }
       },
@@ -102498,6 +102638,30 @@
           "delayed": {
             "$ref": "#/components/schemas/DueRun",
             "description": "Scheduled emails and texts."
+          }
+        }
+      },
+      "SmsLine": {
+        "type": "object",
+        "description": "A Telnyx line the caller can switch their inbox to and text from.",
+        "required": [
+          "number_id",
+          "e164",
+          "label"
+        ],
+        "properties": {
+          "number_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Filter value for `line_id`."
+          },
+          "e164": {
+            "type": "string",
+            "description": "The number, E.164."
+          },
+          "label": {
+            "type": "string",
+            "description": "Its label; may be empty."
           }
         }
       },

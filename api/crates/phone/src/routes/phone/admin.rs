@@ -8,12 +8,13 @@
 use super::superuser::{checked_holidays, checked_hours, http_url};
 use super::{audit, telnyx_failed};
 use crate::auth::AdminUser;
+use crate::auth::sections::SCHEDULING_MANAGER_POSITION;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
 use crate::phone::availability::WorkingHours;
 use crate::phone::company::{self, RecordingMode};
-use crate::phone::lines::NumberKind;
+use crate::phone::lines::{NumberKind, sync_position_lines};
 use crate::phone::numbers::{is_nanp, last10, to_e164};
 use crate::phone::revoke::{RevokeReason, revoke_device_session};
 use crate::phone::routing::{NoAnswerAction, PHONE_USER};
@@ -82,8 +83,11 @@ pub struct AdminNumber {
     /// sender's number in front), E.164; null = they stay in the CRM.
     pub forward_texts_to: Option<String>,
     /// Who it rings and who may call from it, by user id (users of the
-    /// company only).
+    /// company only); users who have it through a position are not listed.
     pub assignments: Vec<NumberAssignment>,
+    /// The company's Scheduling Manager number: everyone with that position
+    /// has it.
+    pub scheduling_managers: bool,
 }
 
 #[derive(FromRow)]
@@ -100,6 +104,7 @@ struct NumberRow {
     active: bool,
     forward_only: bool,
     forward_texts_to: Option<String>,
+    scheduling_managers: bool,
 }
 
 #[derive(FromRow)]
@@ -177,6 +182,11 @@ pub struct NumberInput {
     /// neither flag on are left out.
     #[serde(default)]
     pub assignments: Vec<NumberAssignment>,
+    /// True: this becomes the company's one Scheduling Manager number (a
+    /// direct line turns shared); false: it stops being it; left out: no
+    /// change.
+    #[serde(default)]
+    pub scheduling_managers: Option<bool>,
 }
 
 /// `POST /v1/phone/admin/numbers/import`.
@@ -236,10 +246,12 @@ pub(super) async fn company_numbers(
     let rows: Vec<NumberRow> = sqlx::query_as(
         "SELECT id, e164, label, CAST(kind AS CHAR) AS kind,
                 CAST(no_answer_action AS CHAR) AS no_answer_action, forward_to, greeting,
-                active <> 0 AS active, forward_only <> 0 AS forward_only, forward_texts_to
+                active <> 0 AS active, forward_only <> 0 AS forward_only, forward_texts_to,
+                (position_id <=> ?) <> 0 AS scheduling_managers
            FROM telnyx_numbers WHERE company_id = ? AND released_at IS NULL
           ORDER BY FIELD(kind, 'main', 'shared', 'direct'), label, id",
     )
+    .bind(SCHEDULING_MANAGER_POSITION)
     .bind(company_id)
     .fetch_all(pool)
     .await?;
@@ -248,7 +260,7 @@ pub(super) async fn company_numbers(
            FROM telnyx_number_users nu
            JOIN telnyx_numbers n ON n.id = nu.number_id
            JOIN users u ON u.id = nu.user_id AND u.company_id = n.company_id AND u.is_deleted = 0
-          WHERE n.company_id = ?
+          WHERE n.company_id = ? AND nu.via_position = 0
           ORDER BY nu.number_id, nu.user_id",
     )
     .bind(company_id)
@@ -265,6 +277,7 @@ pub(super) async fn company_numbers(
         .into_iter()
         .map(|row| AdminNumber {
             assignments: by_number.remove(&row.id).unwrap_or_default(),
+            scheduling_managers: row.scheduling_managers,
             id: row.id,
             e164: row.e164,
             label: row.label,
@@ -515,6 +528,12 @@ pub async fn update_admin_number(
             "Every user must be a user of your company.".into(),
         ));
     }
+    // Several people answer the Scheduling Manager number: it is nobody's own.
+    let kind = if input.scheduling_managers == Some(true) && input.kind == NumberKind::Direct {
+        NumberKind::Shared
+    } else {
+        input.kind
+    };
     let mut tx = pool.begin().await?;
     sqlx::query(
         "UPDATE telnyx_numbers
@@ -523,7 +542,7 @@ pub async fn update_admin_number(
           WHERE id = ? AND company_id = ?",
     )
     .bind(&checked.label)
-    .bind(input.kind.as_str())
+    .bind(kind.as_str())
     .bind(input.no_answer_action.as_str())
     .bind(&checked.forward_to)
     .bind(&checked.greeting)
@@ -550,11 +569,33 @@ pub async fn update_admin_number(
         .execute(&mut *tx)
         .await?;
     }
+    if let Some(linked) = input.scheduling_managers {
+        // One number per company: linking this one unlinks any other.
+        sqlx::query(
+            "UPDATE telnyx_numbers SET position_id = NULL
+              WHERE company_id = ? AND (position_id = ? OR id = ?)",
+        )
+        .bind(user.company_id)
+        .bind(if linked { SCHEDULING_MANAGER_POSITION } else { 0 })
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        if linked {
+            sqlx::query("UPDATE telnyx_numbers SET position_id = ? WHERE id = ? AND company_id = ?")
+                .bind(SCHEDULING_MANAGER_POSITION)
+                .bind(id)
+                .bind(user.company_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    // Saving replaced the list above: the position's users get theirs back.
+    sync_position_lines(&mut tx, user.company_id).await?;
     let after = json!({
-        "label": checked.label, "kind": input.kind, "noAnswerAction": input.no_answer_action,
+        "label": checked.label, "kind": kind, "noAnswerAction": input.no_answer_action,
         "forwardTo": checked.forward_to, "greeting": checked.greeting, "active": input.active,
         "forwardOnly": input.forward_only, "forwardTextsTo": checked.forward_texts_to,
-        "assignments": checked.assignments,
+        "assignments": checked.assignments, "schedulingManagers": input.scheduling_managers,
     });
     audit(
         &mut *tx,
@@ -640,7 +681,7 @@ pub async fn delete_admin_number(
     }
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "UPDATE telnyx_numbers SET active = 0, released_at = NOW()
+        "UPDATE telnyx_numbers SET active = 0, released_at = NOW(), position_id = NULL
           WHERE id = ? AND company_id = ?",
     )
     .bind(id)
