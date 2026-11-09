@@ -1,6 +1,6 @@
 //! Shop maintenance: equipment (items), its checks (sub-items) with hour or
 //! day conditions, and their completions. Everyone of the shop reads and
-//! completes; shop managers manage the equipment and checks.
+//! completes; shop managers and superusers manage the equipment and checks.
 //!
 //! - `GET /v1/shop/maintenance` → everything the page shows
 //! - `POST /v1/shop/maintenance/items`, `PUT|DELETE .../items/{id}`
@@ -41,6 +41,9 @@ pub fn router() -> OpenApiRouter<AppState> {
 const SHOP_MANAGER: i32 = 3;
 
 async fn is_shop_manager(state: &AppState, user: &SessionUser) -> Result<bool, sqlx::Error> {
+    if user.is_superuser {
+        return Ok(true);
+    }
     let found: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM users_positions WHERE user_id = ? AND position_id = ? AND company_id = ? LIMIT 1",
     )

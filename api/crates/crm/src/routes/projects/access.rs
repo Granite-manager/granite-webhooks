@@ -14,6 +14,7 @@ use sqlx::MySqlPool;
 const SALES_REP: i32 = 1;
 const SALES_MANAGER: i32 = 2;
 const SHOP_MANAGER: i32 = 3;
+const SHOP_WORKER: i32 = 4;
 const MANAGER: i32 = 5;
 const INVENTORY_MANAGER: i32 = 12;
 const SCHEDULING_MANAGER: i32 = 13;
@@ -194,8 +195,9 @@ pub struct Viewer {
 
 impl Viewer {
     /// Admins, Managers, Sales Managers, Inventory Managers, Office and
-    /// Scheduling Managers (they schedule every job) and Shop Managers (they
-    /// fabricate every job) see every project. Sales reps see their own deals'
+    /// Scheduling Managers (they schedule every job) and the shop (Shop
+    /// Managers and Shop Workers fabricate every job) see every project, and
+    /// the shop adds projects from any deal. Sales reps see their own deals'
     /// projects. Everyone sees the projects they have a task on, done or not.
     pub fn new(user: &SessionUser, positions: &[UserPositionRow]) -> Self {
         let has = |position: i32| {
@@ -205,7 +207,7 @@ impl Viewer {
         };
         let admin = user.is_admin || has(MANAGER);
         let sales_manager = has(SALES_MANAGER);
-        let shop = has(SHOP_MANAGER);
+        let shop = has(SHOP_MANAGER) || has(SHOP_WORKER);
         let rep = has(SALES_REP);
         let scheduling = has(SCHEDULING_MANAGER);
         let inventory = has(INVENTORY_MANAGER);
@@ -215,14 +217,14 @@ impl Viewer {
             company_id: user.company_id,
             permissions: Permissions {
                 view_all: admin || tasked || scheduling || shop,
-                convert: admin || sales_manager || rep,
+                convert: admin || sales_manager || rep || shop,
                 production: admin || scheduling || shop,
                 mark_paid: admin || sales_manager,
                 manage: admin || scheduling,
                 delete: admin || sales_manager,
             },
             own: rep,
-            convert_any: admin || sales_manager,
+            convert_any: admin || sales_manager || shop,
             board: admin || rep || scheduling || shop || tasked,
             employee_view_all: has(MANAGER) || tasked || (!rep && (scheduling || shop)),
         }
@@ -319,6 +321,7 @@ mod tests {
             SALES_REP,
             SALES_MANAGER,
             SHOP_MANAGER,
+            SHOP_WORKER,
             SCHEDULING_MANAGER,
             INVENTORY_MANAGER,
         ] {
@@ -394,8 +397,13 @@ mod tests {
     fn permissions_by_position() {
         let office = viewer(false, &[SCHEDULING_MANAGER]).permissions;
         assert!(office.production && office.manage && !office.mark_paid && !office.convert);
+        for position in [SHOP_MANAGER, SHOP_WORKER] {
+            let shop = viewer(false, &[position]);
+            assert!(shop.convert_any && shop.permissions.convert && shop.permissions.view_all);
+            let shop = shop.permissions;
+            assert!(shop.production && !shop.manage && !shop.mark_paid && !shop.delete);
+        }
         let shop = viewer(false, &[SHOP_MANAGER]).permissions;
-        assert!(shop.production && !shop.manage && !shop.mark_paid);
         let sales = viewer(false, &[SALES_MANAGER]);
         assert!(sales.permissions.view_all && sales.convert_any);
         assert!(sales.permissions.convert && sales.permissions.mark_paid);
