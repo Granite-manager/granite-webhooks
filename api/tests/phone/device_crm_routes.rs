@@ -36,6 +36,42 @@ async fn portal(server: &axum_test::TestServer, n: u32) -> Value {
 }
 
 #[test_db::test(seed)]
+async fn the_crew_phone_reports_its_position_with_its_device_token(pool: MySqlPool) {
+    // Rita (user 100, company 100) also installs; Mark (101) does not.
+    sql(
+        &pool,
+        "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (100, 6, 100)",
+    )
+    .await;
+    let (server, _) = phone_server(pool.clone()).await;
+    let position = json!({ "latitude": 39.77, "longitude": -86.16, "accuracy_m": 10.0 });
+    add_session(&pool, 304, 100, 100).await;
+    server
+        .post("/v1/me/location")
+        .add_header(HEADER, token(304))
+        .json(&position)
+        .await
+        .assert_status_ok();
+    // Only the crew reports; refused, not signed out.
+    add_session(&pool, 305, 101, 100).await;
+    server
+        .post("/v1/me/location")
+        .add_header(HEADER, token(305))
+        .json(&position)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    // A revoked phone is signed out.
+    add_session(&pool, 306, 100, 100).await;
+    revoke_session(&pool, 306).await;
+    server
+        .post("/v1/me/location")
+        .add_header(HEADER, token(306))
+        .json(&position)
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+}
+
+#[test_db::test(seed)]
 async fn installers_and_template_makers_get_the_schedule_only_app(pool: MySqlPool) {
     // Rita (user 100, company 100) also installs; Olga (106, company 101)
     // makes templates; Sam (103) is a super admin who also installs. Nobody
