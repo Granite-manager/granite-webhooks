@@ -30,6 +30,8 @@ pub enum StorageError {
     Disabled,
     #[error("storage error: {0}")]
     Backend(String),
+    #[error("signature bucket must be private and block all public access")]
+    NotPrivate,
 }
 
 /// One stored object.
@@ -295,11 +297,6 @@ impl Storage {
                 _ => Err(StorageError::Disabled),
             };
         };
-        let public = || {
-            StorageError::Backend(
-                "signature bucket must be private and block all public access".into(),
-            )
-        };
         let block = s3
             .send(
                 "GET",
@@ -321,7 +318,7 @@ impl Storage {
         .iter()
         .any(|setting| xml_text(&block, setting) != Some("true"))
         {
-            return Err(public());
+            return Err(StorageError::NotPrivate);
         }
         let status = s3
             .send(
@@ -336,7 +333,7 @@ impl Storage {
         match status {
             Ok(status) => {
                 if xml_text(&status.text().await?, "IsPublic") != Some("false") {
-                    return Err(public());
+                    return Err(StorageError::NotPrivate);
                 }
             }
             Err(err) if err.code == "NoSuchBucketPolicy" => {}
