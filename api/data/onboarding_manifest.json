@@ -139,6 +139,17 @@
       "usage_check": null
     },
     {
+      "id": "quote-contract-add-to-email",
+      "version": 1,
+      "points": 10,
+      "checklist": false,
+      "required_steps": 1,
+      "base_keys": [
+        "quote-contract-add-to-email"
+      ],
+      "usage_check": null
+    },
+    {
       "id": "quote-email-open",
       "version": 1,
       "points": 10,
@@ -391,16 +402,6 @@
         "stone-image-crop"
       ],
       "usage_check": "stone_image_edited"
-    },
-    {
-      "id": "quote-contract-add-to-email",
-      "version": 1,
-      "points": 10,
-      "checklist": false,
-      "required_steps": 1,
-      "base_keys": [
-        "quote-contract-add-to-email"
-      ]
     },
     {
       "id": "setup-email-name",
