@@ -14,12 +14,15 @@
 //! - `POST   /v1/projects/{id}/task-times/reset`   → forget a task's remembered time
 //! - `/v1/projects/{id}/notes[/{note_id}]`         → notes (POST, DELETE)
 //! - `/v1/projects/{id}/files[/{file_id}]`         → files from `POST /v1/uploads` (POST, DELETE)
+//! - `/v1/projects/process-steps[/{step_id}]`      → the company's own steps, for admins (GET, POST, PATCH, DELETE, reorder)
+//! - `PUT    /v1/projects/{id}/steps/{step_id}`    → check a step off a project
 //!
 //! Who sees what is in [`access`].
 
 pub mod access;
 mod handlers;
 mod payments;
+mod process;
 pub mod schemas;
 pub mod service;
 mod tasks;
@@ -44,4 +47,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(tasks::delete_note))
         .routes(routes!(tasks::attach_files))
         .routes(routes!(tasks::delete_file))
+        .routes(routes!(process::list, process::create))
+        .routes(routes!(process::rename, process::delete))
+        .routes(routes!(process::reorder))
+        .routes(routes!(process::set_done))
 }

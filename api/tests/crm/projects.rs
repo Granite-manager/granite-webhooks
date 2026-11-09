@@ -609,3 +609,95 @@ async fn the_page_shows_the_crews_job_photos(pool: MySqlPool) {
     assert_eq!(photos[0]["kind"], "installations");
     assert_eq!(photos[0]["author"], "Mark Manager");
 }
+
+// The company's own process steps.
+
+async fn add_step(
+    pool: &MySqlPool,
+    session: &str,
+    stage: &str,
+    name: &str,
+) -> axum_test::TestResponse {
+    server(pool.clone())
+        .post("/v1/projects/process-steps")
+        .with_session(session)
+        .json(&json!({ "stage": stage, "name": name }))
+        .await
+}
+
+#[test_db::test(seed)]
+async fn admins_set_up_process_steps_and_projects_check_them_off(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let project = projects_of_8002(&pool).await[0];
+
+    add_step(&pool, sessions::REP, "new", "Confirm a file")
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    add_step(&pool, sessions::ADMIN, "completed", "Too late")
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    add_step(&pool, sessions::ADMIN, "new", "   ")
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+
+    let first = add_step(&pool, sessions::ADMIN, "new", "Confirm a file").await;
+    first.assert_status(StatusCode::CREATED);
+    let first = first.json::<Value>()["id"].as_i64().unwrap();
+    let second = add_step(&pool, sessions::ADMIN, "new", "Call the customer").await;
+    let second = second.json::<Value>()["id"].as_i64().unwrap();
+
+    let seen = board(&pool, sessions::ADMIN).await;
+    assert_eq!(seen["process_steps"][0]["name"], "Confirm a file");
+    assert_eq!(seen["done_steps"], json!([]));
+
+    server(pool.clone())
+        .post("/v1/projects/process-steps/reorder")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "ids": [second, first] }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let seen = board(&pool, sessions::ADMIN).await;
+    assert_eq!(seen["process_steps"][0]["name"], "Call the customer");
+
+    server(pool.clone())
+        .patch(&format!("/v1/projects/process-steps/{first}"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "Confirm the file" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    let check = async |done: bool| {
+        server(pool.clone())
+            .put(&format!("/v1/projects/{project}/steps/{first}"))
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "done": done }))
+            .await
+    };
+    check(true).await.assert_status(StatusCode::NO_CONTENT);
+    check(true).await.assert_status(StatusCode::NO_CONTENT);
+    let page = server(pool.clone())
+        .get(&format!("/v1/projects/{project}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<Value>();
+    assert_eq!(page["done_steps"].as_array().unwrap().len(), 1);
+    assert_eq!(page["done_steps"][0]["step_id"].as_i64(), Some(first));
+
+    server(pool.clone())
+        .delete(&format!("/v1/projects/process-steps/{}", first + 9999))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+
+    server(pool.clone())
+        .delete(&format!("/v1/projects/process-steps/{first}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project_process_steps_done")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
