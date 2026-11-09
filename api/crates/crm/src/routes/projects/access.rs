@@ -193,11 +193,10 @@ pub struct Viewer {
 }
 
 impl Viewer {
-    /// Admins, Managers, Office and Scheduling Managers (they schedule every
-    /// job) and Shop Managers (they fabricate every job) see every project.
-    /// Sales reps see their own deals' projects. Everyone sees the projects
-    /// they have a task on, done or not: that is all a Sales or Inventory
-    /// Manager sees.
+    /// Admins, Managers, Sales Managers, Inventory Managers, Office and
+    /// Scheduling Managers (they schedule every job) and Shop Managers (they
+    /// fabricate every job) see every project. Sales reps see their own deals'
+    /// projects. Everyone sees the projects they have a task on, done or not.
     pub fn new(user: &SessionUser, positions: &[UserPositionRow]) -> Self {
         let has = |position: i32| {
             positions
@@ -209,12 +208,13 @@ impl Viewer {
         let shop = has(SHOP_MANAGER);
         let rep = has(SALES_REP);
         let scheduling = has(SCHEDULING_MANAGER);
-        let tasked = sales_manager || has(INVENTORY_MANAGER);
+        let inventory = has(INVENTORY_MANAGER);
+        let tasked = sales_manager || inventory;
         Self {
             user_id: user.id,
             company_id: user.company_id,
             permissions: Permissions {
-                view_all: admin || scheduling || shop,
+                view_all: admin || tasked || scheduling || shop,
                 convert: admin || sales_manager || rep,
                 production: admin || scheduling || shop,
                 mark_paid: admin || sales_manager,
@@ -224,12 +224,14 @@ impl Viewer {
             own: rep,
             convert_any: admin || sales_manager,
             board: admin || rep || scheduling || shop || tasked,
-            employee_view_all: !rep && (has(MANAGER) || scheduling || shop),
+            employee_view_all: has(MANAGER) || tasked || (!rep && (scheduling || shop)),
         }
     }
 
     /// The caller as the employee side sees them: being an admin counts only
-    /// in admin, and a sales rep sees their own there whatever else they are.
+    /// in admin. A Manager, Sales Manager or Inventory Manager sees every
+    /// project there even if also a sales rep; any other sales rep sees their
+    /// own.
     pub const fn on_employee_side(mut self) -> Self {
         self.permissions.view_all = self.employee_view_all;
         self
@@ -330,13 +332,25 @@ mod tests {
         let seen = |is_admin, positions: &[i32]| {
             viewer(is_admin, positions).on_employee_side().visible_sql()
         };
-        // An admin who is also a Manager and a sales rep sees their own.
-        let rep = seen(true, &[SALES_REP, SALES_MANAGER, MANAGER]);
+        // A Manager, Sales or Inventory Manager who is also a sales rep sees
+        // every project.
+        assert_eq!(seen(true, &[SALES_REP, SALES_MANAGER, MANAGER]), "TRUE");
+        assert_eq!(seen(false, &[SALES_REP, MANAGER]), "TRUE");
+        assert_eq!(seen(false, &[SALES_REP, SALES_MANAGER]), "TRUE");
+        assert_eq!(seen(false, &[SALES_REP, INVENTORY_MANAGER]), "TRUE");
+        // Any other sales rep sees their own.
+        let rep = seen(false, &[SALES_REP, SHOP_MANAGER]);
         assert!(rep.contains("p.sales_rep_id = 7"), "{rep}");
         // The admin flag alone shows nothing but the caller's tasks.
         let admin = seen(true, &[]);
         assert!(admin.contains("ta.assigned_user_id") && !admin.contains("sales_rep_id"));
-        for position in [MANAGER, SCHEDULING_MANAGER, SHOP_MANAGER] {
+        for position in [
+            MANAGER,
+            SALES_MANAGER,
+            INVENTORY_MANAGER,
+            SCHEDULING_MANAGER,
+            SHOP_MANAGER,
+        ] {
             assert_eq!(seen(false, &[position]), "TRUE", "{position}");
         }
     }
@@ -353,21 +367,25 @@ mod tests {
     #[test]
     fn visibility_sql() {
         assert_eq!(viewer(true, &[]).visible_sql(), "TRUE");
-        // The office, scheduling and the shop see every project.
-        for position in [MANAGER, SCHEDULING_MANAGER, SHOP_MANAGER] {
+        // Managers, scheduling and the shop see every project.
+        for position in [
+            MANAGER,
+            SALES_MANAGER,
+            INVENTORY_MANAGER,
+            SCHEDULING_MANAGER,
+            SHOP_MANAGER,
+        ] {
             assert_eq!(
                 viewer(false, &[position]).visible_sql(),
                 "TRUE",
                 "{position}"
             );
         }
-        // Sales and Inventory Managers see only the projects they have a task on.
-        for position in [SALES_MANAGER, INVENTORY_MANAGER] {
-            let sql = viewer(false, &[position]).visible_sql();
-            assert!(sql.contains("ta.assigned_user_id = 7"));
-            assert!(!sql.contains("completed_at"), "done tasks keep it in view");
-            assert!(!sql.contains("sales_rep_id"));
-        }
+        // Without one of those positions, only the projects they have a task on.
+        let sql = viewer(false, &[]).visible_sql();
+        assert!(sql.contains("ta.assigned_user_id = 7"));
+        assert!(!sql.contains("completed_at"), "done tasks keep it in view");
+        assert!(!sql.contains("sales_rep_id"));
         let rep = viewer(false, &[SALES_REP]).visible_sql();
         assert!(rep.contains("p.sales_rep_id = 7") && rep.contains("ta.assigned_user_id = 7"));
     }
@@ -379,7 +397,7 @@ mod tests {
         let shop = viewer(false, &[SHOP_MANAGER]).permissions;
         assert!(shop.production && !shop.manage && !shop.mark_paid);
         let sales = viewer(false, &[SALES_MANAGER]);
-        assert!(!sales.permissions.view_all && sales.convert_any);
+        assert!(sales.permissions.view_all && sales.convert_any);
         assert!(sales.permissions.convert && sales.permissions.mark_paid);
         assert!(sales.permissions.delete && !office.delete && !shop.delete);
         assert!(viewer(false, &[MANAGER]).permissions.delete);
