@@ -1,16 +1,16 @@
 //! Which threads, and which rows in them, a user may see.
 //!
-//! A text is the rep's by its user or by its number, either one: "mine" is
-//! the threads carrying a row sent by the user or tagged with an agent id
-//! they have or ever had there (the user sees their own rows plus untagged
-//! ones), and the threads texted to or from a number of theirs, now or ever,
-//! on any provider (every row; `user_sms_identities`). "All" — admins only —
+//! A text is the rep's by its user or by its number, either one, and a rep
+//! sees only their texts, never another rep's in the same thread: those sent
+//! by the user or tagged with an agent id they have or ever had there, those
+//! texted to or from a number of theirs, now or ever, on any provider
+//! (`user_sms_identities`), and untagged ones on a shared company line or on
+//! no line. "Mine" is the threads holding such a text. "All" — admins only —
 //! is the whole company, or one rep's "mine" when filtered by agent.
 //! Company lines and the onboarding sample are never thread keys.
 //!
-//! Telnyx: "mine" is every thread of the numbers the user may call from
-//! (whole threads, so a shared line is a shared inbox); the rep filter takes
-//! the rep's user id.
+//! Telnyx: the user's numbers are the ones they may call from (a shared line
+//! is a shared inbox); the rep filter takes the rep's user id.
 
 use super::provider::{Param, SAMPLE_PHONES, SmsProvider, marks, phone10};
 use crate::auth::session::SessionUser;
@@ -84,10 +84,8 @@ pub async fn filter_agent(
 pub struct Narrowing {
     /// Visible thread keys; `None` = the whole company.
     pub phones: Option<Vec<String>>,
-    /// Threads whose every row is visible (the "my number" branch).
-    pub whole_threads: Vec<String>,
-    /// The rep whose own rows (plus untagged ones) are visible.
-    pub own: Option<OwnRows>,
+    /// The rep whose rows are visible.
+    pub own: Option<RepRows>,
     /// Company lines, never thread keys.
     pub company_lines: Vec<String>,
     /// One rep's inbox (unread first), not the company's.
@@ -96,23 +94,36 @@ pub struct Narrowing {
     pub line: Option<String>,
 }
 
-/// A rep's own rows: tagged with an agent id of theirs, or sent by them.
+/// A rep's rows: tagged with an agent id of theirs or sent by them, texted
+/// to or from a number of theirs, and untagged ones on a shared line or on
+/// none. A text another rep sent, or one on another rep's number, is not.
 #[derive(Debug, Clone)]
-pub struct OwnRows {
+pub struct RepRows {
     agents: Vec<String>,
     sender_user_id: Option<i32>,
+    /// The rep's numbers (last ten digits).
+    lines: Vec<String>,
+    /// Untagged rows on these lines, or on none, are visible too; `None`:
+    /// no untagged rows (Telnyx, whose lines are all the company's).
+    shared_lines: Option<Vec<String>>,
 }
 
-impl OwnRows {
-    fn new(ids: &RepIds) -> Option<Self> {
-        (!ids.agents.is_empty() || ids.user_id.is_some()).then(|| Self {
-            agents: ids.agents.clone(),
+/// The line a row of `s` is on: the one it went to, or came from.
+const ROW_LINE: &str = "(CASE WHEN s.direction = 'inbound' THEN s.recipient10 ELSE s.sender10 END)";
+
+impl RepRows {
+    fn new(ids: RepIds, shared_lines: Option<Vec<String>>) -> Option<Self> {
+        (!ids.agents.is_empty() || ids.user_id.is_some() || !ids.lines.is_empty()).then_some(Self {
+            agents: ids.agents,
             sender_user_id: ids.user_id,
+            lines: ids.lines,
+            shared_lines,
         })
     }
 
-    /// The predicates over `s` for the rep's own rows, ORed.
-    fn own(&self) -> (Vec<String>, Vec<Param>) {
+    /// The predicates over `s` for the rep's own rows and those on a number
+    /// of theirs, ORed: a thread holding one is theirs.
+    fn mine(&self) -> (Vec<String>, Vec<Param>) {
         let mut parts = Vec::new();
         let mut params: Vec<Param> = Vec::new();
         if !self.agents.is_empty() {
@@ -123,14 +134,28 @@ impl OwnRows {
             parts.push("s.sender_user_id = ?".to_string());
             params.push(user_id.into());
         }
+        if !self.lines.is_empty() {
+            let (on_lines, line_params) = on_lines(&self.lines);
+            parts.push(on_lines);
+            params.extend(line_params);
+        }
         (parts, params)
     }
 
-    /// The rep's own rows plus untagged ones, ORed.
-    fn visible(&self) -> (Vec<String>, Vec<Param>) {
-        let (mut parts, params) = self.own();
-        parts.push("s.agent IS NULL".to_string());
-        (parts, params)
+    /// Every row of the rep's threads they see, as one predicate over `s`.
+    fn visible(&self) -> (String, Vec<Param>) {
+        let (mut parts, mut params) = self.mine();
+        if let Some(shared) = &self.shared_lines {
+            let mut untagged = format!("{ROW_LINE} IS NULL");
+            if !shared.is_empty() {
+                untagged = format!("{untagged} OR {ROW_LINE} IN ({})", marks(shared.len()));
+                params.extend(shared.iter().map(Param::from));
+            }
+            parts.push(format!(
+                "(s.agent IS NULL AND s.sender_user_id IS NULL AND ({untagged}))"
+            ));
+        }
+        (format!("({})", parts.join(" OR ")), params)
     }
 }
 
@@ -227,6 +252,29 @@ async fn rep_ids(
     })
 }
 
+/// The rows of the caller, or with `scope=all` of the filtered rep; `None`
+/// when that rep has nothing of theirs on `provider`.
+async fn rep_rows(
+    pool: &MySqlPool,
+    provider: SmsProvider,
+    user: &SessionUser,
+    scope: SmsScope,
+    filter_agent: Option<&str>,
+    company_lines: &[String],
+) -> Result<Option<RepRows>, sqlx::Error> {
+    if provider == SmsProvider::Telnyx {
+        let (rep, lines) = telnyx_lines(pool, user, scope, filter_agent).await?;
+        let ids = RepIds {
+            user_id: rep,
+            agents: rep.map(|id| id.to_string()).into_iter().collect(),
+            lines,
+        };
+        return Ok(RepRows::new(ids, None));
+    }
+    let ids = rep_ids(pool, provider, user, scope, filter_agent, company_lines).await?;
+    Ok(RepRows::new(ids, Some(company_lines.to_vec())))
+}
+
 /// Whether `user` has anything of theirs on `provider`: an agent id or
 /// number they have or had (on Telnyx, a line they may call from now), or a
 /// text they sent (on Telnyx, also one tagged with their user id).
@@ -294,7 +342,7 @@ async fn own_threads(
     pool: &MySqlPool,
     provider: SmsProvider,
     company_id: i32,
-    own: &OwnRows,
+    own: &RepRows,
 ) -> Result<Vec<String>, sqlx::Error> {
     let table = provider.sms_table();
     let mut threads = Vec::new();
@@ -383,60 +431,26 @@ pub async fn narrowing(
     if scope == SmsScope::All && filter_agent.is_none() {
         return Ok(Narrowing {
             phones: None,
-            whole_threads: Vec::new(),
             own: None,
             company_lines,
             one_rep: false,
             line: None,
         });
     }
-    if provider == SmsProvider::Telnyx {
-        let (rep, lines) = telnyx_lines(pool, user, scope, filter_agent).await?;
-        let threads: Vec<String> =
-            crate::phone::texting::line_threads(pool, user.company_id, &lines, rep)
-                .await?
-                .into_iter()
-                .filter(|phone| {
-                    !company_lines.contains(phone) && !SAMPLE_PHONES.contains(&phone.as_str())
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-        return Ok(Narrowing {
-            phones: Some(threads.clone()),
-            whole_threads: threads,
-            own: None,
-            company_lines,
-            one_rep: true,
-            line: None,
-        });
+    let own = rep_rows(pool, provider, user, scope, filter_agent, &company_lines).await?;
+    let mut phones = Vec::new();
+    if let Some(own) = &own {
+        phones.extend(own_threads(pool, provider, user.company_id, own).await?);
+        phones.extend(my_number_threads(pool, provider, user.company_id, &own.lines).await?);
     }
-    let ids = rep_ids(pool, provider, user, scope, filter_agent, &company_lines).await?;
-    let own = OwnRows::new(&ids);
-    let own_phones = match &own {
-        Some(own) => own_threads(pool, provider, user.company_id, own).await?,
-        None => Vec::new(),
-    };
-    let mine = my_number_threads(pool, provider, user.company_id, &ids.lines).await?;
-    let excluded =
-        |phone: &String| company_lines.contains(phone) || SAMPLE_PHONES.contains(&phone.as_str());
-    let whole_threads: Vec<String> = mine
-        .iter()
-        .filter(|phone| !excluded(phone))
-        .cloned()
-        .collect::<BTreeSet<_>>()
+    let phones: Vec<String> = phones
         .into_iter()
-        .collect();
-    let phones: Vec<String> = own_phones
-        .into_iter()
-        .chain(mine)
-        .filter(|phone| !excluded(phone))
+        .filter(|phone| !company_lines.contains(phone) && !SAMPLE_PHONES.contains(&phone.as_str()))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
     Ok(Narrowing {
         phones: Some(phones),
-        whole_threads,
         one_rep: own.is_some(),
         own,
         company_lines,
@@ -466,6 +480,11 @@ async fn telnyx_lines(
 }
 
 impl Narrowing {
+    /// The predicate over `s` for the one rep's rows, and its binds.
+    pub fn rep_rows(&self) -> Option<(String, Vec<Param>)> {
+        self.own.as_ref().map(RepRows::visible)
+    }
+
     /// Nothing is visible at all.
     pub fn is_empty(&self) -> bool {
         self.phones.as_ref().is_some_and(Vec::is_empty)
@@ -497,19 +516,11 @@ impl Narrowing {
         };
         parts.push(format!("s.phone_digits IN ({})", marks(phones.len())));
         params.extend(phones.iter().map(Param::from));
-        // The own-rows branch is row-level (own rows + untagged); the "my
-        // number" branch is thread-level.
+        // Row by row: never another rep's texts in a thread of theirs.
         if let Some(own) = &self.own {
-            let (mut visible, own_params) = own.visible();
+            let (visible, own_params) = own.visible();
+            parts.push(visible);
             params.extend(own_params);
-            if !self.whole_threads.is_empty() {
-                visible.push(format!(
-                    "s.phone_digits IN ({})",
-                    marks(self.whole_threads.len())
-                ));
-                params.extend(self.whole_threads.iter().map(Param::from));
-            }
-            parts.push(format!("({})", visible.join(" OR ")));
         }
         (parts.join(" AND "), params)
     }
@@ -518,7 +529,7 @@ impl Narrowing {
 /// Access to one thread, and the extra row filter inside it.
 pub struct ThreadAccess {
     /// Extra predicate over `s` and its binds, e.g.
-    /// `(s.agent IN (?) OR s.sender_user_id = ? OR s.agent IS NULL)`.
+    /// `(s.agent IN (?) OR s.sender_user_id = ? OR <on a number of theirs>)`.
     pub clause: Option<(String, Vec<Param>)>,
 }
 
@@ -568,53 +579,26 @@ pub async fn thread_access(
         .await?;
         return Ok(found.then_some(ThreadAccess { clause: None }));
     }
-    if provider == SmsProvider::Telnyx {
-        let (rep, lines) = telnyx_lines(pool, user, scope, filter_agent).await?;
-        let seen =
-            crate::phone::texting::thread_on_lines(pool, user.company_id, &lines, rep, phone)
-                .await?;
-        return Ok(seen.then_some(ThreadAccess { clause: None }));
-    }
     let company_lines = company_lines(pool, provider, user.company_id).await?;
-    let ids = rep_ids(pool, provider, user, scope, filter_agent, &company_lines).await?;
-    if !ids.lines.is_empty() {
-        let (on_lines, line_params) = on_lines(&ids.lines);
-        let mut params = vec![company.clone(), phone.into()];
-        params.extend(line_params);
-        let on_my_number = exists(
-            pool,
-            format!(
-                "SELECT 1 FROM {table} s
-                  WHERE s.company_id = ? AND s.phone_digits = ? AND s.is_echo = 0
-                    AND {on_lines}
-                  LIMIT 1"
-            ),
-            &params,
-        )
-        .await?;
-        if on_my_number {
-            return Ok(Some(ThreadAccess { clause: None }));
-        }
-    }
-    if let Some(own) = OwnRows::new(&ids) {
-        let (mine, mine_params) = own.own();
+    let rows = rep_rows(pool, provider, user, scope, filter_agent, &company_lines).await?;
+    if let Some(rows) = rows {
+        let (mine, mine_params) = rows.mine();
         let mut params = vec![company, phone.into()];
         params.extend(mine_params);
-        let tagged = exists(
+        let theirs = exists(
             pool,
             format!(
                 "SELECT 1 FROM {table} s
-                  WHERE s.company_id = ? AND s.phone_digits = ? AND ({})
+                  WHERE s.company_id = ? AND s.phone_digits = ? AND s.is_echo = 0 AND ({})
                   LIMIT 1",
                 mine.join(" OR ")
             ),
             &params,
         )
         .await?;
-        if tagged {
-            let (visible, params) = own.visible();
+        if theirs {
             return Ok(Some(ThreadAccess {
-                clause: Some((format!("({})", visible.join(" OR ")), params)),
+                clause: Some(rows.visible()),
             }));
         }
     }

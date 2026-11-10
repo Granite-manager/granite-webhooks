@@ -661,8 +661,35 @@ async fn a_reps_texts_are_theirs_by_user_or_by_number(pool: MySqlPool) {
         assert!(listed.contains(&phone), "{phone} missing from {listed:?}");
     }
     assert!(!listed.contains(&"3175550304"));
+    // In a thread of hers, Mark's text and one to his number are not hers.
+    sqlx::raw_sql(
+        "INSERT INTO ringcentral_sms (id, ringcentral_id, sender, recipient, text, direction, status, agent,
+                                      sender_user_id, company_id, created_date, sender10, recipient10,
+                                      phone_digits, is_echo) VALUES
+           (9104, 604, 3175550998, 3175550302, 'Mark to Pat', 'outbound', 'sent', '699', 101, 100,
+            '2025-06-07 14:00:00', '3175550998', '3175550302', '3175550302', 0),
+           (9105, 605, 3175550302, 3175550998, 'Pat to Mark', 'inbound', 'received', NULL, NULL, 100,
+            '2025-06-07 15:00:00', '3175550302', '3175550998', '3175550302', 0);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let thread = get(&pool, "/v1/sms/mine/threads/3175550302", sessions::REP).await;
-    assert_eq!(thread["messages"][0]["text"], "To her old number");
+    let texts: Vec<&str> = thread["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, ["To her old number"]);
+    let list = get(&pool, "/v1/sms/ringcentral/threads", sessions::REP).await;
+    let pat = list["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["phone_digits"] == "3175550302")
+        .unwrap();
+    assert_eq!(pat["last_message_text"], "To her old number");
     let hidden = get(&pool, "/v1/sms/mine/threads/3175550304", sessions::REP).await;
     assert_eq!(hidden["messages"], serde_json::json!([]));
 

@@ -261,12 +261,19 @@ pub fn rollup_sql(
     let mut params: Vec<Param> = vec![user.company_id.into()];
     let unread_line = narrowing.line.as_ref().map_or("", |line| {
         params.push(line.into());
-        " AND u.recipient10 = ?"
+        " AND s.recipient10 = ?"
     });
-    let unread_search = search.sql("u").map_or_else(String::new, |sql| {
+    let unread_search = search.sql("s").map_or_else(String::new, |sql| {
         params.extend(search.params.iter().cloned());
         format!(" AND {sql}")
     });
+    // Only the rep's own rows count, never another rep's in the thread.
+    let unread_rep = narrowing
+        .rep_rows()
+        .map_or_else(String::new, |(sql, rep_params)| {
+            params.extend(rep_params);
+            format!(" AND {sql}")
+        });
     params.extend(agg_params);
     params.push(user.id.into());
     params.push(user.company_id.into());
@@ -282,13 +289,13 @@ pub fn rollup_sql(
                 CAST(CASE
                   WHEN {manual} THEN 1
                   WHEN a.last_non_plain_key = a.last_key THEN 0
-                  ELSE (SELECT COUNT(*) FROM {sms} u
-                         WHERE u.company_id = ? AND u.is_echo = 0
-                           AND u.phone_digits = a.phone_digits
-                           AND u.direction = 'inbound'
-                           AND u.sender10 = u.phone_digits{unread_line}
-                           AND u.created_date > GREATEST(COALESCE(r.last_read_at, {EPOCH}),
-                                                         COALESCE(a.last_rep_at, {EPOCH})){unread_search})
+                  ELSE (SELECT COUNT(*) FROM {sms} s
+                         WHERE s.company_id = ? AND s.is_echo = 0
+                           AND s.phone_digits = a.phone_digits
+                           AND s.direction = 'inbound'
+                           AND s.sender10 = s.phone_digits{unread_line}
+                           AND s.created_date > GREATEST(COALESCE(r.last_read_at, {EPOCH}),
+                                                         COALESCE(a.last_rep_at, {EPOCH})){unread_search}{unread_rep})
                 END AS SIGNED) AS unread
            FROM ({agg}) a
            LEFT JOIN {reads} r
