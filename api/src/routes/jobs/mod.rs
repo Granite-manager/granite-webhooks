@@ -15,7 +15,7 @@
 //! - `POST /v1/jobs/contact-sync` → customers into `RingCentral` and
 //!   `CloudTalk` contacts, and `RingCentral` SMS subscriptions onto the
 //!   current webhooks token
-//! - `POST /v1/jobs/phone` → Granite Phone upkeep: sign-outs, recordings,
+//! - `POST /v1/jobs/phone` → Granite Manager upkeep: sign-outs, recordings,
 //!   AI notes, call points, old Telnyx callbacks
 //! - `POST /v1/jobs/posthog-autofix` → new PostHog errors into fix runs
 //! - `POST /v1/jobs/tendlc-checks` → the AI check of a 10DLC texting

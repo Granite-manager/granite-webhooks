@@ -1,4 +1,4 @@
-//! Who has the Granite Phone app: their notifications go to the app, not to
+//! Who has the Granite Manager app: their notifications go to the app, not to
 //! Telegram.
 //!
 //! A user has the app in a company while an Android or iPhone of theirs is

@@ -326,7 +326,7 @@ pub(super) fn new_webhook_token() -> ApiResult<String> {
 
 /// Get a company's Telnyx setup
 ///
-/// The company's Granite Phone calling setup: the kill switch, Telnyx
+/// The company's Granite Manager calling setup: the kill switch, Telnyx
 /// resource ids, recording mode and notice, the main line's business hours
 /// and holidays, the minimum app version, the daily call limit, and
 /// `webhookBase`, the root of the company's Telnyx webhooks to paste into
@@ -460,7 +460,7 @@ pub async fn save_company_telnyx_config(
     Ok(Json(TelnyxCompanyConfig::of(&config, &state)))
 }
 
-/// The company texts through Granite Phone: everyone who may call from one
+/// The company texts through Granite Manager: everyone who may call from one
 /// of its numbers gets their texts from other providers copied to Telnyx
 /// (`crate::routes::sms::moves`). Failures are logged; the save stands.
 async fn carry_company(pool: &MySqlPool, company_id: i32) {
@@ -475,7 +475,7 @@ async fn carry_company(pool: &MySqlPool, company_id: i32) {
     {
         Ok(users) => users,
         Err(error) => {
-            tracing::error!(company_id, %error, "listing Granite Phone users failed");
+            tracing::error!(company_id, %error, "listing Granite Manager users failed");
             return;
         }
     };

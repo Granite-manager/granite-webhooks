@@ -645,8 +645,8 @@ async fn emergency_codes_are_connected_and_alert_the_admins(pool: MySqlPool) {
     assert_eq!(
         alerts,
         [
-            (102, "Rita Rep dialed 911 on Granite Phone".to_string()),
-            (103, "Rita Rep dialed 911 on Granite Phone".to_string())
+            (102, "Rita Rep dialed 911 on Granite Manager".to_string()),
+            (103, "Rita Rep dialed 911 on Granite Manager".to_string())
         ]
     );
     let alerts_now = |pool: MySqlPool| async move {
@@ -1035,7 +1035,7 @@ async fn app_calls_must_be_signed_by_the_phone_that_places_them(pool: MySqlPool)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(alert, "A Granite Phone user dialed 911 on Granite Phone");
+    assert_eq!(alert, "A Granite Manager user dialed 911 on Granite Manager");
 }
 
 #[test_db::test(seed)]

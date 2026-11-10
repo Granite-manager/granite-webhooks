@@ -1,4 +1,4 @@
-//! Telnyx's callbacks for Granite Phone, under
+//! Telnyx's callbacks for Granite Manager, under
 //! `/v1/webhooks/telnyx/{token}/...`, where `token` is the company's
 //! `telnyx_company_config.webhook_token` (the end of `webhookBase`).
 //!

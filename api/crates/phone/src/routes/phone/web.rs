@@ -1,4 +1,4 @@
-//! The CRM's phone dock: the browser as a Granite Phone, signed in with the
+//! The CRM's phone dock: the browser as a Granite Manager, signed in with the
 //! web session cookie.
 //!
 //! A browser phone is a device session of platform `web` whose

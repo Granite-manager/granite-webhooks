@@ -1,4 +1,4 @@
-//! "Connect Telnyx": a company sets itself up for Granite Phone from its own
+//! "Connect Telnyx": a company sets itself up for Granite Manager from its own
 //! Phone page, and buys numbers there. Connecting makes (or, run again,
 //! re-points at us) everything the company needs in our Telnyx account: a
 //! billing group (its costs apart), an outbound voice profile (US and
@@ -402,7 +402,7 @@ async fn provision(
 
 /// Connect Telnyx
 ///
-/// Sets the caller's company up for Granite Phone calls and texts in one
+/// Sets the caller's company up for Granite Manager calls and texts in one
 /// go (see the module): billing group, outbound voice profile, TeXML
 /// application, credential connection and messaging profile, each made
 /// when missing and pointed at the company's webhooks; the company's

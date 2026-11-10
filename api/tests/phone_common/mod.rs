@@ -1,4 +1,4 @@
-//! Shared fixtures of the Granite Phone tests (`tests/phone_*.rs`): device
+//! Shared fixtures of the Granite Manager tests (`tests/phone_*.rs`): device
 //! sessions and phones, a company's Telnyx setup, numbers and calls, and one
 //! stand-in server for Telnyx, FCM, the webhooks Lambda, AssemblyAI and
 //! OpenAI.

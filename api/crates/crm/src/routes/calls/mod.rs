@@ -2,7 +2,7 @@
 //!
 //! - `GET /v1/calls/{provider}` → a deal's or customer's calls, in the
 //!   `CloudTalk` call shape (`RingCentral` rows are converted, and so are
-//!   Granite Phone calls from our own call log, `telnyx`), with the calls
+//!   Granite Manager calls from our own call log, `telnyx`), with the calls
 //!   saved from any provider the company used before
 //! - `POST /v1/calls/{provider}` → call a number: `CloudTalk` rings the
 //!   caller's agent first, `RingCentral` rings their line (`RingOut`)
@@ -177,7 +177,7 @@ struct DealPhones {
     created_at: Option<DateTime<Utc>>,
 }
 
-/// Most Granite Phone calls one list answers (newest first).
+/// Most Granite Manager calls one list answers (newest first).
 const TELNYX_CALLS_LIMIT: i64 = 200;
 
 /// List calls with a customer
@@ -189,7 +189,7 @@ const TELNYX_CALLS_LIMIT: i64 = 200;
 /// `cloudtalk` and `ringcentral` add the calls saved from either provider,
 /// also one the company no longer uses (only those when it has not set up
 /// the provider). `telnyx` reads the
-/// company's Granite Phone call log (ended calls, newest first, at most
+/// company's Granite Manager call log (ended calls, newest first, at most
 /// 200; calls logged to the customer count too; recordings and AI notes
 /// only of the calls the caller may hear, `Telnyx.may_hear`): call the
 /// recording route with `Cdr.recording_link` and `POST /v1/call-transcripts`
@@ -506,7 +506,7 @@ pub async fn start(
                 Err(err) => Ok(refuse(StatusCode::BAD_GATEWAY, &cloudtalk_error(&err))),
             }
         }
-        // Telnyx calls start from Granite Phone (the app or the web phone).
+        // Telnyx calls start from Granite Manager (the app or the web phone).
         SmsProvider::Telnyx => Ok(refuse(StatusCode::BAD_REQUEST, "unsupported_provider")),
         SmsProvider::Ringcentral => {
             if !features.ringcentral {

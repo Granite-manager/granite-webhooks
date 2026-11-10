@@ -1,4 +1,4 @@
-//! Granite Phone (Telnyx) calls in the CRM, with the session cookie: the
+//! Granite Manager (Telnyx) calls in the CRM, with the session cookie: the
 //! call panels' list (`GET /v1/calls/telnyx`, deals, customers and phones),
 //! recordings, transcripts, the bell (missed calls, voicemails, AI messages,
 //! 911 alerts) and what an ended call sets off in a company that calls and
@@ -657,7 +657,7 @@ async fn the_bell_shows_911_alerts_to_the_admins(pool: MySqlPool) {
         ),
         (
             "Emergency call",
-            "Rita Rep dialed 911 on Granite Phone",
+            "Rita Rep dialed 911 on Granite Manager",
             "Emergency Call",
             "/admin/phone"
         )
@@ -931,7 +931,7 @@ async fn the_call_coach_scores_granite_phone_calls(pool: MySqlPool) {
     let mark: Value = coaching(sessions::MANAGER).await.json();
     assert_eq!(mark["eligible"], true);
     assert_eq!(mark["calls"], json!([]));
-    // Company 101 has no Granite Phone (and Olga no CloudTalk line).
+    // Company 101 has no Granite Manager (and Olga no CloudTalk line).
     let olga: Value = coaching(sessions::OTHER_COMPANY_REP).await.json();
     assert_eq!(olga["eligible"], false);
 }

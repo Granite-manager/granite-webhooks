@@ -1,4 +1,4 @@
-//! Granite Phone (business calling through Telnyx): the shared logic.
+//! Granite Manager (business calling through Telnyx): the shared logic.
 //!
 //! Used by the phone routes (`routes/phone/`), Telnyx's webhooks
 //! (`routes/telnyx_webhooks/`), the device sign-in

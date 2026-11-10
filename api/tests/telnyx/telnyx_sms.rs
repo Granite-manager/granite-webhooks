@@ -1074,7 +1074,7 @@ async fn a_users_inbox_is_the_threads_of_their_lines(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn a_reps_texts_follow_them_to_telnyx(pool: MySqlPool) {
     let setup = setup(&pool).await;
-    // Rita texted Dave (317-555-0104) through RingCentral before Granite Phone.
+    // Rita texted Dave (317-555-0104) through RingCentral before Granite Manager.
     sqlx::raw_sql(
         "UPDATE users SET ringcentral_extension_id = '777', ringcentral_phone_number = '3175550199'
           WHERE id = 100;

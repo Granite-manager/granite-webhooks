@@ -1,4 +1,4 @@
-//! Granite Phone: the app's routes and the web admin pages.
+//! Granite Manager: the app's routes and the web admin pages.
 //!
 //! The app's own routes (`/v1/phone/...`) take the device token via
 //! `auth::device::DeviceUser` or `auth::device::PhoneCaller`; the web admin

@@ -196,7 +196,7 @@
   {"question": "why dont i have a phone button", "sections": ["phone-calls"]},
   {"question": "phone not ringing", "sections": ["phone-calls"]},
   {"question": "who does each phone number ring", "sections": ["admin-phone-telnyx"], "role": "admin"},
-  {"question": "how to set up the granite phone app", "sections": ["admin-phone-telnyx"], "role": "admin"},
+  {"question": "how to set up the Granite Manager app", "sections": ["admin-phone-telnyx"], "role": "admin"},
   {"question": "how to connect a company to telnyx", "sections": ["admin-phone-telnyx", "superuser-companies"], "role": "superuser"},
   {"question": "10dlc registration pending what does it mean", "sections": ["admin-phone-telnyx"], "role": "admin"},
   {"question": "how to set up cloudtalk for a user", "sections": ["admin-company-integrations-texting-lines", "admin-company-settings-users"], "role": "admin"},

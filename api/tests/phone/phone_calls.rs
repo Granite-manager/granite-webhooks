@@ -1,4 +1,4 @@
-//! Granite Phone calls: Recents and its rules, one call, seen and hidden,
+//! Granite Manager calls: Recents and its rules, one call, seen and hidden,
 //! stats, recordings, notes, Call via my cell, test calls, declines and 911
 //! alerts (`routes/phone/calls.rs`, `support.rs`).
 //!
@@ -1173,7 +1173,7 @@ async fn dialing_911_alerts_the_companys_admins(pool: MySqlPool) {
     let alert = |user: i32| {
         (
             user,
-            "Rita Rep dialed 911 on Granite Phone".to_string(),
+            "Rita Rep dialed 911 on Granite Manager".to_string(),
             Some("e911_alert".to_string()),
             Some("Rita Rep".to_string()),
         )
@@ -1187,7 +1187,7 @@ async fn dialing_911_alerts_the_companys_admins(pool: MySqlPool) {
                  "apns": { "headers": { "apns-push-type": "alert", "apns-priority": "10" },
                            "payload": { "aps": {
                                "alert": { "title": "911 was dialed",
-                                          "body": "Someone in your company dialed 911. Open Granite Phone for details." },
+                                          "body": "Someone in your company dialed 911. Open Granite Manager for details." },
                                "sound": "default", "mutable-content": 1 } } } })
         ]
     );
@@ -1230,10 +1230,10 @@ async fn dialing_911_alerts_the_companys_admins(pool: MySqlPool) {
     assert_eq!(
         messages[2..],
         [
-            "Mark Manager dialed 411 on Granite Phone".to_string(),
-            "Mark Manager dialed 411 on Granite Phone".to_string(),
-            "Mark Manager dialed 112 on Granite Phone".to_string(),
-            "Mark Manager dialed 112 on Granite Phone".to_string(),
+            "Mark Manager dialed 411 on Granite Manager".to_string(),
+            "Mark Manager dialed 411 on Granite Manager".to_string(),
+            "Mark Manager dialed 112 on Granite Manager".to_string(),
+            "Mark Manager dialed 112 on Granite Manager".to_string(),
         ]
     );
     for number in ["3175550100", "999", ""] {

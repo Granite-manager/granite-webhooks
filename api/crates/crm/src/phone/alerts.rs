@@ -106,7 +106,7 @@ async fn claim(
 
 /// Tells the company's admins (but `caller`) that `who` dialed `code`.
 ///
-/// An in-app notification each ("{who} dialed {code} on Granite Phone") and
+/// An in-app notification each ("{who} dialed {code} on Granite Manager") and
 /// an `e911_alert` push, unless `source` set off this alert in the last 10
 /// minutes (see the module docs). Whether it went out.
 pub async fn alert_e911(
@@ -122,7 +122,7 @@ pub async fn alert_e911(
         return Ok(false);
     }
     let admins = company_admins(pool, company_id, caller).await?;
-    let message: String = format!("{who} dialed {code} on Granite Phone")
+    let message: String = format!("{who} dialed {code} on Granite Manager")
         .chars()
         .take(255)
         .collect();

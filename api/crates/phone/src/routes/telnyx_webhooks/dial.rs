@@ -323,7 +323,7 @@ async fn screen(state: &AppState, hook: &Hook, params: &CellParams) -> ApiResult
                 hook.base, call.id, params.user
             ),
         )
-        .child(Verb::new("Say").text(format!("Granite Phone: a call from {who}. {ask}")));
+        .child(Verb::new("Say").text(format!("Granite Manager: a call from {who}. {ask}")));
     Ok(Texml::new().verb(gather).hangup().into_response())
 }
 

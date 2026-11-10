@@ -1,4 +1,4 @@
-//! Granite Phone settings: caller IDs, settings, availability, notices,
+//! Granite Manager settings: caller IDs, settings, availability, notices,
 //! verifying my cell, and "Report a problem" (`routes/phone/settings.rs`,
 //! `cell.rs`, `support.rs`).
 //!
@@ -576,7 +576,7 @@ async fn problem_reports_reach_support_masked(pool: MySqlPool) {
         ),
         (
             &json!(["support@granite-manager.com"]),
-            &json!("[Granite Phone] Problem report from Acme Stone"),
+            &json!("[Granite Manager] Problem report from Acme Stone"),
             &json!(["rep@acme.test"]),
             &json!("noreply@granite-manager.com"),
             &json!(true)

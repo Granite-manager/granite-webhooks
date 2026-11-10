@@ -40,7 +40,7 @@ pub struct ViewRep {
     pub name: Option<String>,
     /// Work email.
     pub email: String,
-    /// Their own phone, else their Granite Phone line, else their CloudTalk
+    /// Their own phone, else their Granite Manager line, else their CloudTalk
     /// or `RingCentral` number (as the AI's emails sign).
     pub phone: Option<String>,
 }

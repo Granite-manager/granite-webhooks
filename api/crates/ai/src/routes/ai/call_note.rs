@@ -25,7 +25,7 @@ Rules:
 - Never quote, copy, or paraphrase the transcript as prose — output only the bullet lines.
 - No filler. Never include personal names."#;
 
-/// Granite Phone's AI note of a voicemail a caller left for the company
+/// Granite Manager's AI note of a voicemail a caller left for the company
 /// (`VOICEMAIL_PROMPT` is for the rep's own voicemails). Its note is tidied
 /// as a voicemail note: the `Action` bullet.
 pub const INBOUND_VOICEMAIL_PROMPT: &str = r#"Summarize this voicemail a caller left for a countertop company into a minimal CRM note.

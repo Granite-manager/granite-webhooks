@@ -1,4 +1,4 @@
-//! Phone numbers for Granite Phone: E.164, the last 10 digits customers are
+//! Phone numbers for Granite Manager: E.164, the last 10 digits customers are
 //! matched by, which numbers the app may call, and digits for text to speech.
 
 /// Area codes of NANP countries other than the US and Canada (the
@@ -72,7 +72,7 @@ pub fn last10(input: &str) -> Option<String> {
     (digits.len() >= 10).then(|| digits[digits.len() - 10..].iter().collect())
 }
 
-/// A US or Canadian number Granite Phone may call.
+/// A US or Canadian number Granite Manager may call.
 ///
 /// `+1`, an area code and an exchange that both start with 2-9 and are not
 /// N11 codes, not an area code of another NANP country (the Caribbean,

@@ -1,4 +1,4 @@
-//! Web links: how the Granite Phone app opens a CRM page (a quote to edit,
+//! Web links: how the Granite Manager app opens a CRM page (a quote to edit,
 //! say) already signed in, in the phone's browser.
 //!
 //! The app asks for a link with its device token (`POST /v1/auth/web-link`)

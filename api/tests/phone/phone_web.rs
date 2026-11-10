@@ -1,4 +1,4 @@
-//! Granite Phone in the CRM: the browser as a phone (`routes/phone/web.rs`),
+//! Granite Manager in the CRM: the browser as a phone (`routes/phone/web.rs`),
 //! registered with the web session cookie. Its login JWTs (the app's
 //! limits), presence (a connected browser rings with the app phones), its
 //! calls (approved like the app's when signed with its call key), signing

@@ -357,7 +357,7 @@ pub struct SmsFailure {
     pub unsent_s3_keys: Vec<String>,
 }
 
-/// A database error while sending a Granite Phone (Telnyx) text.
+/// A database error while sending a Granite Manager (Telnyx) text.
 impl From<sqlx::Error> for SmsFailure {
     fn from(err: sqlx::Error) -> Self {
         tracing::error!(error = %err, "Telnyx text: database error");

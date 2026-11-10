@@ -1,10 +1,10 @@
-//! Granite Phone (Telnyx) calls in the CRM's call panels: our own call log
+//! Granite Manager (Telnyx) calls in the CRM's call panels: our own call log
 //! (`phone_calls`) read with the session cookie, in the `CloudTalk` call
 //! shape the panels read (as `RingCentral`'s calls are, see
 //! [`super::ringcentral`]), plus a `Telnyx` part with what only our log has
 //! (status, line, AI note).
 //!
-//! In the CRM a Granite Phone call is `tx_<call id>` (call lists,
+//! In the CRM a Granite Manager call is `tx_<call id>` (call lists,
 //! recordings, transcripts, call coaching), so it never collides with a
 //! `CloudTalk` call id.
 //!
@@ -28,7 +28,7 @@ use lambda_http::tracing;
 use serde_json::{Value, json};
 use sqlx::{FromRow, MySql, MySqlPool, QueryBuilder};
 
-/// What a Granite Phone call id starts with in the CRM.
+/// What a Granite Manager call id starts with in the CRM.
 pub const TOKEN_PREFIX: &str = "tx_";
 
 /// The CRM's id of our call `id`: `tx_<id>`.

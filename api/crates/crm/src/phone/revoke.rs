@@ -202,7 +202,7 @@ pub async fn revoke_company_phones(
     Ok(sessions)
 }
 
-/// Device sessions whose user may no longer use Granite Phone.
+/// Device sessions whose user may no longer use Granite Manager.
 ///
 /// Sessions not signed out (of `user_id`, else anyone's) whose user is
 /// deleted, moved to another company, or no longer an employee, admin,

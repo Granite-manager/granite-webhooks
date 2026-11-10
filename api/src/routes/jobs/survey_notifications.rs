@@ -360,7 +360,7 @@ const fn provider_name(provider: SmsProvider) -> &'static str {
     match provider {
         SmsProvider::Cloudtalk => "CloudTalk",
         SmsProvider::Ringcentral => "RingCentral",
-        SmsProvider::Telnyx => "Granite Phone",
+        SmsProvider::Telnyx => "Granite Manager",
     }
 }
 

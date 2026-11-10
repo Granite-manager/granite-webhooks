@@ -1053,7 +1053,7 @@ mod local_tests {
     async fn a_rep_with_the_app_still_gets_the_assigned_lead_in_telegram(pool: MySqlPool) {
         let sales_id = positioned_user(&pool, 1, 1, 123).await;
         positioned_user(&pool, 1, 2, 789).await;
-        // The rep's phone has the Granite Phone app (it gets the push too).
+        // The rep's phone has the Granite Manager app (it gets the push too).
         let session = sqlx::query(
             "INSERT INTO device_sessions
                (user_id, company_id, token_hash, device_name, platform, app_version,

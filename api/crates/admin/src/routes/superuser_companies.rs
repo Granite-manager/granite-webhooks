@@ -693,7 +693,7 @@ pub struct ConfirmName {
 /// Delete a company
 ///
 /// Marks the company deleted. `confirm_name` must be its exact name (400
-/// otherwise). Its Granite Phone calling is switched off and its phones are
+/// otherwise). Its Granite Manager calling is switched off and its phones are
 /// signed out (Telnyx credentials and push tokens dropped).
 #[crate::openapi::path(
     delete,
@@ -727,7 +727,7 @@ pub async fn delete_company(
     if confirm.confirm_name.trim() != name {
         return Err(ApiError::BadRequest("Company name does not match".into()));
     }
-    // Granite Phone stops with the company: calling off, then its phones
+    // Granite Manager stops with the company: calling off, then its phones
     // signed out (Telnyx credentials and push tokens dropped).
     let mut tx = state.pool.begin().await?;
     sqlx::query("UPDATE company SET deleted_at = NOW() WHERE id = ?")

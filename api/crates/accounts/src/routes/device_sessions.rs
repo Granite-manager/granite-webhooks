@@ -1,4 +1,4 @@
-//! Granite Phone sign-in: the app's device sessions.
+//! Granite Manager sign-in: the app's device sessions.
 //!
 //! - `POST   /v1/auth/device-sessions`         → sign a phone in with the CRM email and password
 //! - `DELETE /v1/auth/device-sessions/current` → sign this phone out (device token)
@@ -83,7 +83,7 @@ impl TryFrom<String> for Platform {
     }
 }
 
-/// What a signed-in phone is: `android` or `ios` (the Granite Phone app),
+/// What a signed-in phone is: `android` or `ios` (the Granite Manager app),
 /// or `web` (a browser, signed in by the CRM's phone dock).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
@@ -279,7 +279,7 @@ async fn signed_in_user(pool: &MySqlPool, user_id: i32) -> sqlx::Result<Option<S
 
 /// Sign a phone in
 ///
-/// Signs the Granite Phone app in with the CRM email and password and
+/// Signs the Granite Manager app in with the CRM email and password and
 /// returns its device token (send it as the `X-Granite-Device` header) and
 /// its call key (signs the calls it places), both shown only here. Only
 /// employees, admins and superusers of a company that is not deleted may:
@@ -405,7 +405,7 @@ pub async fn sign_out(State(state): State<AppState>, device: DeviceUser) -> ApiR
 
 /// List my signed-in phones
 ///
-/// The caller's Granite Phone sign-ins that are not signed out, newest
+/// The caller's Granite Manager sign-ins that are not signed out, newest
 /// first; `current` marks the phone making the request (always false with
 /// the CRM's cookie). Revoke one with `DELETE /v1/me/devices/{id}`. Takes
 /// the device token or the session cookie (employees, admins, superusers).

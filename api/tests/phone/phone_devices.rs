@@ -1,4 +1,4 @@
-//! Granite Phone devices: registering a phone (and its Telnyx credential),
+//! Granite Manager devices: registering a phone (and its Telnyx credential),
 //! login JWTs and their limits, push tokens (`routes/phone/devices.rs`).
 //!
 //! Fixture phones use n = 1..=20 (sessions 950001+, devices 960001+).

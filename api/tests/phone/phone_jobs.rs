@@ -1,4 +1,4 @@
-//! Granite Phone's job (`routes/jobs/phone.rs`, `POST /v1/jobs/phone`):
+//! Granite Manager's job (`routes/jobs/phone.rs`, `POST /v1/jobs/phone`):
 //! signing out users who left, leftover Telnyx credentials, old callbacks,
 //! recording copy retries, the customer phone index, AI notes (AssemblyAI,
 //! then OpenAI, the CRM's clean-up, then the deal) and call points.
@@ -176,7 +176,7 @@ async fn the_job_writes_ai_notes_on_calls_and_their_deals(pool: MySqlPool) {
     .unwrap();
     assert_eq!(
         note,
-        (931_101, 100, NOTE.to_string(), "Granite Phone".to_string())
+        (931_101, 100, NOTE.to_string(), "Granite Manager".to_string())
     );
     // The deal's rep and the customer's rep hear about it.
     let told: Vec<(i32, String, String)> = sqlx::query_as(
@@ -188,8 +188,8 @@ async fn the_job_writes_ai_notes_on_calls_and_their_deals(pool: MySqlPool) {
     assert_eq!(
         told,
         [
-            (100, "note_added".into(), "Granite Phone".into()),
-            (101, "note_added".into(), "Granite Phone".into())
+            (100, "note_added".into(), "Granite Manager".into()),
+            (101, "note_added".into(), "Granite Manager".into())
         ]
     );
     // The voicemail: no deal, the note (tidied as the CRM tidies one) stays

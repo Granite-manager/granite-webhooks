@@ -360,7 +360,7 @@ struct Pending {
     transcribe_attempts: u8,
 }
 
-/// SQL: the rows this job classifies. Granite Phone's own calls
+/// SQL: the rows this job classifies. Granite Manager's own calls
 /// (`provider = 'telnyx'`) are scored by the phone job from their AI note's
 /// transcript, never here.
 const PROVIDERS: &str = "provider IN ('cloudtalk', 'ringcentral')";

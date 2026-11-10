@@ -1,4 +1,4 @@
-//! The Granite Phone app opens CRM pages already signed in.
+//! The Granite Manager app opens CRM pages already signed in.
 //!
 //! - `POST /v1/auth/web-link`         → a link to a CRM page (device token)
 //! - `GET  /v1/auth/web-link/{token}` → follow it: the session cookie, then the page
@@ -58,7 +58,7 @@ pub struct WebLink {
 
 /// Get a link that opens a CRM page signed in
 ///
-/// For the Granite Phone app: returns a link to `path` on the caller's CRM
+/// For the Granite Manager app: returns a link to `path` on the caller's CRM
 /// host that signs the phone's browser in as the caller on the way. Open it
 /// at once (the API's base URL + `link_path`): it works for `expires_in`
 /// seconds, and only while this phone stays signed in. Device token only.

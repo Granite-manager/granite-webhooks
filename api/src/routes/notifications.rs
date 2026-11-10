@@ -2,7 +2,7 @@
 //!
 //! - `GET /v1/notifications` → unread mail, activity and billing
 //!   notifications (911 alerts included), missed `CloudTalk` and
-//!   `RingCentral` calls, and unseen missed Granite Phone calls, voicemails
+//!   `RingCentral` calls, and unseen missed Granite Manager calls, voicemails
 //!   and AI messages, newest first
 //! - `POST /v1/notifications/done` → dismiss notifications, or all of them
 //! - `GET /v1/notifications/{id}` → one activity notification (the phone
@@ -89,7 +89,7 @@ pub enum NotificationKind {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct NotificationRef {
     /// `notif-<id>` for activities, `billing-<id>` for billing, the thread
-    /// id for email, `telnyx-call-<id>` for a Granite Phone call (marked
+    /// id for email, `telnyx-call-<id>` for a Granite Manager call (marked
     /// seen, as the phone app's Recents shows it). `CloudTalk` and
     /// `RingCentral` calls are dismissed in the browser only.
     pub id: String,
@@ -100,7 +100,7 @@ pub struct NotificationRef {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct DoneInput {
     /// Dismiss everything: activity and billing notifications, every
-    /// unread incoming email, and the Granite Phone calls the bell lists
+    /// unread incoming email, and the Granite Manager calls the bell lists
     /// (marked seen).
     #[serde(default)]
     pub clear_all: bool,
@@ -128,14 +128,14 @@ fn numbered(items: &[NotificationRef], kind: NotificationKind, prefix: &str) -> 
         .collect()
 }
 
-/// The id prefix of a Granite Phone call in the bell.
+/// The id prefix of a Granite Manager call in the bell.
 const TELNYX_CALL_PREFIX: &str = "telnyx-call-";
-/// How far back the bell lists Granite Phone calls, in days.
+/// How far back the bell lists Granite Manager calls, in days.
 const TELNYX_CALL_DAYS: i64 = 3;
-/// Most Granite Phone calls the bell lists.
+/// Most Granite Manager calls the bell lists.
 const TELNYX_CALLS_LISTED: i64 = 30;
 
-/// The Granite Phone calls among `items` (`telnyx-call-<id>`).
+/// The Granite Manager calls among `items` (`telnyx-call-<id>`).
 fn telnyx_call_ids(items: &[NotificationRef]) -> Vec<i64> {
     items
         .iter()
@@ -145,7 +145,7 @@ fn telnyx_call_ids(items: &[NotificationRef]) -> Vec<i64> {
         .collect()
 }
 
-/// Pushes ` WHERE` the Granite Phone calls the bell lists for `user`
+/// Pushes ` WHERE` the Granite Manager calls the bell lists for `user`
 /// (`pc` the call, `v` its `phone_call_views` row of the user): incoming
 /// calls of the last 3 days nobody answered (missed, voicemail, AI message),
 /// not seen yet, that are theirs by the Recents rule (their direct lines,
@@ -210,9 +210,9 @@ fn push_incoming(builder: &mut QueryBuilder<MySql>, user: &SessionUser) {
 /// Dismiss notifications
 ///
 /// Marks activity and billing notifications done, the listed email threads
-/// read and the listed Granite Phone calls seen (for the caller only, as in
+/// read and the listed Granite Manager calls seen (for the caller only, as in
 /// the phone app). With `clear_all`, dismisses every one of them, marks all
-/// unread incoming mail read and the bell's Granite Phone calls seen.
+/// unread incoming mail read and the bell's Granite Manager calls seen.
 #[crate::openapi::path(
     post,
     path = "/v1/notifications/done",
@@ -345,7 +345,7 @@ const TELEGRAM_SENT_MARKER: &str = "__telegram_sent__";
 #[derive(Debug, Serialize, ToSchema)]
 pub struct NotificationItem {
     /// `notif-<id>`, `billing-<id>`, `call-<id>` (`CloudTalk`), `rc-call-<id>`
-    /// (`RingCentral`), `telnyx-call-<id>` (Granite Phone), or the email
+    /// (`RingCentral`), `telnyx-call-<id>` (Granite Manager), or the email
     /// thread id.
     pub id: String,
     /// Usually the customer's name.
@@ -700,7 +700,7 @@ struct PhoneCallRow {
     started_at: DateTime<Utc>,
 }
 
-/// The Granite Phone calls the bell lists for `user` ([`push_bell_calls`]),
+/// The Granite Manager calls the bell lists for `user` ([`push_bell_calls`]),
 /// newest first: each opens its deal, else its customer, else the
 /// customers page.
 async fn telnyx_calls(
@@ -923,7 +923,7 @@ fn missed_call_item(call: &crate::routes::users::call_activity::CallActivity) ->
 /// registrations; `tendlc_status` for the company's admins and Managers,
 /// opening `/admin/phone`), number port news (`phone_port`, for the
 /// company's admins, opening `/admin/phone`), open billing notices,
-/// missed `CloudTalk` and `RingCentral` calls, and Granite Phone calls of
+/// missed `CloudTalk` and `RingCentral` calls, and Granite Manager calls of
 /// the last 3 days that nobody answered and the caller has not seen (missed
 /// calls, voicemails and AI messages of their direct lines and of the lines
 /// that ring them; `telnyx-call-<id>`, `type_title` names the line), newest

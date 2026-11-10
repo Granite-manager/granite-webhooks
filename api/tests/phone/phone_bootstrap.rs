@@ -1,4 +1,4 @@
-//! Granite Phone start-up: `GET /v1/phone/bootstrap`
+//! Granite Manager start-up: `GET /v1/phone/bootstrap`
 //! (`routes/phone/bootstrap.rs`).
 //!
 //! Fixture phones use n = 61..=80; numbers 9730+; calls 980200+.

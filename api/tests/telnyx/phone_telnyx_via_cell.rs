@@ -354,7 +354,7 @@ async fn test_calls_say_hello_and_stay_out_of_recents(pool: MySqlPool) {
     assert_eq!(
         hello,
         texml_doc(
-            "<Say>This is a Granite Phone test call. Your phone can take calls. Goodbye.</Say><Hangup/>"
+            "<Say>This is a Granite Manager test call. Your phone can take calls. Goodbye.</Say><Hangup/>"
         )
     );
     assert_eq!(
@@ -434,12 +434,12 @@ async fn cell_codes_are_read_to_the_cell_being_verified(pool: MySqlPool) {
     assert_eq!(
         read,
         texml_doc(&format!(
-            "<Say>Your Granite Phone code is {spoken}.</Say><Pause length=\"1\"/>\
+            "<Say>Your Granite Manager code is {spoken}.</Say><Pause length=\"1\"/>\
              <Say>Again, your code is {spoken}.</Say><Hangup/>"
         ))
     );
     let none = texml_doc(
-        "<Say>This code is no longer valid. Ask for a new one in the Granite Phone app. Goodbye.</Say><Hangup/>",
+        "<Say>This code is no longer valid. Ask for a new one in the Granite Manager app. Goodbye.</Say><Hangup/>",
     );
     // Not the cell being verified (Rita's verified cell is another one), or
     // no number named at all.

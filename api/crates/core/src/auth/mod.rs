@@ -10,7 +10,7 @@
 //! | `CompanyManager` | (`can_manage_billing`)    | anyone holding Manager in the company (superusers too only then) |
 //! | `InstallerUser` | `getInstallerUser` | an installer of the company |
 //! | `ShopOrEmployeeUser` | `getShopOrEmployeeUser` | an employee, or a shop manager / worker of the company |
-//! | `device::DeviceUser` | (Granite Phone app)  | a live `X-Granite-Device` token of an employee, admin or superuser |
+//! | `device::DeviceUser` | (Granite Manager app)  | a live `X-Granite-Device` token of an employee, admin or superuser |
 //! | `device::PhoneCaller` | (app or CRM)        | the device token when sent, else `EmployeeUser`'s cookie rules |
 //!
 //! *`CurrentUser` also applies the super-admin elevation and company switch, so
@@ -133,7 +133,7 @@ async fn check_sections(
     skills::check(&state.pool, user, &positions, &parts.method, path).await
 }
 
-/// The CRM routes the Granite Phone app also calls with its device token.
+/// The CRM routes the Granite Manager app also calls with its device token.
 ///
 /// These prefixes and everything under them. `/v1/me/schedule` is the
 /// schedule-only app of installers and template makers (their web portal);

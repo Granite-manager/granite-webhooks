@@ -401,7 +401,7 @@ async fn nobody_answering_rings_the_cells_then_the_assistant(pool: MySqlPool) {
         screen,
         texml_doc(&format!(
             "<Gather numDigits=\"1\" timeout=\"8\" action=\"{base}/cell-screen-result?call={id}&amp;user=100\">\
-             <Say>Granite Phone: a call from Alice Lead. Press 1 to answer.</Say></Gather><Hangup/>"
+             <Say>Granite Manager: a call from Alice Lead. Press 1 to answer.</Say></Gather><Hangup/>"
         ))
     );
     // A 1 from a leg that is not Rita's cell is no answer of hers.

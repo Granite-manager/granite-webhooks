@@ -7,7 +7,7 @@
 //! 1. queues the rep's calls, texts and emails of the last
 //!    [`LOOKBACK_DAYS`] days it has not read (`ai_promise_scans`): recorded
 //!    calls of [`MIN_CALL_SECONDS`] seconds or more with a customer's number
-//!    (`RingCentral`, `CloudTalk` and Granite Phone), and the texts and
+//!    (`RingCentral`, `CloudTalk` and Granite Manager), and the texts and
 //!    emails the rep wrote themselves (not automated ones);
 //! 2. claims up to [`SCANS_PER_RUN`] of them, oldest first (a claim lasts
 //!    [`CLAIM_TTL_MINUTES`] minutes, [`MAX_ATTEMPTS`] attempts in all), so
@@ -1190,7 +1190,7 @@ pub async fn waiting_customers(
     // Copies of a rep's texts on their new provider (`moves`) are not new.
     let original = not_a_copy("");
     for table in SMS_TABLES {
-        // Granite Phone texts carry no agent: a thread is its line's.
+        // Granite Manager texts carry no agent: a thread is its line's.
         let to_rep = if table == "telnyx_sms" {
             String::new()
         } else {
@@ -1308,7 +1308,7 @@ async fn queue(pool: &MySqlPool) -> sqlx::Result<u64> {
     .bind(MIN_CALL_SECONDS)
     .fetch_all(pool)
     .await?;
-    // Granite Phone: once its own job is not transcribing the call, whose
+    // Granite Manager: once its own job is not transcribing the call, whose
     // transcript is then reused.
     found.extend(
         sqlx::query_as::<_, Candidate>(
@@ -1872,7 +1872,7 @@ async fn customer_of(pool: &MySqlPool, scan: &Scan) -> sqlx::Result<Option<i32>>
 }
 
 /// The customer (id, name) with this phone's last 10 digits: through the
-/// phone index Granite Phone keeps (`customer_phone_index`), else, for a
+/// phone index Granite Manager keeps (`customer_phone_index`), else, for a
 /// company it has not indexed yet, the customer records.
 pub async fn customer_by_digits(
     pool: &MySqlPool,

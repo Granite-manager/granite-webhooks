@@ -91,7 +91,7 @@ pub struct Coworker {
     pub e164: Option<String>,
     /// That number's label; null when empty.
     pub label: Option<String>,
-    /// Every number they have, first the Granite Phone direct lines, then
+    /// Every number they have, first the Granite Manager direct lines, then
     /// RingCentral, CloudTalk and their own phone; no number twice.
     pub phones: Vec<CoworkerPhone>,
 }

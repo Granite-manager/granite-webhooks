@@ -1,4 +1,4 @@
-//! Our own pushes to the Granite Phone app: FCM HTTP v1 data messages that
+//! Our own pushes to the Granite Manager app: FCM HTTP v1 data messages that
 //! carry ids only (missed call, voicemail, AI message, revoked, 911 alert).
 //! Telnyx sends the incoming-call pushes itself. On Android they go at the
 //! priority asked for, kept 60 s. An iPhone can't run code for a background
@@ -42,7 +42,7 @@ fn apns(data: &BTreeMap<String, String>) -> Value {
         Some("ai_message") => ("Missed call. AI took a message.", None),
         Some("e911_alert") => (
             "911 was dialed",
-            Some("Someone in your company dialed 911. Open Granite Phone for details.".to_string()),
+            Some("Someone in your company dialed 911. Open Granite Manager for details.".to_string()),
         ),
         Some("text") => ("New text", None),
         Some("email") => ("New email", None),
@@ -665,7 +665,7 @@ zVwmY+zvp0zIX68RsO90kuxb
         );
         assert_eq!(
             alert(&with("e911_alert", &[]))["body"],
-            "Someone in your company dialed 911. Open Granite Phone for details."
+            "Someone in your company dialed 911. Open Granite Manager for details."
         );
         // As Android replaces them: a lead's "Lead assigned" takes the place
         // of its new-lead alert, and the maintenance checks are one alert.

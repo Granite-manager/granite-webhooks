@@ -1,4 +1,4 @@
-//! Granite Phone's admin pages (`routes/phone/admin.rs`,
+//! Granite Manager's admin pages (`routes/phone/admin.rs`,
 //! `routes/phone/superuser.rs`): the company's numbers (list, change,
 //! import from Telnyx), its signed-in phones (list, sign out), and a
 //! company's Telnyx setup (superusers). Changes land in `phone_audit_log`.

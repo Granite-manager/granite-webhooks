@@ -296,7 +296,7 @@ mod local_tests {
         assert_eq!(manager_chat_ids, vec![456, 789]);
     }
 
-    /// Signs `user_id` in to the Granite Phone app in `company_id`, with a push token.
+    /// Signs `user_id` in to the Granite Manager app in `company_id`, with a push token.
     async fn give_app(pool: &MySqlPool, company_id: i32, user_id: i32) {
         let session = sqlx::query(
             "INSERT INTO device_sessions

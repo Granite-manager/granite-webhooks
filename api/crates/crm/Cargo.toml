@@ -2,7 +2,7 @@
 name = "api-crm"
 version = "0.1.0"
 edition = "2024"
-description = "Customers, deals and the conversations with them: texts, emails, calls, Granite Phone's shared logic."
+description = "Customers, deals and the conversations with them: texts, emails, calls, Granite Manager's shared logic."
 
 [lib]
 # No doc tests; rustdoc would still compile the whole crate looking for them.

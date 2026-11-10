@@ -40,7 +40,7 @@ pub struct Transcript {
 }
 
 impl Transcript {
-    /// The transcript as Granite Phone keeps it (`phone_calls.transcript`)
+    /// The transcript as Granite Manager keeps it (`phone_calls.transcript`)
     /// and writes its AI notes from: the speakers' turns, one a line
     /// (`Speaker A: ...`), else the plain text.
     pub fn labeled_text(&self) -> String {

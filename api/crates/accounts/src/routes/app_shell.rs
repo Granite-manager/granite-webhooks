@@ -92,7 +92,7 @@ pub struct AppShell {
     pub has_cloudtalk_api: bool,
     /// The company has RingCentral.
     pub has_ringcentral_api: bool,
-    /// The company has Granite Phone (Telnyx) switched on.
+    /// The company has Granite Manager (Telnyx) switched on.
     pub has_telnyx_api: bool,
     /// The company texts through Telnyx (its messaging profile is set):
     /// users with a `telnyx_line` text from it (`/v1/sms/telnyx/...`).
@@ -166,7 +166,7 @@ fn portal(user: &SessionUser, super_admin: bool, positions: &[i32]) -> Option<(S
 /// The portal a position locks `user` into ([`AppShell::portal`]).
 ///
 /// From all their position rows: `installer`, `check-in`, `marketing`,
-/// `shop_worker` or `template`; `None` for everyone else. The Granite Phone
+/// `shop_worker` or `template`; `None` for everyone else. The Granite Manager
 /// app shows only the schedule for `installer` and `template`.
 pub fn user_portal(user: &SessionUser, rows: &[UserPositionRow]) -> Option<String> {
     let all: Vec<i32> = rows.iter().map(|row| row.position_id).collect();

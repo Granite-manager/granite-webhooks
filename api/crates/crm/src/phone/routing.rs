@@ -149,7 +149,7 @@ pub fn open(config: &CompanyConfig, now: DateTime<Utc>) -> bool {
         .is_none_or(|hours| hours.contains(now))
 }
 
-/// SQL condition: the user `u` may use Granite Phone (an employee, admin or
+/// SQL condition: the user `u` may use Granite Manager (an employee, admin or
 /// superuser, or a super admin by position).
 pub const PHONE_USER: &str = "(COALESCE(u.is_employee, 0) <> 0 OR COALESCE(u.is_admin, 0) <> 0
       OR COALESCE(u.is_superuser, 0) <> 0
