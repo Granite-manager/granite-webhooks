@@ -406,6 +406,7 @@ fn type_title(kind: &str) -> Option<&'static str> {
         "project_task_assigned" => "Gave You a Task",
         "project_task_reminder" => "Task Due",
         "project_task_done" => "Finished Your Task",
+        "project_step_done" => "Finished a Step",
         "estimate_appointment_reminder" => "In-Home Estimate Reminder",
         "installation_appointment_reminder" => "Installation Reminder",
         "template_appointment_reminder" => "Template Appointment Reminder",

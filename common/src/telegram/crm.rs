@@ -27,6 +27,7 @@ pub fn notification_type_title(notification_type: &str) -> &'static str {
         "project_task_assigned" => "Gave You a Task",
         "project_task_reminder" => "Task Due",
         "project_task_done" => "Finished Your Task",
+        "project_step_done" => "Finished a Step",
         "note_added" => "Added a Note",
         "note_edited" => "Edited a Note",
         "note_deleted" => "Deleted a Note",

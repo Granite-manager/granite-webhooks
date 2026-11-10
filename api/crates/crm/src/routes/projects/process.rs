@@ -4,20 +4,27 @@
 
 use super::access::{Stage, Viewer};
 use super::schemas::{
-    DoneStep, ProcessStep, ProcessStepInput, ProcessStepName, ProcessStepOrder, StepDone,
+    DoneStep, ProcessStep, ProcessStepInput, ProcessStepName, ProcessStepNotify, ProcessStepOrder,
+    StepDone,
 };
 use super::service::visible_project;
+use crate::auth::session::SessionUser;
 use crate::auth::{AdminUser, EmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
+use crate::phone::crm_push::push_notification_logged;
 use crate::routes::created::CreatedId;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use lambda_http::tracing;
 use sqlx::{MySql, MySqlConnection, QueryBuilder};
 
 const NAME_MAX: usize = 120;
+
+/// The bell: someone checked off a step you are told about.
+pub const STEP_DONE: &str = "project_step_done";
 
 /// The name to store, or why it can't be.
 fn clean_name(name: &str) -> ApiResult<&str> {
@@ -38,14 +45,29 @@ pub async fn company_steps(
     conn: &mut MySqlConnection,
     company_id: i32,
 ) -> sqlx::Result<Vec<ProcessStep>> {
-    sqlx::query_as(
+    let mut steps: Vec<ProcessStep> = sqlx::query_as(
         "SELECT id, stage_code, name, position FROM project_process_steps
           WHERE company_id = ?
           ORDER BY FIELD(stage_code, 'new', 'templated', 'fabrication', 'installed'), position, id",
     )
     .bind(company_id)
     .fetch_all(&mut *conn)
-    .await
+    .await?;
+    let told: Vec<(i32, i32)> = sqlx::query_as(
+        "SELECT n.step_id, n.user_id FROM project_process_step_notify n
+           JOIN project_process_steps s ON s.id = n.step_id AND s.company_id = ?
+           JOIN users u ON u.id = n.user_id AND u.is_deleted = 0
+          ORDER BY u.name, u.id",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (step_id, user_id) in told {
+        if let Some(step) = steps.iter_mut().find(|step| step.id == step_id) {
+            step.notify.push(user_id);
+        }
+    }
+    Ok(steps)
 }
 
 /// The steps these projects have done.
@@ -218,6 +240,114 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Set who is told when a step is checked off
+///
+/// Replaces the list. Each person gets a bell notification and a phone push
+/// when someone checks the step off a project (not when they do it themselves).
+#[crate::openapi::path(
+    put,
+    path = "/v1/projects/process-steps/{step_id}/notify",
+    operation_id = "set_project_process_step_notify",
+    tag = "projects",
+    params(("step_id" = i32, Path, description = "Step id")),
+    request_body = ProcessStepNotify,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "Someone outside the company", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such step in the company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_notify(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(step_id): Path<i32>,
+    JsonBody(input): JsonBody<ProcessStepNotify>,
+) -> ApiResult<StatusCode> {
+    let mut ids = input.user_ids;
+    ids.sort_unstable();
+    ids.dedup();
+    let mut conn = state.pool.acquire().await?;
+    require_step(&mut conn, user.company_id, step_id).await?;
+    if !ids.is_empty() {
+        let mut sql = QueryBuilder::<MySql>::new(
+            "SELECT COUNT(*) FROM users WHERE is_deleted = 0 AND company_id = ",
+        );
+        sql.push_bind(user.company_id);
+        crate::sql::push_in(&mut sql, "id", &ids);
+        let found: i64 = sql.build_query_scalar().fetch_one(&mut *conn).await?;
+        if usize::try_from(found).unwrap_or_default() != ids.len() {
+            return Err(ApiError::BadRequest("Pick people from your company".into()));
+        }
+    }
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("DELETE FROM project_process_step_notify WHERE step_id = ?")
+        .bind(step_id)
+        .execute(&mut *tx)
+        .await?;
+    for id in &ids {
+        sqlx::query("INSERT INTO project_process_step_notify (step_id, user_id) VALUES (?, ?)")
+            .bind(step_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Tells the step's people (not the one who checked it) on the bell and
+/// their phones. Logged, never returned: the check-off is saved.
+async fn tell_step_people(state: &AppState, user: &SessionUser, project_id: i32, step_id: i32) {
+    let result: sqlx::Result<()> = async {
+        let people: Vec<i32> = sqlx::query_scalar(
+            "SELECT n.user_id FROM project_process_step_notify n
+               JOIN users u ON u.id = n.user_id AND u.is_deleted = 0
+              WHERE n.step_id = ? AND n.user_id <> ?",
+        )
+        .bind(step_id)
+        .bind(user.id)
+        .fetch_all(&state.pool)
+        .await?;
+        let actor = user
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| name.chars().take(255).collect::<String>());
+        for person in people {
+            let id = sqlx::query(
+                "INSERT INTO notifications
+                    (user_id, project_id, message, notification_type, actor_name, due_at)
+                 SELECT ?, ?, LEFT(name, 255), ?, ?, NOW()
+                   FROM project_process_steps WHERE id = ?",
+            )
+            .bind(person)
+            .bind(project_id)
+            .bind(STEP_DONE)
+            .bind(&actor)
+            .bind(step_id)
+            .execute(&state.pool)
+            .await?
+            .last_insert_id();
+            push_notification_logged(state, i64::try_from(id).unwrap_or_default()).await;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        tracing::error!(
+            ?error,
+            project_id,
+            step_id,
+            "project step notification failed"
+        );
+    }
+}
+
 /// Save a stage's order of steps
 #[crate::openapi::path(
     post,
@@ -294,7 +424,7 @@ pub async fn set_done(
     }
     require_step(&mut conn, viewer.company_id, step_id).await?;
     if input.done {
-        sqlx::query(
+        let added = sqlx::query(
             "INSERT IGNORE INTO project_process_steps_done (project_id, step_id, done_by)
              VALUES (?, ?, ?)",
         )
@@ -302,7 +432,13 @@ pub async fn set_done(
         .bind(step_id)
         .bind(user.id)
         .execute(&mut *conn)
-        .await?;
+        .await?
+        .rows_affected();
+        drop(conn);
+        // Already done (a second click) tells nobody again.
+        if added > 0 {
+            tell_step_people(&state, &user, id, step_id).await;
+        }
     } else {
         sqlx::query("DELETE FROM project_process_steps_done WHERE project_id = ? AND step_id = ?")
             .bind(id)

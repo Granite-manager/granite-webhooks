@@ -710,3 +710,67 @@ async fn admins_set_up_process_steps_and_projects_check_them_off(pool: MySqlPool
         .unwrap();
     assert_eq!(left, 0);
 }
+
+#[test_db::test(seed)]
+async fn checking_a_step_off_tells_its_people(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let project = projects_of_8002(&pool).await[0];
+    let step = add_step(&pool, sessions::ADMIN, "new", "Send the file").await;
+    let step = step.json::<Value>()["id"].as_i64().unwrap();
+    let notify = async |session: &str, people: Value| {
+        server(pool.clone())
+            .put(&format!("/v1/projects/process-steps/{step}/notify"))
+            .with_session(session)
+            .json(&json!({ "user_ids": people }))
+            .await
+    };
+    notify(sessions::REP, json!([100]))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    notify(sessions::ADMIN, json!([100, 999_999]))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    notify(sessions::ADMIN, json!([101, 100, 102, 100]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let seen = board(&pool, sessions::ADMIN).await;
+    let mut people: Vec<i64> = seen["process_steps"][0]["notify"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_i64().unwrap())
+        .collect();
+    people.sort_unstable();
+    assert_eq!(people, vec![100, 101, 102]);
+
+    // Ada (102) checks it off: Rita and Mark hear, Ada doesn't; twice tells once.
+    for _ in 0..2 {
+        server(pool.clone())
+            .put(&format!("/v1/projects/{project}/steps/{step}"))
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "done": true }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    }
+    let told: Vec<(i32, Option<i32>, String)> = sqlx::query_as(
+        "SELECT user_id, project_id, message FROM notifications
+          WHERE notification_type = 'project_step_done' ORDER BY user_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        told,
+        vec![
+            (100, Some(project), "Send the file".to_string()),
+            (101, Some(project), "Send the file".to_string()),
+        ]
+    );
+
+    notify(sessions::ADMIN, json!([]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let seen = board(&pool, sessions::ADMIN).await;
+    assert_eq!(seen["process_steps"][0]["notify"], json!([]));
+}

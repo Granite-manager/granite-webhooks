@@ -166,6 +166,9 @@ pub struct ProcessStep {
     pub name: String,
     /// Its place in the stage.
     pub position: i32,
+    /// Who is told when a project checks it off (user ids).
+    #[sqlx(skip)]
+    pub notify: Vec<i32>,
 }
 
 /// A process step a project has done.
@@ -195,6 +198,13 @@ pub struct ProcessStepInput {
 pub struct ProcessStepName {
     /// What to do.
     pub name: String,
+}
+
+/// Who to tell when a project checks a step off.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ProcessStepNotify {
+    /// Users of the company; empty tells nobody.
+    pub user_ids: Vec<i32>,
 }
 
 /// A stage's steps, in their new order.
