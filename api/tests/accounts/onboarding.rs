@@ -535,6 +535,7 @@ async fn data_checks_read_the_company_and_respect_the_fence(pool: MySqlPool) {
         "quote_cutout_added",
         "automation_set_up",
         "schedule_texts_saved",
+        "schedule_prefs_set",
     ];
     let rep = Actor {
         user_id: 100,

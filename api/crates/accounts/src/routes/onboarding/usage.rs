@@ -66,7 +66,7 @@ impl UsageCheck {
 }
 
 /// Every check, by id.
-static CHECKS: [UsageCheck; 20] = [
+static CHECKS: [UsageCheck; 21] = [
     // A quote emailed to a customer. Quotes are scoped by their company.
     UsageCheck {
         id: "quote_emailed",
@@ -301,6 +301,23 @@ static CHECKS: [UsageCheck; 20] = [
                SELECT f.created_by AS user_id, f.created_at AS ts
                  FROM schedule_notification_flows f
                 WHERE f.company_id = {c} AND f.created_by IS NOT NULL [[f.created_by]]",
+    },
+    // The user's own schedule settings: week start, 12/24-hour times, maps app,
+    // or the question the Schedule used to ask. Only that question has a date;
+    // for the others the user's own creation date stands in. The app reports
+    // later changes.
+    UsageCheck {
+        id: "schedule_prefs_set",
+        kind: Kind::Both,
+        rows: "SELECT u.id AS user_id,
+                      COALESCE(u.schedule_prefs_asked_at, u.created_date) AS ts
+                 FROM users u
+                WHERE u.company_id = {c}
+                  AND (u.schedule_prefs_asked_at IS NOT NULL
+                       OR u.schedule_week_starts_monday IS NOT NULL
+                       OR u.schedule_time_24h <> 0
+                       OR u.maps_app IS NOT NULL)
+                  [[u.id]]",
     },
     // An exact length typed and committed in the quote drawing's dimension
     // dialog.
@@ -567,7 +584,7 @@ mod tests {
             assert!(!check(id).unwrap().reads_data(), "{id}");
         }
         // Read from the tables, and the app may report it too.
-        for id in ["schedule_texts_saved", "quote_automation_changed"] {
+        for id in ["schedule_texts_saved", "quote_automation_changed", "schedule_prefs_set"] {
             let both = check(id).unwrap();
             assert_eq!(both.kind, Kind::Both, "{id}");
             assert!(is_event_check(both.id) && both.reads_data(), "{id}");
