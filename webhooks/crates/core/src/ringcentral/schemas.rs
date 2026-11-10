@@ -317,31 +317,7 @@ struct MessageStoreChange {
     updated_count: i64,
 }
 
-/// The `RingCentral` id of a message-store record it could not deliver, and
-/// the token the CRM shows for it. Accepted texts are only rejected later, so
-/// this is the one place a spam block can be seen.
-pub fn undelivered_sms(record: &serde_json::Value) -> Option<(i64, &'static str)> {
-    let status = record["messageStatus"].as_str()?;
-    if !matches!(status, "DeliveryFailed" | "SendingFailed") {
-        return None;
-    }
-    let code = record["deliveryErrorCode"].as_str().unwrap_or_default();
-    // The carrier gave no verdict; the text may well have arrived.
-    if matches!(code, "SMS-CAR-104" | "SMS-CAR-199") {
-        return None;
-    }
-    let id = match &record["id"] {
-        serde_json::Value::Number(n) => n.as_i64(),
-        serde_json::Value::String(s) => s.parse().ok(),
-        _ => None,
-    }?;
-    let token = match code {
-        "SMS-RC-430" | "SMS-UP-430" | "SMS-CAR-430" => "ringcentral_spam",
-        "SMS-UP-431" => "ringcentral_number_flagged_spam",
-        _ => "ringcentral_undelivered",
-    };
-    Some((id, token))
-}
+pub use common::telephony::ringcentral::undelivered_sms;
 
 #[derive(Deserialize, Debug)]
 struct NotificationAttachment {

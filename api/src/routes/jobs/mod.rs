@@ -22,6 +22,8 @@
 //!   registration marked ready
 //! - `POST /v1/jobs/promises` → what reps promised customers on calls, texts
 //!   and emails, with the message that keeps each
+//! - `POST /v1/jobs/ringcentral-delivery` → (run by hand) texts `RingCentral`
+//!   did not deliver, marked failed
 //!
 //! Replaces the Remix `api.*.process` cron routes.
 
@@ -33,6 +35,7 @@ pub mod maintenance_reminders;
 pub mod phone;
 pub mod posthog_autofix;
 pub mod promises;
+pub mod ringcentral_delivery;
 pub mod signature_reminders;
 pub mod sms_followups;
 pub mod supplier_files;
@@ -57,4 +60,5 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(posthog_autofix::run))
         .routes(routes!(tendlc_checks::run))
         .routes(routes!(promises::run))
+        .routes(routes!(ringcentral_delivery::run))
 }

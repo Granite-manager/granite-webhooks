@@ -466,6 +466,142 @@ pub fn mms_filename(filename: &str, content_type: &str) -> String {
     format!("{}.{ext}", if base.is_empty() { "file" } else { base })
 }
 
+/// The `RingCentral` id of a message-store record it could not deliver, and
+/// the token the CRM shows for it. Accepted texts are only rejected later, so
+/// the message store is the one place a spam block can be seen.
+pub fn undelivered_sms(record: &Value) -> Option<(i64, &'static str)> {
+    let status = record["messageStatus"].as_str()?;
+    if !matches!(status, "DeliveryFailed" | "SendingFailed") {
+        return None;
+    }
+    let code = record["deliveryErrorCode"].as_str().unwrap_or_default();
+    // The carrier gave no verdict; the text may well have arrived.
+    if matches!(code, "SMS-CAR-104" | "SMS-CAR-199") {
+        return None;
+    }
+    let id = coerce_id(&record["id"])?;
+    let token = match code {
+        "SMS-RC-430" | "SMS-UP-430" | "SMS-CAR-430" => "ringcentral_spam",
+        "SMS-UP-431" => "ringcentral_number_flagged_spam",
+        _ => "ringcentral_undelivered",
+    };
+    Some((id, token))
+}
+
+/// Texts `RingCentral` reports per page of the message store.
+const MESSAGE_STORE_PAGE: u32 = 100;
+
+/// One page (1-based) of the texts `extension` sent from `date_from` on
+/// (and before `date_to`, when given; both ISO 8601), and whether another
+/// page follows.
+pub async fn sent_texts_page(
+    pool: &MySqlPool,
+    client: &Client,
+    company_id: i32,
+    extension: &str,
+    date_from: &str,
+    date_to: Option<&str>,
+    page: u32,
+) -> Result<(Vec<Value>, bool), ApiError> {
+    let mut path = format!(
+        "account/~/extension/{extension}/message-store?messageType=SMS&direction=Outbound&dateFrom={date_from}&perPage={MESSAGE_STORE_PAGE}&page={page}"
+    );
+    if let Some(date_to) = date_to {
+        path.push_str("&dateTo=");
+        path.push_str(date_to);
+    }
+    let reply = request(
+        pool,
+        client,
+        company_id,
+        Method::GET,
+        &path,
+        &Body::Empty,
+        None,
+    )
+    .await?;
+    let records = reply["records"].as_array().cloned().unwrap_or_default();
+    let more =
+        reply["navigation"]["nextPage"].is_object() || records.len() >= MESSAGE_STORE_PAGE as usize;
+    Ok((records, more))
+}
+
+/// Marks the CRM's copy of a text `RingCentral` did not deliver (see
+/// [`undelivered_sms`]) as failed with the reason. Found by its `RingCentral`
+/// id; a text saved before ids were kept is found by the rep's extension,
+/// recipient, words and send time. True when a row changed.
+pub async fn mark_undelivered(
+    pool: &MySqlPool,
+    company_id: i32,
+    extension: &str,
+    record: &Value,
+) -> Result<bool, sqlx::Error> {
+    let Some((ringcentral_id, reason)) = undelivered_sms(record) else {
+        return Ok(false);
+    };
+    let by_id = sqlx::query(
+        "UPDATE ringcentral_sms SET status = 'failed', error_message = ?
+          WHERE company_id = ? AND ringcentral_id = ?
+            AND direction = 'outbound' AND status = 'sent'",
+    )
+    .bind(reason)
+    .bind(company_id)
+    .bind(ringcentral_id)
+    .execute(pool)
+    .await?;
+    if by_id.rows_affected() > 0 {
+        return Ok(true);
+    }
+    let known: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM ringcentral_sms WHERE company_id = ? AND ringcentral_id = ?)",
+    )
+    .bind(company_id)
+    .bind(ringcentral_id)
+    .fetch_one(pool)
+    .await?;
+    if known {
+        return Ok(false);
+    }
+    let recipient: String = record["to"][0]["phoneNumber"]
+        .as_str()
+        .unwrap_or_default()
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect();
+    let recipient = &recipient[recipient.len().saturating_sub(10)..];
+    let text = record["subject"].as_str().unwrap_or_default().trim();
+    let sent_at = record["creationTime"]
+        .as_str()
+        .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+        .map(|time| time.naive_utc());
+    let Some(sent_at) = sent_at else {
+        return Ok(false);
+    };
+    if recipient.len() < 10 || text.is_empty() {
+        return Ok(false);
+    }
+    let by_match = sqlx::query(
+        "UPDATE ringcentral_sms SET status = 'failed', error_message = ?
+          WHERE company_id = ? AND ringcentral_id IS NULL
+            AND direction = 'outbound' AND status = 'sent'
+            AND agent = ? AND recipient10 = ? AND TRIM(text) = ?
+            AND created_date BETWEEN ? - INTERVAL 5 MINUTE AND ? + INTERVAL 5 MINUTE
+          ORDER BY ABS(TIMESTAMPDIFF(SECOND, created_date, ?))
+          LIMIT 1",
+    )
+    .bind(reason)
+    .bind(company_id)
+    .bind(extension)
+    .bind(recipient)
+    .bind(text)
+    .bind(sent_at)
+    .bind(sent_at)
+    .bind(sent_at)
+    .execute(pool)
+    .await?;
+    Ok(by_match.rows_affected() > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
