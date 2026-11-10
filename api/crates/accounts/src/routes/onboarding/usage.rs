@@ -66,7 +66,7 @@ impl UsageCheck {
 }
 
 /// Every check, by id.
-static CHECKS: [UsageCheck; 21] = [
+static CHECKS: [UsageCheck; 22] = [
     // A quote emailed to a customer. Quotes are scoped by their company.
     UsageCheck {
         id: "quote_emailed",
