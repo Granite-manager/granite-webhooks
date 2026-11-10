@@ -332,6 +332,12 @@ static CHECKS: [UsageCheck; 21] = [
         kind: Kind::Event,
         rows: "",
     },
+    // Undo clicked after sending a text or email (the 10-second Undo button).
+    UsageCheck {
+        id: "undo_send_used",
+        kind: Kind::Event,
+        rows: "",
+    },
 ];
 
 /// The check with this id.
@@ -578,6 +584,7 @@ mod tests {
             "ai_reply_revised",
             "quote_size_typed",
             "stone_image_edited",
+            "undo_send_used",
         ] {
             assert_eq!(check(id).unwrap().kind, Kind::Event, "{id}");
             assert!(is_event_check(id), "{id}");
