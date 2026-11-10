@@ -1037,6 +1037,9 @@ async fn fresh_scan(state: &AppState, company_id: i32) -> Option<Scan> {
     if let Err(err) = reconcile::reconcile(&state.pool, company_id, &invoices, &names).await {
         tracing::warn!(error = %err, company_id, "invoice outcomes not read back");
     }
+    // Customers invoiced before the CRM sent QuickBooks more than a display
+    // name get their first and last name, phone and billing address.
+    super::complete_invoiced_customers(state, &access, company_id).await;
     Some(scan)
 }
 
@@ -1249,7 +1252,11 @@ pub struct DraftRules {
 /// and the company's newest `QuickBooks` invoices. The class is the one named
 /// after the quote's sales rep unless the company's invoices carry a fixed
 /// one. Also says where the addresses go and when the invoice is due, as the
-/// company's invoices usually have it. Nothing is saved.
+/// company's invoices usually have it. Nothing of the draft is saved. When
+/// the company's invoices are read again for this (about once a day), the
+/// `QuickBooks` customers of its invoiced quotes also get what they lack of
+/// the CRM's first and last name, phone, email and billing address; nothing
+/// they have is replaced.
 #[crate::openapi::path(
     post,
     path = "/v1/quotes/{id}/invoice-draft",

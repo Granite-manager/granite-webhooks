@@ -21,6 +21,7 @@
 //! opens Create invoice (`style_due` of the draft), or when an admin asks.
 
 use super::instructions::{self, Action, InstructionRule, phrase_regex};
+use super::reconcile::{self, Tidying};
 use super::refuse_installer;
 use super::rules::{self, SampleLine, Wording};
 use crate::ai::{Caller, Chat, MINI_FALLBACK_MODEL, MINI_MODEL};
@@ -103,6 +104,10 @@ pub struct InvoiceStyle {
     /// How many of the company's `QuickBooks` invoices it was learned from.
     #[serde(default)]
     pub invoices_read: usize,
+    /// How many of the invoices created from quotes the office still changes
+    /// in `QuickBooks` afterwards: whether the drafts are getting closer.
+    #[serde(default)]
+    pub tidying: Tidying,
 }
 
 /// Body of `POST /v1/qbo/invoice-style`.
@@ -173,19 +178,31 @@ pub(super) async fn load(pool: &MySqlPool, company_id: i32) -> Option<Learned> {
 
 /// What is kept, as the API says it.
 async fn read(pool: &MySqlPool, company_id: i32) -> sqlx::Result<InvoiceStyle> {
-    Ok(stored(pool, company_id)
-        .await?
-        .map(|(stored, at)| style(stored, at))
-        .unwrap_or_default())
+    let learned = stored(pool, company_id).await?;
+    style(pool, company_id, learned).await
 }
 
-fn style(stored: Stored, at: DateTime<Utc>) -> InvoiceStyle {
-    InvoiceStyle {
-        rules: stored.rules,
-        notes: stored.notes,
-        learned_at: Some(at.to_rfc3339_opts(SecondsFormat::Secs, true)),
-        invoices_read: stored.invoices_read,
-    }
+/// What was learned (nothing yet: empty), with how many invoices the office
+/// still tidies in `QuickBooks`.
+async fn style(
+    pool: &MySqlPool,
+    company_id: i32,
+    learned: Option<(Stored, DateTime<Utc>)>,
+) -> sqlx::Result<InvoiceStyle> {
+    let tidying = reconcile::tidying(pool, company_id).await?;
+    Ok(match learned {
+        Some((stored, at)) => InvoiceStyle {
+            rules: stored.rules,
+            notes: stored.notes,
+            learned_at: Some(at.to_rfc3339_opts(SecondsFormat::Secs, true)),
+            invoices_read: stored.invoices_read,
+            tidying,
+        },
+        None => InvoiceStyle {
+            tidying,
+            ..InvoiceStyle::default()
+        },
+    })
 }
 
 /// What became of one past draft line (newest first when listed).
@@ -659,7 +676,9 @@ pub async fn learn_style(
         && let Some((stored, at)) = stored(&state.pool, company_id).await?
         && fresh(at)
     {
-        return Ok(Json(style(stored, at)));
+        return Ok(Json(
+            style(&state.pool, company_id, Some((stored, at))).await?,
+        ));
     }
     learn(&state, company_id, user.id, &input.lines)
         .await

@@ -62,6 +62,7 @@ use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
+use std::time::Duration;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -474,11 +475,137 @@ async fn complete_customer(
             return;
         }
     };
-    let Some(update) = customer::completion(&current, known) else {
-        return;
+    fill_customer(state, access, &current, known).await;
+}
+
+/// Sends what the `QuickBooks` customer `current` lacks of `known`. Whether
+/// anything was filled in.
+async fn fill_customer(
+    state: &AppState,
+    access: &Access,
+    current: &Value,
+    known: &serde_json::Map<String, Value>,
+) -> bool {
+    let Some(update) = customer::completion(current, known) else {
+        return false;
     };
-    if let Err(err) = state.qbo.post(access, "customer", &update).await {
-        tracing::warn!(error = %err, "QuickBooks customer not completed");
+    match state.qbo.post(access, "customer", &update).await {
+        Ok(_) => true,
+        Err(err) => {
+            tracing::warn!(error = %err, "QuickBooks customer not completed");
+            false
+        }
+    }
+}
+
+/// The customers of this many of the company's newest invoiced quotes are
+/// looked at in one pass of [`complete_invoiced_customers`].
+const CUSTOMERS_CHECKED: u32 = 40;
+/// At most this many are filled in in one pass; the rest wait for the next.
+const CUSTOMERS_FILLED: usize = 10;
+/// One pass takes at most this long: it runs while a rep waits for a draft.
+const CUSTOMERS_PASS: Duration = Duration::from_secs(6);
+
+/// A customer with an invoice made from a quote, and that quote's job address.
+#[derive(Debug, sqlx::FromRow)]
+struct Invoiced {
+    job_address: Option<String>,
+    #[sqlx(flatten)]
+    customer: CustomerRow,
+}
+
+/// Fills in what the `QuickBooks` customers of the company's newest invoiced
+/// quotes lack of what the CRM knows (first and last name, phone, email,
+/// billing address), as creating their next invoice would: customers made
+/// before the CRM sent more than a display name get the rest without
+/// waiting for another invoice. Nothing a customer has is replaced, and a
+/// complete customer is only read. Runs with the daily scan of the company's
+/// invoices; failures are logged and tried again with the next scan.
+pub(super) async fn complete_invoiced_customers(
+    state: &AppState,
+    access: &Access,
+    company_id: i32,
+) {
+    let pass = async {
+        let invoiced: Vec<Invoiced> = sqlx::query_as(
+            "SELECT q.address AS job_address, c.name,
+                    NULLIF(TRIM(CAST(c.qbo_id AS CHAR)), '') AS qbo_id, ce.email, c.phone,
+                    c.phone_2, c.company_name, c.address, c.city, c.state, c.postal_code
+               FROM (SELECT customer_id, MAX(id) AS quote_id
+                       FROM quotes
+                      WHERE company_id = ? AND qbo_invoice_id IS NOT NULL
+                        AND customer_id IS NOT NULL AND deleted_at IS NULL
+                      GROUP BY customer_id
+                      ORDER BY quote_id DESC
+                      LIMIT ?) made
+               JOIN quotes q ON q.id = made.quote_id
+               JOIN customers c
+                 ON c.id = made.customer_id AND c.company_id = q.company_id
+                AND c.deleted_at IS NULL
+               LEFT JOIN customers_emails ce ON ce.id = c.email_id AND ce.customer_id = c.id
+              WHERE NULLIF(TRIM(CAST(c.qbo_id AS CHAR)), '') IS NOT NULL",
+        )
+        .bind(company_id)
+        .bind(CUSTOMERS_CHECKED)
+        .fetch_all(&state.pool)
+        .await?;
+        let known: HashMap<String, serde_json::Map<String, Value>> = invoiced
+            .iter()
+            .filter_map(|row| {
+                let id = row.customer.qbo_id.as_deref()?.trim();
+                let job = row.job_address.as_deref().and_then(customer::parse_address);
+                let known = known_fields(&row.customer, job.as_ref());
+                (valid_id(id) && !known.is_empty()).then(|| (id.to_string(), known))
+            })
+            .collect();
+        if known.is_empty() {
+            return Ok(0);
+        }
+        let mut ids: Vec<&str> = known.keys().map(String::as_str).collect();
+        ids.sort_unstable();
+        let current = state
+            .qbo
+            .query(
+                access,
+                &format!(
+                    "select * from Customer where Id in ('{}') MAXRESULTS {CUSTOMERS_CHECKED}",
+                    ids.join("', '")
+                ),
+                "Customer",
+            )
+            .await?;
+        let mut filled = 0;
+        for current in &current {
+            if filled == CUSTOMERS_FILLED {
+                break;
+            }
+            let Some(known) = text(&current["Id"]).and_then(|id| known.get(&id)) else {
+                continue;
+            };
+            if fill_customer(state, access, current, known).await {
+                filled += 1;
+            }
+        }
+        Ok::<_, QboError>(filled)
+    };
+    match tokio::time::timeout(CUSTOMERS_PASS, pass).await {
+        Ok(Ok(0)) => {}
+        Ok(Ok(filled)) => {
+            tracing::info!(
+                company_id,
+                filled,
+                "QuickBooks customers of invoiced quotes completed"
+            );
+        }
+        Ok(Err(err)) => {
+            tracing::warn!(error = %err, company_id, "QuickBooks customers of invoiced quotes not checked");
+        }
+        Err(_) => {
+            tracing::warn!(
+                company_id,
+                "QuickBooks customers of invoiced quotes: out of time, the rest next scan"
+            );
+        }
     }
 }
 

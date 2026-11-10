@@ -17,10 +17,16 @@
 //! it, any other was deleted. An invoice kept in sync with its quote is
 //! rewritten from the quote (its text lines get new ids each time), so only
 //! its class, CC and product are read back.
+//!
+//! An outcome found changed this way is marked (`tidied_at`), so the company
+//! can see how many of its invoices still need tidying in `QuickBooks`
+//! ([`tidying`]).
 
 use super::invoice::{rows, text};
 use super::rules::{Outcome, fill, first_item, header_outcome, invoice_class, template, words};
+use crate::openapi::ToSchema;
 use lambda_http::tracing;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
 use std::collections::{HashMap, HashSet};
@@ -51,6 +57,9 @@ pub(super) struct Now {
     pub outcome: Outcome,
     /// A product's name.
     pub draft_text: Option<String>,
+    /// The office changed it in `QuickBooks` (not only a product's name
+    /// read for the first time).
+    pub tidied: bool,
 }
 
 fn trimmed(value: &Value) -> &str {
@@ -187,13 +196,13 @@ pub(super) fn differing(kept: &[Kept], invoice: &Value, staff: &[&str], lines: b
             };
             // A product is also told apart by its name.
             let named = row.field != "item" || draft_text == row.draft_text;
-            let same = named
-                && (outcome.outcome.as_str(), outcome.value.as_deref())
-                    == (row.outcome.as_str(), row.saved_value.as_deref());
-            (!same).then_some(Now {
+            let tidied = (outcome.outcome.as_str(), outcome.value.as_deref())
+                != (row.outcome.as_str(), row.saved_value.as_deref());
+            (tidied || !named).then_some(Now {
                 id: row.id,
                 outcome,
                 draft_text,
+                tidied,
             })
         })
         .collect()
@@ -253,12 +262,14 @@ pub(super) async fn reconcile(
         for now in differing(rows, invoice, staff, !synced.contains(id.as_str())) {
             sqlx::query(
                 "UPDATE qbo_invoice_draft_outcomes
-                    SET outcome = ?, saved_value = ?, draft_text = COALESCE(?, draft_text)
+                    SET outcome = ?, saved_value = ?, draft_text = COALESCE(?, draft_text),
+                        tidied_at = IF(?, COALESCE(tidied_at, CURRENT_TIMESTAMP), tidied_at)
                   WHERE id = ? AND company_id = ?",
             )
             .bind(&now.outcome.outcome)
             .bind(&now.outcome.value)
             .bind(&now.draft_text)
+            .bind(now.tidied)
             .bind(now.id)
             .bind(company_id)
             .execute(pool)
@@ -274,6 +285,69 @@ pub(super) async fn reconcile(
         );
     }
     Ok(changed)
+}
+
+/// The days each period of [`Tidying`] covers.
+const TIDYING_DAYS: u32 = 30;
+
+/// The invoices created from quotes in one period.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Tidied {
+    /// How many were created.
+    pub invoices: u32,
+    /// How many of them the office then changed in `QuickBooks`: a line
+    /// deleted or reworded, or another class, CC or product.
+    pub changed: u32,
+}
+
+/// How many of the invoices created from quotes the office still tidies in
+/// `QuickBooks` afterwards, lately and before that: fewer means the drafts
+/// come out more the company's way.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct Tidying {
+    /// The days each period covers.
+    pub days: u32,
+    /// The last `days` days.
+    pub recent: Tidied,
+    /// The `days` days before those.
+    pub before: Tidied,
+}
+
+/// The company's [`Tidying`], as the last scan of its invoices left it. An
+/// invoice is read back while it is among the company's newest in
+/// `QuickBooks`; one just created may still be tidied.
+pub(super) async fn tidying(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Tidying> {
+    let periods: Vec<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT CAST(made > DATE_SUB(NOW(), INTERVAL ? DAY) AS SIGNED) AS recent,
+                COUNT(*) AS invoices, CAST(SUM(changed) AS SIGNED) AS changed
+           FROM (SELECT MIN(created_at) AS made, MAX(tidied_at IS NOT NULL) AS changed
+                   FROM qbo_invoice_draft_outcomes
+                  WHERE company_id = ? AND qbo_invoice_id IS NOT NULL
+                  GROUP BY qbo_invoice_id
+                 HAVING made > DATE_SUB(NOW(), INTERVAL ? DAY)) invoices
+          GROUP BY recent",
+    )
+    .bind(TIDYING_DAYS)
+    .bind(company_id)
+    .bind(TIDYING_DAYS * 2)
+    .fetch_all(pool)
+    .await?;
+    let mut tidying = Tidying {
+        days: TIDYING_DAYS,
+        ..Tidying::default()
+    };
+    for (recent, invoices, changed) in periods {
+        let period = Tidied {
+            invoices: u32::try_from(invoices).unwrap_or(u32::MAX),
+            changed: u32::try_from(changed).unwrap_or(u32::MAX),
+        };
+        if recent == 1 {
+            tidying.recent = period;
+        } else {
+            tidying.before = period;
+        }
+    }
+    Ok(tidying)
 }
 
 #[cfg(test)]

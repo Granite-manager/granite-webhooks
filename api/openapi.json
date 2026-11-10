@@ -50366,7 +50366,7 @@
           "quickbooks"
         ],
         "summary": "Make a quote's invoice draft the company's way",
-        "description": "Applies the changes the company's recent invoices keep making to such a\ndraft: lines reworded or left out (text lines only; amounts never change),\nand the class, CC and product they usually get, from invoices made here\n(as they are in `QuickBooks` now, so what the office changes there counts)\nand the company's newest `QuickBooks` invoices. The class is the one named\nafter the quote's sales rep unless the company's invoices carry a fixed\none. Also says where the addresses go and when the invoice is due, as the\ncompany's invoices usually have it. Nothing is saved.",
+        "description": "Applies the changes the company's recent invoices keep making to such a\ndraft: lines reworded or left out (text lines only; amounts never change),\nand the class, CC and product they usually get, from invoices made here\n(as they are in `QuickBooks` now, so what the office changes there counts)\nand the company's newest `QuickBooks` invoices. The class is the one named\nafter the quote's sales rep unless the company's invoices carry a fixed\none. Also says where the addresses go and when the invoice is due, as the\ncompany's invoices usually have it. Nothing of the draft is saved. When\nthe company's invoices are read again for this (about once a day), the\n`QuickBooks` customers of its invoiced quotes also get what they lack of\nthe CRM's first and last name, phone, email and billing address; nothing\nthey have is replaced.",
         "operationId": "apply_invoice_draft_rules",
         "parameters": [
           {
@@ -86743,6 +86743,10 @@
             "type": "integer",
             "description": "How many of the company's `QuickBooks` invoices it was learned from.",
             "minimum": 0
+          },
+          "tidying": {
+            "$ref": "#/components/schemas/Tidying",
+            "description": "How many of the invoices created from quotes the office still changes\nin `QuickBooks` afterwards: whether the drafts are getting closer."
           }
         }
       },
@@ -109616,6 +109620,53 @@
               "type": "string"
             },
             "description": "Steps that failed (PostHog or GitHub unreachable); retried next tick."
+          }
+        }
+      },
+      "Tidied": {
+        "type": "object",
+        "description": "The invoices created from quotes in one period.",
+        "required": [
+          "invoices",
+          "changed"
+        ],
+        "properties": {
+          "invoices": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many were created.",
+            "minimum": 0
+          },
+          "changed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many of them the office then changed in `QuickBooks`: a line\ndeleted or reworded, or another class, CC or product.",
+            "minimum": 0
+          }
+        }
+      },
+      "Tidying": {
+        "type": "object",
+        "description": "How many of the invoices created from quotes the office still tidies in\n`QuickBooks` afterwards, lately and before that: fewer means the drafts\ncome out more the company's way.",
+        "required": [
+          "days",
+          "recent",
+          "before"
+        ],
+        "properties": {
+          "days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The days each period covers.",
+            "minimum": 0
+          },
+          "recent": {
+            "$ref": "#/components/schemas/Tidied",
+            "description": "The last `days` days."
+          },
+          "before": {
+            "$ref": "#/components/schemas/Tidied",
+            "description": "The `days` days before those."
           }
         }
       },
