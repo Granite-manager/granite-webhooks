@@ -546,17 +546,36 @@ impl Classes {
     }
 }
 
+/// What a new invoice gets because the company's own invoices usually have
+/// it ([`super::habits`]).
+#[derive(Debug, Default)]
+pub struct Usual {
+    /// Priced lines carry the invoice's date as their service date.
+    pub service_dates: bool,
+    /// The terms of an invoice due this many days after its date.
+    pub term: Option<(i64, String)>,
+}
+
+fn day(text: Option<&str>) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(text?.trim(), "%Y-%m-%d").ok()
+}
+
 /// A new invoice for `customer` (its `QuickBooks` id).
 ///
 /// It has the editor's lines and CC, in `classes` (set on each priced line
 /// for a company that sets classes per line, where a line may have its
-/// own), and is emailed to `email` when `QuickBooks` sends it.
+/// own), and is emailed to `email` when `QuickBooks` sends it. `usual`
+/// adds the service dates and terms the company's invoices usually have;
+/// the terms only while the invoice is due when such invoices are.
 pub fn create_payload(
     customer: &str,
     edited: &EditableInvoice,
     email: Option<&str>,
     classes: &Classes,
+    usual: &Usual,
 ) -> Result<Value, String> {
+    let made = day(edited.txn_date.as_deref());
+    let service_date = made.filter(|_| usual.service_dates);
     let mut lines = Vec::new();
     for line in &edited.lines {
         match line.detail_type.as_str() {
@@ -565,11 +584,16 @@ pub fn create_payload(
             }
             "SalesItemLineDetail" | "DescriptionOnly" => {
                 let mut built = new_line(line);
-                if classes.per_line
-                    && built["DetailType"] == "SalesItemLineDetail"
-                    && let Some(class) = classes.of(line)
-                {
-                    built["SalesItemLineDetail"]["ClassRef"] = json!({ "value": class });
+                if built["DetailType"] == "SalesItemLineDetail" {
+                    if classes.per_line
+                        && let Some(class) = classes.of(line)
+                    {
+                        built["SalesItemLineDetail"]["ClassRef"] = json!({ "value": class });
+                    }
+                    if let Some(date) = service_date {
+                        built["SalesItemLineDetail"]["ServiceDate"] =
+                            json!(date.format("%Y-%m-%d").to_string());
+                    }
                 }
                 lines.push(built);
             }
@@ -607,6 +631,12 @@ pub fn create_payload(
         && let Some(class) = &classes.invoice
     {
         payload["ClassRef"] = json!({ "value": class });
+    }
+    if let Some((days, term)) = &usual.term
+        && let Some((made, due)) = made.zip(day(edited.due_date.as_deref()))
+        && (due - made).num_days() == *days
+    {
+        payload["SalesTermRef"] = json!({ "value": term });
     }
     Ok(payload)
 }
@@ -751,7 +781,14 @@ mod tests {
             invoice: Some("7".into()),
             ..Classes::default()
         };
-        let payload = create_payload("42", &invoice, Some(" a@x.test "), &classes).unwrap();
+        let payload = create_payload(
+            "42",
+            &invoice,
+            Some(" a@x.test "),
+            &classes,
+            &Usual::default(),
+        )
+        .unwrap();
         assert_eq!(payload["CustomerRef"]["value"], "42");
         let lines = payload["Line"].as_array().unwrap();
         assert_eq!(lines.len(), 2);
@@ -773,7 +810,7 @@ mod tests {
             per_line: true,
             by_name: HashMap::from([("Cabinets".to_string(), "8".to_string())]),
         };
-        let payload = create_payload("42", &invoice, None, &classes).unwrap();
+        let payload = create_payload("42", &invoice, None, &classes, &Usual::default()).unwrap();
         assert!(payload.get("ClassRef").is_none());
         assert_eq!(
             payload["Line"][0]["SalesItemLineDetail"]["ClassRef"]["value"],
@@ -785,13 +822,39 @@ mod tests {
             "8"
         );
 
-        invoice.lines[0].item_ref_value = None;
+        // What the company's invoices usually have: a service date on each
+        // priced line, and the terms while the invoice is due as usual.
         let none = Classes::default();
-        assert!(create_payload("42", &invoice, None, &none).is_err());
+        let usual = Usual {
+            service_dates: true,
+            term: Some((30, "3".into())),
+        };
+        invoice.txn_date = Some("2026-10-28".into());
+        invoice.due_date = Some("2026-11-27".into());
+        let payload = create_payload("42", &invoice, None, &none, &usual).unwrap();
+        assert_eq!(
+            payload["Line"][0]["SalesItemLineDetail"]["ServiceDate"],
+            "2026-10-28"
+        );
+        assert!(payload["Line"][1].get("SalesItemLineDetail").is_none());
+        assert_eq!(payload["SalesTermRef"]["value"], "3");
+        // The rep moved the due date: no terms that would say otherwise.
+        invoice.due_date = Some("2026-11-05".into());
+        let payload = create_payload("42", &invoice, None, &none, &usual).unwrap();
+        assert!(payload.get("SalesTermRef").is_none());
+        let plain = create_payload("42", &invoice, None, &none, &Usual::default()).unwrap();
+        assert!(
+            plain["Line"][0]["SalesItemLineDetail"]
+                .get("ServiceDate")
+                .is_none()
+        );
+
+        invoice.lines[0].item_ref_value = None;
+        assert!(create_payload("42", &invoice, None, &none, &Usual::default()).is_err());
         invoice
             .lines
             .retain(|line| line.detail_type != "SalesItemLineDetail");
-        assert!(create_payload("42", &invoice, None, &none).is_err());
+        assert!(create_payload("42", &invoice, None, &none, &Usual::default()).is_err());
     }
 
     fn note(id: &str, text: &str) -> Line {

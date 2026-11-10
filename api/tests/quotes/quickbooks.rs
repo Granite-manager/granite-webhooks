@@ -33,7 +33,34 @@ fn invoice() -> Value {
     })
 }
 
+/// An older invoice of the company: an eased edge, due in 30 days under
+/// terms 3, its priced line dated.
+fn older_invoice(id: u32) -> Value {
+    json!({
+        "Id": id.to_string(), "SyncToken": "0", "DocNumber": (900 + id).to_string(),
+        "TxnDate": "2026-04-01", "DueDate": "2026-05-01", "TotalAmt": 300,
+        "CustomerRef": { "value": "42" }, "SalesTermRef": { "value": "3" },
+        "ClassRef": { "value": "1", "name": "Rita" },
+        "Line": [
+            { "Id": "1", "DetailType": "SalesItemLineDetail", "Amount": 300, "Description": "Kitchen based @ 30 sqft",
+              "SalesItemLineDetail": { "ItemRef": { "value": "5", "name": "tile" }, "ServiceDate": "2026-04-01" } },
+            { "Id": "2", "DetailType": "DescriptionOnly", "Description": "Eased Edge 33.5 lf" },
+            { "DetailType": "SubTotalLineDetail", "Amount": 300 },
+        ],
+    })
+}
+
 async fn server(pool: &MySqlPool, access_expires_in: i64) -> (TestServer, Arc<Mutex<Vec<Value>>>) {
+    let (server, invoices, _) = server_and_customers(pool, access_expires_in).await;
+    (server, invoices)
+}
+
+/// The API over a stand-in `QuickBooks` (and AI), with the invoices and the
+/// customers posted to it.
+async fn server_and_customers(
+    pool: &MySqlPool,
+    access_expires_in: i64,
+) -> (TestServer, Arc<Mutex<Vec<Value>>>, Arc<Mutex<Vec<Value>>>) {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         "UPDATE company SET qbo_realm_id = '555', qbo_access_token = ?, qbo_refresh_token = ?,
@@ -51,6 +78,8 @@ async fn server(pool: &MySqlPool, access_expires_in: i64) -> (TestServer, Arc<Mu
     .unwrap();
     let posted = Arc::new(Mutex::new(Vec::new()));
     let saved = Arc::clone(&posted);
+    let customers = Arc::new(Mutex::new(Vec::new()));
+    let saved_customers = Arc::clone(&customers);
     let router = Router::new()
         .route(
             "/token",
@@ -91,6 +120,14 @@ async fn server(pool: &MySqlPool, access_expires_in: i64) -> (TestServer, Arc<Mu
                 if q == "select Id from Class where FullyQualifiedName = 'Rita'" {
                     return Json(json!({ "QueryResponse": { "Class": [{ "Id": "1" }] } }));
                 }
+                if q.starts_with("select * from Invoice ORDERBY MetaData.CreateTime DESC MAXRESULTS") {
+                    // The scan: the newest invoice and five older ones.
+                    let mut raw = invoice();
+                    raw["ClassRef"] = json!({ "value": "1", "name": "Rita" });
+                    let mut all = vec![raw];
+                    all.extend((90..95).map(older_invoice));
+                    return Json(json!({ "QueryResponse": { "Invoice": all } }));
+                }
                 if q.starts_with("select * from Invoice ORDERBY MetaData.CreateTime DESC") {
                     let mut raw = invoice();
                     raw["ClassRef"] = json!({ "value": "1", "name": "Rita" });
@@ -121,6 +158,28 @@ async fn server(pool: &MySqlPool, access_expires_in: i64) -> (TestServer, Arc<Mu
             assert_eq!(id, "9");
             Json(json!({ "Invoice": invoice() }))
         }))
+        // Customer 42 has only its display name; 43 has everything.
+        .route("/v3/company/555/customer/{id}", get(|Path(id): Path<String>| async move {
+            let mut found = json!({ "Id": id, "SyncToken": "0", "DisplayName": "Alice Lead" });
+            if id == "43" {
+                found["GivenName"] = json!("Alicia");
+                found["PrimaryPhone"] = json!({ "FreeFormNumber": "555-0199" });
+                found["PrimaryEmailAddr"] = json!({ "Address": "alice@example.com" });
+                found["BillAddr"] = json!({ "Line1": "Alice Lead", "Line2": "1 Main St", "Line3": "Carmel, IN 46032" });
+            }
+            Json(json!({ "Customer": found }))
+        }))
+        .route(
+            "/v3/company/555/customer",
+            post(move |Json(body): Json<Value>| {
+                let saved = Arc::clone(&saved_customers);
+                async move {
+                    saved.lock().unwrap().push(body.clone());
+                    let id = body["Id"].as_str().unwrap_or("77").to_string();
+                    Json(json!({ "Customer": { "Id": id, "SyncToken": "1" } }))
+                }
+            }),
+        )
         .route(
             "/v3/company/555/reports/ClassSales",
             get(|Query(query): Query<HashMap<String, String>>| async move {
@@ -151,6 +210,33 @@ async fn server(pool: &MySqlPool, access_expires_in: i64) -> (TestServer, Arc<Mu
             "/chat",
             post(|Json(body): Json<Value>| async move {
                 let prompt = body["messages"][1]["content"].as_str().unwrap_or_default();
+                // The AI reading the company's invoice wording: it also
+                // proposes what the invoices do not bear out.
+                if body["messages"][0]["content"]
+                    .as_str()
+                    .is_some_and(|system| system.starts_with("You study how one countertop company"))
+                {
+                    let seen: Value = serde_json::from_str(prompt).unwrap();
+                    assert_eq!(seen["invoices"].as_array().unwrap().len(), 6);
+                    assert_eq!(seen["invoices"][1][1]["text"], "Eased Edge 33.5 lf");
+                    assert_eq!(seen["draft_lines"][0], "Digital Template");
+                    assert!(
+                        seen["corrections"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|c| c["drafted"] == "Laser Template" && c["removed"] == 1)
+                    );
+                    let learned = json!({ "rules": [
+                        { "when_has": [], "when_lacks": [], "action": { "type": "hide", "line": "Template" },
+                          "evidence": "removed every time" },
+                        { "action": { "type": "hide", "line": "sink" } },
+                        { "action": { "type": "rename", "line": "finished edge", "to": "Edge" } },
+                        { "action": { "type": "rename", "line": "sealer", "to": "Protective coat" } },
+                        { "action": { "type": "cc", "email": "office@example.com" } },
+                    ], "notes": ["Invoices are due 30 days out."] });
+                    return Json(json!({ "choices": [{ "message": { "content": learned.to_string() } }] }));
+                }
                 assert!(prompt.contains("\"Stone\"") && !prompt.contains("\"Parts\""));
                 let rules = json!({ "rules": [
                     { "when_has": ["cabinet"], "action": { "type": "product", "product": "Stone" } },
@@ -171,6 +257,12 @@ async fn server(pool: &MySqlPool, access_expires_in: i64) -> (TestServer, Arc<Mu
                     let mut updated = invoice();
                     updated["SyncToken"] = json!("2");
                     updated["Line"] = body["Line"].clone();
+                    // QuickBooks gives each new line an id, in order.
+                    for (index, line) in updated["Line"].as_array_mut().into_iter().flatten().enumerate() {
+                        if line.get("Id").is_none() {
+                            line["Id"] = json!((index + 1).to_string());
+                        }
+                    }
                     Json(json!({ "Invoice": updated }))
                 }
             }),
@@ -182,7 +274,7 @@ async fn server(pool: &MySqlPool, access_expires_in: i64) -> (TestServer, Arc<Mu
     let state = AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN)
         .with_qbo(qbo)
         .with_ai(Ai::new(Some("key"), &format!("{base}/chat")));
-    (TestServer::new(app(state)), posted)
+    (TestServer::new(app(state)), posted, customers)
 }
 
 #[test_db::test(seed)]
@@ -294,7 +386,7 @@ async fn a_quote_makes_invoices_with_the_companys_items(pool: MySqlPool) {
     .execute(&pool)
     .await
     .unwrap();
-    let (server, posted) = server(&pool, 10).await;
+    let (server, posted, customers) = server_and_customers(&pool, 10).await;
     let items: Value = server
         .get("/v1/qbo/items")
         .with_session(sessions::REP)
@@ -356,6 +448,26 @@ async fn a_quote_makes_invoices_with_the_companys_items(pool: MySqlPool) {
     assert_eq!(linked.as_deref(), Some("9"));
     assert_eq!(sent["ClassRef"]["value"], "1");
     assert_eq!(sent["BillEmailCc"]["Address"], "rep@acme.test");
+    // Before any scan, nothing is known of the company's habits.
+    assert!(
+        sent["Line"][0]["SalesItemLineDetail"]
+            .get("ServiceDate")
+            .is_none()
+    );
+    assert!(sent.get("SalesTermRef").is_none());
+    // The matched QuickBooks customer had only a display name: it gets the
+    // first and last name, phones, email and address the CRM has.
+    assert_eq!(
+        *customers.lock().unwrap(),
+        [json!({
+            "Id": "42", "SyncToken": "0", "sparse": true,
+            "GivenName": "Alice", "FamilyName": "Lead",
+            "PrimaryEmailAddr": { "Address": "alice@example.com" },
+            "PrimaryPhone": { "FreeFormNumber": "(317) 555-0100" },
+            "AlternatePhone": { "FreeFormNumber": "(317) 555-0101" },
+            "BillAddr": { "Line1": "1 Main St" },
+        })]
+    );
     let outcomes: Vec<(String, String, Option<String>)> = sqlx::query_as(
         "SELECT field, outcome, saved_value FROM qbo_invoice_draft_outcomes
           WHERE company_id = 100 ORDER BY id",
@@ -375,11 +487,21 @@ async fn a_quote_makes_invoices_with_the_companys_items(pool: MySqlPool) {
         [
             outcome("line", "kept", None),
             outcome("line", "changed", Some("Kitchen")),
-            outcome("class", "value", Some("Rita")),
+            // "Rita" is the class of the quote's rep, Rita Rep.
+            outcome("class", "sales_rep", None),
             outcome("cc", "sales_rep", None),
             outcome("item", "value", Some("3")),
         ]
     );
+    // Each line keeps the id QuickBooks gave it, to read later changes back.
+    let line_ids: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT qbo_line_id FROM qbo_invoice_draft_outcomes
+          WHERE company_id = 100 AND field = 'line' ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(line_ids, [Some("1".to_string()), Some("2".to_string())]);
     // The quote can be invoiced again (its invoice deleted in QuickBooks).
     server
         .post("/v1/customers/1000/qbo-invoices")
@@ -455,6 +577,19 @@ async fn a_draft_follows_what_recent_invoices_keep_doing(pool: MySqlPool) {
     assert_eq!(draft["item_id"], "5");
     assert_eq!(draft["item_name"], "tile");
     assert_eq!(draft["lines"][0]["item_ref_value"], "5");
+    // The company's invoices carry no shipping address: the customer's
+    // address goes in the billing address, under their name. They are due
+    // in 30 days, and the AI has not read their wording yet.
+    assert_eq!(
+        draft["addresses"],
+        json!({
+            "bill": { "line1": "Alice Lead", "line2": "1 Main St", "line3": null, "city": null,
+                      "country_sub_division_code": null, "postal_code": null },
+            "ship": null,
+        })
+    );
+    assert_eq!(draft["due_days"], 30);
+    assert_eq!(draft["style_due"], true);
     let scanned: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM qbo_invoice_scans WHERE company_id = 100")
             .fetch_one(&pool)
@@ -467,6 +602,365 @@ async fn a_draft_follows_what_recent_invoices_keep_doing(pool: MySqlPool) {
         .json(&json!({ "lines": [] }))
         .await
         .assert_status(StatusCode::NOT_FOUND);
+}
+
+#[test_db::test(seed)]
+async fn a_new_quickbooks_customer_gets_the_crm_name_phone_and_address(pool: MySqlPool) {
+    // Nina has no QuickBooks customer by email or name; her quote's job is
+    // at her home, the only address the CRM has.
+    sqlx::query(
+        "INSERT INTO customers (id, name, phone, company_id, source, sales_rep, created_date)
+         VALUES (9901, 'Nina  Stone', '3175550195', 100, 'leads', 100, NOW())",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO quotes (id, customer_id, quote_name, quote_type, created_date, sales_rep,
+                             company_id, salesperson_id, created_by, status, address)
+         VALUES (9810, 9901, 'Kitchen', 'countertops', NOW(), 'Rep', 100, 100, 100, 'converted',
+                 '9 Oak Ave, Fishers, IN 46037')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (server, posted, customers) = server_and_customers(&pool, 10).await;
+    let body = json!({
+        "quote_id": 9810,
+        "draft": null,
+        "invoice": {
+            "id": "", "sync_token": "", "doc_number": null, "txn_date": "2026-11-10",
+            "due_date": null, "total_amt": 500, "balance": null, "currency": null,
+            "customer_memo": null, "private_note": null,
+            "bill_addr": { "line1": "Nina Stone", "line2": "9 Oak Ave", "line3": null, "city": "Fishers",
+                           "country_sub_division_code": "IN", "postal_code": "46037" },
+            "ship_addr": null,
+            "lines": [{ "id": "new:0", "line_num": null, "detail_type": "SalesItemLineDetail",
+                        "description": "Kitchen", "amount": 500, "qty": 1, "unit_price": 500,
+                        "item_ref_value": "3", "item_ref_name": "Stone", "editable": true }],
+        },
+    });
+    server
+        .post("/v1/customers/9901/qbo-invoices")
+        .with_session(sessions::REP)
+        .json(&body)
+        .await
+        .assert_status_ok();
+    assert_eq!(
+        *customers.lock().unwrap(),
+        [json!({
+            "DisplayName": "Nina Stone",
+            "GivenName": "Nina", "FamilyName": "Stone",
+            "PrimaryPhone": { "FreeFormNumber": "(317) 555-0195" },
+            // The quote's job address, not the invoice's bill-to lines.
+            "BillAddr": { "Line1": "9 Oak Ave", "City": "Fishers",
+                          "CountrySubDivisionCode": "IN", "PostalCode": "46037" },
+        })]
+    );
+    let sent = posted.lock().unwrap()[0].clone();
+    assert_eq!(sent["CustomerRef"]["value"], "77");
+    assert_eq!(sent["BillAddr"]["Line1"], "Nina Stone");
+    assert_eq!(sent["BillAddr"]["Line2"], "9 Oak Ave");
+    assert!(sent.get("ShipAddr").is_none());
+    let linked: Option<String> =
+        sqlx::query_scalar("SELECT CAST(qbo_id AS CHAR) FROM customers WHERE id = 9901")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(linked.as_deref(), Some("77"));
+}
+
+#[test_db::test(seed)]
+async fn a_customer_complete_in_quickbooks_is_left_as_it_is(pool: MySqlPool) {
+    sqlx::query("UPDATE customers SET qbo_id = '43' WHERE id = 1000")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO quotes (id, customer_id, quote_name, quote_type, created_date, sales_rep,
+                             company_id, salesperson_id, created_by, status, address)
+         VALUES (9811, 1000, 'Kitchen', 'countertops', NOW(), 'Rep', 100, 100, 100, 'converted',
+                 '9 Oak Ave, Fishers, IN 46037')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (server, _, customers) = server_and_customers(&pool, 10).await;
+    let line = json!({ "id": "new:0", "line_num": null, "detail_type": "SalesItemLineDetail",
+                       "description": "Kitchen", "amount": 500, "qty": 1, "unit_price": 500,
+                       "item_ref_value": "3", "item_ref_name": "Stone", "editable": true });
+    // The billing address is QuickBooks' own; the job is elsewhere, so it is
+    // said in the shipping address though the company's invoices carry none.
+    let draft: Value = server
+        .post("/v1/quotes/9811/invoice-draft")
+        .with_session(sessions::REP)
+        .json(&json!({ "lines": [line] }))
+        .await
+        .json();
+    assert_eq!(draft["addresses"]["bill"], Value::Null);
+    assert_eq!(draft["addresses"]["ship"]["line1"], "9 Oak Ave");
+    assert_eq!(draft["addresses"]["ship"]["postal_code"], "46037");
+    let body = json!({
+        "quote_id": 9811,
+        "draft": null,
+        "invoice": {
+            "id": "", "sync_token": "", "doc_number": null, "txn_date": "2026-11-10",
+            "due_date": "2026-12-10", "total_amt": 500, "balance": null, "currency": null,
+            "customer_memo": null, "private_note": null, "bill_addr": null,
+            "ship_addr": draft["addresses"]["ship"], "lines": [line],
+        },
+    });
+    server
+        .post("/v1/customers/1000/qbo-invoices")
+        .with_session(sessions::REP)
+        .json(&body)
+        .await
+        .assert_status_ok();
+    // Nothing was written to the customer.
+    assert!(customers.lock().unwrap().is_empty());
+}
+
+#[test_db::test(seed)]
+async fn what_the_office_changes_in_quickbooks_teaches_the_next_drafts(pool: MySqlPool) {
+    sqlx::query(
+        "INSERT INTO quotes (id, customer_id, quote_name, quote_type, created_date, sales_rep,
+                             company_id, salesperson_id, created_by, status)
+         VALUES (9812, 1000, 'Kitchen', 'countertops', NOW(), 'Rep', 100, 100, 100, 'converted')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (server, posted) = server(&pool, 10).await;
+    let line = |id: &str, detail: &str, text: &str, amount: Value| {
+        json!({ "id": id, "line_num": null, "detail_type": detail, "description": text,
+                "amount": amount, "qty": null, "unit_price": amount,
+                "item_ref_value": if amount.is_null() { Value::Null } else { json!("3") },
+                "item_ref_name": null, "editable": true })
+    };
+    let lines = json!([
+        line("new:0", "SalesItemLineDetail", "Quartz", json!(120)),
+        line("new:1", "DescriptionOnly", "Laser Template", Value::Null),
+    ]);
+    let body = |due: Value| {
+        json!({
+            "quote_id": 9812,
+            "draft": lines,
+            "invoice": {
+                "id": "", "sync_token": "", "doc_number": null, "txn_date": "2026-11-10",
+                "due_date": due, "total_amt": 120, "balance": null, "currency": null,
+                "customer_memo": null, "private_note": null, "bill_addr": null, "ship_addr": null,
+                "lines": lines,
+            },
+        })
+    };
+    // Three invoices the rep created just as drafted, without a class.
+    for _ in 0..3 {
+        server
+            .post("/v1/customers/1000/qbo-invoices")
+            .with_session(sessions::REP)
+            .json(&body(Value::Null))
+            .await
+            .assert_status_ok();
+    }
+    let outcomes = || async {
+        sqlx::query_as::<_, (String, String, Option<String>)>(
+            "SELECT field, outcome, saved_value FROM qbo_invoice_draft_outcomes
+              WHERE company_id = 100 ORDER BY id LIMIT 5",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    let row = |field: &str, outcome: &str, value: Option<&str>| {
+        (
+            field.to_string(),
+            outcome.to_string(),
+            value.map(String::from),
+        )
+    };
+    assert_eq!(
+        outcomes().await,
+        [
+            row("line", "kept", None),
+            row("line", "kept", None),
+            row("class", "none", None),
+            row("cc", "none", None),
+            row("item", "value", Some("3")),
+        ]
+    );
+    // In QuickBooks the invoice now has no Laser Template line and the class
+    // Rita (the stand-in's invoice 9). The next draft reads that back.
+    let draft: Value = server
+        .post("/v1/quotes/9812/invoice-draft")
+        .with_session(sessions::REP)
+        .json(&json!({ "lines": lines }))
+        .await
+        .json();
+    assert_eq!(
+        outcomes().await,
+        [
+            row("line", "kept", None),
+            row("line", "removed", None),
+            row("class", "sales_rep", None),
+            row("cc", "none", None),
+            row("item", "value", Some("3")),
+        ]
+    );
+    // Deleted in QuickBooks three times: left out of the draft from now on.
+    assert_eq!(draft["lines"].as_array().unwrap().len(), 1);
+    assert_eq!(draft["removed"][0]["description"], "Laser Template");
+    assert_eq!(draft["class_name"], "Rita Rep");
+    // With the scan kept, a new invoice gets what the company's invoices
+    // have: a service date on the priced line, and the terms of 30 days.
+    server
+        .post("/v1/customers/1000/qbo-invoices")
+        .with_session(sessions::REP)
+        .json(&body(json!("2026-12-10")))
+        .await
+        .assert_status_ok();
+    let sent = posted.lock().unwrap()[3].clone();
+    assert_eq!(
+        sent["Line"][0]["SalesItemLineDetail"]["ServiceDate"],
+        "2026-11-10"
+    );
+    assert_eq!(sent["SalesTermRef"]["value"], "3");
+    assert_eq!(sent["DueDate"], "2026-12-10");
+}
+
+#[test_db::test(seed)]
+async fn the_ai_learns_the_wording_the_invoices_bear_out(pool: MySqlPool) {
+    sqlx::query(
+        "INSERT INTO quotes (id, customer_id, quote_name, quote_type, created_date, sales_rep,
+                             company_id, salesperson_id, created_by, status)
+         VALUES (9813, 1000, 'Kitchen', 'countertops', NOW(), 'Rep', 100, 100, 100, 'converted')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // The office deleted two differently worded template lines; it kept
+    // the sink three times.
+    sqlx::query(
+        "INSERT INTO qbo_invoice_draft_outcomes (company_id, qbo_invoice_id, field, draft_shape, draft_text, outcome) VALUES
+           (100, '201', 'line', 'laser template', 'Laser Template', 'removed'),
+           (100, '202', 'line', 'template visit', 'Template visit', 'removed'),
+           (100, '201', 'line', '# sink - 60/40', '1 Sink - 60/40', 'kept'),
+           (100, '202', 'line', '# sink - 60/40', '1 Sink - 60/40', 'kept'),
+           (100, '203', 'line', '# sink - 60/40', '1 Sink - 60/40', 'kept')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (server, _) = server(&pool, 10).await;
+    let learn = |session, force: bool| {
+        server
+            .post("/v1/qbo/invoice-style")
+            .with_session(session)
+            .json(&json!({ "force": force, "lines": ["Digital Template", "1 Sink - 60/40"] }))
+    };
+    let empty: Value = server
+        .get("/v1/qbo/invoice-style")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(
+        empty,
+        json!({ "rules": [], "notes": [], "learned_at": null, "invoices_read": 0 })
+    );
+    let learned: Value = learn(sessions::REP, false).await.json();
+    // Kept: what the outcomes and the six invoices bear out. Dropped: hiding
+    // the sink the office keeps, a wording of the AI's own, a CC.
+    assert_eq!(
+        learned["rules"],
+        json!([
+            { "when_has": [], "when_lacks": [], "action": { "type": "hide", "line": "template" } },
+            { "when_has": [], "when_lacks": [],
+              "action": { "type": "rename", "line": "finished edge", "to": "Edge" } },
+        ])
+    );
+    assert_eq!(learned["notes"], json!(["Invoices are due 30 days out."]));
+    assert_eq!(learned["invoices_read"], 6);
+    assert!(learned["learned_at"].as_str().unwrap().ends_with('Z'));
+    let read: Value = server
+        .get("/v1/qbo/invoice-style")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(read["rules"], learned["rules"]);
+    server
+        .get("/v1/qbo/invoice-style")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    // Learned today: not asked again, unless an admin says so.
+    let asked = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM ai_usage_log WHERE feature = 'qbo_invoice_style'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    assert_eq!(asked().await, 1);
+    let again: Value = learn(sessions::REP, true).await.json();
+    assert_eq!(again["learned_at"], learned["learned_at"]);
+    assert_eq!(asked().await, 1);
+    learn(sessions::ADMIN, true).await.assert_status_ok();
+    assert_eq!(asked().await, 2);
+
+    // A draft follows it: a template line never seen before is left out
+    // (and offered back), the edge is called what the invoices call it.
+    let line = |id: &str, detail: &str, text: &str, amount: Value| {
+        json!({ "id": id, "line_num": null, "detail_type": detail, "description": text,
+                "amount": amount, "qty": null, "unit_price": amount, "item_ref_value": null,
+                "item_ref_name": null, "editable": true })
+    };
+    let lines = json!({ "lines": [
+        line("new:0", "SalesItemLineDetail", "Kitchen based @ 30 sqft", json!(900)),
+        line("new:1", "DescriptionOnly", "Digital Template", Value::Null),
+        line("new:2", "DescriptionOnly", "40.9 lin ft Finished Edge - Flat", Value::Null),
+        line("new:3", "DescriptionOnly", "1 Sink - 60/40", Value::Null),
+    ] });
+    let draft: Value = server
+        .post("/v1/quotes/9813/invoice-draft")
+        .with_session(sessions::REP)
+        .json(&lines)
+        .await
+        .json();
+    let texts: Vec<&str> = draft["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["description"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            "Kitchen based @ 30 sqft",
+            "40.9 lin ft Edge - Flat",
+            "1 Sink - 60/40"
+        ]
+    );
+    assert_eq!(draft["lines"][0]["amount"], 900.0);
+    assert_eq!(draft["removed"][0]["description"], "Digital Template");
+    assert_eq!(draft["style_due"], false);
+    // An admin says to keep template lines: the instruction wins.
+    sqlx::query(
+        "INSERT INTO qbo_invoice_instructions (company_id, instructions, rules_json) VALUES
+           (100, 'Always keep the template line.',
+            '{\"rules\": [{\"when_has\": [], \"when_lacks\": [], \"action\": {\"type\": \"keep\", \"line\": \"template\"}}], \"not_understood\": []}')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let kept: Value = server
+        .post("/v1/quotes/9813/invoice-draft")
+        .with_session(sessions::REP)
+        .json(&lines)
+        .await
+        .json();
+    assert_eq!(kept["lines"].as_array().unwrap().len(), 4);
+    assert_eq!(kept["lines"][1]["description"], "Digital Template");
+    assert!(kept["removed"].as_array().unwrap().is_empty());
 }
 
 #[test_db::test(seed)]

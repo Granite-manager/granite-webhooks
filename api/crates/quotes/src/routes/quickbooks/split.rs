@@ -394,6 +394,7 @@ pub async fn create_split(
                 invoice,
                 ready.email.as_deref(),
                 &ready.classes,
+                &ready.usual,
             )
             .map_err(ApiError::BadRequest)?,
         );
@@ -478,9 +479,9 @@ pub async fn create_split(
             &state.pool,
             &user,
             input.quote_id,
-            &first.id,
             draft,
             &input.invoice,
+            first,
         )
         .await
     {

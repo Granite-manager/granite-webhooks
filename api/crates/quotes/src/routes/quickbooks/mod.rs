@@ -14,6 +14,10 @@
 //!   as a PDF (the rep's sales panel, schedule events)
 //! - `GET /v1/qbo/customers` → `QuickBooks` customers by email or name
 //! - `GET /v1/qbo/items` → the products and services a line can sell
+//! - `POST /v1/quotes/{id}/invoice-draft` → a quote's invoice draft the
+//!   company's way, `GET`/`PUT /v1/qbo/invoice-instructions` what an admin
+//!   told the AI about it, `GET`/`POST /v1/qbo/invoice-style` what the AI
+//!   learned from the company's own invoices
 //! - `GET /v1/qbo/class-sales` → the "Sales by Class" report (admins)
 //! - `GET /v1/me/qbo-sales` → the rep's sales this month, and
 //!   `/customers` the customers behind them
@@ -23,12 +27,16 @@
 //! Replaces the Remix `api.quickbooks.*` and `api.employee.qbo-*` routes.
 
 pub mod class_sales;
+mod customer;
+pub mod habits;
 pub mod instructions;
 pub mod invoice;
 pub mod products;
+mod reconcile;
 pub mod rules;
 pub mod sales;
 pub mod split;
+pub mod style;
 
 use crate::auth::session::SessionUser;
 use crate::auth::{AdminUser, EmployeeUser};
@@ -42,9 +50,10 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::header;
 use axum::response::IntoResponse;
+use customer::{CustomerRow, display_name, known_fields};
 use invoice::{
-    Address, Classes, EditableInvoice, InvoiceSummary, Line, create_payload, editable, summary,
-    text, update_payload,
+    Address, Classes, EditableInvoice, InvoiceSummary, Line, Usual, create_payload, editable,
+    summary, text, update_payload,
 };
 use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
@@ -67,6 +76,7 @@ pub fn router() -> OpenApiRouter<AppState> {
             instructions::get_instructions,
             instructions::save_instructions
         ))
+        .routes(routes!(style::get_style, style::learn_style))
         .routes(routes!(sales::my_sales))
         .routes(routes!(sales::my_customers))
         .routes(routes!(sales::set_company_goal))
@@ -159,16 +169,10 @@ impl CustomerInvoices {
     }
 }
 
-#[derive(sqlx::FromRow)]
-struct CustomerRow {
-    name: Option<String>,
-    qbo_id: Option<String>,
-    email: Option<String>,
-}
-
 async fn customer(state: &AppState, company_id: i32, customer_id: i32) -> ApiResult<CustomerRow> {
     let row: Option<CustomerRow> = sqlx::query_as(
-        "SELECT c.name, NULLIF(TRIM(CAST(c.qbo_id AS CHAR)), '') AS qbo_id, ce.email
+        "SELECT c.name, NULLIF(TRIM(CAST(c.qbo_id AS CHAR)), '') AS qbo_id, ce.email,
+                c.phone, c.phone_2, c.company_name, c.address, c.city, c.state, c.postal_code
            FROM customers c
            LEFT JOIN customers_emails ce ON ce.id = c.email_id AND ce.customer_id = c.id
           WHERE c.id = ? AND c.company_id = ? AND c.deleted_at IS NULL",
@@ -443,34 +447,60 @@ pub async fn invoices_of_customer(
     })
 }
 
-/// A `QuickBooks` display name: no `:` (it nests customers), tabs or new lines.
-fn display_name(name: &str) -> String {
-    name.split([':', '\t', '\n', '\r', ' '])
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(500)
-        .collect()
+/// Fills in what the customer's `QuickBooks` customer lacks of what the CRM
+/// knows (first and last name, phone, email, billing address); what it has
+/// stays. The invoice is made either way: a failure here is only logged.
+async fn complete_customer(
+    state: &AppState,
+    access: &Access,
+    qbo_id: &str,
+    known: &serde_json::Map<String, Value>,
+) {
+    if known.is_empty() || !valid_id(qbo_id) {
+        return;
+    }
+    let current = match state
+        .qbo
+        .get(access, &format!("customer/{}", qbo_id.trim()))
+        .await
+    {
+        Ok(found) => found["Customer"].clone(),
+        Err(err) => {
+            tracing::warn!(error = %err, "QuickBooks customer not read; left as it is");
+            return;
+        }
+    };
+    let Some(update) = customer::completion(&current, known) else {
+        return;
+    };
+    if let Err(err) = state.qbo.post(access, "customer", &update).await {
+        tracing::warn!(error = %err, "QuickBooks customer not completed");
+    }
 }
 
 /// The customer's `QuickBooks` customer: the linked one, a match, or a new
-/// one made from the CRM customer. Links it.
+/// one made from the CRM customer with its first and last name, phones,
+/// email and billing address (`job` is the quote's job address, a person's
+/// billing address when they have no other). Links it, and fills in what an
+/// existing one lacks.
 async fn qbo_customer_for(
     state: &AppState,
     access: &Access,
     company_id: i32,
     customer_id: i32,
     row: &CustomerRow,
-    bill_addr: Option<&Address>,
+    job: Option<&Address>,
 ) -> ApiResult<String> {
+    let known = known_fields(row, job);
     if let Some(id) = row.qbo_id.clone() {
+        complete_customer(state, access, &id, &known).await;
         return Ok(id);
     }
     let id = if let Some(id) = resolve_qbo_id(state, access, row)
         .await
         .map_err(qbo_error)?
     {
+        complete_customer(state, access, &id, &known).await;
         id
     } else {
         let name = display_name(row.name.as_deref().unwrap_or(""));
@@ -479,18 +509,8 @@ async fn qbo_customer_for(
                 "The customer needs a name for QuickBooks".into(),
             ));
         }
-        let mut body = json!({ "DisplayName": name });
-        if let Some(email) = row
-            .email
-            .as_deref()
-            .map(str::trim)
-            .filter(|e| !e.is_empty())
-        {
-            body["PrimaryEmailAddr"] = json!({ "Address": email });
-        }
-        if let Some(address) = bill_addr.and_then(Address::to_qbo) {
-            body["BillAddr"] = address;
-        }
+        let mut body = Value::Object(known);
+        body["DisplayName"] = json!(name);
         let created = state
             .qbo
             .post(access, "customer", &body)
@@ -563,6 +583,7 @@ pub async fn create_invoice(
         &input.invoice,
         ready.email.as_deref(),
         &ready.classes,
+        &ready.usual,
     )
     .map_err(ApiError::BadRequest)?;
     let access = ready.access;
@@ -598,9 +619,9 @@ pub async fn create_invoice(
             &state.pool,
             &user,
             input.quote_id,
-            &invoice.id,
             draft,
             &input.invoice,
+            &invoice,
         )
         .await
     {
@@ -623,13 +644,15 @@ pub async fn create_invoice(
 }
 
 /// What a new invoice for a customer needs: the token, the customer's
-/// `QuickBooks` customer (matched or created), their email, and the class
-/// ids of the invoice and of its lines.
+/// `QuickBooks` customer (matched or created), their email, the class ids of
+/// the invoice and of its lines, and what the company's invoices usually
+/// have (service dates, terms).
 pub(crate) struct Prepared {
     pub access: Access,
     pub qbo_id: String,
     pub email: Option<String>,
     pub classes: Classes,
+    pub usual: Usual,
 }
 
 /// Checks the quote is the customer's and gets what a new invoice needs.
@@ -641,11 +664,11 @@ pub(crate) async fn prepare(
     invoice: &EditableInvoice,
 ) -> ApiResult<Prepared> {
     let company_id = user.company_id;
-    if let Some(quote_id) = quote_id {
+    let job = if let Some(quote_id) = quote_id {
         // A quote may be invoiced again (e.g. its invoice was deleted in
         // QuickBooks); it keeps the newest invoice's id.
-        let quote: Option<i32> = sqlx::query_scalar(
-            "SELECT id FROM quotes
+        let quote: Option<(i32, Option<String>)> = sqlx::query_as(
+            "SELECT id, address FROM quotes
               WHERE id = ? AND company_id = ? AND customer_id = ? AND deleted_at IS NULL",
         )
         .bind(quote_id)
@@ -653,27 +676,26 @@ pub(crate) async fn prepare(
         .bind(customer_id)
         .fetch_optional(&state.pool)
         .await?;
-        if quote.is_none() {
+        let Some((_, address)) = quote else {
             return Err(ApiError::Denied(
                 "This quote is not one of this customer's.".into(),
             ));
-        }
-    }
+        };
+        address.as_deref().and_then(customer::parse_address)
+    } else {
+        None
+    };
+    // Without a quote, or a quote without an address, the job is where the
+    // editor ships to.
+    let job = job.or_else(|| invoice.ship_addr.clone());
     let row = customer(state, company_id, customer_id).await?;
     let access = state
         .qbo
         .access(&state.pool, company_id)
         .await
         .map_err(qbo_error)?;
-    let qbo_id = qbo_customer_for(
-        state,
-        &access,
-        company_id,
-        customer_id,
-        &row,
-        invoice.bill_addr.as_ref(),
-    )
-    .await?;
+    let qbo_id =
+        qbo_customer_for(state, &access, company_id, customer_id, &row, job.as_ref()).await?;
     let named = |name: Option<&str>| {
         name.map(str::trim)
             .filter(|name| !name.is_empty())
@@ -700,6 +722,7 @@ pub(crate) async fn prepare(
             by_name.insert(name, id);
         }
     }
+    let habits = rules::kept_habits(&state.pool, company_id).await;
     Ok(Prepared {
         access,
         qbo_id,
@@ -708,6 +731,12 @@ pub(crate) async fn prepare(
             invoice: invoice_class,
             per_line,
             by_name,
+        },
+        usual: Usual {
+            service_dates: habits.service_dates(),
+            term: habits
+                .usual_due()
+                .and_then(|due| Some((due.days, due.term?))),
         },
     })
 }
