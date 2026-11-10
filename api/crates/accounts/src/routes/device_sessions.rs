@@ -161,6 +161,10 @@ pub struct PhoneUser {
     /// app shows quotes read-only. Null: every skill (admins, superusers and
     /// people without a configurable position).
     pub skills: Option<Vec<String>>,
+    /// The user has a Projects board, as `GET /v1/app/shell`
+    /// `has_projects_board` has it: the app shows its Projects tab (`GET
+    /// /v1/projects` with the device token) only then.
+    pub has_projects_board: bool,
 }
 
 /// The [`PhoneUser`] of a signed-in user.
@@ -181,6 +185,7 @@ pub async fn phone_user(pool: &MySqlPool, user: &SessionUser) -> sqlx::Result<Ph
         skills: crate::auth::skills::user_skills(pool, user, &positions)
             .await
             .map(|keys| keys.into_iter().map(ToString::to_string).collect()),
+        has_projects_board: crate::routes::app_shell::has_projects_board(user, &positions),
     })
 }
 
