@@ -28,9 +28,10 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_sale_events, create_sale_event))
         .routes(routes!(update_sale_event, delete_sale_event))
+        .routes(routes!(get_built_in_titles, save_built_in_titles))
 }
 
-/// Longest text after the variable.
+/// Longest text before or after the variable.
 const MAX_TEXT: usize = 200;
 
 /// What an event template's title starts with.
@@ -70,8 +71,10 @@ pub struct QuoteSaleEvent {
     pub calendar_id: i32,
     /// That calendar's name.
     pub calendar_name: String,
-    /// What the event's title starts with.
+    /// The name the event's title is built around.
     pub title_variable: TitleVariable,
+    /// What comes before the variable, e.g. "Rough-in"; empty: nothing.
+    pub title_before: String,
     /// What follows the variable, e.g. "Plumbing"; empty: the variable alone.
     pub title_text: String,
     /// Catalog extras (`GET /v1/quote-extras` ids) that tick this event in
@@ -100,6 +103,7 @@ struct SaleEventRow {
     calendar_id: i32,
     calendar_name: String,
     title_variable: String,
+    title_before: String,
     title_text: String,
     trigger_extra_ids: Option<String>,
     trigger_options: Option<String>,
@@ -112,6 +116,7 @@ impl From<SaleEventRow> for QuoteSaleEvent {
             calendar_id: row.calendar_id,
             calendar_name: row.calendar_name,
             title_variable: TitleVariable::parse(&row.title_variable),
+            title_before: row.title_before,
             title_text: row.title_text,
             trigger_extra_ids: row
                 .trigger_extra_ids
@@ -134,6 +139,10 @@ pub struct QuoteSaleEventInput {
     /// What the title starts with (default `quote_name`).
     #[serde(default)]
     pub title_variable: TitleVariable,
+    /// What comes before the variable, e.g. "Rough-in" (at most 200
+    /// characters; blank: nothing).
+    #[serde(default)]
+    pub title_before: String,
     /// What follows the variable, e.g. "Plumbing" (at most 200 characters;
     /// blank: the variable alone).
     #[serde(default)]
@@ -157,12 +166,14 @@ pub struct CreatedSaleEvent {
     pub id: u64,
 }
 
-/// The title a template gives a sold quote's event: the variable's name, then
-/// " - " and the text. `quote_name` and `customer_name` are trimmed and
-/// `None` when blank; `fallback` stands in when both are.
+/// The title a template gives a sold quote's event: the text before, the
+/// variable's name and the text after, joined by " - " (blank parts left
+/// out). `quote_name` and `customer_name` are trimmed and `None` when blank;
+/// `fallback` stands in when both are.
 #[must_use]
 pub fn sale_event_title(
     variable: TitleVariable,
+    before: &str,
     text: &str,
     quote_name: Option<&str>,
     customer_name: Option<&str>,
@@ -173,13 +184,93 @@ pub fn sale_event_title(
         TitleVariable::CustomerName => (customer_name, quote_name),
     };
     let name = first.or(second).unwrap_or(fallback);
-    let text = text.trim();
-    let title = if text.is_empty() {
-        name.to_string()
-    } else {
-        format!("{name} - {text}")
-    };
+    let title = [before.trim(), name, text.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" - ");
     title.chars().take(255).collect()
+}
+
+/// How a sold quote's built-in template or installation event is named:
+/// the text before, the variable, the text after.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SaleEventName {
+    /// The name the title is built around (default `quote_name`).
+    #[serde(default)]
+    pub title_variable: TitleVariable,
+    /// What comes before the variable (at most 200 characters; blank: nothing).
+    #[serde(default)]
+    pub title_before: String,
+    /// What follows the variable (at most 200 characters; blank: nothing).
+    #[serde(default)]
+    pub title_text: String,
+}
+
+impl SaleEventName {
+    /// The title for a sold quote (see `sale_event_title`).
+    #[must_use]
+    pub fn title(
+        &self,
+        quote_name: Option<&str>,
+        customer_name: Option<&str>,
+        fallback: &str,
+    ) -> String {
+        sale_event_title(
+            self.title_variable,
+            &self.title_before,
+            &self.title_text,
+            quote_name,
+            customer_name,
+            fallback,
+        )
+    }
+}
+
+/// `GET|PUT /v1/quote-sale-built-in-titles`: how the company names the
+/// template and installation events a sale adds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BuiltInTitles {
+    /// The template event (default: the quote's name alone).
+    pub template: SaleEventName,
+    /// The installation event (default: the quote's name alone).
+    pub installation: SaleEventName,
+}
+
+/// The company's built-in event names (`company.sale_template_title` and
+/// `sale_installation_title`; unset: the quote's name alone).
+pub async fn built_in_titles(
+    pool: &MySqlPool,
+    company_id: i32,
+) -> Result<BuiltInTitles, sqlx::Error> {
+    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT CAST(sale_template_title AS CHAR), CAST(sale_installation_title AS CHAR)
+           FROM company WHERE id = ?",
+    )
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await?;
+    let parse = |json: Option<String>| {
+        json.and_then(|json| serde_json::from_str::<SaleEventName>(&json).ok())
+            .unwrap_or_default()
+    };
+    let (template, installation) = row.unwrap_or_default();
+    Ok(BuiltInTitles {
+        template: parse(template),
+        installation: parse(installation),
+    })
+}
+
+/// The text trimmed; 400 when longer than `MAX_TEXT`.
+fn checked_text(text: &str, side: &str) -> ApiResult<String> {
+    let text = text.trim().to_string();
+    if text.chars().count() > MAX_TEXT {
+        return Err(ApiError::BadRequest(format!(
+            "The text {side} the variable can be at most {MAX_TEXT} characters"
+        )));
+    }
+    Ok(text)
 }
 
 /// The company's event templates on calendars it still has, in the order they
@@ -190,7 +281,8 @@ pub async fn sale_events(
 ) -> Result<Vec<QuoteSaleEvent>, sqlx::Error> {
     let rows: Vec<SaleEventRow> = sqlx::query_as(
         "SELECT t.id, t.calendar_id, c.name AS calendar_name,
-                CAST(t.title_variable AS CHAR) AS title_variable, t.title_text,
+                CAST(t.title_variable AS CHAR) AS title_variable, t.title_before,
+                t.title_text,
                 CAST(t.trigger_extra_ids AS CHAR) AS trigger_extra_ids,
                 CAST(t.trigger_options AS CHAR) AS trigger_options
            FROM quote_sale_event_templates t
@@ -205,8 +297,9 @@ pub async fn sale_events(
     Ok(rows.into_iter().map(QuoteSaleEvent::from).collect())
 }
 
-/// What `check` accepted: the text trimmed, the trigger extras and options as JSON.
+/// What `check` accepted: the texts trimmed, the trigger extras and options as JSON.
 struct Checked {
+    before: String,
     text: String,
     triggers: String,
     options: String,
@@ -251,12 +344,8 @@ async fn check(
     company_id: i32,
     input: &QuoteSaleEventInput,
 ) -> ApiResult<Checked> {
-    let text = input.title_text.trim().to_string();
-    if text.chars().count() > MAX_TEXT {
-        return Err(ApiError::BadRequest(format!(
-            "The text after the variable can be at most {MAX_TEXT} characters"
-        )));
-    }
+    let before = checked_text(&input.title_before, "before")?;
+    let text = checked_text(&input.title_text, "after")?;
     let calendar: Option<i32> = sqlx::query_scalar(
         "SELECT id FROM calendars WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
     )
@@ -284,6 +373,7 @@ async fn check(
     triggers.dedup();
     let options = kept_options(&input.trigger_options, &catalog);
     Ok(Checked {
+        before,
         text,
         triggers: serde_json::to_string(&triggers).unwrap_or_else(|_| "[]".into()),
         options: serde_json::to_string(&options).unwrap_or_else(|_| "[]".into()),
@@ -361,13 +451,14 @@ pub async fn create_sale_event(
     let checked = check(&state.pool, user.company_id, &input).await?;
     let id = sqlx::query(
         "INSERT INTO quote_sale_event_templates
-           (company_id, calendar_id, title_variable, title_text, trigger_extra_ids,
-            trigger_options, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+           (company_id, calendar_id, title_variable, title_before, title_text,
+            trigger_extra_ids, trigger_options, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user.company_id)
     .bind(input.calendar_id)
     .bind(input.title_variable.as_str())
+    .bind(checked.before)
     .bind(checked.text)
     .bind(checked.triggers)
     .bind(checked.options)
@@ -409,12 +500,13 @@ pub async fn update_sale_event(
     let checked = check(&state.pool, user.company_id, &input).await?;
     sqlx::query(
         "UPDATE quote_sale_event_templates
-            SET calendar_id = ?, title_variable = ?, title_text = ?, trigger_extra_ids = ?,
-                trigger_options = ?
+            SET calendar_id = ?, title_variable = ?, title_before = ?, title_text = ?,
+                trigger_extra_ids = ?, trigger_options = ?
           WHERE id = ? AND company_id = ?",
     )
     .bind(input.calendar_id)
     .bind(input.title_variable.as_str())
+    .bind(checked.before)
     .bind(checked.text)
     .bind(checked.triggers)
     .bind(checked.options)
@@ -457,6 +549,75 @@ pub async fn delete_sale_event(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// How the sale's template and installation events are named
+///
+/// Admin › Quotes › Automation › Event templates: each built-in event's title
+/// is the text before, the variable and the text after, joined by " - "
+/// (default: the quote's name alone). Any employee may read them (Mark as
+/// Sold shows the titles); admins change them with `PUT`.
+#[crate::openapi::path(
+    get,
+    path = "/v1/quote-sale-built-in-titles",
+    operation_id = "get_quote_sale_built_in_titles",
+    tag = "quotes",
+    responses(
+        (status = 200, description = "The company's built-in event names", body = BuiltInTitles),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn get_built_in_titles(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+) -> ApiResult<Json<BuiltInTitles>> {
+    Ok(Json(built_in_titles(&state.pool, user.company_id).await?))
+}
+
+/// Rename the sale's template and installation events
+///
+/// Quotes sold from then on get the new titles; events already added stay
+/// as they are.
+#[crate::openapi::path(
+    put,
+    path = "/v1/quote-sale-built-in-titles",
+    operation_id = "save_quote_sale_built_in_titles",
+    tag = "quotes",
+    request_body = BuiltInTitles,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "A text is too long", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn save_built_in_titles(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    JsonBody(input): JsonBody<BuiltInTitles>,
+) -> ApiResult<StatusCode> {
+    let checked = |name: &SaleEventName| -> ApiResult<String> {
+        let name = SaleEventName {
+            title_variable: name.title_variable,
+            title_before: checked_text(&name.title_before, "before")?,
+            title_text: checked_text(&name.title_text, "after")?,
+        };
+        Ok(serde_json::to_string(&name).unwrap_or_else(|_| "{}".into()))
+    };
+    sqlx::query(
+        "UPDATE company SET sale_template_title = ?, sale_installation_title = ? WHERE id = ?",
+    )
+    .bind(checked(&input.template)?)
+    .bind(checked(&input.installation)?)
+    .bind(user.company_id)
+    .execute(&state.pool)
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,8 +653,31 @@ mod tests {
     #[test]
     fn the_title_is_the_variable_then_the_text() {
         let title = |variable, text, quote, customer| {
-            sale_event_title(variable, text, quote, customer, "Customer #7")
+            sale_event_title(variable, "", text, quote, customer, "Customer #7")
         };
+        // Text before: it leads, joined the same way.
+        assert_eq!(
+            sale_event_title(
+                TitleVariable::QuoteName,
+                " Rough-in ",
+                "Plumbing",
+                Some("Ostrom Kitchen"),
+                None,
+                "Customer #7"
+            ),
+            "Rough-in - Ostrom Kitchen - Plumbing"
+        );
+        assert_eq!(
+            sale_event_title(
+                TitleVariable::CustomerName,
+                "Sink",
+                " ",
+                None,
+                Some("Jo"),
+                "x"
+            ),
+            "Sink - Jo"
+        );
         let q = TitleVariable::QuoteName;
         let c = TitleVariable::CustomerName;
         assert_eq!(

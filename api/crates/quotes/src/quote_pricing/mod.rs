@@ -28,7 +28,7 @@ pub mod takeoff;
 use crate::error::{ApiError, ApiResult};
 use crate::routes::events::history::{History, record};
 use crate::routes::quote_sale_events::{
-    QuoteSaleEvent, TitleVariable, sale_event_title, sale_events,
+    QuoteSaleEvent, built_in_titles, sale_event_title, sale_events,
 };
 use crate::routes::schedule::board::sole_template_maker;
 use doc::QuoteDoc;
@@ -940,20 +940,22 @@ async fn add_waiting_jobs(
         .map(str::trim)
         .filter(|quote_name| !quote_name.is_empty());
     let fallback = format!("Customer #{}", quote.customer_id);
-    // Named after the quote, else the customer.
-    let title = sale_event_title(
-        TitleVariable::QuoteName,
-        "",
-        quote_name,
-        name.as_deref(),
-        &fallback,
+    // Named as the company set (Admin › Quotes › Automation); default the
+    // quote's name, else the customer's.
+    let names = built_in_titles(pool, quote.company_id).await?;
+    let titles = (
+        names.template.title(quote_name, name.as_deref(), &fallback),
+        names
+            .installation
+            .title(quote_name, name.as_deref(), &fallback),
     );
     // The template and installation jobs, then the event templates' events.
-    let mut events = built_in_jobs(&calendars, jobs, &title);
+    let mut events = built_in_jobs(&calendars, jobs, &titles);
     events.extend(extra.into_iter().map(|(template, notes, urgent)| NewJob {
         calendar_id: template.calendar_id,
         title: sale_event_title(
             template.title_variable,
+            &template.title_before,
             &template.title_text,
             quote_name,
             name.as_deref(),
@@ -969,14 +971,20 @@ async fn add_waiting_jobs(
     Ok(())
 }
 
-/// The template and installation jobs titled `title` on `calendars` (id, is
-/// the templates calendar), each followed (Full Height Backsplash) by its FH
-/// Backsplash job.
-fn built_in_jobs(calendars: &[(i32, bool)], jobs: &SaleJobs, title: &str) -> Vec<NewJob> {
-    let fh_title: String = format!("{title} - FH Backsplash")
-        .chars()
-        .take(255)
-        .collect();
+/// The template and installation jobs on `calendars` (id, is the templates
+/// calendar), titled `titles` (template, installation), each followed (Full
+/// Height Backsplash) by its FH Backsplash job.
+fn built_in_jobs(
+    calendars: &[(i32, bool)],
+    jobs: &SaleJobs,
+    titles: &(String, String),
+) -> Vec<NewJob> {
+    let fh_title = |title: &str| -> String {
+        format!("{title} - FH Backsplash")
+            .chars()
+            .take(255)
+            .collect()
+    };
     calendars
         .iter()
         .flat_map(|&(calendar_id, template)| {
@@ -1001,10 +1009,9 @@ fn built_in_jobs(calendars: &[(i32, bool)], jobs: &SaleJobs, title: &str) -> Vec
             };
             NewJob {
                 calendar_id,
-                title: if fh {
-                    fh_title.clone()
-                } else {
-                    title.to_string()
+                title: {
+                    let title = if template { &titles.0 } else { &titles.1 };
+                    if fh { fh_title(title) } else { title.clone() }
                 },
                 notes: notes
                     .as_deref()
