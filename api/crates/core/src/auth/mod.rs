@@ -42,7 +42,9 @@
 //! `GET`, `place_read`, and `sale_and_invoice_write`: the sale, a quick-added
 //! stone, the invoice or its split, its draft rules and sync link), and the
 //! company's own (non-QuickBooks) invoice made from a quote (`own_invoice`:
-//! the next number, creating it, marking it sent once emailed) the
+//! the next number, creating it, marking it sent once emailed), and the
+//! Projects tab (`project_route`: the board, a project's page, its actions,
+//! tasks, notes, files and steps, starting a deal's project) the
 //! cookie extractors above (`CurrentUser` through `ShopOrEmployeeUser`) also take the
 //! app's `X-Granite-Device` token in place of the cookie: the phone's user, in
 //! the device session's company, with the same rights as their CRM session.
@@ -485,6 +487,56 @@ fn own_invoice(method: &Method, path: &str) -> bool {
     }
 }
 
+/// The app's Projects tab with its device token, exactly these, as the
+/// website's Projects board and project page make them: the board (`GET
+/// /v1/projects`), QuickBooks payments (`GET /v1/projects/payments`), the
+/// company's steps (`GET /v1/projects/process-steps`), a project's page and
+/// deleting it (`GET|DELETE /v1/projects/{id}`), its actions (`POST
+/// .../actions`), a column's manual order (`POST /v1/projects/reorder`), its
+/// tasks (`POST .../tasks`, `PATCH|DELETE .../tasks/{id}`), forgetting a task's
+/// time (`POST .../task-times/reset`), its notes and files (`POST
+/// .../notes|files`, `DELETE .../notes|files/{id}`), checking a step off (`PUT
+/// .../steps/{id}`), and starting a deal's project (`POST
+/// /v1/deals/{id}/project`; reading it is under [`DEVICE_READ_ROUTES`]). The
+/// handlers keep their own position checks ([`sections`] and [`skills`]
+/// still apply); setting up the company's steps stays with the CRM session.
+fn project_route(method: &Method, path: &str) -> bool {
+    let (get, post, put, patch, delete) = (
+        method == Method::GET,
+        method == Method::POST,
+        method == Method::PUT,
+        method == Method::PATCH,
+        method == Method::DELETE,
+    );
+    if let Some(id) = path
+        .strip_prefix("/v1/deals/")
+        .and_then(|rest| rest.strip_suffix("/project"))
+    {
+        return is_id(id) && post;
+    }
+    let Some(rest) = path.strip_prefix("/v1/projects") else {
+        return false;
+    };
+    if rest.is_empty() {
+        return get;
+    }
+    let Some(rest) = rest.strip_prefix('/') else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    match parts.as_slice() {
+        ["payments" | "process-steps"] => get,
+        ["reorder"] => post,
+        [id] => is_id(id) && (get || delete),
+        [id, "actions" | "tasks" | "notes" | "files"] => is_id(id) && post,
+        [id, "task-times", "reset"] => is_id(id) && post,
+        [id, "tasks", task] => is_id(id) && is_id(task) && (patch || delete),
+        [id, "notes" | "files", item] => is_id(id) && is_id(item) && delete,
+        [id, "steps", step] => is_id(id) && is_id(step) && put,
+        _ => false,
+    }
+}
+
 /// A request the device token may sign: any method on [`DEVICE_ROUTES`],
 /// `GET` on [`DEVICE_READ_ROUTES`], `POST` on [`DEVICE_ACTIONS`] and on a
 /// provider's `/v1/sms/{provider}/messages`, and the Deals tab's changes
@@ -494,7 +546,8 @@ fn own_invoice(method: &Method, path: &str) -> bool {
 /// the quote screen's (`GET` on [`DEVICE_QUOTE_READS`], [`quote_write`],
 /// [`quote_print_and_templates`]), and the sale form's and invoice editor's
 /// (`GET` on [`DEVICE_SALE_READS`], [`place_read`],
-/// [`sale_and_invoice_write`]) and its own invoice ([`own_invoice`]).
+/// [`sale_and_invoice_write`]) and its own invoice ([`own_invoice`]), and
+/// the Projects tab's ([`project_route`]).
 fn device_route(method: &Method, path: &str) -> bool {
     DEVICE_ROUTES.iter().any(|prefix| under(path, prefix))
         || (method == Method::GET && DEVICE_READ_ROUTES.iter().any(|prefix| under(path, prefix)))
@@ -512,6 +565,7 @@ fn device_route(method: &Method, path: &str) -> bool {
         || sale_read(method, path)
         || sale_and_invoice_write(method, path)
         || own_invoice(method, path)
+        || project_route(method, path)
 }
 
 async fn identify(
@@ -1170,6 +1224,55 @@ mod tests {
             (Method::PUT, "/v1/invoices/7/status/x"),
             (Method::POST, "/v1/invoicesx"),
             (Method::GET, "/v1/invoices/"),
+        ] {
+            assert!(!device_route(&method, path), "{method} {path}");
+        }
+    }
+
+    #[test]
+    fn the_projects_tab_works_as_the_websites_projects() {
+        for (method, path) in [
+            (Method::GET, "/v1/projects"),
+            (Method::GET, "/v1/projects/payments"),
+            (Method::GET, "/v1/projects/process-steps"),
+            (Method::GET, "/v1/projects/7"),
+            (Method::DELETE, "/v1/projects/7"),
+            (Method::POST, "/v1/projects/7/actions"),
+            (Method::POST, "/v1/projects/reorder"),
+            (Method::POST, "/v1/projects/7/tasks"),
+            (Method::PATCH, "/v1/projects/7/tasks/3"),
+            (Method::DELETE, "/v1/projects/7/tasks/3"),
+            (Method::POST, "/v1/projects/7/task-times/reset"),
+            (Method::POST, "/v1/projects/7/notes"),
+            (Method::DELETE, "/v1/projects/7/notes/3"),
+            (Method::POST, "/v1/projects/7/files"),
+            (Method::DELETE, "/v1/projects/7/files/3"),
+            (Method::PUT, "/v1/projects/7/steps/3"),
+            (Method::GET, "/v1/deals/7/project"),
+            (Method::POST, "/v1/deals/7/project"),
+        ] {
+            assert!(device_route(&method, path), "{method} {path}");
+        }
+        for (method, path) in [
+            // Setting up the company's steps stays with the CRM session.
+            (Method::POST, "/v1/projects/process-steps"),
+            (Method::PATCH, "/v1/projects/process-steps/3"),
+            (Method::DELETE, "/v1/projects/process-steps/3"),
+            (Method::POST, "/v1/projects/process-steps/reorder"),
+            (Method::POST, "/v1/projects"),
+            (Method::PUT, "/v1/projects/7"),
+            (Method::PATCH, "/v1/projects/7"),
+            (Method::GET, "/v1/projects/7/actions"),
+            (Method::GET, "/v1/projects/reorder"),
+            (Method::PATCH, "/v1/projects/7/notes/3"),
+            (Method::PUT, "/v1/projects/7/tasks/3"),
+            (Method::GET, "/v1/projects/7/steps/3"),
+            (Method::POST, "/v1/projects/x/actions"),
+            (Method::DELETE, "/v1/projects/7/files/x"),
+            (Method::POST, "/v1/projects/7/task-times"),
+            (Method::GET, "/v1/projectsx"),
+            (Method::DELETE, "/v1/deals/7/project"),
+            (Method::POST, "/v1/deals/x/project"),
         ] {
             assert!(!device_route(&method, path), "{method} {path}");
         }

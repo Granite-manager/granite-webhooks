@@ -32192,6 +32192,131 @@
         ]
       }
     },
+    "/v1/quote-sale-built-in-titles": {
+      "get": {
+        "tags": [
+          "quotes"
+        ],
+        "summary": "How the sale's template and installation events are named",
+        "description": "Admin › Quotes › Automation › Event templates: each built-in event's title\nis the text before, the variable and the text after, joined by \" - \"\n(default: the quote's name alone). Any employee may read them (Mark as\nSold shows the titles); admins change them with `PUT`.",
+        "operationId": "get_quote_sale_built_in_titles",
+        "responses": {
+          "200": {
+            "description": "The company's built-in event names",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuiltInTitles"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "quotes"
+        ],
+        "summary": "Rename the sale's template and installation events",
+        "description": "Quotes sold from then on get the new titles; events already added stay\nas they are.",
+        "operationId": "save_quote_sale_built_in_titles",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuiltInTitles"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "A text is too long",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/quotes/{id}/invoice-sync": {
       "get": {
         "tags": [
@@ -73277,6 +73402,25 @@
           }
         }
       },
+      "BuiltInTitles": {
+        "type": "object",
+        "description": "`GET|PUT /v1/quote-sale-built-in-titles`: how the company names the\ntemplate and installation events a sale adds.",
+        "required": [
+          "template",
+          "installation"
+        ],
+        "properties": {
+          "template": {
+            "$ref": "#/components/schemas/SaleEventName",
+            "description": "The template event (default: the quote's name alone)."
+          },
+          "installation": {
+            "$ref": "#/components/schemas/SaleEventName",
+            "description": "The installation event (default: the quote's name alone)."
+          }
+        },
+        "additionalProperties": false
+      },
       "BuyNumber": {
         "type": "object",
         "description": "Body of `POST /v1/phone/admin/numbers/buy`.",
@@ -92625,7 +92769,8 @@
           "email",
           "companyId",
           "companyName",
-          "isAdmin"
+          "isAdmin",
+          "hasProjectsBoard"
         ],
         "properties": {
           "id": {
@@ -92670,6 +92815,10 @@
               "type": "string"
             },
             "description": "The skills the user's positions give them (Position access), as\n`GET /v1/app/shell` `skills` has them: e.g. without `edit_quotes` the\napp shows quotes read-only. Null: every skill (admins, superusers and\npeople without a configurable position)."
+          },
+          "hasProjectsBoard": {
+            "type": "boolean",
+            "description": "The user has a Projects board, as `GET /v1/app/shell`\n`has_projects_board` has it: the app shows its Projects tab (`GET\n/v1/projects` with the device token) only then."
           }
         }
       },
@@ -98389,6 +98538,7 @@
           "calendar_id",
           "calendar_name",
           "title_variable",
+          "title_before",
           "title_text",
           "trigger_extra_ids",
           "trigger_options"
@@ -98410,7 +98560,11 @@
           },
           "title_variable": {
             "$ref": "#/components/schemas/TitleVariable",
-            "description": "What the event's title starts with."
+            "description": "The name the event's title is built around."
+          },
+          "title_before": {
+            "type": "string",
+            "description": "What comes before the variable, e.g. \"Rough-in\"; empty: nothing."
           },
           "title_text": {
             "type": "string",
@@ -98448,6 +98602,10 @@
           "title_variable": {
             "$ref": "#/components/schemas/TitleVariable",
             "description": "What the title starts with (default `quote_name`)."
+          },
+          "title_before": {
+            "type": "string",
+            "description": "What comes before the variable, e.g. \"Rough-in\" (at most 200\ncharacters; blank: nothing)."
           },
           "title_text": {
             "type": "string",
@@ -100253,6 +100411,24 @@
               "$ref": "#/components/schemas/SaleRoom"
             },
             "description": "Rooms in the order their first slab was added."
+          }
+        }
+      },
+      "SaleEventName": {
+        "type": "object",
+        "description": "How a sold quote's built-in template or installation event is named:\nthe text before, the variable, the text after.",
+        "properties": {
+          "title_variable": {
+            "$ref": "#/components/schemas/TitleVariable",
+            "description": "The name the title is built around (default `quote_name`)."
+          },
+          "title_before": {
+            "type": "string",
+            "description": "What comes before the variable (at most 200 characters; blank: nothing)."
+          },
+          "title_text": {
+            "type": "string",
+            "description": "What follows the variable (at most 200 characters; blank: nothing)."
           }
         }
       },

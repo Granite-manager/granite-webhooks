@@ -173,6 +173,27 @@ pub fn user_portal(user: &SessionUser, rows: &[UserPositionRow]) -> Option<Strin
     portal(user, all.contains(&SUPER_ADMIN_POSITION), &all).map(|(name, _)| name)
 }
 
+/// Projects is on and `user`'s position has a Projects board
+/// ([`AppShell::has_projects_board`]; the Granite Manager app's Projects tab
+/// follows it too): an admin, or a Sales Rep, Sales Manager, Shop Manager,
+/// Manager, Inventory Manager or Scheduling Manager of the company.
+pub fn has_projects_board(user: &SessionUser, rows: &[UserPositionRow]) -> bool {
+    user.is_admin
+        || [
+            SALES_REP,
+            SALES_MANAGER,
+            SHOP_MANAGER,
+            MANAGER,
+            INVENTORY_MANAGER,
+            SCHEDULING_MANAGER,
+        ]
+        .into_iter()
+        .any(|position| {
+            rows.iter()
+                .any(|row| row.position_id == position && row.company_id == user.company_id)
+        })
+}
+
 /// The app frame
 ///
 /// The signed-in user (in the company they act in), the super admin company
@@ -298,17 +319,7 @@ pub async fn shell(
         can_manage_company: user.is_superuser || here(MANAGER),
         can_manage_billing: here(MANAGER),
         is_shop_manager: here(SHOP_MANAGER),
-        has_projects_board: user.is_admin
-            || [
-                SALES_REP,
-                SALES_MANAGER,
-                SHOP_MANAGER,
-                MANAGER,
-                INVENTORY_MANAGER,
-                SCHEDULING_MANAGER,
-            ]
-            .into_iter()
-            .any(here),
+        has_projects_board: has_projects_board(&user, &rows),
         is_template_maker: here(TEMPLATE_MAKER),
         user_signature_access: user.is_signature_available,
         user_ai_promises,

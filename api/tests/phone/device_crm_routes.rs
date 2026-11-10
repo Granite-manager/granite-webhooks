@@ -1526,3 +1526,94 @@ async fn the_deal_edit_saves_its_customer_and_reassigns_the_sales_rep_with_its_d
             .assert_status(StatusCode::FORBIDDEN);
     }
 }
+
+#[test_db::test(seed)]
+async fn the_projects_tab_works_with_the_device_token(pool: MySqlPool) {
+    // Mark (101) is company 100's Sales Manager; Dina (107) has no position.
+    add_session(&pool, 331, 101, 100).await;
+    add_session(&pool, 332, 107, 100).await;
+    let (server, _) = phone_server(pool.clone()).await;
+    let bootstrap = |n: u32| {
+        server
+            .get("/v1/phone/bootstrap")
+            .add_header(HEADER, token(n))
+    };
+    let marks = bootstrap(331).await.json::<Value>();
+    assert_eq!(marks["user"]["hasProjectsBoard"], json!(true));
+    let dinas = bootstrap(332).await.json::<Value>();
+    assert_eq!(dinas["user"]["hasProjectsBoard"], json!(false));
+
+    // Mark starts the project of deal 8002 from his phone and works on it.
+    let started = server
+        .post("/v1/deals/8002/project")
+        .add_header(HEADER, token(331))
+        .json(&json!({}))
+        .await;
+    started.assert_status_ok();
+    let id = started.json::<Value>()["project_id"].as_i64().unwrap();
+    let board = server
+        .get("/v1/projects?employee=true")
+        .add_header(HEADER, token(331))
+        .await;
+    board.assert_status_ok();
+    let board = board.json::<Value>();
+    assert!(board["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|project| project["id"] == json!(id)));
+    assert_eq!(board["permissions"]["convert"], json!(true));
+    let page = server
+        .get(&format!("/v1/projects/{id}"))
+        .add_header(HEADER, token(331))
+        .await;
+    page.assert_status_ok();
+    let version = page.json::<Value>()["project"]["version"].clone();
+    server
+        .post(&format!("/v1/projects/{id}/notes"))
+        .add_header(HEADER, token(331))
+        .json(&json!({ "content": "Measure on Tuesday" }))
+        .await
+        .assert_status_success();
+    server
+        .post(&format!("/v1/projects/{id}/tasks"))
+        .add_header(HEADER, token(331))
+        .json(&json!({ "name": "Call the customer", "assignedUserId": 100, "deadline": null }))
+        .await
+        .assert_status_success();
+    // The project's own position checks still apply: a Sales Manager doesn't pick the owner.
+    let assign = server
+        .post(&format!("/v1/projects/{id}/actions"))
+        .add_header(HEADER, token(331))
+        .json(&json!({ "intent": "assign", "ownerId": 101, "version": version }))
+        .await;
+    assign.assert_status(StatusCode::FORBIDDEN);
+    assert_eq!(
+        assign.json::<Value>()["error"],
+        json!("Your position can't do this on a project")
+    );
+    server
+        .get(&format!("/v1/projects/payments?ids={id}"))
+        .add_header(HEADER, token(331))
+        .await
+        .assert_status_ok();
+    // Setting up the company's steps stays with the CRM: refused, not signed out.
+    server
+        .post("/v1/projects/process-steps")
+        .add_header(HEADER, token(331))
+        .json(&json!({ "stage": "new", "name": "Order sinks" }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    // Without a Projects board the phone is refused, not signed out.
+    server
+        .get("/v1/projects?employee=true")
+        .add_header(HEADER, token(332))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    // A Sales Manager deletes it for good.
+    server
+        .delete(&format!("/v1/projects/{id}"))
+        .add_header(HEADER, token(331))
+        .await
+        .assert_status_success();
+}
