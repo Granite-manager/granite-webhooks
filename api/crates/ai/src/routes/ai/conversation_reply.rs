@@ -49,11 +49,10 @@ PRIMARY TASK — write the next message this conversation itself calls for:
 3. If the last message is from the rep: write the next outreach the thread requires now — especially a follow-through you already promised.
 4. Move it forward with ONE natural question or one concrete next step.
 
-## Greeting and the customer's name: obey the GREETING line in the request
-- GREETING: NONE → the conversation is ongoing (an SMS or email with them earlier today). No greeting ("Hi", "Hey", "Hello", "Good morning", "Dear") and no customer name anywhere in the message, on SMS and email alike. Start straight with the content, like the next text in a running thread.
-- GREETING: BY NAME → a brand-new conversation, or the last message was on an earlier day: open with a short greeting and their first name ("Hi Ann,"). Never "Hello <Full Name>" or "Dear".
+## Greeting and the customer's name: every message opens with "Hi <first name>,"
+- Always open with a short greeting and the customer's first name ("Hi Ann,"), also when the conversation is still going today, on SMS and email alike; then go straight to the content. Without a known first name, "Hi,". Never "Hello <Full Name>" or "Dear".
 - The customer's name appears at most once in a message.
-- Never add a greeting just because the channel is email.
+- The examples below show what comes after that opener.
 
 ## Be specific — use the facts you have
 - Build the message on concrete facts from QUOTES, CUSTOMER / PROJECT INFO and the thread: the stone/color they picked or are choosing between, the area (kitchen, island, vanity), the edge, the quote and whether they opened it, a measurement or install date, the open next step.
@@ -117,18 +116,18 @@ For this exact situation, prefer wording very close to the GOOD example.
 Promised later text — ONLY when they asked you to wait and you agreed:
 Customer: "10-12 days would be best"
 Rep: "Great, will do"
-GOOD next message, two weeks later (GREETING: NONE, the thread is only weeks old):
-"Reaching out as we agreed. How is the project going?"
+GOOD next message, two weeks later (the thread is only weeks old):
+"Hi Lenora, reaching out as we agreed. How is the project going?"
 BAD next message:
 "Hi Lenora, you reached out about new countertops. Is there a good time for a call?"
 
 No agreement in the thread (quote sent, customer chose an edge, named two slabs, then went quiet):
 BAD: "Hi Ahoura, reaching out as we agreed. How is the kitchen renovation coming along?"
-GOOD: "Did you get a chance to look over the quote? Between Viraldi and Idillio, which one are you leaning toward?"
+GOOD: "Hi Ahoura, did you get a chance to look over the quote? Between Viraldi and Idillio, which one are you leaning toward?"
 
-Ongoing conversation (GREETING: NONE): the rep texted 20 minutes ago "Just sent the island quote", and now drafts the email:
+Ongoing conversation: the rep texted 20 minutes ago "Just sent the island quote", and now drafts the email:
 BAD: "Hi Maria, I hope you're doing well! As promised, please find the quote for your island."
-GOOD: "Here's the island quote in Calacatta Karmelo with the eased edge we talked about. Want me to hold that slab while you look it over?"
+GOOD: "Hi Maria, here's the island quote in Calacatta Karmelo with the eased edge we talked about. Want me to hold that slab while you look it over?"
 
 Customer opened the quote three times but has not replied (QUOTES shows it):
 GOOD: "Saw you had a chance to look at the quote. Is the Viraldi option still the one you like for the kitchen, or should I price the island in it too?"
@@ -940,8 +939,8 @@ mod tests {
     }
 
     #[test]
-    fn a_message_from_today_on_any_channel_skips_the_greeting() {
-        // Earlier today (5:00 AM in Indianapolis): no greeting.
+    fn every_draft_greets_the_customer_by_name() {
+        // Earlier today (5:00 AM in Indianapolis): still "Hi Ann," (owner, 2026-11-10).
         for at in ["2026-10-13 09:00"] {
             let timeline = vec![message(
                 at,
@@ -949,11 +948,11 @@ mod tests {
                 "Can you send the price for the island top please?",
             )];
             let text = prompt(&timeline, ReplyMode::FastReply, &CustomDraft::default());
-            assert!(text.contains("GREETING: NONE"), "{at}");
-            assert!(text.contains("Do NOT open with a greeting"));
-            assert!(text.contains("do NOT use the customer's name"));
+            assert!(text.contains("GREETING: BY NAME"), "{at}");
+            assert!(text.contains("ongoing today"));
+            assert!(!text.contains("GREETING: NONE"));
         }
-        // The rep just texted; an email draft still continues without "Hi".
+        // The rep just texted; an email draft still opens with "Hi Lenora,".
         let mut texted = lenora();
         texted.push(message(
             "2026-10-13 14:40",
@@ -975,7 +974,7 @@ mod tests {
             &ReplyExtras::default(),
             now,
         );
-        assert!(email.contains("GREETING: NONE") && email.contains("20 minutes ago"));
+        assert!(email.contains("GREETING: BY NAME") && email.contains("20 minutes ago"));
         // Lenora's last message was 48 days ago: greet by name.
         assert!(
             prompt(&lenora(), ReplyMode::FastReply, &CustomDraft::default())
@@ -1126,22 +1125,17 @@ mod tests {
     }
 
     #[test]
-    fn the_system_prompt_does_not_anchor_a_greeting() {
+    fn the_system_prompt_always_greets_by_name() {
         let p = CONVERSATION_REPLY_SYSTEM_PROMPT;
-        assert!(p.contains("GREETING: NONE") && p.contains("GREETING: BY NAME"));
+        assert!(p.contains("every message opens with \"Hi <first name>,\""));
+        assert!(!p.contains("GREETING: NONE"));
         assert!(p.contains("at most once"));
-        // GOOD examples open without a greeting except after a 60+ day gap,
-        // and the examples model plain writing: no em dashes in them.
+        // The examples model plain writing: no em dashes in them.
         let goods: Vec<&str> = p.lines().filter(|l| l.starts_with("GOOD: \"")).collect();
         assert!(goods.len() >= 4);
-        assert_eq!(
-            goods.iter().filter(|l| l.starts_with("GOOD: \"Hi")).count(),
-            1
-        );
         assert!(goods.iter().all(|l| !l.contains('—')));
-        assert!(p.contains("two weeks later (GREETING: NONE"));
-        assert!(p.contains("\"Reaching out as we agreed. How is the project going?\""));
-        assert!(p.contains("\"Here's the island quote in Calacatta Karmelo"));
+        assert!(p.contains("\"Hi Lenora, reaching out as we agreed. How is the project going?\""));
+        assert!(p.contains("\"Hi Maria, here's the island quote in Calacatta Karmelo"));
         assert!(reply_body(r#"{"body":"  Sounds good  "}"#) == "Sounds good");
         assert_eq!(reply_body("not json"), "");
     }
