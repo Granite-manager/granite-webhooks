@@ -18293,6 +18293,452 @@
         ]
       }
     },
+    "/v1/projects/process-steps": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "The company's process steps",
+        "operationId": "list_project_process_steps",
+        "responses": {
+          "200": {
+            "description": "The steps, in process order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProcessStep"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Add a process step",
+        "description": "Goes last in its stage. Paid & Completed has nothing after it, so it takes none.",
+        "operationId": "create_project_process_step",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedId"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or long name, or Paid & Completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-steps/{step_id}": {
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Delete a process step",
+        "description": "Gone from every project, with its check-offs.",
+        "operationId": "delete_project_process_step",
+        "parameters": [
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such step in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Rename a process step",
+        "operationId": "rename_project_process_step",
+        "parameters": [
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepName"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Renamed"
+          },
+          "400": {
+            "description": "Missing or long name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such step in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-steps/reorder": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Save a stage's order of steps",
+        "operationId": "reorder_project_process_steps",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepOrder"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/steps/{step_id}": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Check a step off a project, or undo it",
+        "description": "Anyone who can see the project, while it is not archived or cancelled.",
+        "operationId": "set_project_step_done",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepDone"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see, or step in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/calendars": {
       "get": {
         "tags": [
@@ -39951,6 +40397,43 @@
               "type": "integer",
               "format": "int32"
             }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "The planned start, as an event's `start_date`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "end",
+            "in": "query",
+            "description": "The planned end, as an event's `end_date`.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "all_day",
+            "in": "query",
+            "description": "Whether the planned time is all day.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "assigned_user_id",
+            "in": "query",
+            "description": "The person who would get the job.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
           }
         ],
         "responses": {
@@ -50971,6 +51454,63 @@
           },
           "500": {
             "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "job_key": []
+          }
+        ]
+      }
+    },
+    "/v1/jobs/ringcentral-delivery": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Mark texts RingCentral did not deliver",
+        "description": "Reads one page of the texts a rep sent through `RingCentral` and marks\nthe CRM's copy of each one `RingCentral` did not deliver as failed, with\nthe reason (marked as spam, number flagged as spam, or undelivered).",
+        "operationId": "run_ringcentral_delivery",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RingcentralDeliveryInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What was done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RingcentralDeliveryRun"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong job key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "RingCentral refused the request",
             "content": {
               "application/json": {
                 "schema": {
@@ -80519,6 +81059,38 @@
           }
         }
       },
+      "DoneStep": {
+        "type": "object",
+        "description": "A process step a project has done.",
+        "required": [
+          "project_id",
+          "step_id",
+          "done_at"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The project."
+          },
+          "step_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The step."
+          },
+          "done_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who checked it off."
+          },
+          "done_at": {
+            "type": "string",
+            "description": "When (UTC ISO)."
+          }
+        }
+      },
       "DraftAttachment": {
         "type": "object",
         "description": "A file of a draft.",
@@ -87904,6 +88476,13 @@
           "status": {
             "$ref": "#/components/schemas/MessageStatus"
           },
+          "error_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why a failed text failed (`ringcentral_spam`, ...)."
+          },
           "attachments": {
             "type": "array",
             "items": {
@@ -94680,6 +95259,84 @@
           "high"
         ]
       },
+      "ProcessStep": {
+        "type": "object",
+        "description": "A step a company added to a stage of its process.",
+        "required": [
+          "id",
+          "stage_code",
+          "name",
+          "position"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its id."
+          },
+          "stage_code": {
+            "$ref": "#/components/schemas/Stage",
+            "description": "The stage it belongs to."
+          },
+          "name": {
+            "type": "string",
+            "description": "What to do, e.g. \"Confirm a file\"."
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its place in the stage."
+          }
+        }
+      },
+      "ProcessStepInput": {
+        "type": "object",
+        "description": "A new process step.",
+        "required": [
+          "stage",
+          "name"
+        ],
+        "properties": {
+          "stage": {
+            "$ref": "#/components/schemas/Stage",
+            "description": "The stage to add it to."
+          },
+          "name": {
+            "type": "string",
+            "description": "What to do."
+          }
+        }
+      },
+      "ProcessStepName": {
+        "type": "object",
+        "description": "A process step's new name.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "What to do."
+          }
+        }
+      },
+      "ProcessStepOrder": {
+        "type": "object",
+        "description": "A stage's steps, in their new order.",
+        "required": [
+          "ids"
+        ],
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Step ids, first to last."
+          }
+        }
+      },
       "ProgressUser": {
         "type": "object",
         "description": "A sales rep of the company.",
@@ -95538,6 +96195,8 @@
           "people",
           "calendars",
           "appointments",
+          "process_steps",
+          "done_steps",
           "permissions",
           "user_id"
         ],
@@ -95616,6 +96275,20 @@
             },
             "description": "Every appointment of the project, newest first."
           },
+          "process_steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProcessStep"
+            },
+            "description": "The company's own steps in the process."
+          },
+          "done_steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DoneStep"
+            },
+            "description": "Which of those steps this project has done."
+          },
           "permissions": {
             "$ref": "#/components/schemas/Permissions",
             "description": "What the caller may do."
@@ -95636,6 +96309,8 @@
           "owners",
           "appointments",
           "tasks",
+          "process_steps",
+          "done_steps",
           "permissions",
           "page",
           "has_next"
@@ -95675,6 +96350,20 @@
               "$ref": "#/components/schemas/ProjectTask"
             },
             "description": "Their open tasks, the most urgent first."
+          },
+          "process_steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProcessStep"
+            },
+            "description": "The company's own steps in the process."
+          },
+          "done_steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DoneStep"
+            },
+            "description": "Which of those steps these projects have done."
           },
           "permissions": {
             "$ref": "#/components/schemas/Permissions",
@@ -98867,6 +99556,74 @@
               "null"
             ],
             "description": "The number the user texts from now (10 digits); null when their\n`RingCentral` user has no number that can text."
+          }
+        }
+      },
+      "RingcentralDeliveryInput": {
+        "type": "object",
+        "description": "Which texts to check.",
+        "required": [
+          "company_id",
+          "extension",
+          "date_from"
+        ],
+        "properties": {
+          "company_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "extension": {
+            "type": "string",
+            "description": "The rep's `RingCentral` extension id (`ringcentral_sms.agent`)."
+          },
+          "date_from": {
+            "type": "string",
+            "description": "Texts sent from then on (ISO 8601, e.g. `2026-06-01T00:00:00Z`)."
+          },
+          "date_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "And before then, when given."
+          },
+          "page": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Page of 100 texts, from 1.",
+            "minimum": 0
+          }
+        }
+      },
+      "RingcentralDeliveryRun": {
+        "type": "object",
+        "description": "What a run did.",
+        "required": [
+          "checked",
+          "marked"
+        ],
+        "properties": {
+          "checked": {
+            "type": "integer",
+            "description": "Texts `RingCentral` reported on this page.",
+            "minimum": 0
+          },
+          "marked": {
+            "type": "integer",
+            "description": "Of them, the CRM texts now marked failed.",
+            "minimum": 0
+          },
+          "next_page": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The page to ask for next, or null when this was the last.",
+            "minimum": 0
           }
         }
       },
@@ -103651,6 +104408,19 @@
           "sms",
           "email"
         ]
+      },
+      "StepDone": {
+        "type": "object",
+        "description": "Whether a project has done a step.",
+        "required": [
+          "done"
+        ],
+        "properties": {
+          "done": {
+            "type": "boolean",
+            "description": "Done, or undone."
+          }
+        }
       },
       "StepInput": {
         "type": "object",

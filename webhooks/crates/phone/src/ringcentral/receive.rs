@@ -8,7 +8,7 @@ use crate::crud::deals::{
 };
 use crate::crud::ringcentral::{
     cancel_flow_enrollments_for_customer, cancel_flow_enrollments_on_reply, insert_inbound_sms,
-    insert_outbound_sms, mark_undelivered,
+    insert_outbound_sms,
 };
 use crate::libs::app_request::{SmsFollowupCallCheckBody, spawn_sms_followup_call_check};
 use crate::libs::constants::{BAD_REQUEST, ERR_DB, OK_RESPONSE, internal_error};
@@ -17,7 +17,7 @@ use crate::ringcentral::api::sync_customer_to_ring_central;
 use crate::ringcentral::media::store_inbound_media;
 use crate::ringcentral::schemas::{
     NotifiedSms, RingcentralSMS, RingcentralSmsNotification,
-    inbound_customer_phone_from_call_payload, outbound_call_followup_check, undelivered_sms,
+    inbound_customer_phone_from_call_payload, outbound_call_followup_check,
 };
 use axum::body::{Body, Bytes};
 use axum::extract::Request;
@@ -278,54 +278,64 @@ async fn store_outbound_sms(
 /// How far back a `message-store` push looks for texts sent from the
 /// `RingCentral` app; ones already stored are skipped.
 const SENT_LOOKBACK_MINUTES: i64 = 10;
+/// How far back a push looks for texts `RingCentral` rejected: a carrier
+/// can refuse a text (as spam) well after it was sent.
+const REJECTED_LOOKBACK_HOURS: i64 = 24;
+/// Pages of 100 texts a push reads at most.
+const MAX_PAGES: u32 = 5;
 
 /// Texts `extension` sent lately, stored like the CRM's own sends (a text the
-/// CRM sent itself is already there under its `RingCentral` id).
+/// CRM sent itself is already there under its `RingCentral` id), and the
+/// ones of the last day `RingCentral` did not deliver marked failed.
 async fn store_recent_outbound(
     pool: &MySqlPool,
     company_id: i32,
     extension: &str,
 ) -> BasicResponse {
-    let since = (chrono::Utc::now() - chrono::Duration::minutes(SENT_LOOKBACK_MINUTES))
-        .format("%Y-%m-%dT%H:%M:%S%.3fZ");
-    let path = format!(
-        "account/~/extension/{extension}/message-store?messageType=SMS&direction=Outbound&dateFrom={since}&perPage=100"
-    );
+    let now = chrono::Utc::now();
+    let stored_since = now - chrono::Duration::minutes(SENT_LOOKBACK_MINUTES);
+    let since = (now - chrono::Duration::hours(REJECTED_LOOKBACK_HOURS))
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
     let client = common::http::client();
-    let messages = match common::telephony::ringcentral::request(
-        pool,
-        &client,
-        company_id,
-        reqwest::Method::GET,
-        &path,
-        &common::telephony::ringcentral::Body::Empty,
-        None,
-    )
-    .await
-    {
-        Ok(messages) => messages,
-        Err(error) => {
-            tracing::error!(
-                company_id,
-                status = error.status,
-                "Could not load sent ringcentral texts"
-            );
-            // A 200 still: RingCentral would only retry the same push.
-            return OK_RESPONSE;
-        }
-    };
-    let records = messages["records"].as_array().cloned().unwrap_or_default();
-    for record in records {
-        let undelivered = undelivered_sms(&record);
-        if let Some(NotifiedSms::Outbound(sms)) =
-            RingcentralSmsNotification::from_record(extension, record)
+    for page in 1..=MAX_PAGES {
+        let (records, more) = match common::telephony::ringcentral::sent_texts_page(
+            pool, &client, company_id, extension, &since, None, page,
+        )
+        .await
         {
-            store_outbound_sms(pool, company_id, &sms).await;
+            Ok(found) => found,
+            Err(error) => {
+                tracing::error!(
+                    company_id,
+                    status = error.status,
+                    "Could not load sent ringcentral texts"
+                );
+                // A 200 still: RingCentral would only retry the same push.
+                return OK_RESPONSE;
+            }
+        };
+        for record in records {
+            let recent = record["creationTime"]
+                .as_str()
+                .and_then(|time| chrono::DateTime::parse_from_rfc3339(time).ok())
+                .is_some_and(|time| time.with_timezone(&chrono::Utc) >= stored_since);
+            if recent
+                && let Some(NotifiedSms::Outbound(sms)) =
+                    RingcentralSmsNotification::from_record(extension, record.clone())
+            {
+                store_outbound_sms(pool, company_id, &sms).await;
+            }
+            if let Err(error) = common::telephony::ringcentral::mark_undelivered(
+                pool, company_id, extension, &record,
+            )
+            .await
+            {
+                tracing::error!(company_id, "Could not mark text undelivered: {error}");
+            }
         }
-        if let Some((message_id, reason)) = undelivered
-            && let Err(error) = mark_undelivered(pool, company_id, message_id, reason).await
-        {
-            tracing::error!(company_id, message_id, "Could not mark text undelivered: {error}");
+        if !more {
+            break;
         }
     }
     OK_RESPONSE
