@@ -201,6 +201,8 @@ pub struct Message {
     /// webhook arrived late).
     pub created_at: DateTime<Utc>,
     pub status: MessageStatus,
+    /// Why a failed text failed (`ringcentral_spam`, ...).
+    pub error_message: Option<String>,
     /// Photos and files, in order.
     pub attachments: Vec<Attachment>,
 }

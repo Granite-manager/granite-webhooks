@@ -8,7 +8,7 @@ use crate::crud::deals::{
 };
 use crate::crud::ringcentral::{
     cancel_flow_enrollments_for_customer, cancel_flow_enrollments_on_reply, insert_inbound_sms,
-    insert_outbound_sms,
+    insert_outbound_sms, mark_undelivered,
 };
 use crate::libs::app_request::{SmsFollowupCallCheckBody, spawn_sms_followup_call_check};
 use crate::libs::constants::{BAD_REQUEST, ERR_DB, OK_RESPONSE, internal_error};
@@ -17,7 +17,7 @@ use crate::ringcentral::api::sync_customer_to_ring_central;
 use crate::ringcentral::media::store_inbound_media;
 use crate::ringcentral::schemas::{
     NotifiedSms, RingcentralSMS, RingcentralSmsNotification,
-    inbound_customer_phone_from_call_payload, outbound_call_followup_check,
+    inbound_customer_phone_from_call_payload, outbound_call_followup_check, undelivered_sms,
 };
 use axum::body::{Body, Bytes};
 use axum::extract::Request;
@@ -316,10 +316,16 @@ async fn store_recent_outbound(
     };
     let records = messages["records"].as_array().cloned().unwrap_or_default();
     for record in records {
+        let undelivered = undelivered_sms(&record);
         if let Some(NotifiedSms::Outbound(sms)) =
             RingcentralSmsNotification::from_record(extension, record)
         {
             store_outbound_sms(pool, company_id, &sms).await;
+        }
+        if let Some((message_id, reason)) = undelivered
+            && let Err(error) = mark_undelivered(pool, company_id, message_id, reason).await
+        {
+            tracing::error!(company_id, message_id, "Could not mark text undelivered: {error}");
         }
     }
     OK_RESPONSE
@@ -348,7 +354,7 @@ pub async fn sms_notification(
             return BAD_REQUEST.into_response();
         }
     };
-    if let Some(extension) = notification.new_sms_extension() {
+    if let Some(extension) = notification.changed_sms_extension() {
         return store_recent_outbound(&pool, company_id, &extension)
             .await
             .into_response();

@@ -144,6 +144,25 @@ pub async fn insert_outbound_sms(
     .await
 }
 
+/// `RingCentral` accepted a text and then rejected it: the row stops saying sent.
+pub async fn mark_undelivered(
+    pool: &MySqlPool,
+    company_id: i32,
+    ringcentral_id: i64,
+    reason: &str,
+) -> Result<MySqlQueryResult, sqlx::Error> {
+    sqlx::query(
+        "UPDATE ringcentral_sms SET status = 'failed', error_message = ?
+          WHERE company_id = ? AND ringcentral_id = ?
+            AND direction = 'outbound' AND status = 'sent'",
+    )
+    .bind(reason)
+    .bind(company_id)
+    .bind(ringcentral_id)
+    .execute(pool)
+    .await
+}
+
 #[derive(Debug, sqlx::FromRow)]
 pub struct CustomerWithMapping {
     // From customers table

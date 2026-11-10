@@ -31,6 +31,7 @@ struct MessageRow {
     recipient: String,
     text: String,
     status: String,
+    error_message: Option<String>,
     agent: Option<String>,
     conversation_at: DateTime<Utc>,
     /// The original a copy names (`moves`).
@@ -114,7 +115,7 @@ async fn message_rows(
 ) -> Result<Vec<MessageRow>, sqlx::Error> {
     let (table, id) = (provider.sms_table(), provider.id_column());
     let columns = "s.id, CAST(s.sender AS CHAR) AS sender, CAST(s.recipient AS CHAR) AS recipient,
-                   s.text, CAST(s.status AS CHAR) AS status, s.agent";
+                   s.text, CAST(s.status AS CHAR) AS status, s.error_message, s.agent";
     let window = if provider.has_conversation_time() {
         conversation_window(pool, provider, company_id, filter, &params).await?
     } else {
@@ -123,7 +124,7 @@ async fn message_rows(
     let sql = if let Some((low, high)) = window {
         params.extend([company_id.into(), low.into(), high.into()]);
         format!(
-            "SELECT t.id, t.sender, t.recipient, t.text, t.status, t.agent,
+            "SELECT t.id, t.sender, t.recipient, t.text, t.status, t.error_message, t.agent,
                     COALESCE(adj.conversation_at, t.created_date) AS conversation_at
                FROM (SELECT {columns}, s.{id} AS provider_id, s.created_date
                        FROM {table} s WHERE {filter}) t
@@ -477,6 +478,7 @@ async fn to_messages(
                 agent_name,
                 created_at: row.conversation_at,
                 status: status_of(&row.status),
+                error_message: row.error_message,
             }
         })
         .collect())
@@ -494,7 +496,8 @@ pub async fn message_by_id(
         pool,
         format!(
             "SELECT s.id, CAST(s.sender AS CHAR) AS sender, CAST(s.recipient AS CHAR) AS recipient,
-                    s.text, CAST(s.status AS CHAR) AS status, s.agent, s.created_date AS conversation_at
+                    s.text, CAST(s.status AS CHAR) AS status, s.error_message, s.agent,
+                    s.created_date AS conversation_at
                FROM {} s WHERE s.company_id = ? AND s.id = ?",
             provider.sms_table()
         ),
