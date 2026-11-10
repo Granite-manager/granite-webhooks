@@ -60,7 +60,7 @@ impl PhoneDigits {
 }
 
 /// A provider's call id: `CloudTalk`'s or `RingCentral`'s number, or a
-/// Granite Phone call `tx_<id>`.
+/// Granite Manager call `tx_<id>`.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(untagged)]
 pub enum CallId {
@@ -76,7 +76,7 @@ impl CallId {
         }
     }
 
-    /// A Granite Phone call: its transcript is ours (no waiting for the
+    /// A Granite Manager call: its transcript is ours (no waiting for the
     /// provider) and the phone job gives it its call points.
     fn is_telnyx(&self) -> bool {
         matches!(self, Self::Text(text) if crate::routes::calls::telnyx::parse_token(text).is_some())
@@ -90,7 +90,7 @@ pub struct CallCheck {
     pub company_id: i32,
     /// The customer's phone.
     pub phone_digits: PhoneDigits,
-    /// The provider's call id: a number, or a Granite Phone call `tx_<id>`
+    /// The provider's call id: a number, or a Granite Manager call `tx_<id>`
     /// (whose kept transcript is checked).
     pub call_id: CallId,
     /// Seconds of talk.
@@ -184,7 +184,7 @@ async fn record_call_points(
     transcript: &str,
     voicemail: bool,
 ) {
-    // Granite Phone calls get their points from the phone job.
+    // Granite Manager calls get their points from the phone job.
     if check.call_id.is_telnyx() {
         return;
     }
@@ -256,7 +256,7 @@ pub async fn call_check(
 }
 
 /// The check of `POST /v1/followups/call-check`, for any caller (the phone
-/// job checks Granite Phone calls in-process).
+/// job checks Granite Manager calls in-process).
 pub async fn check_call(state: &AppState, check: &CallCheck) -> sqlx::Result<CallCheckResult> {
     let skipped = |reason, transcript_preview| CallCheckResult {
         skipped: true,

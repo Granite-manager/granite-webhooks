@@ -254,7 +254,7 @@ pub async fn send_diagnostics(
     let mut body = String::new();
     let _ = write!(
         body,
-        "<h2>Granite Phone problem report</h2>\
+        "<h2>Granite Manager problem report</h2>\
          <p><b>From:</b> {} &lt;{}&gt; (user {}), {} (company {})</p>\
          <p><b>App:</b> {} on {}</p>\
          <p><b>Summary:</b></p><p style=\"white-space:pre-wrap\">{}</p>\
@@ -271,12 +271,12 @@ pub async fn send_diagnostics(
         html(&lines.join("\n")),
     );
     let email = OutgoingEmail {
-        from_name: Some("Granite Phone".into()),
+        from_name: Some("Granite Manager".into()),
         from_address: NO_REPLY.into(),
         to: vec![SUPPORT_EMAIL.into()],
         cc: Vec::new(),
         bcc: Vec::new(),
-        subject: format!("[Granite Phone] Problem report from {company}"),
+        subject: format!("[Granite Manager] Problem report from {company}"),
         body,
         signature: None,
         reply_to: vec![user.email.clone()],

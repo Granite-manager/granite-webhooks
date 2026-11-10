@@ -114,7 +114,7 @@
           "me"
         ],
         "summary": "Save my account",
-        "description": "Saves the user's details in their home company. A new password ends the\nuser's other sessions and signs out their Granite Phone apps. The texting line is checked with its provider (the\n`RingCentral` extension is looked up from the number), and a number moved\nfrom `CloudTalk` to `RingCentral` brings its texting history along. A newly\nfilled email name or signature completes its setup task, with its points.",
+        "description": "Saves the user's details in their home company. A new password ends the\nuser's other sessions and signs out their Granite Manager apps. The texting line is checked with its provider (the\n`RingCentral` extension is looked up from the number), and a number moved\nfrom `CloudTalk` to `RingCentral` brings its texting history along. A newly\nfilled email name or signature completes its setup task, with its points.",
         "operationId": "update_my_account",
         "requestBody": {
           "content": {
@@ -5752,7 +5752,7 @@
           "users"
         ],
         "summary": "List reps' calls",
-        "description": "The `CloudTalk` and `RingCentral` calls of the given users of the caller's\ncompany over the last 90 days, and their Granite Phone calls (placed or\nanswered by them, and unanswered calls of their direct lines; `source`\n`telnyx_call`), newest first. Users without a `CloudTalk` agent or\n`RingCentral` extension, and companies without either, have no\n`CloudTalk` or `RingCentral` calls.",
+        "description": "The `CloudTalk` and `RingCentral` calls of the given users of the caller's\ncompany over the last 90 days, and their Granite Manager calls (placed or\nanswered by them, and unanswered calls of their direct lines; `source`\n`telnyx_call`), newest first. Users without a `CloudTalk` agent or\n`RingCentral` extension, and companies without either, have no\n`CloudTalk` or `RingCentral` calls.",
         "operationId": "list_user_call_activity",
         "parameters": [
           {
@@ -6054,7 +6054,7 @@
           "users"
         ],
         "summary": "Save a user",
-        "description": "Saves the user's details and positions. Positions that stay keep their\nrows (Telegram lead buttons point at them). Non-superusers keep the\nuser's company, Super Admin and check-in positions and Super Admin\ncompanies as they are, and may only grant marketing for the user's own\ncompany (or remove companies a superuser granted). Super Admins are\nalways admins. The `RingCentral` extension follows the number. A user\nwho is no longer an employee or admin of their company (or moved to\nanother one) is signed out of Granite Phone.",
+        "description": "Saves the user's details and positions. Positions that stay keep their\nrows (Telegram lead buttons point at them). Non-superusers keep the\nuser's company, Super Admin and check-in positions and Super Admin\ncompanies as they are, and may only grant marketing for the user's own\ncompany (or remove companies a superuser granted). Super Admins are\nalways admins. The `RingCentral` extension follows the number. A user\nwho is no longer an employee or admin of their company (or moved to\nanother one) is signed out of Granite Manager.",
         "operationId": "update_managed_user",
         "parameters": [
           {
@@ -6154,7 +6154,7 @@
           "users"
         ],
         "summary": "Delete a user",
-        "description": "Soft-deletes a live user of the caller's company (superusers: any) and\nsigns out their Granite Phone apps.",
+        "description": "Soft-deletes a live user of the caller's company (superusers: any) and\nsigns out their Granite Manager apps.",
         "operationId": "delete_managed_user",
         "parameters": [
           {
@@ -24648,7 +24648,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "description": "The SMS provider a company texts through: `cloudtalk`, `ringcentral`, or\n`telnyx` (Granite Phone: texts from the company's Telnyx numbers).",
+              "description": "The SMS provider a company texts through: `cloudtalk`, `ringcentral`, or\n`telnyx` (Granite Manager: texts from the company's Telnyx numbers).",
               "enum": [
                 "cloudtalk",
                 "ringcentral",
@@ -42677,7 +42677,7 @@
           "schedule"
         ],
         "summary": "Where the crew is",
-        "description": "Every installer and template maker of the company with their phone's\nlatest position (Granite Phone sends it from 5 AM until 9 PM), and the\nshop or job they are at. Admins only.",
+        "description": "Every installer and template maker of the company with their phone's\nlatest position (Granite Manager sends it from 5 AM until 9 PM), and the\nshop or job they are at. Admins only.",
         "operationId": "get_crew_positions",
         "responses": {
           "200": {
@@ -44592,7 +44592,7 @@
           "calls"
         ],
         "summary": "List calls with a customer",
-        "description": "With `deal_id`: calls with the deal's customer since the deal was created\n(none for another company's deal). With `customer_id`: calls with the\ncustomer's numbers (none for another company's customer). With\n`phone`/`phone2`: every call with those numbers in the date range.\n`cloudtalk` and `ringcentral` add the calls saved from either provider,\nalso one the company no longer uses (only those when it has not set up\nthe provider). `telnyx` reads the\ncompany's Granite Phone call log (ended calls, newest first, at most\n200; calls logged to the customer count too; recordings and AI notes\nonly of the calls the caller may hear, `Telnyx.may_hear`): call the\nrecording route with `Cdr.recording_link` and `POST /v1/call-transcripts`\nwith `Cdr.id`.",
+        "description": "With `deal_id`: calls with the deal's customer since the deal was created\n(none for another company's deal). With `customer_id`: calls with the\ncustomer's numbers (none for another company's customer). With\n`phone`/`phone2`: every call with those numbers in the date range.\n`cloudtalk` and `ringcentral` add the calls saved from either provider,\nalso one the company no longer uses (only those when it has not set up\nthe provider). `telnyx` reads the\ncompany's Granite Manager call log (ended calls, newest first, at most\n200; calls logged to the customer count too; recordings and AI notes\nonly of the calls the caller may hear, `Telnyx.may_hear`): call the\nrecording route with `Cdr.recording_link` and `POST /v1/call-transcripts`\nwith `Cdr.id`.",
         "operationId": "list_calls",
         "parameters": [
           {
@@ -44602,7 +44602,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "A telephony provider of the call routes: `cloudtalk`, `ringcentral`, or\n`telnyx` (Granite Phone, whose calls are in our own call log).",
+              "description": "A telephony provider of the call routes: `cloudtalk`, `ringcentral`, or\n`telnyx` (Granite Manager, whose calls are in our own call log).",
               "enum": [
                 "cloudtalk",
                 "ringcentral",
@@ -44882,7 +44882,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an employee or admin, or may not hear this Granite Phone call",
+            "description": "Caller is not an employee or admin, or may not hear this Granite Manager call",
             "content": {
               "application/json": {
                 "schema": {
@@ -44892,7 +44892,7 @@
             }
           },
           "404": {
-            "description": "The recording is empty (or a Granite Phone call has none, or is not the company's)",
+            "description": "The recording is empty (or a Granite Manager call has none, or is not the company's)",
             "content": {
               "application/json": {
                 "schema": {
@@ -44935,7 +44935,7 @@
           "calls"
         ],
         "summary": "Load a call's recording",
-        "description": "A link (an hour) to the audio of a recorded call or voicemail: a\n`CloudTalk` call id, or a `RingCentral` media token (`rec_<id>`,\n`vm_<extension>_<message>_<attachment>`) as the call lists give them.\nFor `telnyx`, a Granite Phone call `tx_<id>` of the caller's company\n(`Cdr.recording_link` of `GET /v1/calls/telnyx`): a 5-minute link to our\nprivate copy; 404 for another company's call or one not recorded, 403\nwhen the caller may not hear it (only the call's user, the users of its\ndirect line, for an unanswered incoming call the users its line rings,\nits deal's owner, admins and sales managers may).",
+        "description": "A link (an hour) to the audio of a recorded call or voicemail: a\n`CloudTalk` call id, or a `RingCentral` media token (`rec_<id>`,\n`vm_<extension>_<message>_<attachment>`) as the call lists give them.\nFor `telnyx`, a Granite Manager call `tx_<id>` of the caller's company\n(`Cdr.recording_link` of `GET /v1/calls/telnyx`): a 5-minute link to our\nprivate copy; 404 for another company's call or one not recorded, 403\nwhen the caller may not hear it (only the call's user, the users of its\ndirect line, for an unanswered incoming call the users its line rings,\nits deal's owner, admins and sales managers may).",
         "operationId": "get_call_recording",
         "parameters": [
           {
@@ -44945,7 +44945,7 @@
             "required": true,
             "schema": {
               "type": "string",
-              "description": "A telephony provider of the call routes: `cloudtalk`, `ringcentral`, or\n`telnyx` (Granite Phone, whose calls are in our own call log).",
+              "description": "A telephony provider of the call routes: `cloudtalk`, `ringcentral`, or\n`telnyx` (Granite Manager, whose calls are in our own call log).",
               "enum": [
                 "cloudtalk",
                 "ringcentral",
@@ -44956,7 +44956,7 @@
           {
             "name": "media_id",
             "in": "path",
-            "description": "CloudTalk call id, RingCentral media token, or Granite Phone call `tx_<id>`",
+            "description": "CloudTalk call id, RingCentral media token, or Granite Manager call `tx_<id>`",
             "required": true,
             "schema": {
               "type": "string"
@@ -44995,7 +44995,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an employee or admin, or may not hear this Granite Phone call",
+            "description": "Caller is not an employee or admin, or may not hear this Granite Manager call",
             "content": {
               "application/json": {
                 "schema": {
@@ -46342,7 +46342,7 @@
           "auth"
         ],
         "summary": "Sign out",
-        "description": "Ends the request's session (it no longer signs anyone in, even if the\ncookie is replayed) and clears the cookie. The browser phone of the\nsession (Granite Phone in the CRM) is signed out too: its Telnyx\ncredential is deleted. Always answers 204.",
+        "description": "Ends the request's session (it no longer signs anyone in, even if the\ncookie is replayed) and clears the cookie. The browser phone of the\nsession (Granite Manager in the CRM) is signed out too: its Telnyx\ncredential is deleted. Always answers 204.",
         "operationId": "sign_out",
         "responses": {
           "204": {
@@ -46580,7 +46580,7 @@
           "auth"
         ],
         "summary": "Set a new password",
-        "description": "Uses a reset link once: sets the password (bcrypt), spends the link and\nends every session of the user, Granite Phone sign-ins included.",
+        "description": "Uses a reset link once: sets the password (bcrypt), spends the link and\nends every session of the user, Granite Manager sign-ins included.",
         "operationId": "reset_password",
         "parameters": [
           {
@@ -49112,7 +49112,7 @@
           "notifications"
         ],
         "summary": "List notifications",
-        "description": "Unread incoming mail of the last 14 days (one per conversation), due\nnotifications on live deals (signature status is emailed to the sender\ninstead, so it is left out), 911 alerts (`e911_alert`, for the\ncompany's admins; they open `/admin/phone`), the texting registration's\nnotices (`tendlc_ready` for superusers, opening their list of\nregistrations; `tendlc_status` for the company's admins and Managers,\nopening `/admin/phone`), number port news (`phone_port`, for the\ncompany's admins, opening `/admin/phone`), open billing notices,\nmissed `CloudTalk` and `RingCentral` calls, and Granite Phone calls of\nthe last 3 days that nobody answered and the caller has not seen (missed\ncalls, voicemails and AI messages of their direct lines and of the lines\nthat ring them; `telnyx-call-<id>`, `type_title` names the line), newest\nfirst. The onboarding tour's sample notifications are left out unless\n`samples` is set.",
+        "description": "Unread incoming mail of the last 14 days (one per conversation), due\nnotifications on live deals (signature status is emailed to the sender\ninstead, so it is left out), 911 alerts (`e911_alert`, for the\ncompany's admins; they open `/admin/phone`), the texting registration's\nnotices (`tendlc_ready` for superusers, opening their list of\nregistrations; `tendlc_status` for the company's admins and Managers,\nopening `/admin/phone`), number port news (`phone_port`, for the\ncompany's admins, opening `/admin/phone`), open billing notices,\nmissed `CloudTalk` and `RingCentral` calls, and Granite Manager calls of\nthe last 3 days that nobody answered and the caller has not seen (missed\ncalls, voicemails and AI messages of their direct lines and of the lines\nthat ring them; `telnyx-call-<id>`, `type_title` names the line), newest\nfirst. The onboarding tour's sample notifications are left out unless\n`samples` is set.",
         "operationId": "list_notifications",
         "parameters": [
           {
@@ -49180,7 +49180,7 @@
           "notifications"
         ],
         "summary": "Dismiss notifications",
-        "description": "Marks activity and billing notifications done, the listed email threads\nread and the listed Granite Phone calls seen (for the caller only, as in\nthe phone app). With `clear_all`, dismisses every one of them, marks all\nunread incoming mail read and the bell's Granite Phone calls seen.",
+        "description": "Marks activity and billing notifications done, the listed email threads\nread and the listed Granite Manager calls seen (for the caller only, as in\nthe phone app). With `clear_all`, dismisses every one of them, marks all\nunread incoming mail read and the bell's Granite Manager calls seen.",
         "operationId": "dismiss_notifications",
         "requestBody": {
           "content": {
@@ -51287,8 +51287,8 @@
         "tags": [
           "jobs"
         ],
-        "summary": "Run Granite Phone's upkeep",
-        "description": "Signs out the phones of users who may no longer use Granite Phone (or\nwhose company was deleted) and browser phones whose CRM sign-in ended, deletes\nleftover Telnyx credentials of signed-out phones (backing off on\nfailures), deletes Telnyx callbacks older than 30 days, closes calls\nTelnyx never reported the end of (after 6 hours), keeps the customer\nphone index that matches calls to customers in step (customers changed\nor added since the last run; each company's first fill, at most 5,000\ncustomers a run), writes up to 3 AI notes (transcript, note tidied like\nthe CRM's, on the call and its deal, the deal's people notified), gives\nanswered outbound calls their call points (provider `telnyx`), deletes\nTelnyx's copies of copied recordings whose delete failed, retries failed\nrecording copies (5 attempts), brings port-in orders up to date from\nTelnyx (adding ported numbers to the company), asks Telnyx again about\nsent texts with no final status yet (so one that did not go out shows as\nfailed), and last reads sent 10DLC\ntexting registrations and pending number assignments again. Bounded work per run, and\nno new work after 20 seconds; the next run takes the rest. Returns what\nwas done.",
+        "summary": "Run Granite Manager's upkeep",
+        "description": "Signs out the phones of users who may no longer use Granite Manager (or\nwhose company was deleted) and browser phones whose CRM sign-in ended, deletes\nleftover Telnyx credentials of signed-out phones (backing off on\nfailures), deletes Telnyx callbacks older than 30 days, closes calls\nTelnyx never reported the end of (after 6 hours), keeps the customer\nphone index that matches calls to customers in step (customers changed\nor added since the last run; each company's first fill, at most 5,000\ncustomers a run), writes up to 3 AI notes (transcript, note tidied like\nthe CRM's, on the call and its deal, the deal's people notified), gives\nanswered outbound calls their call points (provider `telnyx`), deletes\nTelnyx's copies of copied recordings whose delete failed, retries failed\nrecording copies (5 attempts), brings port-in orders up to date from\nTelnyx (adding ported numbers to the company), asks Telnyx again about\nsent texts with no final status yet (so one that did not go out shows as\nfailed), and last reads sent 10DLC\ntexting registrations and pending number assignments again. Bounded work per run, and\nno new work after 20 seconds; the next run takes the rest. Returns what\nwas done.",
         "operationId": "run_phone_job",
         "responses": {
           "200": {
@@ -51533,7 +51533,7 @@
           "me"
         ],
         "summary": "Get my call coaching",
-        "description": "The caller's last three real calls with their scores: `CloudTalk` and\n`RingCentral` calls when they have either line, and Granite Phone calls\nthey placed or answered (`tx_<id>`) when they have a Granite Phone number.",
+        "description": "The caller's last three real calls with their scores: `CloudTalk` and\n`RingCentral` calls when they have either line, and Granite Manager calls\nthey placed or answered (`tx_<id>`) when they have a Granite Manager number.",
         "operationId": "get_my_call_coaching",
         "responses": {
           "200": {
@@ -56221,7 +56221,7 @@
           "superuser"
         ],
         "summary": "Delete a company",
-        "description": "Marks the company deleted. `confirm_name` must be its exact name (400\notherwise). Its Granite Phone calling is switched off and its phones are\nsigned out (Telnyx credentials and push tokens dropped).",
+        "description": "Marks the company deleted. `confirm_name` must be its exact name (400\notherwise). Its Granite Manager calling is switched off and its phones are\nsigned out (Telnyx credentials and push tokens dropped).",
         "operationId": "delete_platform_company",
         "parameters": [
           {
@@ -58088,7 +58088,7 @@
           "phone"
         ],
         "summary": "Sign a phone in",
-        "description": "Signs the Granite Phone app in with the CRM email and password and\nreturns its device token (send it as the `X-Granite-Device` header) and\nits call key (signs the calls it places), both shown only here. Only\nemployees, admins and superusers of a company that is not deleted may:\nothers get 403 `no_phone_access`.\nFailed attempts count together with `POST /v1/auth/login`'s (10 per\nemail and address, 50 per email in 15 minutes, then 429\n`rate_limited`), and a wrong email and a wrong password both answer 401\n`invalid_credentials`. The sign-in lasts until the phone signs out or is\nrevoked, never ending by time. Next:\n`POST /v1/phone/devices` registers the phone for calling.",
+        "description": "Signs the Granite Manager app in with the CRM email and password and\nreturns its device token (send it as the `X-Granite-Device` header) and\nits call key (signs the calls it places), both shown only here. Only\nemployees, admins and superusers of a company that is not deleted may:\nothers get 403 `no_phone_access`.\nFailed attempts count together with `POST /v1/auth/login`'s (10 per\nemail and address, 50 per email in 15 minutes, then 429\n`rate_limited`), and a wrong email and a wrong password both answer 401\n`invalid_credentials`. The sign-in lasts until the phone signs out or is\nrevoked, never ending by time. Next:\n`POST /v1/phone/devices` registers the phone for calling.",
         "operationId": "create_device_session",
         "requestBody": {
           "content": {
@@ -58210,7 +58210,7 @@
           "phone"
         ],
         "summary": "List my signed-in phones",
-        "description": "The caller's Granite Phone sign-ins that are not signed out, newest\nfirst; `current` marks the phone making the request (always false with\nthe CRM's cookie). Revoke one with `DELETE /v1/me/devices/{id}`. Takes\nthe device token or the session cookie (employees, admins, superusers).",
+        "description": "The caller's Granite Manager sign-ins that are not signed out, newest\nfirst; `current` marks the phone making the request (always false with\nthe CRM's cookie). Revoke one with `DELETE /v1/me/devices/{id}`. Takes\nthe device token or the session cookie (employees, admins, superusers).",
         "operationId": "list_my_devices",
         "responses": {
           "200": {
@@ -58345,7 +58345,7 @@
           "phone"
         ],
         "summary": "Get a link that opens a CRM page signed in",
-        "description": "For the Granite Phone app: returns a link to `path` on the caller's CRM\nhost that signs the phone's browser in as the caller on the way. Open it\nat once (the API's base URL + `link_path`): it works for `expires_in`\nseconds, and only while this phone stays signed in. Device token only.",
+        "description": "For the Granite Manager app: returns a link to `path` on the caller's CRM\nhost that signs the phone's browser in as the caller on the way. Open it\nat once (the API's base URL + `link_path`): it works for `expires_in`\nseconds, and only while this phone stays signed in. Device token only.",
         "operationId": "create_web_link",
         "requestBody": {
           "content": {
@@ -61708,7 +61708,7 @@
           "phone"
         ],
         "summary": "List the company's phone numbers",
-        "description": "The company's Granite Phone numbers (main line first, then shared and\ndirect lines), who each one rings and who may call from it; the users\nnumbers can be given to (employees and admins, by name); and the\ncompany's calling status (`enabled`, `recordingMode`, `configured` =\nTelnyx is set up). Change a number with `PUT\n/v1/phone/admin/numbers/{id}`; add the TeXML app's numbers with `POST\n/v1/phone/admin/numbers/import`. Company admins (and super admins,\nsuperusers) only.",
+        "description": "The company's Granite Manager numbers (main line first, then shared and\ndirect lines), who each one rings and who may call from it; the users\nnumbers can be given to (employees and admins, by name); and the\ncompany's calling status (`enabled`, `recordingMode`, `configured` =\nTelnyx is set up). Change a number with `PUT\n/v1/phone/admin/numbers/{id}`; add the TeXML app's numbers with `POST\n/v1/phone/admin/numbers/import`. Company admins (and super admins,\nsuperusers) only.",
         "operationId": "list_phone_admin_numbers",
         "responses": {
           "200": {
@@ -62041,7 +62041,7 @@
           "phone"
         ],
         "summary": "List the company's signed-in phones",
-        "description": "Every Granite Phone sign-in of the company's users that is not signed\nout (expired and idle ones stay listed until revoked), newest first,\nwith whose phone it is and its Telnyx SIP user. Sign one out with\n`DELETE /v1/phone/admin/devices/{id}`. Company admins (and super admins,\nsuperusers) only.",
+        "description": "Every Granite Manager sign-in of the company's users that is not signed\nout (expired and idle ones stay listed until revoked), newest first,\nwith whose phone it is and its Telnyx SIP user. Sign one out with\n`DELETE /v1/phone/admin/devices/{id}`. Company admins (and super admins,\nsuperusers) only.",
         "operationId": "list_phone_admin_devices",
         "responses": {
           "200": {
@@ -62556,7 +62556,7 @@
           "phone"
         ],
         "summary": "Connect Telnyx",
-        "description": "Sets the caller's company up for Granite Phone calls and texts in one\ngo (see the module): billing group, outbound voice profile, TeXML\napplication, credential connection and messaging profile, each made\nwhen missing and pointed at the company's webhooks; the company's\nnumbers are put on them and the TeXML app's numbers imported. Safe to\nrun again: it repairs what changed in Telnyx. A company connecting for\nthe first time gets calling switched on. 409 while another connect of\nthe company runs, 502 when Telnyx fails (what was made is kept; try\nagain), 503 when Telnyx is not set up on the server. Written to the\nphone audit log. Company admins (and super admins, superusers) only.",
+        "description": "Sets the caller's company up for Granite Manager calls and texts in one\ngo (see the module): billing group, outbound voice profile, TeXML\napplication, credential connection and messaging profile, each made\nwhen missing and pointed at the company's webhooks; the company's\nnumbers are put on them and the TeXML app's numbers imported. Safe to\nrun again: it repairs what changed in Telnyx. A company connecting for\nthe first time gets calling switched on. 409 while another connect of\nthe company runs, 502 when Telnyx fails (what was made is kept; try\nagain), 503 when Telnyx is not set up on the server. Written to the\nphone audit log. Company admins (and super admins, superusers) only.",
         "operationId": "connect_phone_admin_telnyx",
         "responses": {
           "200": {
@@ -62947,7 +62947,7 @@
           "phone"
         ],
         "summary": "Get a company's Telnyx setup",
-        "description": "The company's Granite Phone calling setup: the kill switch, Telnyx\nresource ids, recording mode and notice, the main line's business hours\nand holidays, the minimum app version, the daily call limit, and\n`webhookBase`, the root of the company's Telnyx webhooks to paste into\nthe Telnyx portal. 404 when the company has no setup yet (save one with\n`PUT`) or does not exist. Superusers only.",
+        "description": "The company's Granite Manager calling setup: the kill switch, Telnyx\nresource ids, recording mode and notice, the main line's business hours\nand holidays, the minimum app version, the daily call limit, and\n`webhookBase`, the root of the company's Telnyx webhooks to paste into\nthe Telnyx portal. 404 when the company has no setup yet (save one with\n`PUT`) or does not exist. Superusers only.",
         "operationId": "get_company_telnyx_config",
         "parameters": [
           {
@@ -70085,14 +70085,14 @@
           },
           "has_granite_phone": {
             "type": "boolean",
-            "description": "The home company calls through Granite Phone (Telnyx calling is on)."
+            "description": "The home company calls through Granite Manager (Telnyx calling is on)."
           },
           "granite_phone_numbers": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "The Granite Phone numbers the user can call from (E.164); an admin\nassigns them on the Phone page."
+            "description": "The Granite Manager numbers the user can call from (E.164); an admin\nassigns them on the Phone page."
           }
         }
       },
@@ -71247,7 +71247,7 @@
             "items": {
               "$ref": "#/components/schemas/PhoneAdminUser"
             },
-            "description": "The company's users who may use Granite Phone (employees, admins),\nby name: who numbers can be given to."
+            "description": "The company's users who may use Granite Manager (employees, admins),\nby name: who numbers can be given to."
           },
           "config": {
             "$ref": "#/components/schemas/PhoneAdminStatus",
@@ -71976,7 +71976,7 @@
           },
           "has_telnyx_api": {
             "type": "boolean",
-            "description": "The company has Granite Phone (Telnyx) switched on."
+            "description": "The company has Granite Manager (Telnyx) switched on."
           },
           "has_telnyx_sms": {
             "type": "boolean",
@@ -73531,7 +73531,7 @@
           "id": {
             "type": "integer",
             "format": "int64",
-            "description": "The `CloudTalk` call id, or our call id for a Granite Phone call; 0\nfor `RingCentral`, whose ids are not numbers."
+            "description": "The `CloudTalk` call id, or our call id for a Granite Manager call; 0\nfor `RingCentral`, whose ids are not numbers."
           },
           "call_id": {
             "type": "string",
@@ -73544,7 +73544,7 @@
           "user_id": {
             "type": "integer",
             "format": "int32",
-            "description": "The rep (for a Granite Phone call nobody answered: the owner of the\ndirect line it rang)."
+            "description": "The rep (for a Granite Manager call nobody answered: the owner of the\ndirect line it rang)."
           },
           "user_name": {
             "type": "string",
@@ -73556,14 +73556,14 @@
           },
           "created_at": {
             "type": "string",
-            "description": "When the call started, as `CloudTalk` reports it (RFC 3339 for a\n`RingCentral` or Granite Phone call)."
+            "description": "When the call started, as `CloudTalk` reports it (RFC 3339 for a\n`RingCentral` or Granite Manager call)."
           },
           "customer_name": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The `CloudTalk` contact's name, for `RingCentral` the customer with\nthat number (else the caller-ID name), or the CRM customer of a\nGranite Phone call."
+            "description": "The `CloudTalk` contact's name, for `RingCentral` the customer with\nthat number (else the caller-ID name), or the CRM customer of a\nGranite Manager call."
           },
           "customer_id": {
             "type": [
@@ -73571,7 +73571,7 @@
               "null"
             ],
             "format": "int64",
-            "description": "The customer with that number (`RingCentral`), or the CRM customer of\na Granite Phone call."
+            "description": "The customer with that number (`RingCentral`), or the CRM customer of\na Granite Manager call."
           },
           "contact": {
             "type": [
@@ -73589,14 +73589,14 @@
               "string",
               "null"
             ],
-            "description": "The call's notes, one per line (a Granite Phone call's AI note)."
+            "description": "The call's notes, one per line (a Granite Manager call's AI note)."
           },
           "tags": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Direction, outcome, `Recorded`, then `CloudTalk` tags (a Granite Phone\ncall: the label of our number)."
+            "description": "Direction, outcome, `Recorded`, then `CloudTalk` tags (a Granite Manager\ncall: the label of our number)."
           },
           "recorded": {
             "type": "boolean",
@@ -73607,7 +73607,7 @@
               "string",
               "null"
             ],
-            "description": "`CloudTalk`'s recording link, a `RingCentral` media token (`rec_<id>`),\nor `tx_<id>` for a recorded Granite Phone call\n(`GET /v1/calls/telnyx/{media_id}/recording`)."
+            "description": "`CloudTalk`'s recording link, a `RingCentral` media token (`rec_<id>`),\nor `tx_<id>` for a recorded Granite Manager call\n(`GET /v1/calls/telnyx/{media_id}/recording`)."
           },
           "is_voicemail": {
             "type": "boolean",
@@ -73733,7 +73733,7 @@
           },
           "call_id": {
             "$ref": "#/components/schemas/CallId",
-            "description": "The provider's call id: a number, or a Granite Phone call `tx_<id>`\n(whose kept transcript is checked)."
+            "description": "The provider's call id: a number, or a Granite Manager call `tx_<id>`\n(whose kept transcript is checked)."
           },
           "talking_time": {
             "type": "integer",
@@ -73848,7 +73848,7 @@
             "type": "string"
           }
         ],
-        "description": "A provider's call id: `CloudTalk`'s or `RingCentral`'s number, or a\nGranite Phone call `tx_<id>`."
+        "description": "A provider's call id: `CloudTalk`'s or `RingCentral`'s number, or a\nGranite Manager call `tx_<id>`."
       },
       "CallInput": {
         "type": "object",
@@ -73961,7 +73961,7 @@
         "properties": {
           "url": {
             "type": "string",
-            "description": "A link to the audio, valid an hour (5 minutes for a Granite Phone\nrecording: ask again when it runs out)."
+            "description": "A link to the audio, valid an hour (5 minutes for a Granite Manager\nrecording: ask again when it runs out)."
           },
           "content_type": {
             "type": "string",
@@ -75204,7 +75204,7 @@
         "properties": {
           "eligible": {
             "type": "boolean",
-            "description": "The caller has a `CloudTalk` line (agent and number), a `RingCentral`\nline (extension and number) or a Granite Phone number (calling\nswitched on for the company)."
+            "description": "The caller has a `CloudTalk` line (agent and number), a `RingCentral`\nline (extension and number) or a Granite Manager number (calling\nswitched on for the company)."
           },
           "analyzing": {
             "type": "boolean",
@@ -75233,14 +75233,14 @@
         "properties": {
           "call_id": {
             "type": "string",
-            "description": "`CloudTalk` or `RingCentral` call id, or `tx_<id>` for a Granite Phone\ncall."
+            "description": "`CloudTalk` or `RingCentral` call id, or `tx_<id>` for a Granite Manager\ncall."
           },
           "status": {
             "$ref": "#/components/schemas/CoachingStatus"
           },
           "started_at": {
             "type": "string",
-            "description": "When it started (`CloudTalk` time, or RFC 3339 for `RingCentral` and\nGranite Phone)."
+            "description": "When it started (`CloudTalk` time, or RFC 3339 for `RingCentral` and\nGranite Manager)."
           },
           "talking_time": {
             "type": "number",
@@ -75925,11 +75925,11 @@
           },
           "telnyx": {
             "type": "boolean",
-            "description": "Granite Phone is switched on (`telnyx_company_config.enabled`): calls\nthrough Telnyx, and texts from the company's Telnyx numbers."
+            "description": "Granite Manager is switched on (`telnyx_company_config.enabled`): calls\nthrough Telnyx, and texts from the company's Telnyx numbers."
           },
           "telnyx_sms": {
             "type": "boolean",
-            "description": "Texting through Telnyx is on: Granite Phone is on and the company's\nTelnyx messaging profile is set. Users with a Telnyx line text through\nit (`/v1/sms/telnyx/...`)."
+            "description": "Texting through Telnyx is on: Granite Manager is on and the company's\nTelnyx messaging profile is set. Users with a Telnyx line text through\nit (`/v1/sms/telnyx/...`)."
           },
           "auto_sale": {
             "type": "boolean",
@@ -77573,7 +77573,7 @@
             "items": {
               "$ref": "#/components/schemas/CoworkerPhone"
             },
-            "description": "Every number they have, first the Granite Phone direct lines, then\nRingCentral, CloudTalk and their own phone; no number twice."
+            "description": "Every number they have, first the Granite Manager direct lines, then\nRingCentral, CloudTalk and their own phone; no number twice."
           }
         }
       },
@@ -80662,7 +80662,7 @@
       },
       "DevicePlatform": {
         "type": "string",
-        "description": "What a signed-in phone is: `android` or `ios` (the Granite Phone app),\nor `web` (a browser, signed in by the CRM's phone dock).",
+        "description": "What a signed-in phone is: `android` or `ios` (the Granite Manager app),\nor `web` (a browser, signed in by the CRM's phone dock).",
         "enum": [
           "android",
           "ios",
@@ -81044,7 +81044,7 @@
         "properties": {
           "clear_all": {
             "type": "boolean",
-            "description": "Dismiss everything: activity and billing notifications, every\nunread incoming email, and the Granite Phone calls the bell lists\n(marked seen)."
+            "description": "Dismiss everything: activity and billing notifications, every\nunread incoming email, and the Granite Manager calls the bell lists\n(marked seen)."
           },
           "items": {
             "type": "array",
@@ -89784,7 +89784,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "`notif-<id>`, `billing-<id>`, `call-<id>` (`CloudTalk`), `rc-call-<id>`\n(`RingCentral`), `telnyx-call-<id>` (Granite Phone), or the email\nthread id."
+            "description": "`notif-<id>`, `billing-<id>`, `call-<id>` (`CloudTalk`), `rc-call-<id>`\n(`RingCentral`), `telnyx-call-<id>` (Granite Manager), or the email\nthread id."
           },
           "title": {
             "type": "string",
@@ -89981,7 +89981,7 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "`notif-<id>` for activities, `billing-<id>` for billing, the thread\nid for email, `telnyx-call-<id>` for a Granite Phone call (marked\nseen, as the phone app's Recents shows it). `CloudTalk` and\n`RingCentral` calls are dismissed in the browser only."
+            "description": "`notif-<id>` for activities, `billing-<id>` for billing, the thread\nid for email, `telnyx-call-<id>` for a Granite Manager call (marked\nseen, as the phone app's Recents shows it). `CloudTalk` and\n`RingCentral` calls are dismissed in the browser only."
           },
           "kind": {
             "$ref": "#/components/schemas/NotificationKind"
@@ -103732,7 +103732,7 @@
       },
       "SmsProvider": {
         "type": "string",
-        "description": "The SMS provider a company texts through: `cloudtalk`, `ringcentral`, or\n`telnyx` (Granite Phone: texts from the company's Telnyx numbers).",
+        "description": "The SMS provider a company texts through: `cloudtalk`, `ringcentral`, or\n`telnyx` (Granite Manager: texts from the company's Telnyx numbers).",
         "enum": [
           "cloudtalk",
           "ringcentral",
@@ -109631,14 +109631,14 @@
         "properties": {
           "call_id": {
             "type": "string",
-            "description": "`CloudTalk`'s numeric call id, the `RingCentral` call id, or a\nGranite Phone call `tx_<id>` (`Cdr.id` of `GET /v1/calls/telnyx`)."
+            "description": "`CloudTalk`'s numeric call id, the `RingCentral` call id, or a\nGranite Manager call `tx_<id>` (`Cdr.id` of `GET /v1/calls/telnyx`)."
           },
           "recording_link": {
             "type": [
               "string",
               "null"
             ],
-            "description": "The call's `recording_link`: a `RingCentral` media token, a\n`CloudTalk` URL, or the Granite Phone call `tx_<id>`."
+            "description": "The call's `recording_link`: a `RingCentral` media token, a\n`CloudTalk` URL, or the Granite Manager call `tx_<id>`."
           }
         }
       },
@@ -110829,7 +110829,7 @@
               "string",
               "null"
             ],
-            "description": "Their own phone, else their Granite Phone line, else their CloudTalk\nor `RingCentral` number (as the AI's emails sign)."
+            "description": "Their own phone, else their Granite Manager line, else their CloudTalk\nor `RingCentral` number (as the AI's emails sign)."
           }
         }
       },
@@ -111284,7 +111284,7 @@
         "type": "apiKey",
         "in": "header",
         "name": "X-Granite-Device",
-        "description": "Device token of a signed-in Granite Phone app (`POST /v1/auth/device-sessions`)."
+        "description": "Device token of a signed-in Granite Manager app (`POST /v1/auth/device-sessions`)."
       },
       "job_key": {
         "type": "apiKey",
@@ -111463,11 +111463,11 @@
     },
     {
       "name": "phone",
-      "description": "Granite Phone, business calling through Telnyx: the app's sign-in and devices, calls, contacts and settings, and their admin pages"
+      "description": "Granite Manager, business calling through Telnyx: the app's sign-in and devices, calls, contacts and settings, and their admin pages"
     },
     {
       "name": "telnyx-webhooks",
-      "description": "Telnyx's TeXML and Call Control callbacks for Granite Phone (signed by Telnyx, no session)"
+      "description": "Telnyx's TeXML and Call Control callbacks for Granite Manager (signed by Telnyx, no session)"
     }
   ]
 }

@@ -1,4 +1,4 @@
-//! Granite Phone settings from the environment (`PHONE_*`, `TELNYX_PUBLIC_KEY`,
+//! Granite Manager settings from the environment (`PHONE_*`, `TELNYX_PUBLIC_KEY`,
 //! `TELNYX_FALLBACK_TEXML_URL`).
 
 use std::sync::Arc;
@@ -11,7 +11,7 @@ pub const DEFAULT_PUBLIC_API_URL: &str = "https://api.granite-manager.com";
 /// a voicemail (in our Telnyx account's media storage).
 pub const DEFAULT_FALLBACK_TEXML_URL: &str = "https://api.telnyx.com/v2/media/granite-fallback.xml";
 
-/// Granite Phone settings from the environment.
+/// Granite Manager settings from the environment.
 #[derive(Clone)]
 pub struct PhoneConfig {
     /// `PHONE_PUBLIC_API_URL`: this API's public root, the base of the

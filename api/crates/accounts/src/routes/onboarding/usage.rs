@@ -169,7 +169,7 @@ static CHECKS: [UsageCheck; 21] = [
                   [[al.user_id]]",
     },
     // A call the user placed: CloudTalk and RingCentral calls from the points
-    // sync, Granite Phone calls from its own table.
+    // sync, Granite Manager calls from its own table.
     UsageCheck {
         id: "customer_called",
         kind: Kind::Data,

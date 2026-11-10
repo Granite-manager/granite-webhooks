@@ -15,7 +15,7 @@ pub const NAME_TAKEN: &str = "10015";
 /// Where the company's calls and texts may go.
 const DESTINATIONS: [&str; 2] = ["US", "CA"];
 
-/// The aliases of the Granite Phone app's push credentials (Firebase for
+/// The aliases of the Granite Manager app's push credentials (Firebase for
 /// Android, `APNs` for iPhone) in the Telnyx account.
 pub const ANDROID_PUSH_ALIAS: &str = "granite-phone-android";
 pub const IOS_PUSH_ALIAS: &str = "granite-phone-ios";

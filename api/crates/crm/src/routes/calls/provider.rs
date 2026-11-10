@@ -5,7 +5,7 @@ use crate::openapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 /// A telephony provider of the call routes: `cloudtalk`, `ringcentral`, or
-/// `telnyx` (Granite Phone, whose calls are in our own call log).
+/// `telnyx` (Granite Manager, whose calls are in our own call log).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CallProvider {

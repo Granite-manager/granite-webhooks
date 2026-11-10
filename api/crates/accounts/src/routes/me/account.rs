@@ -66,9 +66,9 @@ pub struct Account {
     pub has_onboarding_feedback: bool,
     /// The user dismissed the tours rating.
     pub feedback_dismissed: bool,
-    /// The home company calls through Granite Phone (Telnyx calling is on).
+    /// The home company calls through Granite Manager (Telnyx calling is on).
     pub has_granite_phone: bool,
-    /// The Granite Phone numbers the user can call from (E.164); an admin
+    /// The Granite Manager numbers the user can call from (E.164); an admin
     /// assigns them on the Phone page.
     pub granite_phone_numbers: Vec<String>,
 }
@@ -652,7 +652,7 @@ async fn finished_setup_credit(
 /// Save my account
 ///
 /// Saves the user's details in their home company. A new password ends the
-/// user's other sessions and signs out their Granite Phone apps. The texting line is checked with its provider (the
+/// user's other sessions and signs out their Granite Manager apps. The texting line is checked with its provider (the
 /// `RingCentral` extension is looked up from the number), and a number moved
 /// from `CloudTalk` to `RingCentral` brings its texting history along. A newly
 /// filled email name or signature completes its setup task, with its points.

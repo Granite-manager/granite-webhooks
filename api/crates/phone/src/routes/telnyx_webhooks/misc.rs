@@ -17,10 +17,10 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 /// What the test call says.
-const TEST_MESSAGE: &str = "This is a Granite Phone test call. Your phone can take calls. Goodbye.";
+const TEST_MESSAGE: &str = "This is a Granite Manager test call. Your phone can take calls. Goodbye.";
 /// What the code call says when there is no code to read.
 const NO_CODE: &str =
-    "This code is no longer valid. Ask for a new one in the Granite Phone app. Goodbye.";
+    "This code is no longer valid. Ask for a new one in the Granite Manager app. Goodbye.";
 
 /// Query of `test-call`.
 #[derive(Debug, Deserialize, IntoParams)]
@@ -158,7 +158,7 @@ async fn read_code(state: &AppState, hook: &Hook, user_id: i32) -> ApiResult<Res
         .collect::<Vec<_>>()
         .join(", ");
     Ok(Texml::new()
-        .say(&format!("Your Granite Phone code is {spoken}."))
+        .say(&format!("Your Granite Manager code is {spoken}."))
         .verb(Verb::new("Pause").attr("length", "1"))
         .say(&format!("Again, your code is {spoken}."))
         .hangup()

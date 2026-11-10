@@ -991,7 +991,7 @@ pub async fn assign_numbers(
     .await?;
     if numbers.is_empty() {
         return Err(RegistryError::Invalid(
-            "The company has no active numbers on Granite Phone. Import them on its Phone page \
+            "The company has no active numbers on Granite Manager. Import them on its Phone page \
              first."
                 .into(),
         ));

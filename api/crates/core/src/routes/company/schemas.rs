@@ -30,10 +30,10 @@ pub struct CompanyFeatures {
     /// The company is connected to RingCentral (OAuth, or JWT credentials).
     /// When both are set up, texts go through RingCentral.
     pub ringcentral: bool,
-    /// Granite Phone is switched on (`telnyx_company_config.enabled`): calls
+    /// Granite Manager is switched on (`telnyx_company_config.enabled`): calls
     /// through Telnyx, and texts from the company's Telnyx numbers.
     pub telnyx: bool,
-    /// Texting through Telnyx is on: Granite Phone is on and the company's
+    /// Texting through Telnyx is on: Granite Manager is on and the company's
     /// Telnyx messaging profile is set. Users with a Telnyx line text through
     /// it (`/v1/sms/telnyx/...`).
     pub telnyx_sms: bool,

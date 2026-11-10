@@ -26,7 +26,7 @@ const MAX_PAGES_PER_AGENT: usize = 5;
 const DAYS_BACK: i64 = 90;
 const RINGCENTRAL_PAGE_SIZE: usize = 1000;
 const RINGCENTRAL_MAX_PAGES: usize = 5;
-/// Most Granite Phone calls listed per rep (`CloudTalk` lists 1,000 an agent).
+/// Most Granite Manager calls listed per rep (`CloudTalk` lists 1,000 an agent).
 const TELNYX_CALLS_PER_REP: i64 = 1_000;
 /// Most saved calls of one provider read for the 90 days.
 const SAVED_CALLS_LIMIT: i64 = 5_000;
@@ -53,7 +53,7 @@ pub struct CallActivityQuery {
 /// One call, as a row of the users-activity feed.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CallActivity {
-    /// The `CloudTalk` call id, or our call id for a Granite Phone call; 0
+    /// The `CloudTalk` call id, or our call id for a Granite Manager call; 0
     /// for `RingCentral`, whose ids are not numbers.
     pub id: i64,
     /// The provider's call id as text.
@@ -61,7 +61,7 @@ pub struct CallActivity {
     /// `cloudtalk_call`, `ringcentral_call`, or `telnyx_call` for a Granite
     /// Phone call.
     pub source: &'static str,
-    /// The rep (for a Granite Phone call nobody answered: the owner of the
+    /// The rep (for a Granite Manager call nobody answered: the owner of the
     /// direct line it rang).
     pub user_id: i32,
     /// The rep's name.
@@ -69,28 +69,28 @@ pub struct CallActivity {
     /// `Made a call`, `Received a call` or `Missed a call`.
     pub action: &'static str,
     /// When the call started, as `CloudTalk` reports it (RFC 3339 for a
-    /// `RingCentral` or Granite Phone call).
+    /// `RingCentral` or Granite Manager call).
     pub created_at: String,
     /// The `CloudTalk` contact's name, for `RingCentral` the customer with
     /// that number (else the caller-ID name), or the CRM customer of a
-    /// Granite Phone call.
+    /// Granite Manager call.
     pub customer_name: Option<String>,
     /// The customer with that number (`RingCentral`), or the CRM customer of
-    /// a Granite Phone call.
+    /// a Granite Manager call.
     pub customer_id: Option<i64>,
     /// The other party's number.
     pub contact: Option<String>,
     /// Direction and outcome, like `Incoming · 2m 5s`.
     pub summary: String,
-    /// The call's notes, one per line (a Granite Phone call's AI note).
+    /// The call's notes, one per line (a Granite Manager call's AI note).
     pub body: Option<String>,
-    /// Direction, outcome, `Recorded`, then `CloudTalk` tags (a Granite Phone
+    /// Direction, outcome, `Recorded`, then `CloudTalk` tags (a Granite Manager
     /// call: the label of our number).
     pub tags: Vec<String>,
     /// Whether there is a recording.
     pub recorded: bool,
     /// `CloudTalk`'s recording link, a `RingCentral` media token (`rec_<id>`),
-    /// or `tx_<id>` for a recorded Granite Phone call
+    /// or `tx_<id>` for a recorded Granite Manager call
     /// (`GET /v1/calls/telnyx/{media_id}/recording`).
     pub recording_link: Option<String>,
     /// The caller left a voicemail.
@@ -483,7 +483,7 @@ pub async fn try_company_ringcentral_calls(
     Some(records)
 }
 
-/// A Granite Phone call as a row of the feed, for rep `user_id`.
+/// A Granite Manager call as a row of the feed, for rep `user_id`.
 pub fn telnyx_activity(call: &TelnyxCall, user_id: i32, user_name: &str) -> CallActivity {
     let talk_seconds = i64::from(call.duration_secs.unwrap_or(0).max(0));
     let incoming = call.direction == CallDirection::Inbound;
@@ -560,7 +560,7 @@ fn started(row: &CallActivity) -> Option<DateTime<Utc>> {
 /// List reps' calls
 ///
 /// The `CloudTalk` and `RingCentral` calls of the given users of the caller's
-/// company over the last 90 days, and their Granite Phone calls (placed or
+/// company over the last 90 days, and their Granite Manager calls (placed or
 /// answered by them, and unanswered calls of their direct lines; `source`
 /// `telnyx_call`), newest first. Users without a `CloudTalk` agent or
 /// `RingCentral` extension, and companies without either, have no

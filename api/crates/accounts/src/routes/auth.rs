@@ -405,7 +405,7 @@ async fn start_session(state: &AppState, user_id: i32) -> ApiResult<Response> {
 ///
 /// Ends the request's session (it no longer signs anyone in, even if the
 /// cookie is replayed) and clears the cookie. The browser phone of the
-/// session (Granite Phone in the CRM) is signed out too: its Telnyx
+/// session (Granite Manager in the CRM) is signed out too: its Telnyx
 /// credential is deleted. Always answers 204.
 #[crate::openapi::path(
     post,
@@ -718,7 +718,7 @@ impl std::fmt::Debug for NewPassword {
 /// Set a new password
 ///
 /// Uses a reset link once: sets the password (bcrypt), spends the link and
-/// ends every session of the user, Granite Phone sign-ins included.
+/// ends every session of the user, Granite Manager sign-ins included.
 #[crate::openapi::path(
     post,
     path = "/v1/auth/password-reset/{token}",

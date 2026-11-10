@@ -1,4 +1,4 @@
-//! Granite Phone contacts: the offline index (pages, since-sync, ETag),
+//! Granite Manager contacts: the offline index (pages, since-sync, ETag),
 //! lookups, the contact card, new customers and added numbers
 //! (`routes/phone/contacts.rs`).
 //!

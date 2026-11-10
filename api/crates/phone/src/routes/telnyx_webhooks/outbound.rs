@@ -386,7 +386,7 @@ async fn calling_device(
     Ok(Ok(device))
 }
 
-/// The user, while they may still use Granite Phone in the company.
+/// The user, while they may still use Granite Manager in the company.
 async fn phone_user(
     pool: &MySqlPool,
     user_id: i32,
@@ -553,7 +553,7 @@ async fn decide(
         return refuse(unproven.reason, None);
     }
     let Some(user) = user else {
-        return refuse("the phone's user may not use Granite Phone", None);
+        return refuse("the phone's user may not use Granite Manager", None);
     };
     let stored = settings::load(pool, user.id, company_id).await?;
     let caller_ids = lines::caller_ids(pool, company_id, user.id).await?;
@@ -741,7 +741,7 @@ async fn alert_admins(
     call_id: i64,
 ) {
     let who = plan.user.as_ref().map_or_else(
-        || "A Granite Phone user".to_string(),
+        || "A Granite Manager user".to_string(),
         |user| {
             user.name
                 .as_deref()

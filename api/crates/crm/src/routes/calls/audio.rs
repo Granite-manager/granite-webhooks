@@ -5,7 +5,7 @@
 //! (recordings are often over Lambda's 6 MB response limit) and answered as
 //! a presigned link the player fetches. Replaces the Remix
 //! `api.{cloudtalk,ringcentral}.userCallMedia.$callId` routes, which
-//! streamed it. Granite Phone recordings are ours already: they are played
+//! streamed it. Granite Manager recordings are ours already: they are played
 //! from the private recordings bucket through a 5-minute link.
 
 use super::provider::CallProvider;
@@ -26,7 +26,7 @@ use std::fmt::Write as _;
 /// Where to load a call's audio.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CallRecording {
-    /// A link to the audio, valid an hour (5 minutes for a Granite Phone
+    /// A link to the audio, valid an hour (5 minutes for a Granite Manager
     /// recording: ask again when it runs out).
     pub url: String,
     /// Its type, e.g. `audio/mpeg` or `audio/wav`.
@@ -54,7 +54,7 @@ fn cache_key(secret: &str, company_id: i32, provider: CallProvider, media_id: &s
 /// A link (an hour) to the audio of a recorded call or voicemail: a
 /// `CloudTalk` call id, or a `RingCentral` media token (`rec_<id>`,
 /// `vm_<extension>_<message>_<attachment>`) as the call lists give them.
-/// For `telnyx`, a Granite Phone call `tx_<id>` of the caller's company
+/// For `telnyx`, a Granite Manager call `tx_<id>` of the caller's company
 /// (`Cdr.recording_link` of `GET /v1/calls/telnyx`): a 5-minute link to our
 /// private copy; 404 for another company's call or one not recorded, 403
 /// when the caller may not hear it (only the call's user, the users of its
@@ -67,13 +67,13 @@ fn cache_key(secret: &str, company_id: i32, provider: CallProvider, media_id: &s
     tag = "calls",
     params(
         ("provider" = inline(CallProvider), Path, description = "`cloudtalk`, `ringcentral` or `telnyx`"),
-        ("media_id" = String, Path, description = "CloudTalk call id, RingCentral media token, or Granite Phone call `tx_<id>`"),
+        ("media_id" = String, Path, description = "CloudTalk call id, RingCentral media token, or Granite Manager call `tx_<id>`"),
     ),
     responses(
         (status = 200, description = "Where to load the audio", body = CallRecording),
         (status = 400, description = "Not a call id or media token of the provider", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not an employee or admin, or may not hear this Granite Phone call", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin, or may not hear this Granite Manager call", body = ErrorBody),
         (status = 404, description = "The call has no recording (or is not the company's)", body = ErrorBody),
         (status = 502, description = "The provider could not be reached", body = ErrorBody),
         (status = 503, description = "No bucket (or no recordings bucket) configured", body = ErrorBody),

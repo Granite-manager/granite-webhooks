@@ -1,10 +1,10 @@
 //! A rep's texts follow them to the providers they text through now:
-//! `RingCentral` (an extension) and Telnyx (a Granite Phone line, while the
+//! `RingCentral` (an extension) and Telnyx (a Granite Manager line, while the
 //! company texts through it). Whenever their line changes (My Account, the
-//! Users page, a number given to them, Granite Phone texting turned on)
+//! Users page, a number given to them, Granite Manager texting turned on)
 //! their texts on every other provider are copied there: those they sent,
 //! those tagged with an agent id they ever had, and those on a number they
-//! ever had (their own: a shared Granite Phone line is not theirs alone).
+//! ever had (their own: a shared Granite Manager line is not theirs alone).
 //! The ids are kept in `user_sms_identities`, so a cleared field still
 //! counts. On Telnyx the copies sit on the rep's own line, so the Granite
 //! Phone app shows them too. A copy's `idempotency_key` names its original

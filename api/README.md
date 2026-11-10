@@ -28,14 +28,14 @@ api/
                               extractors (auth/), the route macros (openapi.rs), sql
     media/     api-media      pictures (HEIC, thumbnails) and PDFs, signing PDFs
     crm/       api-crm        customers, deals, texts (routes/sms), emails, calls,
-                              templates, uploads, Granite Phone's logic (phone/)
+                              templates, uploads, Granite Manager's logic (phone/)
     accounts/  api-accounts   sign-in (routes/auth), me, users, onboarding, leaderboard
     schedule/  api-schedule   calendars, events, the schedule board
     inventory/ api-inventory  stones, slabs, sinks, faucets, suppliers, sales, documents
     followups/ api-followups  AI follow-ups (followups/) and their routes
     quotes/    api-quotes     quote pricing and editor, online quotes, signatures,
                               QuickBooks, commissions
-    phone/     api-phone      Granite Phone's routes (routes/phone) and Telnyx's webhooks
+    phone/     api-phone      Granite Manager's routes (routes/phone) and Telnyx's webhooks
     admin/     api-admin      admin and superuser screens, billing, integrations,
                               marketing, the PostHog auto-fix
     ai/        api-ai         the AI chat (chat/), routes/ai, call notes and coaching
@@ -480,7 +480,7 @@ webhooks Lambda) is set: not on dev, whose database holds production's
 
 ## Phone (Telnyx)
 
-Granite Phone, the business calling app (repo `granite-phone`; its contract
+Granite Manager, the business calling app (repo `granite-phone`; its contract
 is `docs/api-contract.md` there), runs on this API. Calls go through Telnyx:
 a company's numbers sit on its TeXML application (incoming calls), and each
 signed-in phone gets a telephony credential on its credential connection

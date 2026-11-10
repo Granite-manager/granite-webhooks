@@ -79,12 +79,12 @@ pub enum CoachingStatus {
 /// A call the coach can score.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CoachingCall {
-    /// `CloudTalk` or `RingCentral` call id, or `tx_<id>` for a Granite Phone
+    /// `CloudTalk` or `RingCentral` call id, or `tx_<id>` for a Granite Manager
     /// call.
     pub call_id: String,
     pub status: CoachingStatus,
     /// When it started (`CloudTalk` time, or RFC 3339 for `RingCentral` and
-    /// Granite Phone).
+    /// Granite Manager).
     pub started_at: String,
     /// Seconds talked.
     pub talking_time: f64,
@@ -108,7 +108,7 @@ pub struct CoachingCall {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Coaching {
     /// The caller has a `CloudTalk` line (agent and number), a `RingCentral`
-    /// line (extension and number) or a Granite Phone number (calling
+    /// line (extension and number) or a Granite Manager number (calling
     /// switched on for the company).
     pub eligible: bool,
     /// Some call is being scored.
@@ -204,7 +204,7 @@ fn started(at: &str) -> Option<DateTime<Utc>> {
 }
 
 /// Which calls the caller has: a `CloudTalk` or `RingCentral` line
-/// ([`has_line`]), and a Granite Phone number of their company (calling
+/// ([`has_line`]), and a Granite Manager number of their company (calling
 /// switched on).
 async fn lines(state: &AppState, user: &SessionUser) -> Result<(bool, bool), sqlx::Error> {
     let line = has_line(user);
@@ -222,7 +222,7 @@ async fn lines(state: &AppState, user: &SessionUser) -> Result<(bool, bool), sql
     Ok((line, telnyx))
 }
 
-/// The caller's Granite Phone calls the coach can score: answered by them,
+/// The caller's Granite Manager calls the coach can score: answered by them,
 /// over a minute of talk, not a voicemail, last 30 days (`tx_<id>`).
 async fn telnyx_candidates(
     state: &AppState,
@@ -269,7 +269,7 @@ async fn telnyx_candidates(
 }
 
 /// The caller's newest calls the coach can score: `CloudTalk` and
-/// `RingCentral` ones on the lines they have, and Granite Phone ones when
+/// `RingCentral` ones on the lines they have, and Granite Manager ones when
 /// `lines` says they have a number there.
 async fn candidates(
     state: &AppState,
@@ -413,8 +413,8 @@ const fn not_eligible() -> Coaching {
 /// Get my call coaching
 ///
 /// The caller's last three real calls with their scores: `CloudTalk` and
-/// `RingCentral` calls when they have either line, and Granite Phone calls
-/// they placed or answered (`tx_<id>`) when they have a Granite Phone number.
+/// `RingCentral` calls when they have either line, and Granite Manager calls
+/// they placed or answered (`tx_<id>`) when they have a Granite Manager number.
 #[crate::openapi::path(
     get,
     path = "/v1/me/call-coaching",

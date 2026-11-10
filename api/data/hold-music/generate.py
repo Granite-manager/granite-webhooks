@@ -1,4 +1,4 @@
-"""Synthesizes Granite Phone's built-in hold music (original, CC0).
+"""Synthesizes Granite Manager's built-in hold music (original, CC0).
 
 python3 holdmusic.py OUT_DIR  ->  calm.wav, bright.wav, ambient.wav (22.05 kHz mono)
 Each track is a seamless loop: its notes decay before the end.

@@ -547,7 +547,7 @@ async fn pictures_come_as_short_links(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn texts_from_my_earlier_provider_are_on_my_line(pool: MySqlPool) {
     let setup = setup(&pool, true).await;
-    // Rita texted Dave (317-555-0104) through RingCentral before Granite Phone.
+    // Rita texted Dave (317-555-0104) through RingCentral before Granite Manager.
     sqlx::raw_sql(
         "UPDATE users SET ringcentral_extension_id = '777', ringcentral_phone_number = '3175550199'
           WHERE id = 100;

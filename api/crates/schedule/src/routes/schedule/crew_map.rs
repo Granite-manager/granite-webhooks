@@ -61,7 +61,7 @@ struct Row {
 /// Where the crew is
 ///
 /// Every installer and template maker of the company with their phone's
-/// latest position (Granite Phone sends it from 5 AM until 9 PM), and the
+/// latest position (Granite Manager sends it from 5 AM until 9 PM), and the
 /// shop or job they are at. Admins only.
 #[crate::openapi::path(
     get,

@@ -18,10 +18,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct TranscriptInput {
     /// `CloudTalk`'s numeric call id, the `RingCentral` call id, or a
-    /// Granite Phone call `tx_<id>` (`Cdr.id` of `GET /v1/calls/telnyx`).
+    /// Granite Manager call `tx_<id>` (`Cdr.id` of `GET /v1/calls/telnyx`).
     pub call_id: String,
     /// The call's `recording_link`: a `RingCentral` media token, a
-    /// `CloudTalk` URL, or the Granite Phone call `tx_<id>`.
+    /// `CloudTalk` URL, or the Granite Manager call `tx_<id>`.
     #[serde(default)]
     pub recording_link: Option<String>,
 }
@@ -54,8 +54,8 @@ pub struct CallTranscript {
         (status = 200, description = "Transcript", body = CallTranscript),
         (status = 400, description = "Invalid call id", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not an employee or admin, or may not hear this Granite Phone call", body = ErrorBody),
-        (status = 404, description = "The recording is empty (or a Granite Phone call has none, or is not the company's)", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin, or may not hear this Granite Manager call", body = ErrorBody),
+        (status = 404, description = "The recording is empty (or a Granite Manager call has none, or is not the company's)", body = ErrorBody),
         (status = 422, description = "No speech in the recording", body = ErrorBody),
         (status = 500, description = "The recording could not be fetched or transcribed", body = ErrorBody),
     ),

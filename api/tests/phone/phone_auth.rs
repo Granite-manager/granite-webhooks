@@ -1,4 +1,4 @@
-//! Granite Phone sign-in: device sessions, the `X-Granite-Device` header and
+//! Granite Manager sign-in: device sessions, the `X-Granite-Device` header and
 //! signing phones out (`routes/device_sessions.rs`, `auth/device.rs`).
 //!
 //! Fixture device sessions use ids 900100+ and phone devices 900200+; their

@@ -2,7 +2,7 @@
 //!
 //! `CloudTalk` call ids are numeric; `RingCentral` audio is addressed by the media tokens of
 //! [`super::ringcentral`] (`rec_<id>`, `vm_<extension>_<message>_<attachment>`);
-//! Granite Phone calls are `tx_<id>` ([`super::telnyx`]), read from our own bucket.
+//! Granite Manager calls are `tx_<id>` ([`super::telnyx`]), read from our own bucket.
 //! Port of `callTranscription.server.ts` and `ringcentralCallMedia.ts`.
 
 use super::ringcentral::attachment_of;
@@ -159,7 +159,7 @@ async fn voicemail_transcript(
     (!text.is_empty() && !unavailable).then_some(text)
 }
 
-/// The Granite Phone call (`tx_<id>`) a call id or recording link names.
+/// The Granite Manager call (`tx_<id>`) a call id or recording link names.
 pub fn telnyx_call(call_id: &str, recording_link: Option<&str>) -> Option<i64> {
     telnyx::parse_token(call_id).or_else(|| recording_link.and_then(telnyx::parse_token))
 }
@@ -229,7 +229,7 @@ pub async fn fetch_audio(
 }
 
 /// Transcribes a call, reusing `RingCentral`'s voicemail transcript when it
-/// has one. A Granite Phone call (`tx_<id>`, of the caller's company) reuses
+/// has one. A Granite Manager call (`tx_<id>`, of the caller's company) reuses
 /// the transcript kept on it, else transcribes our copy of its recording
 /// (always with speaker labels) and keeps the transcript.
 pub async fn transcribe_call(

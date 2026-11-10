@@ -479,7 +479,7 @@ pub async fn invite_port_loa_signer(
         .to_string();
     let numbers = numbers_text(&row.numbers());
     let outgoing = OutgoingEmail {
-        from_name: Some("Granite Phone".into()),
+        from_name: Some("Granite Manager".into()),
         from_address: NO_REPLY.into(),
         to: vec![email.clone()],
         cc: Vec::new(),
@@ -719,12 +719,12 @@ async fn notify_sender(state: &AppState, invite: &InviteRow, row: &PortRow) {
         row.id
     );
     let outgoing = OutgoingEmail {
-        from_name: Some("Granite Phone".into()),
+        from_name: Some("Granite Manager".into()),
         from_address: NO_REPLY.into(),
         to: vec![email],
         cc: Vec::new(),
         bcc: Vec::new(),
-        subject: format!("[Granite Phone] {} signed the LOA", invite.signer_name),
+        subject: format!("[Granite Manager] {} signed the LOA", invite.signer_name),
         body: format!(
             "<p>{} signed the Letter of Authorization for {}. It is attached to the port.</p>\
              <p><a href=\"{}\">Open the port</a></p>",

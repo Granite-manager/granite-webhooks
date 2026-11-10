@@ -2,7 +2,7 @@
 name = "api-phone"
 version = "0.1.0"
 edition = "2024"
-description = "Granite Phone's routes: the app's API and Telnyx's webhooks."
+description = "Granite Manager's routes: the app's API and Telnyx's webhooks."
 
 [lib]
 # No doc tests; rustdoc would still compile the whole crate looking for them.

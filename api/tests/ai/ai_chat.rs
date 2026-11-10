@@ -718,7 +718,7 @@ async fn turning_off_notifications_asks_which_ones_first(pool: MySqlPool) {
             "Bell in the header",
             "Desktop pop-ups",
             "Telegram alerts",
-            "Granite Phone app",
+            "Granite Manager app",
             "Phone ringing",
             "Reminders to customers"
         ]
@@ -731,7 +731,7 @@ async fn turning_off_notifications_asks_which_ones_first(pool: MySqlPool) {
         .unwrap()
         .to_string();
     assert!(
-        asked.ends_with("[[CLARIFY:How to turn off notifications|Bell in the header=notifications|Desktop pop-ups=notifications|Telegram alerts=notifications,my-account-telegram|Granite Phone app=notifications,admin-phone-telnyx|Phone ringing=notifications,phone-calls,admin-phone-telnyx|Reminders to customers=schedule-notifications,notifications]]"),
+        asked.ends_with("[[CLARIFY:How to turn off notifications|Bell in the header=notifications|Desktop pop-ups=notifications|Telegram alerts=notifications,my-account-telegram|Granite Manager app=notifications,admin-phone-telnyx|Phone ringing=notifications,phone-calls,admin-phone-telnyx|Reminders to customers=schedule-notifications,notifications]]"),
         "{asked}"
     );
 
@@ -832,7 +832,7 @@ async fn an_answer_that_found_nothing_asks_which_topic(pool: MySqlPool) {
         .collect();
     assert_eq!(
         labels[..2],
-        ["Texting registration (10DLC)", "Granite Phone (Telnyx)"]
+        ["Texting registration (10DLC)", "Granite Manager (Telnyx)"]
     );
     assert!(named(&events, "crmManual").is_empty());
     let saved = history(&pool).await;
@@ -841,7 +841,7 @@ async fn an_answer_that_found_nothing_asks_which_topic(pool: MySqlPool) {
         .unwrap()
         .to_string();
     assert!(
-        asked.contains("Do you mean one of these?\n\n[[CLARIFY:What about the DLC form?|Texting registration (10DLC)=texting-registration-10dlc|Granite Phone (Telnyx)=admin-phone-telnyx"),
+        asked.contains("Do you mean one of these?\n\n[[CLARIFY:What about the DLC form?|Texting registration (10DLC)=texting-registration-10dlc|Granite Manager (Telnyx)=admin-phone-telnyx"),
         "{asked}"
     );
 

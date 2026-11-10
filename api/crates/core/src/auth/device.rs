@@ -1,4 +1,4 @@
-//! The Granite Phone app's sign-in: a device token sent as `X-Granite-Device`
+//! The Granite Manager app's sign-in: a device token sent as `X-Granite-Device`
 //! (CloudFront drops `Authorization` on GET requests).
 //!
 //! - [`DeviceUser`]: the device token only (the app's own routes).

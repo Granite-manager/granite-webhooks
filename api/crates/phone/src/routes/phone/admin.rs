@@ -1,4 +1,4 @@
-//! The company admin's Granite Phone page: the company's numbers, who they
+//! The company admin's Granite Manager page: the company's numbers, who they
 //! ring and who may call from them, the main line's business hours and
 //! holidays, call recording, and the company's signed-in phones.
 //! Session cookie only; company admins, super admins and superusers
@@ -146,7 +146,7 @@ pub struct AdminNumbers {
     /// The company's numbers: the main line first, then shared lines, then
     /// direct lines (each by label).
     pub numbers: Vec<AdminNumber>,
-    /// The company's users who may use Granite Phone (employees, admins),
+    /// The company's users who may use Granite Manager (employees, admins),
     /// by name: who numbers can be given to.
     pub users: Vec<PhoneAdminUser>,
     /// The company's calling status.
@@ -310,7 +310,7 @@ pub(super) async fn company_number(
 
 /// List the company's phone numbers
 ///
-/// The company's Granite Phone numbers (main line first, then shared and
+/// The company's Granite Manager numbers (main line first, then shared and
 /// direct lines), who each one rings and who may call from it; the users
 /// numbers can be given to (employees and admins, by name); and the
 /// company's calling status (`enabled`, `recordingMode`, `configured` =
@@ -889,7 +889,7 @@ pub(super) async fn import_numbers(
 
 /// List the company's signed-in phones
 ///
-/// Every Granite Phone sign-in of the company's users that is not signed
+/// Every Granite Manager sign-in of the company's users that is not signed
 /// out (expired and idle ones stay listed until revoked), newest first,
 /// with whose phone it is and its Telnyx SIP user. Sign one out with
 /// `DELETE /v1/phone/admin/devices/{id}`. Company admins (and super admins,

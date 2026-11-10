@@ -1,4 +1,4 @@
-//! Telnyx, for Granite Phone: the REST client, a TeXML builder and the
+//! Telnyx, for Granite Manager: the REST client, a TeXML builder and the
 //! webhook signature check.
 //!
 //! - [`Telnyx`]: the REST API with our key (`TELNYX_API_KEY`;

@@ -1,4 +1,4 @@
-//! `GET /v1/public/hold-music/{file}`: Granite Phone's built-in hold music,
+//! `GET /v1/public/hold-music/{file}`: Granite Manager's built-in hold music,
 //! fetched by Telnyx while a caller is on hold and by the app's preview
 //! (original CC0 music, `api/data/hold-music/`).
 

@@ -1,5 +1,5 @@
 //! `GET /v1/phone/calls/ringcentral`: the caller's `RingCentral` calls for
-//! the app's Calls tab, beside its Granite Phone calls.
+//! the app's Calls tab, beside its Granite Manager calls.
 //!
 //! Like texts, a call is the rep's by its user or its number, either one:
 //! their `RingCentral` extension now or ever, or a number of theirs now or

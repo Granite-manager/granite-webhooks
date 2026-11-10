@@ -6,7 +6,7 @@ use crate::openapi::ToSchema;
 use serde::{Deserialize, Serialize};
 
 /// The SMS provider a company texts through: `cloudtalk`, `ringcentral`, or
-/// `telnyx` (Granite Phone: texts from the company's Telnyx numbers).
+/// `telnyx` (Granite Manager: texts from the company's Telnyx numbers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SmsProvider {

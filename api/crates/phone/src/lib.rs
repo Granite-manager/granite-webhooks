@@ -1,4 +1,4 @@
-//! Granite Phone's routes: the app's API (`/v1/phone/...`) and Telnyx's
+//! Granite Manager's routes: the app's API (`/v1/phone/...`) and Telnyx's
 //! webhooks. The phone logic that texts and calls share is api-crm's `phone`.
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 #![allow(

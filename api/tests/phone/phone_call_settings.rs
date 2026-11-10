@@ -1,4 +1,4 @@
-//! Granite Phone call settings: incoming call rules and "Forward all calls"
+//! Granite Manager call settings: incoming call rules and "Forward all calls"
 //! (`routes/phone/call_rules.rs`, `phone/call_rules.rs`), incoming call
 //! information (display number, announcements, answer PIN), the company's
 //! spam and blocked numbers (`routes/phone/blocking.rs`), and hold music
@@ -597,7 +597,7 @@ async fn a_fallback_cell_asks_for_the_pin(pool: MySqlPool) {
         screen.text(),
         texml_doc(&format!(
             "<Gather numDigits=\"4\" timeout=\"8\" action=\"{base}/cell-screen-result?call={id}&amp;user=100\">\
-             <Say>Granite Phone: a call from Alice Lead. Enter your PIN to answer.</Say></Gather><Hangup/>"
+             <Say>Granite Manager: a call from Alice Lead. Enter your PIN to answer.</Say></Gather><Hangup/>"
         ))
     );
     let route = format!("cell-screen-result?call={id}&user=100");

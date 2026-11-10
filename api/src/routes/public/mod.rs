@@ -7,7 +7,7 @@
 //! - `GET /v1/public/companies/{company_id}/sinks|faucets` → displayed models in stock
 //! - `GET /v1/public/colors` → stone colors
 //! - `GET /v1/public/vcard` → a contact card file
-//! - `GET /v1/public/hold-music/{file}` → a built-in Granite Phone hold music MP3
+//! - `GET /v1/public/hold-music/{file}` → a built-in Granite Manager hold music MP3
 //! - `GET /v1/public/calendly-url` → the demo booking page
 //! - `GET /v1/public/companies/{company_id}/survey`, `POST .../surveys` →
 //!   the post-installation survey

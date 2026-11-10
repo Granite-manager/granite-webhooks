@@ -754,7 +754,7 @@ struct PositionRow {
 /// company (or remove companies a superuser granted). Super Admins are
 /// always admins. The `RingCentral` extension follows the number. A user
 /// who is no longer an employee or admin of their company (or moved to
-/// another one) is signed out of Granite Phone.
+/// another one) is signed out of Granite Manager.
 #[crate::openapi::path(
     put,
     path = "/v1/admin/users/{id}",
@@ -978,7 +978,7 @@ pub async fn update(
 /// Delete a user
 ///
 /// Soft-deletes a live user of the caller's company (superusers: any) and
-/// signs out their Granite Phone apps.
+/// signs out their Granite Manager apps.
 #[crate::openapi::path(
     delete,
     path = "/v1/admin/users/{id}",

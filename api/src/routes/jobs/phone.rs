@@ -1,4 +1,4 @@
-//! `POST /v1/jobs/phone`: Granite Phone's upkeep.
+//! `POST /v1/jobs/phone`: Granite Manager's upkeep.
 //!
 //! A bounded amount each run (the `time-triggered` Lambda calls it every
 //! minute). A run starts no new work after [`RUN_BUDGET`], so it ends
@@ -6,7 +6,7 @@
 //! overlapping run never repeats work.
 //!
 //! In order:
-//! 1. signs out the phones of users who may no longer use Granite Phone
+//! 1. signs out the phones of users who may no longer use Granite Manager
 //!    (deleted, moved to another company, no longer an employee or admin,
 //!    or their company deleted), and browser phones whose CRM sign-in
 //!    ended (no sign-in ends by time);
@@ -25,7 +25,7 @@
 //!    bucket (speaker labels on), writes the note with the CRM's call-note
 //!    prompts (the voicemail prompt for voicemails), tidies it the way the
 //!    CRM does (`call_notes::sanitize`), adds it to the call's deal (by
-//!    "Granite Phone"; the deal's people are notified as for a CRM note)
+//!    "Granite Manager"; the deal's people are notified as for a CRM note)
 //!    and keeps it on the call (`aiNote`); a rep's answered call of 31 to 89
 //!    seconds with a customer also gets the CRM's call check on that
 //!    transcript (a conversation stops their flows and moves the deal on);
@@ -117,7 +117,7 @@ const MAX_NOTE_ATTEMPTS: i64 = 5;
 const POINTS_PER_RUN: i64 = 200;
 /// Who the AI notes are by (`deal_notes.created_by`, the notifications'
 /// actor).
-pub const AI_NOTE_AUTHOR: &str = "Granite Phone";
+pub const AI_NOTE_AUTHOR: &str = "Granite Manager";
 /// The longest AI note kept (a deal note's limit).
 const MAX_NOTE_CHARS: usize = 5000;
 
@@ -186,9 +186,9 @@ pub struct PhoneJobRun {
     pub tendlc_numbers_assigned: usize,
 }
 
-/// Run Granite Phone's upkeep
+/// Run Granite Manager's upkeep
 ///
-/// Signs out the phones of users who may no longer use Granite Phone (or
+/// Signs out the phones of users who may no longer use Granite Manager (or
 /// whose company was deleted) and browser phones whose CRM sign-in ended, deletes
 /// leftover Telnyx credentials of signed-out phones (backing off on
 /// failures), deletes Telnyx callbacks older than 30 days, closes calls
@@ -284,14 +284,14 @@ const fn is_zero(count: &usize) -> bool {
 /// Which sign-ins step 1 ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Sessions {
-    /// Of users who may no longer use Granite Phone, or of a deleted
+    /// Of users who may no longer use Granite Manager, or of a deleted
     /// company.
     LostAccess,
     /// Browser phones whose CRM sign-in ended.
     Expired,
 }
 
-/// Step 1: the phones of users who may no longer use Granite Phone, and
+/// Step 1: the phones of users who may no longer use Granite Manager, and
 /// browser phones whose CRM sign-in ended (through `revoke_device_session`, so their
 /// credentials and push tokens go too).
 async fn sign_out(state: &AppState, which: Sessions, deadline: Instant) -> sqlx::Result<usize> {

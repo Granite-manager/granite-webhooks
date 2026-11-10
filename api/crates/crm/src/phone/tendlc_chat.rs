@@ -162,10 +162,10 @@ async fn company_context(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Stri
     );
     let numbers = registry::numbers(pool, company_id).await?;
     if numbers.is_empty() {
-        text.push_str("- Phone numbers (Granite Phone): none yet\n");
+        text.push_str("- Phone numbers (Granite Manager): none yet\n");
     } else {
         text.push_str(
-            "- Phone numbers (Granite Phone) that will text once the campaign is approved:\n",
+            "- Phone numbers (Granite Manager) that will text once the campaign is approved:\n",
         );
         for number in &numbers {
             let label = number.label.trim();

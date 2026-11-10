@@ -1,4 +1,4 @@
-//! The Granite Phone app's Emails and Schedule screens call the CRM's own
+//! The Granite Manager app's Emails and Schedule screens call the CRM's own
 //! routes (`/v1/emails`, `/v1/schedule`, `/v1/events`) with its device token
 //! (`X-Granite-Device`) instead of the cookie (`auth::DEVICE_ROUTES`), and so
 //! does its schedule-only app for installers and template makers

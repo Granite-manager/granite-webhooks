@@ -105,13 +105,13 @@ pub struct AppState {
     /// `SIGNATURE_SESSION_SECRET`: keys the native signer's CSRF token
     /// (32+ bytes); unset, native signing links answer 503.
     pub signing_session_secret: Option<Arc<str>>,
-    /// Telnyx, for Granite Phone (a stub in tests; disabled without
+    /// Telnyx, for Granite Manager (a stub in tests; disabled without
     /// `TELNYX_API_KEY`).
     pub telnyx: Telnyx,
-    /// FCM pushes to the Granite Phone app (disabled without a service
+    /// FCM pushes to the Granite Manager app (disabled without a service
     /// account).
     pub push: Push,
-    /// Granite Phone settings (`PHONE_*`, `TELNYX_PUBLIC_KEY`,
+    /// Granite Manager settings (`PHONE_*`, `TELNYX_PUBLIC_KEY`,
     /// `TELNYX_FALLBACK_TEXML_URL`).
     pub phone: PhoneConfig,
     /// State of the crates above this one, one value per type (see

@@ -1068,12 +1068,12 @@ pub async fn notify(state: &AppState, row: &PortRow, notice: Notice) -> sqlx::Re
     );
     for email in emails {
         let outgoing = OutgoingEmail {
-            from_name: Some("Granite Phone".into()),
+            from_name: Some("Granite Manager".into()),
             from_address: NO_REPLY.into(),
             to: vec![email],
             cc: Vec::new(),
             bcc: Vec::new(),
-            subject: format!("[Granite Phone] {subject}"),
+            subject: format!("[Granite Manager] {subject}"),
             body: format!(
                 "<p>{}</p><p><a href=\"{}\">Open the port</a></p>",
                 html(&message),

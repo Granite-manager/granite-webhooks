@@ -21,7 +21,7 @@ pub use utoipa_axum::{router::OpenApiRouter, routes};
 /// Name of the `__session` cookie scheme every route lists under `security`.
 pub const SESSION_SECURITY: &str = "session_cookie";
 
-/// Name of the Granite Phone app's `X-Granite-Device` token scheme.
+/// Name of the Granite Manager app's `X-Granite-Device` token scheme.
 pub const DEVICE_SECURITY: &str = "device_token";
 
 #[cfg(not(feature = "openapi"))]

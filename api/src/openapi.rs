@@ -77,8 +77,8 @@ use utoipa::{Modify, OpenApi};
         (name = "payments", description = "The payments page (payments.granite-manager.com): a company's monthly Stripe subscription, opened from its signed payment link (no session)"),
         (name = "jobs", description = "Scheduled jobs the time-triggered Lambda runs (job key, no session)"),
         (name = "posthog-autofix", description = "Callbacks of the PostHog auto-fix GitHub workflow (callback secret, no session)"),
-        (name = "phone", description = "Granite Phone, business calling through Telnyx: the app's sign-in and devices, calls, contacts and settings, and their admin pages"),
-        (name = "telnyx-webhooks", description = "Telnyx's TeXML and Call Control callbacks for Granite Phone (signed by Telnyx, no session)"),
+        (name = "phone", description = "Granite Manager, business calling through Telnyx: the app's sign-in and devices, calls, contacts and settings, and their admin pages"),
+        (name = "telnyx-webhooks", description = "Telnyx's TeXML and Call Control callbacks for Granite Manager (signed by Telnyx, no session)"),
     )
 )]
 struct ApiDoc;
@@ -116,7 +116,7 @@ impl Modify for SessionCookie {
             DEVICE_SECURITY,
             SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
                 "X-Granite-Device",
-                "Device token of a signed-in Granite Phone app (`POST /v1/auth/device-sessions`).",
+                "Device token of a signed-in Granite Manager app (`POST /v1/auth/device-sessions`).",
             ))),
         );
         let mut runner = Http::new(HttpAuthScheme::Bearer);

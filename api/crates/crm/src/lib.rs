@@ -1,5 +1,5 @@
 //! Customers, deals and the conversations with them: texts (`routes::sms`),
-//! emails, calls, Granite Phone's logic that texts and calls share (`phone`),
+//! emails, calls, Granite Manager's logic that texts and calls share (`phone`),
 //! templates, uploads and the user's stats.
 #![warn(clippy::all, clippy::pedantic, clippy::nursery)]
 #![allow(

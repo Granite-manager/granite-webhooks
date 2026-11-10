@@ -1031,7 +1031,7 @@ pub fn looks_like_how_to(query: &str) -> bool {
     }
     // The services the app connects to, by name.
     if help
-        && re!(r"\b(?:telnyx|telegram|quickbooks|qbo|cloudtalk|ringcentral|signwell|zapier|10dlc|granite phone)\b").is_match(&normalized)
+        && re!(r"\b(?:telnyx|telegram|quickbooks|qbo|cloudtalk|ringcentral|signwell|zapier|10dlc|Granite Manager)\b").is_match(&normalized)
     {
         return true;
     }
@@ -1414,7 +1414,7 @@ mod tests {
             .collect();
         assert_eq!(offered[0].0, "Texting registration (10DLC)");
         assert_eq!(offered[0].1, ["texting-registration-10dlc"]);
-        assert_eq!(offered[1].0, "Granite Phone (Telnyx)");
+        assert_eq!(offered[1].0, "Granite Manager (Telnyx)");
         assert_eq!(offered[1].1, ["admin-phone-telnyx"]);
         assert!(offered.len() <= 3);
         // Not the sections the dead end was answered from.
@@ -1710,7 +1710,7 @@ mod tests {
                 "Bell in the header",
                 "Desktop pop-ups",
                 "Telegram alerts",
-                "Granite Phone app",
+                "Granite Manager app",
                 "Phone ringing",
                 "Reminders to customers"
             ]
@@ -1720,7 +1720,7 @@ mod tests {
             "the bell",
             "desktop pop-ups",
             "telegram alerts",
-            "granite phone app",
+            "Granite Manager app",
             "phone ringing",
             "reminders sent to customers",
         ] {

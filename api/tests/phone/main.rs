@@ -1,4 +1,4 @@
-//! Granite Phone: the app's sign-in, devices, calls, contacts, texts and
+//! Granite Manager: the app's sign-in, devices, calls, contacts, texts and
 //! settings, and their admin pages (api-phone).
 //!
 //! One file's tests: `cargo test -p api --test phone <file>::`.

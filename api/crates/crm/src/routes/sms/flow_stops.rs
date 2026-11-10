@@ -36,7 +36,7 @@ pub async fn stop_after_customer_conversation(
     Ok(affected)
 }
 
-/// The customer of a Granite Phone call talked to the company (or called
+/// The customer of a Granite Manager call talked to the company (or called
 /// it): their running flows stop, like [`stop_after_customer_conversation`]
 /// (by the call's number, the customer and the customer's other phone).
 /// The call names its customer, so no SMS provider is needed: a company
