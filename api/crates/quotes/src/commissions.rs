@@ -304,6 +304,11 @@ pub fn feature_of(line: &PriceLine) -> Option<&'static str> {
     if key.contains("|edge:") {
         return (line.total > 0.0).then_some("custom_edge");
     }
+    // The stone itself is never an extra: "30 sq ft remnants Soapstone" is
+    // not a soap dispenser.
+    if is_stone_line(&key) {
+        return None;
+    }
     let feature = if key.contains("|waterfall") || text.contains("waterfall") {
         "waterfall"
     } else if key.contains("|mitered edge material:")
@@ -315,7 +320,7 @@ pub fn feature_of(line: &PriceLine) -> Option<&'static str> {
         "phantom_seam"
     } else if text.contains("support") || text.contains("corbel") {
         "support"
-    } else if text.contains("soap") {
+    } else if text.replace("soapstone", "").contains("soap") {
         "soap_dispenser"
     } else if text.contains("faucet") && !text.contains("hole") && !key.contains("faucethole") {
         "faucet"
@@ -323,6 +328,23 @@ pub fn feature_of(line: &PriceLine) -> Option<&'static str> {
         return None;
     };
     Some(feature)
+}
+
+/// An area's stone line: `{area}|material`, `{area}|material-sqft`, or a
+/// slab size (`{area}|126x63`).
+fn is_stone_line(key: &str) -> bool {
+    let Some((_, last)) = key.rsplit_once('|') else {
+        return false;
+    };
+    last == "material"
+        || last == "material-sqft"
+        || last.split_once('x').is_some_and(|(w, h)| {
+            !w.is_empty()
+                && !h.is_empty()
+                && w.chars()
+                    .chain(h.chars())
+                    .all(|c| c.is_ascii_digit() || c == '.')
+        })
 }
 
 /// Dollars of each extra ([`feature_of`]) sold on one option.
@@ -864,6 +886,8 @@ mod tests {
                     line("a|miterEach", "2 Mitered Edges", 100.0),
                     line("a|faucetHole", "3 Faucet Holes", 0.0),
                     line("a|material", "40 sq ft Quartz White", 2000.0),
+                    line("a|material", "30 sq ft remnants Soapstone", 900.0),
+                    line("a|126x63", "1 Slab Waterfall White 126x63", 900.0),
                 ],
             )],
             other: area(
@@ -873,6 +897,7 @@ mod tests {
                     line("item:2", "Seam Phantom", 120.0),
                     line("item:3", "Faucet - Chrome", 250.0),
                     line("item:4", "Karran Soap Dispenser", 45.0),
+                    line("item:5", "Soapstone sealer", 30.0),
                 ],
             ),
             discount: 0.0,
