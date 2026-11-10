@@ -286,18 +286,18 @@ pub const AUTO_CONFIRM_INSTALL: (&str, &[&str], &str) = (
     &["installations"],
     "Hi {{customer.first_name}}, this is {{company.name}}. Our installation team is scheduled to install your countertops on {{appointment.date}}, arriving between {{appointment.time}} and {{appointment.end_time}}. Does this time work for you? Reply YES to confirm, or NO and we'll find another time that suits you.",
 );
-/// Sent 24 hours after either confirmation when the customer has not replied.
+/// Sent 6 hours after either confirmation when the customer has not replied.
 pub const AUTO_CONFIRM_REMINDER: (&str, &[&str], &str) = (
     "Confirmation reminder",
     &["templates", "installations"],
     "Hi {{customer.first_name}}, just following up from {{company.name}}. Does {{appointment.date}} between {{appointment.time}} and {{appointment.end_time}} still work for you? Reply YES to confirm, or NO and we'll find another time.",
 );
 /// Hours before the reminder follows a confirmation.
-pub const AUTO_CONFIRM_REMINDER_HOURS: i32 = 24;
+pub const AUTO_CONFIRM_REMINDER_HOURS: i32 = 6;
 
 /// Adds Auto-confirm's default texts to a new company (after its built-in
 /// calendars): the template and installation confirmations, each followed
-/// 24 hours later by the reminder when the customer has not replied.
+/// 6 hours later by the reminder when the customer has not replied.
 pub async fn seed_auto_confirm(
     conn: &mut sqlx::MySqlConnection,
     company_id: i32,
