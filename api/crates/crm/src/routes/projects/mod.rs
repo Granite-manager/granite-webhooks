@@ -14,7 +14,7 @@
 //! - `POST   /v1/projects/{id}/task-times/reset`   → forget a task's remembered time
 //! - `/v1/projects/{id}/notes[/{note_id}]`         → notes (POST, DELETE)
 //! - `/v1/projects/{id}/files[/{file_id}]`         → files from `POST /v1/uploads` (POST, DELETE)
-//! - `/v1/projects/process-steps[/{step_id}]`      → the company's own steps, for admins (GET, POST, PATCH, DELETE, reorder)
+//! - `/v1/projects/process-steps[/{step_id}]`      → the company's own steps, for admins (GET, POST, PATCH, DELETE, reorder, notify)
 //! - `PUT    /v1/projects/{id}/steps/{step_id}`    → check a step off a project
 //!
 //! Who sees what is in [`access`].
@@ -50,5 +50,6 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(process::list, process::create))
         .routes(routes!(process::rename, process::delete))
         .routes(routes!(process::reorder))
+        .routes(routes!(process::set_notify))
         .routes(routes!(process::set_done))
 }
