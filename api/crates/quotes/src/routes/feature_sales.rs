@@ -9,12 +9,12 @@ use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::openapi::{IntoParams, ToSchema};
 use crate::openapi::{OpenApiRouter, routes};
 use crate::quote_pricing::pricing::price_quote;
-use crate::quote_pricing::{load_company_quote, price_list_for_quote};
+use crate::quote_pricing::{Quote, load_company_quotes, load_stock, pricing_with_stock};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Query, State};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new().routes(routes!(list_feature_sales))
@@ -136,13 +136,26 @@ pub async fn list_feature_sales(
     .bind(to.as_deref())
     .fetch_all(&state.pool)
     .await?;
+    // One query for every quote and the stock loaded once: per quote they
+    // took ten round trips and made the dashboard widget slow.
+    let ids: Vec<i32> = quotes.iter().map(|q| q.id).collect();
+    let mut loaded: HashMap<i32, Quote> = load_company_quotes(&state.pool, &ids, user.company_id)
+        .await?
+        .into_iter()
+        .map(|q| (q.id, q))
+        .collect();
+    let stock = if loaded.is_empty() {
+        None
+    } else {
+        Some(load_stock(&state.pool, user.company_id).await?)
+    };
     let mut rows = Vec::new();
     for sold in quotes {
-        let Some(quote) = load_company_quote(&state.pool, sold.id, user.company_id).await? else {
+        let (Some(quote), Some(stock)) = (loaded.remove(&sold.id), stock.as_ref()) else {
             continue;
         };
         let doc = quote.doc();
-        let price_list = price_list_for_quote(&state.pool, &quote).await?;
+        let (price_list, _) = pricing_with_stock(&state.pool, &quote, stock).await?;
         let prices = price_quote(&doc, &price_list, quote.options());
         let accepted = usize::try_from(quote.customer_accepted_option_id.unwrap_or(0).max(0))
             .unwrap_or_default()

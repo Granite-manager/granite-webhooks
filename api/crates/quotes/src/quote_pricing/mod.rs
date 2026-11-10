@@ -81,6 +81,25 @@ pub async fn load_company_quote(
     .await?)
 }
 
+/// Many of a company's quotes in one query (deleted ones left out), any order.
+pub async fn load_company_quotes(
+    pool: &MySqlPool,
+    quote_ids: &[i32],
+    company_id: i32,
+) -> ApiResult<Vec<Quote>> {
+    if quote_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let marks = vec!["?"; quote_ids.len()].join(", ");
+    let sql =
+        format!("{QUOTE_SELECT} WHERE company_id = ? AND deleted_at IS NULL AND id IN ({marks})");
+    let mut query = sqlx::query_as::<_, Quote>(sqlx::AssertSqlSafe(sql)).bind(company_id);
+    for id in quote_ids {
+        query = query.bind(id);
+    }
+    Ok(query.fetch_all(pool).await?)
+}
+
 fn json_value(text: Option<&str>) -> Value {
     text.and_then(|t| serde_json::from_str(t).ok())
         .unwrap_or(Value::Null)
@@ -304,6 +323,17 @@ pub async fn price_list_for_quote(pool: &MySqlPool, quote: &Quote) -> ApiResult<
 /// `pricingForQuote`: the quote's prices (its snapshot with today's new
 /// choices) and `latest`, the same list as it prices today.
 pub async fn pricing_for_quote(pool: &MySqlPool, quote: &Quote) -> ApiResult<(Value, Value)> {
+    let stock = load_stock(pool, quote.company_id).await?;
+    pricing_with_stock(pool, quote, &stock).await
+}
+
+/// [`pricing_for_quote`] with the company's stock already loaded, for
+/// pricing many quotes in one request.
+pub async fn pricing_with_stock(
+    pool: &MySqlPool,
+    quote: &Quote,
+    stock: &Stock,
+) -> ApiResult<(Value, Value)> {
     let snapshot: Option<Value> = sqlx::query_scalar::<_, Option<String>>(
         "SELECT CAST(price_snapshot_json AS CHAR) FROM quotes WHERE id = ?",
     )
@@ -342,10 +372,9 @@ pub async fn pricing_for_quote(pool: &MySqlPool, quote: &Quote) -> ApiResult<(Va
         .and_then(|info| price_list::parse(&json_value(info.as_deref()))),
         None => None,
     };
-    let stock = load_stock(pool, quote.company_id).await?;
     let priced = |info: Option<&Value>| {
         let empty = price_list::empty();
-        price_list::sync_with_stock(info.unwrap_or(&empty), &stock)
+        price_list::sync_with_stock(info.unwrap_or(&empty), stock)
     };
     let latest = priced(list.flatten().as_ref().or(revision.as_ref()));
     let taken = if let Some(snapshot) = snapshot {
