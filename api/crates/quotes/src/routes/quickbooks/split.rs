@@ -9,7 +9,7 @@
 //! the classes they last gave them.
 
 use super::invoice::{EditableInvoice, Line, create_payload, editable, line_amount};
-use super::{new_doc_numbers, prepare, qbo_refusal, refuse_installer, rules};
+use super::{new_doc_numbers, post_invoice, prepare, qbo_refusal, refuse_installer, rules};
 use crate::auth::EmployeeUser;
 use crate::auth::session::SessionUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -407,9 +407,7 @@ pub async fn create_split(
     }
     let mut made: Vec<EditableInvoice> = Vec::with_capacity(count);
     for (index, payload) in payloads.iter().enumerate() {
-        let created = state
-            .qbo
-            .post(&ready.access, "invoice", payload)
+        let created = post_invoice(&state, &ready.access, payload)
             .await
             .map_err(qbo_refusal)
             .and_then(|created| {
@@ -633,6 +631,7 @@ mod tests {
             bill_email_cc: None,
             bill_email_bcc: None,
             email_status: None,
+            custom_fields: Vec::new(),
         }
     }
 

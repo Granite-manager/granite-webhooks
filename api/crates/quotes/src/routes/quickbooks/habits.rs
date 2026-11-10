@@ -34,6 +34,12 @@ pub(super) struct Due {
 pub(super) struct Habits {
     /// Invoices read.
     pub invoices: usize,
+    /// Those with a billing address, and those of them whose billing
+    /// address starts with the customer's name.
+    #[serde(default)]
+    pub bill: usize,
+    #[serde(default)]
+    pub bill_named: usize,
     /// Those with a shipping address.
     pub ship: usize,
     /// Their priced lines, and those of them with a service date.
@@ -75,6 +81,19 @@ impl Habits {
             ..Self::default()
         };
         for invoice in invoices {
+            let billing = &invoice["BillAddr"];
+            if has_address(billing) {
+                habits.bill += 1;
+                // A name has no digit, a street nearly always does:
+                // "Alice Lead / 1 Main St / Carmel, IN" against "1 Main St".
+                let first = billing["Line1"].as_str().unwrap_or_default();
+                if !first.trim().is_empty()
+                    && !first.bytes().any(|b| b.is_ascii_digit())
+                    && text(&billing["Line2"]).is_some()
+                {
+                    habits.bill_named += 1;
+                }
+            }
             if has_address(&invoice["ShipAddr"]) {
                 habits.ship += 1;
             }
@@ -102,6 +121,13 @@ impl Habits {
     /// invoices are read it is kept, as invoices always had it.
     pub const fn ships(&self) -> bool {
         self.invoices < MIN_SEEN || self.ship * 2 >= self.invoices
+    }
+
+    /// The billing address starts with the customer's name, as `QuickBooks`
+    /// writes it on its own invoices (and as it is taken to be before
+    /// enough invoices are read). Some companies keep the street first.
+    pub const fn names_billing(&self) -> bool {
+        self.bill < MIN_SEEN || self.bill_named * 2 >= self.bill
     }
 
     /// Priced lines usually carry a service date.
@@ -139,9 +165,10 @@ fn most<T: PartialEq>(values: impl Iterator<Item = T>, of: usize) -> Option<T> {
 /// The addresses a new invoice opens with.
 #[derive(Debug, Clone, Default, Serialize, ToSchema)]
 pub struct DraftAddresses {
-    /// The billing address: the customer's name, then their address, as
-    /// `QuickBooks` writes it. Null leaves it to `QuickBooks`, which fills in
-    /// the billing address its customer already has.
+    /// The billing address, written as the company's invoices write it: the
+    /// customer's name, then their address, or the address alone. Null
+    /// leaves it to `QuickBooks`, which fills in the billing address its
+    /// customer already has.
     pub bill: Option<Address>,
     /// The shipping (job) address. Null when the company's invoices carry
     /// none and the job is at the billing address.
@@ -231,7 +258,10 @@ impl Habits {
         Some(DraftAddresses {
             bill: match qbo_billing {
                 Some(_) => None,
-                None => billed_at.map(|address| under_name(places.name, address)),
+                None if self.names_billing() => {
+                    billed_at.map(|address| under_name(places.name, address))
+                }
+                None => billed_at.cloned(),
             },
             ship: site.filter(|_| self.ships() || !at_billing).cloned(),
         })
@@ -275,6 +305,8 @@ mod tests {
         ];
         let habits = Habits::read(&invoices);
         assert_eq!((habits.invoices, habits.ship), (4, 1));
+        assert_eq!((habits.bill, habits.bill_named), (4, 4));
+        assert!(habits.names_billing());
         assert!(!habits.ships());
         assert!(habits.service_dates());
         assert_eq!(
@@ -390,6 +422,15 @@ mod tests {
         let made = bills.addresses(&builder).unwrap();
         assert!(made.bill.is_none());
         assert_eq!(lines(made.ship.as_ref())[0], "9 Oak Ave");
+        // A company whose invoices bill to the street, without the name.
+        let streets = Habits {
+            invoices: 10,
+            bill: 9,
+            bill_named: 1,
+            ..Habits::default()
+        };
+        let made = streets.addresses(&person(None, Some(home))).unwrap();
+        assert_eq!(lines(made.bill.as_ref()), ["1 Main St", "Carmel"]);
         // The billing address QuickBooks has stays QuickBooks' own.
         let kept = json!({ "Line1": "Alice Lead", "Line2": "1 Main St.", "Line3": "Carmel, IN" });
         let linked = Places {

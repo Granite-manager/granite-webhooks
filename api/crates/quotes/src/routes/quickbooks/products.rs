@@ -9,6 +9,17 @@
 //! read most like it: which words they have and which they lack (naive Bayes
 //! over those words), weighed by how much the product is used. So a company
 //! keeps getting what it keeps doing, and a few corrections turn it.
+//!
+//! An office may word its invoices nothing like the drafts made from quotes
+//! ("Price based on color" against "Kitchen based @ 71.3 sqft ..."). Three
+//! things keep that from picking a wrong product:
+//! - A product reps chose for quotes at least [`TRUSTED_CHOICES`] times is
+//!   read from those quotes' words alone, which are worded like the draft.
+//! - A product with few examples says little about its words: its shares are
+//!   pulled toward what all the company's examples say ([`PRIOR_EXAMPLES`]).
+//! - A product reps never chose that is hardly used ([`MIN_USE`] of the most
+//!   used one) is not a candidate: two odd invoices do not outvote the
+//!   product on nearly every invoice.
 
 use super::rules::Seen;
 use std::collections::{HashMap, HashSet};
@@ -19,6 +30,40 @@ const MIN_WORD_INVOICES: usize = 3;
 const PAIR_WEIGHT: f64 = 3.0;
 /// Scanned invoices (newest first) count half as much every this many.
 const HALF_LIFE: f64 = 100.0;
+/// A product's word shares start from the company's overall shares as if it
+/// had this many examples saying so.
+const PRIOR_EXAMPLES: f64 = 5.0;
+/// Reps' choices of a product (with the quote's words) that are enough to
+/// read the product from them alone.
+const TRUSTED_CHOICES: usize = 2;
+/// The least a product reps never chose must be used, as a share of the
+/// most used product, to be a candidate.
+const MIN_USE: f64 = 0.2;
+
+/// Weighted examples, and the weight on which each word is.
+#[derive(Default)]
+struct Read<'a> {
+    examples: f64,
+    words: HashMap<&'a str, f64>,
+}
+
+impl<'a> Read<'a> {
+    fn add(&mut self, words: &'a [String], weight: f64) {
+        self.examples += weight;
+        for word in words {
+            *self.words.entry(word.as_str()).or_default() += weight;
+        }
+    }
+
+    /// The share of the examples with the word, starting from `overall`
+    /// (the share of all the company's examples with it). Never 0 or 1, so
+    /// one word cannot rule a product in or out.
+    fn share(&self, word: &str, overall: f64) -> f64 {
+        let with = self.words.get(word).copied().unwrap_or(0.0);
+        (PRIOR_EXAMPLES.mul_add(overall, with) / (self.examples + PRIOR_EXAMPLES))
+            .clamp(0.005, 0.995)
+    }
+}
 
 /// One product as the company's invoices use it.
 struct Product<'a> {
@@ -27,16 +72,32 @@ struct Product<'a> {
     /// Its examples, weighted.
     used: f64,
     /// Those whose words are known.
-    read: f64,
-    /// Their weight on which each word is.
-    words: HashMap<&'a str, f64>,
+    all: Read<'a>,
+    /// Those of them reps chose for a quote, and how many.
+    chosen: Read<'a>,
+    choices: usize,
+}
+
+impl Product<'_> {
+    /// Reps chose it for quotes often enough to read it from those alone.
+    const fn trusted(&self) -> bool {
+        self.choices >= TRUSTED_CHOICES
+    }
+}
+
+/// A word that tells products apart, with the share of the examples it is
+/// on: of all of them, and of those reps chose for a quote.
+struct Word<'a> {
+    text: &'a str,
+    overall: f64,
+    chosen: f64,
 }
 
 /// What a company's invoices say about its products.
 pub(super) struct Model<'a> {
     products: Vec<Product<'a>>,
     /// The words that tell products apart (on [`MIN_WORD_INVOICES`] or more).
-    vocabulary: Vec<&'a str>,
+    vocabulary: Vec<Word<'a>>,
 }
 
 impl<'a> Model<'a> {
@@ -63,8 +124,9 @@ impl<'a> Model<'a> {
                         value,
                         name: None,
                         used: 0.0,
-                        read: 0.0,
-                        words: HashMap::new(),
+                        all: Read::default(),
+                        chosen: Read::default(),
+                        choices: 0,
                     });
                     products.len() - 1
                 }
@@ -73,29 +135,44 @@ impl<'a> Model<'a> {
             product.used += weight;
             product.name = product.name.or(seen.name.as_deref());
             if !seen.words.is_empty() {
-                product.read += weight;
+                product.all.add(&seen.words, weight);
+                if seen.pair {
+                    product.chosen.add(&seen.words, weight);
+                    product.choices += 1;
+                }
                 for word in &seen.words {
-                    *product.words.entry(word.as_str()).or_default() += weight;
                     *examples_with.entry(word.as_str()).or_default() += 1;
                 }
             }
         }
-        let mut vocabulary: Vec<&str> = examples_with
+        let (all, chosen) = products.iter().fold((0.0, 0.0), |(all, chosen), product| {
+            (all + product.all.examples, chosen + product.chosen.examples)
+        });
+        let share = |with: f64, of: f64| if of > 0.0 { with / of } else { 0.5 };
+        let mut vocabulary: Vec<Word> = examples_with
             .into_iter()
             .filter(|(_, count)| *count >= MIN_WORD_INVOICES)
-            .map(|(word, _)| word)
+            .map(|(text, _)| {
+                let with_all: f64 = products
+                    .iter()
+                    .filter_map(|product| product.all.words.get(text))
+                    .sum();
+                let with_chosen: f64 = products
+                    .iter()
+                    .filter_map(|product| product.chosen.words.get(text))
+                    .sum();
+                Word {
+                    text,
+                    overall: share(with_all, all),
+                    chosen: share(with_chosen, chosen),
+                }
+            })
             .collect();
-        vocabulary.sort_unstable();
+        vocabulary.sort_unstable_by(|a, b| a.text.cmp(b.text));
         Self {
             products,
             vocabulary,
         }
-    }
-
-    /// The share of a product's examples with the word.
-    fn share(product: &Product, word: &str) -> f64 {
-        let with = product.words.get(word).copied().unwrap_or(0.0);
-        (with + 1.0) / (product.read + 2.0)
     }
 
     fn score(&self, product: &Product, draft: &HashSet<&str>) -> f64 {
@@ -106,8 +183,13 @@ impl<'a> Model<'a> {
                 .vocabulary
                 .iter()
                 .map(|word| {
-                    let share = Self::share(product, word);
-                    if draft.contains(word) {
+                    // Quotes are compared with quotes, invoices with all.
+                    let share = if product.trusted() {
+                        product.chosen.share(word.text, word.chosen)
+                    } else {
+                        product.all.share(word.text, word.overall)
+                    };
+                    if draft.contains(word.text) {
                         share.ln()
                     } else {
                         (1.0 - share).ln()
@@ -124,10 +206,14 @@ impl<'a> Model<'a> {
         avoid: &HashSet<String>,
     ) -> Option<(String, Option<String>)> {
         let draft: HashSet<&str> = draft.iter().map(String::as_str).collect();
-        let winner = self
-            .products
-            .iter()
-            .filter(|product| !avoid.contains(product.value))
+        let allowed = || {
+            self.products
+                .iter()
+                .filter(|product| !avoid.contains(product.value))
+        };
+        let most = allowed().map(|product| product.used).fold(0.0, f64::max);
+        let winner = allowed()
+            .filter(|product| product.choices > 0 || product.used >= most * MIN_USE)
             .map(|product| (product, self.score(product, &draft)))
             .fold(
                 None,
@@ -242,6 +328,64 @@ mod tests {
         let model = Model::learn(&history);
         assert_eq!(model.pick(&draft(&COUNTERS), &none).unwrap().0, "5");
         assert_eq!(model.pick(&draft(&PACKAGE), &none).unwrap().0, "30");
+    }
+
+    /// An office that words its invoices its own way: nothing like the
+    /// drafts made from quotes.
+    #[test]
+    fn a_product_used_twice_does_not_beat_the_one_on_nearly_every_invoice() {
+        let mut scanned: Vec<Seen> = (0..179)
+            .map(|n| {
+                let lines: &[&str] = if n % 2 == 0 {
+                    &[
+                        "Price based on color",
+                        "Undermount sink cut out",
+                        "Customers provided sinks",
+                    ]
+                } else {
+                    &[
+                        "Price based on color",
+                        "Tear out formica laminate wood",
+                        "Fee per mile",
+                    ]
+                };
+                item("7", "Kitchen, Master & Guest Bath, Laundry", lines)
+            })
+            .collect();
+        scanned.extend((0..11).map(|_| item("9", "Cost of Slab", &["Cost of slab, tax included"])));
+        scanned.extend((0..2).map(|_| item("3", "Labor", &["Fabrication", "Installation"])));
+        let quote = draft(&[
+            "Kitchen based @ 71.3 sqft Additional sqft of Taj Beach @ $70/sqft",
+            "71.3 sq ft Quartz Taj Beach",
+            "71.3 sq ft Fabrication",
+            "71.3 sq ft Installation",
+            "86.3 lin ft Finished Edge - Eased",
+            "1 - 30\" Undermount Sink Cutout",
+            "Laminate T/O (Over 60 sqft)",
+        ]);
+        let none = HashSet::new();
+        // Labor's two invoices say "fabrication" and "installation" like the
+        // draft, and little is known against it; the product on 179 of 192
+        // invoices still wins.
+        assert_eq!(Model::learn(&scanned).pick(&quote, &none).unwrap().0, "7");
+        let chose = |value: &str, name: &str| Seen {
+            pair: true,
+            words: quote.clone(),
+            ..item(value, name, &[])
+        };
+        // Reps created six invoices with Labor and three with the usual
+        // product, all for such quotes: the quotes' words tell the two apart
+        // no more, and the product the company uses most stays.
+        let mut mixed: Vec<Seen> = (0..3)
+            .map(|_| chose("7", "Kitchen, Master & Guest Bath, Laundry"))
+            .collect();
+        mixed.extend((0..6).map(|_| chose("3", "Labor")));
+        mixed.extend(scanned.iter().cloned());
+        assert_eq!(Model::learn(&mixed).pick(&quote, &none).unwrap().0, "7");
+        // Reps picking only Labor for such quotes, again and again, turn it.
+        let mut history: Vec<Seen> = (0..12).map(|_| chose("3", "Labor")).collect();
+        history.extend(scanned);
+        assert_eq!(Model::learn(&history).pick(&quote, &none).unwrap().0, "3");
     }
 
     #[test]

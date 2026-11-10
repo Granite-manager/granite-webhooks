@@ -17,7 +17,9 @@
 //! - `POST /v1/quotes/{id}/invoice-draft` → a quote's invoice draft the
 //!   company's way, `GET`/`PUT /v1/qbo/invoice-instructions` what an admin
 //!   told the AI about it, `GET`/`POST /v1/qbo/invoice-style` what the AI
-//!   learned from the company's own invoices
+//!   learned from the company's own invoices, `POST
+//!   /v1/quotes/{id}/invoice-fields` the invoice's custom fields filled in
+//!   from the quote
 //! - `GET /v1/qbo/class-sales` → the "Sales by Class" report (admins)
 //! - `GET /v1/me/qbo-sales` → the rep's sales this month, and
 //!   `/customers` the customers behind them
@@ -28,6 +30,7 @@
 
 pub mod class_sales;
 mod customer;
+pub mod fields;
 pub mod habits;
 pub mod instructions;
 pub mod invoice;
@@ -77,6 +80,7 @@ pub fn router() -> OpenApiRouter<AppState> {
             instructions::save_instructions
         ))
         .routes(routes!(style::get_style, style::learn_style))
+        .routes(routes!(fields::invoice_fields))
         .routes(routes!(sales::my_sales))
         .routes(routes!(sales::my_customers))
         .routes(routes!(sales::set_company_goal))
@@ -594,9 +598,7 @@ pub async fn create_invoice(
         payload["DocNumber"] = json!(number);
     }
     let company_id = user.company_id;
-    let created = state
-        .qbo
-        .post(&access, "invoice", &payload)
+    let created = post_invoice(&state, &access, &payload)
         .await
         .map_err(qbo_refusal)?;
     let created = if created["Invoice"].is_object() {
@@ -641,6 +643,35 @@ pub async fn create_invoice(
         .await;
     }
     Ok(Json(invoice))
+}
+
+/// Creates an invoice in `QuickBooks`. Custom fields are sent the way the
+/// company's own are read (`include=enhancedAllCustomFields`); if
+/// `QuickBooks` refuses the invoice with them, it is made without them
+/// rather than not at all (the office then fills them in as before).
+pub(super) async fn post_invoice(
+    state: &AppState,
+    access: &Access,
+    payload: &Value,
+) -> Result<Value, QboError> {
+    if payload.get("CustomField").is_none() {
+        return state.qbo.post(access, "invoice", payload).await;
+    }
+    match state
+        .qbo
+        .post(access, "invoice?include=enhancedAllCustomFields", payload)
+        .await
+    {
+        Err(QboError::Status { status: 400, body }) => {
+            tracing::warn!(body = %body, "QuickBooks refused an invoice with custom fields; made without them");
+            let mut plain = payload.clone();
+            if let Some(fields) = plain.as_object_mut() {
+                fields.remove("CustomField");
+            }
+            state.qbo.post(access, "invoice", &plain).await
+        }
+        made => made,
+    }
 }
 
 /// What a new invoice for a customer needs: the token, the customer's
@@ -722,7 +753,7 @@ pub(crate) async fn prepare(
             by_name.insert(name, id);
         }
     }
-    let habits = rules::kept_habits(&state.pool, company_id).await;
+    let (habits, custom) = rules::kept_habits(&state.pool, company_id).await;
     Ok(Prepared {
         access,
         qbo_id,
@@ -737,6 +768,11 @@ pub(crate) async fn prepare(
             term: habits
                 .usual_due()
                 .and_then(|due| Some((due.days, due.term?))),
+            fields: custom
+                .usual()
+                .into_iter()
+                .map(|field| (field.id.clone(), field.name.clone()))
+                .collect(),
         },
     })
 }

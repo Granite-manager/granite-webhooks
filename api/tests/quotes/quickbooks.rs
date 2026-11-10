@@ -34,13 +34,17 @@ fn invoice() -> Value {
 }
 
 /// An older invoice of the company: an eased edge, due in 30 days under
-/// terms 3, its priced line dated.
+/// terms 3, its priced line dated, the job in two custom fields.
 fn older_invoice(id: u32) -> Value {
     json!({
         "Id": id.to_string(), "SyncToken": "0", "DocNumber": (900 + id).to_string(),
         "TxnDate": "2026-04-01", "DueDate": "2026-05-01", "TotalAmt": 300,
         "CustomerRef": { "value": "42" }, "SalesTermRef": { "value": "3" },
         "ClassRef": { "value": "1", "name": "Rita" },
+        "CustomField": [
+            { "DefinitionId": "1", "Name": "Room & Color", "Type": "StringType", "StringValue": "Kitchen, Luna Pearl" },
+            { "DefinitionId": "2", "Name": "Sink & Stove", "Type": "StringType", "StringValue": "CP, F/S" },
+        ],
         "Line": [
             { "Id": "1", "DetailType": "SalesItemLineDetail", "Amount": 300, "Description": "Kitchen based @ 30 sqft",
               "SalesItemLineDetail": { "ItemRef": { "value": "5", "name": "tile" }, "ServiceDate": "2026-04-01" } },
@@ -237,6 +241,23 @@ async fn server_and_customers(
                     ], "notes": ["Invoices are due 30 days out."] });
                     return Json(json!({ "choices": [{ "message": { "content": learned.to_string() } }] }));
                 }
+                // The AI filling in the invoice's custom fields from a quote.
+                if body["messages"][0]["content"]
+                    .as_str()
+                    .is_some_and(|system| system.starts_with("You fill in the custom fields"))
+                {
+                    let seen: Value = serde_json::from_str(prompt).unwrap();
+                    assert_eq!(seen["fields"][0]["name"], "Room & Color");
+                    assert_eq!(seen["fields"][0]["examples"], json!(["Kitchen, Luna Pearl"]));
+                    assert_eq!(seen["fields"][1]["name"], "Sink & Stove");
+                    assert_eq!(seen["quote"][1], "1 Sink - CP sink");
+                    let values = json!({ "values": {
+                        "Room & Color": "Kitchen, Taj Beach",
+                        "Sink & Stove": " CP,  F/S ",
+                        "Edge & BS": "Eased, no",
+                    } });
+                    return Json(json!({ "choices": [{ "message": { "content": values.to_string() } }] }));
+                }
                 assert!(prompt.contains("\"Stone\"") && !prompt.contains("\"Parts\""));
                 let rules = json!({ "rules": [
                     { "when_has": ["cabinet"], "action": { "type": "product", "product": "Stone" } },
@@ -254,6 +275,13 @@ async fn server_and_customers(
                 let saved = Arc::clone(&saved);
                 async move {
                     saved.lock().unwrap().push(body.clone());
+                    // A custom field value QuickBooks will not take.
+                    if body["CustomField"][0]["StringValue"] == "REFUSED" {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "Fault": { "Error": [{ "Detail": "Invalid custom field" }] } })),
+                        );
+                    }
                     let mut updated = invoice();
                     updated["SyncToken"] = json!("2");
                     updated["Line"] = body["Line"].clone();
@@ -263,7 +291,7 @@ async fn server_and_customers(
                             line["Id"] = json!((index + 1).to_string());
                         }
                     }
-                    Json(json!({ "Invoice": updated }))
+                    (StatusCode::OK, Json(json!({ "Invoice": updated })))
                 }
             }),
         );
@@ -961,6 +989,92 @@ async fn the_ai_learns_the_wording_the_invoices_bear_out(pool: MySqlPool) {
     assert_eq!(kept["lines"].as_array().unwrap().len(), 4);
     assert_eq!(kept["lines"][1]["description"], "Digital Template");
     assert!(kept["removed"].as_array().unwrap().is_empty());
+}
+
+#[test_db::test(seed)]
+async fn custom_fields_are_filled_from_the_quote_and_sent_with_the_invoice(pool: MySqlPool) {
+    sqlx::query(
+        "INSERT INTO quotes (id, customer_id, quote_name, quote_type, created_date, sales_rep,
+                             company_id, salesperson_id, created_by, status)
+         VALUES (9814, 1000, 'Kitchen', 'countertops', NOW(), 'Rep', 100, 100, 100, 'converted')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (server, posted) = server(&pool, 10).await;
+    // Five of the company's six invoices fill "Room & Color" and "Sink &
+    // Stove": the AI writes this quote's values for them, its way.
+    let fields: Value = server
+        .post("/v1/quotes/9814/invoice-fields")
+        .with_session(sessions::REP)
+        .json(&json!({ "lines": [
+            "Kitchen based @ 71.3 sqft Additional sqft of Taj Beach @ $70/sqft",
+            " 1 Sink - CP sink ",
+            "",
+        ] }))
+        .await
+        .json();
+    assert_eq!(
+        fields,
+        json!({ "fields": [
+            { "definition_id": "1", "name": "Room & Color", "value": "Kitchen, Taj Beach",
+              "examples": ["Kitchen, Luna Pearl"] },
+            { "definition_id": "2", "name": "Sink & Stove", "value": "CP, F/S",
+              "examples": ["CP, F/S"] },
+        ] })
+    );
+    server
+        .post("/v1/quotes/424242/invoice-fields")
+        .with_session(sessions::REP)
+        .json(&json!({ "lines": [] }))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+
+    let invoice = |room: &str| {
+        json!({
+            "quote_id": 9814,
+            "draft": null,
+            "invoice": {
+                "id": "", "sync_token": "", "doc_number": null, "txn_date": "2026-11-10",
+                "due_date": null, "total_amt": 500, "balance": null, "currency": null,
+                "customer_memo": null, "private_note": null, "bill_addr": null, "ship_addr": null,
+                "lines": [{ "id": "new:0", "line_num": null, "detail_type": "SalesItemLineDetail",
+                            "description": "Kitchen", "amount": 500, "qty": 1, "unit_price": 500,
+                            "item_ref_value": "3", "item_ref_name": "Stone", "editable": true }],
+                "custom_fields": [
+                    { "definition_id": "1", "name": "Room & Color", "value": room },
+                    { "definition_id": "2", "value": "  " },
+                    { "definition_id": "77", "name": "Not theirs", "value": "x" },
+                ],
+            },
+        })
+    };
+    // Sent as the company's own fields: by their ids, with their names, the
+    // empty one and the unknown one left out.
+    server
+        .post("/v1/customers/1000/qbo-invoices")
+        .with_session(sessions::REP)
+        .json(&invoice("Kitchen, Taj Beach"))
+        .await
+        .assert_status_ok();
+    assert_eq!(
+        posted.lock().unwrap()[0]["CustomField"],
+        json!([{ "DefinitionId": "1", "Name": "Room & Color", "Type": "StringType",
+                 "StringValue": "Kitchen, Taj Beach" }])
+    );
+    // QuickBooks refuses the invoice with its custom fields: it is made
+    // without them rather than not at all.
+    server
+        .post("/v1/customers/1000/qbo-invoices")
+        .with_session(sessions::REP)
+        .json(&invoice("REFUSED"))
+        .await
+        .assert_status_ok();
+    let sent = posted.lock().unwrap();
+    assert_eq!(sent.len(), 3);
+    assert_eq!(sent[1]["CustomField"][0]["StringValue"], "REFUSED");
+    assert!(sent[2].get("CustomField").is_none());
+    assert_eq!(sent[2]["Line"], sent[1]["Line"]);
 }
 
 #[test_db::test(seed)]

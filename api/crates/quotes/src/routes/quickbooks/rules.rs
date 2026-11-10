@@ -18,6 +18,7 @@
 //! ([`super::habits`]).
 
 use super::customer::{CustomerRow, parse_address};
+use super::fields::CustomFields;
 use super::habits::{DraftAddresses, Habits, Places};
 use super::instructions::{self, Kept};
 use super::invoice::{EditableInvoice, Line, rows, text};
@@ -643,6 +644,9 @@ struct Scan {
     /// The newest invoices' lines, for the AI to read the company's wording.
     #[serde(default)]
     samples: Vec<Vec<SampleLine>>,
+    /// The custom fields the invoices fill, and how.
+    #[serde(default)]
+    custom: CustomFields,
 }
 
 /// One line of a sampled invoice.
@@ -718,9 +722,41 @@ pub(super) async fn wording(state: &AppState, company_id: i32) -> sqlx::Result<O
     }))
 }
 
-/// What the company's invoices usually have, from the scan last kept (never
-/// read again here: creating an invoice does not wait for a scan).
-pub(super) async fn kept_habits(pool: &MySqlPool, company_id: i32) -> Habits {
+/// The custom fields the company's invoices fill, from its scan (read again
+/// when a day old); none without `QuickBooks`.
+pub(super) async fn custom_fields(state: &AppState, company_id: i32) -> sqlx::Result<CustomFields> {
+    Ok(scan(state, company_id)
+        .await?
+        .map(|scan| scan.custom)
+        .unwrap_or_default())
+}
+
+/// The draft lines of the company's invoices made here, by invoice id.
+async fn draft_lines(
+    pool: &MySqlPool,
+    company_id: i32,
+) -> sqlx::Result<HashMap<String, Vec<String>>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT qbo_invoice_id, draft_text FROM qbo_invoice_draft_outcomes
+          WHERE company_id = ? AND field = 'line' AND qbo_invoice_id IS NOT NULL
+            AND draft_text IS NOT NULL
+          ORDER BY id LIMIT ?",
+    )
+    .bind(company_id)
+    .bind(LINE_HISTORY)
+    .fetch_all(pool)
+    .await?;
+    let mut drafts: HashMap<String, Vec<String>> = HashMap::new();
+    for (invoice, line) in rows {
+        drafts.entry(invoice).or_default().push(line);
+    }
+    Ok(drafts)
+}
+
+/// What the company's invoices usually have and the custom fields they
+/// fill, from the scan last kept (never read again here: creating an invoice
+/// does not wait for a scan).
+pub(super) async fn kept_habits(pool: &MySqlPool, company_id: i32) -> (Habits, CustomFields) {
     let kept: Option<String> = sqlx::query_scalar(
         "SELECT CAST(stats_json AS CHAR) FROM qbo_invoice_scans WHERE company_id = ?",
     )
@@ -732,7 +768,7 @@ pub(super) async fn kept_habits(pool: &MySqlPool, company_id: i32) -> Habits {
         None
     });
     kept.and_then(|json| serde_json::from_str::<Scan>(&json).ok())
-        .and_then(|scan| scan.habits)
+        .map(|scan| (scan.habits.unwrap_or_default(), scan.custom))
         .unwrap_or_default()
 }
 
@@ -973,6 +1009,12 @@ async fn fresh_scan(state: &AppState, company_id: i32) -> Option<Scan> {
         line_classes: true,
         habits: Some(Habits::read(&invoices)),
         samples: samples(&invoices),
+        custom: CustomFields::read(
+            &invoices,
+            &draft_lines(&state.pool, company_id)
+                .await
+                .unwrap_or_default(),
+        ),
         classes: classes
             .iter()
             .filter_map(|c| text(&c["FullyQualifiedName"]).or_else(|| text(&c["Name"])))

@@ -50743,6 +50743,95 @@
         ]
       }
     },
+    "/v1/quotes/{id}/invoice-fields": {
+      "post": {
+        "tags": [
+          "quickbooks"
+        ],
+        "summary": "Fill in a new invoice's custom fields from its quote",
+        "description": "The custom fields the company's `QuickBooks` invoices usually fill (e.g.\n\"Room & Color\", \"Sink & Stove\", \"Edge & BS\"), each with the value for\nthis quote written the way the company's own invoices write it. The AI\nwrites the values from the quote's lines, the field's recent values and\nthe values the office gave earlier invoices made from quotes. They are a\nsuggestion for the editor: send the ones to keep as `custom_fields` of\nthe invoice when creating it. Without the AI, or when it does not answer\nin 12 seconds, the fields come with null values. Nothing is saved.",
+        "operationId": "fill_invoice_custom_fields",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Quote id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FieldsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The fields with this quote's values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftFields"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin, or is an installer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such quote in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/me/qbo-sales": {
       "get": {
         "tags": [
@@ -78431,6 +78520,31 @@
           }
         }
       },
+      "CustomFieldValue": {
+        "type": "object",
+        "description": "One custom field of an invoice.",
+        "required": [
+          "definition_id",
+          "value"
+        ],
+        "properties": {
+          "definition_id": {
+            "type": "string",
+            "description": "`QuickBooks`' id of the field."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its name, e.g. \"Room & Color\"."
+          },
+          "value": {
+            "type": "string",
+            "description": "The text (at most 31 characters are kept)."
+          }
+        }
+      },
       "CustomerDeal": {
         "type": "object",
         "description": "A deal of a customer, with a preview of its notes and activities.",
@@ -81261,7 +81375,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/Address",
-                "description": "The billing address: the customer's name, then their address, as\n`QuickBooks` writes it. Null leaves it to `QuickBooks`, which fills in\nthe billing address its customer already has."
+                "description": "The billing address, written as the company's invoices write it: the\ncustomer's name, then their address, or the address alone. Null\nleaves it to `QuickBooks`, which fills in the billing address its\ncustomer already has."
               },
               {
                 "type": "null"
@@ -81304,6 +81418,55 @@
           }
         },
         "additionalProperties": false
+      },
+      "DraftField": {
+        "type": "object",
+        "description": "One custom field of a new invoice.",
+        "required": [
+          "definition_id",
+          "name",
+          "examples"
+        ],
+        "properties": {
+          "definition_id": {
+            "type": "string",
+            "description": "`QuickBooks`' id of the field: sent back with the value when the\ninvoice is created."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name, e.g. \"Room & Color\"."
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The value for this quote, written the company's way (at most 31\ncharacters); null when the AI could not tell, or did not answer."
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A few values the company gave it on recent invoices."
+          }
+        }
+      },
+      "DraftFields": {
+        "type": "object",
+        "description": "`POST /v1/quotes/{id}/invoice-fields`.",
+        "required": [
+          "fields"
+        ],
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DraftField"
+            },
+            "description": "The custom fields the company's invoices usually fill, in\n`QuickBooks`' order; empty when it uses none."
+          }
+        }
       },
       "DraftInput": {
         "type": "object",
@@ -81788,6 +81951,13 @@
               "null"
             ],
             "description": "Whether `QuickBooks` emailed it: `EmailSent`, `NeedToSend` or\n`NotSet` (read only)."
+          },
+          "custom_fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomFieldValue"
+            },
+            "description": "The text custom fields the company's invoices fill (e.g. \"Room &\nColor\"; from `POST /v1/quotes/{id}/invoice-fields`). Set on a new\ninvoice only; saving an existing invoice leaves them as they are."
           }
         }
       },
@@ -83723,6 +83893,19 @@
           "text",
           "skip"
         ]
+      },
+      "FieldsInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/quotes/{id}/invoice-fields`.",
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The texts of the draft's lines, as the quote makes them."
+          }
+        }
       },
       "FileReadiness": {
         "type": "object",

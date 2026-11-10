@@ -11,12 +11,15 @@
 //!
 //! A line is found by the `QuickBooks` line id it got when the invoice was
 //! created; a line whose id is gone while its very text is still on the
-//! invoice (saved again as a new line) counts as kept. An invoice kept in
-//! sync with its quote is rewritten from the quote (its text lines get new
-//! ids each time), so only its class, CC and product are read back.
+//! invoice (saved again as a new line) counts as kept. Invoices created
+//! before line ids were kept are read by their text: a line still there is
+//! kept, one whose words mostly live on in another line was reworded to
+//! it, any other was deleted. An invoice kept in sync with its quote is
+//! rewritten from the quote (its text lines get new ids each time), so only
+//! its class, CC and product are read back.
 
 use super::invoice::{rows, text};
-use super::rules::{Outcome, first_item, header_outcome, invoice_class, template};
+use super::rules::{Outcome, fill, first_item, header_outcome, invoice_class, template, words};
 use lambda_http::tracing;
 use serde_json::Value;
 use sqlx::MySqlPool;
@@ -54,22 +57,21 @@ fn trimmed(value: &Value) -> &str {
     value.as_str().map_or("", str::trim)
 }
 
-/// What a draft line is in the invoice now; none when it cannot be told
-/// (the line was left out before the invoice was created, or its id was
-/// never kept).
-fn line_now(kept: &Kept, invoice: &Value) -> Option<Outcome> {
-    let id = kept.qbo_line_id.as_deref()?;
-    let drafted = kept.draft_text.as_deref()?.trim();
-    let lines = rows(&invoice["Line"]);
+fn changed_to(drafted: &str, now: &str) -> Outcome {
+    let to: String = template(drafted, now).chars().take(1000).collect();
+    Outcome::new("changed", Some(&to))
+}
+
+/// What a draft line with a kept line id is in the invoice now.
+fn line_by_id(id: &str, drafted: &str, lines: &[Value]) -> Outcome {
     let now = lines
         .iter()
         .find(|line| text(&line["Id"]).as_deref() == Some(id))
         .map_or("", |line| trimmed(&line["Description"]));
-    Some(if now == drafted {
+    if now == drafted {
         Outcome::new("kept", None)
     } else if !now.is_empty() {
-        let to: String = template(drafted, now).chars().take(1000).collect();
-        Outcome::new("changed", Some(&to))
+        changed_to(drafted, now)
     } else if lines
         .iter()
         .any(|line| trimmed(&line["Description"]) == drafted)
@@ -79,6 +81,57 @@ fn line_now(kept: &Kept, invoice: &Value) -> Option<Outcome> {
         Outcome::new("kept", None)
     } else {
         Outcome::new("removed", None)
+    }
+}
+
+/// The line as the invoice was created with it: reworded in the editor, or
+/// as drafted. None for a line left out before the invoice was created.
+fn created_text(kept: &Kept) -> Option<String> {
+    let drafted = kept.draft_text.as_deref()?.trim();
+    match (kept.outcome.as_str(), kept.saved_value.as_deref()) {
+        ("kept", _) => Some(drafted.to_string()),
+        ("changed", Some(to)) => Some(fill(to, drafted).unwrap_or_else(|| to.to_string())),
+        _ => None,
+    }
+}
+
+/// How much of `text`'s words `other` has (0 to 1).
+fn shared(text: &str, other: &str) -> f64 {
+    let wanted = words(std::iter::once(text));
+    if wanted.is_empty() {
+        return 0.0;
+    }
+    let had = words(std::iter::once(other));
+    let common = wanted.iter().filter(|word| had.contains(word)).count();
+    #[allow(clippy::cast_precision_loss)] // a handful of words
+    let share = common as f64 / wanted.len() as f64;
+    share
+}
+
+/// What a draft line without a kept line id is in the invoice now, read by
+/// its text. `free` are the invoice's lines that are no draft line's own
+/// text: one that keeps at least half this line's words is its rewording.
+fn line_by_text(kept: &Kept, lines: &[Value], free: &[&str]) -> Option<Outcome> {
+    let drafted = kept.draft_text.as_deref()?.trim();
+    let created = created_text(kept)?;
+    if lines
+        .iter()
+        .any(|line| trimmed(&line["Description"]) == created)
+    {
+        // As it was created: the outcome recorded then stands.
+        return Some(Outcome {
+            outcome: kept.outcome.clone(),
+            value: kept.saved_value.clone(),
+        });
+    }
+    let reworded = free
+        .iter()
+        .map(|now| (*now, shared(&created, now)))
+        .filter(|(_, share)| *share >= 0.5)
+        .max_by(|a, b| a.1.total_cmp(&b.1));
+    Some(match reworded {
+        Some((now, _)) => changed_to(drafted, now),
+        None => Outcome::new("removed", None),
     })
 }
 
@@ -86,10 +139,28 @@ fn line_now(kept: &Kept, invoice: &Value) -> Option<Outcome> {
 /// longer bears out, as they are now. `lines` is off for an invoice whose
 /// lines were rewritten since (kept in sync with its quote).
 pub(super) fn differing(kept: &[Kept], invoice: &Value, staff: &[&str], lines: bool) -> Vec<Now> {
+    let now = rows(&invoice["Line"]);
+    // The invoice's lines that are not a draft line as it was created.
+    let created: Vec<String> = kept
+        .iter()
+        .filter(|row| row.field == "line")
+        .filter_map(created_text)
+        .collect();
+    let free: Vec<&str> = now
+        .iter()
+        .map(|line| trimmed(&line["Description"]))
+        .filter(|said| !said.is_empty() && !created.iter().any(|text| text == said))
+        .collect();
     kept.iter()
         .filter_map(|row| {
             let (outcome, draft_text) = match row.field.as_str() {
-                "line" if lines => (line_now(row, invoice)?, row.draft_text.clone()),
+                "line" if lines => {
+                    let outcome = match (row.qbo_line_id.as_deref(), row.draft_text.as_deref()) {
+                        (Some(id), Some(drafted)) => line_by_id(id, drafted.trim(), &now),
+                        _ => line_by_text(row, &now, &free)?,
+                    };
+                    (outcome, row.draft_text.clone())
+                }
                 "class" => {
                     // The quote's rep, else (the quote is gone) anyone on staff.
                     let reps = row
@@ -314,6 +385,52 @@ mod tests {
         let now = differing(&drafted(), &invoice, &[], true);
         assert!(now.iter().all(|now| now.id != 4));
         assert_eq!(now.len(), 4);
+    }
+
+    #[test]
+    fn an_invoice_made_before_line_ids_were_kept_is_read_by_its_text() {
+        let without_ids: Vec<Kept> = drafted()
+            .into_iter()
+            .map(|row| Kept {
+                qbo_line_id: None,
+                ..row
+            })
+            .collect();
+        let now = differing(&without_ids, &tidied(), &[], true);
+        let lines: Vec<(i32, &str, Option<&str>)> = now
+            .iter()
+            .filter(|now| now.id <= 5)
+            .map(|now| {
+                (
+                    now.id,
+                    now.outcome.outcome.as_str(),
+                    now.outcome.value.as_deref(),
+                )
+            })
+            .collect();
+        // Fabrication is gone; the edge lives on in "Eased Edge 33.5 lf";
+        // the kitchen line and the sink are as created; the template was
+        // left out in the editor and stays so.
+        assert_eq!(
+            lines,
+            [
+                (2, "removed", None),
+                (3, "changed", Some("Eased Edge {0} lf")),
+            ]
+        );
+        // A sink line deleted while the cutout line stays is not taken for
+        // a rewording of it.
+        let mut cutout = without_ids;
+        cutout[1] = Kept {
+            draft_text: Some("1 - 30\" Undermount Sink Cutout".into()),
+            ..cutout[1].clone()
+        };
+        let mut invoice = tidied();
+        invoice["Line"][2]["Description"] = json!("1 - 30\" Undermount Sink Cutout");
+        let now = differing(&cutout, &invoice, &[], true);
+        let sink = now.iter().find(|now| now.id == 4).unwrap();
+        assert_eq!(sink.outcome, Outcome::new("removed", None));
+        assert!(now.iter().all(|now| now.id != 2));
     }
 
     #[test]
