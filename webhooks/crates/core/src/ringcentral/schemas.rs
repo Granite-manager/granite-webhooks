@@ -313,6 +313,34 @@ struct MessageStoreChange {
     kind: Option<String>,
     #[serde(rename = "newCount", default)]
     new_count: i64,
+    #[serde(rename = "updatedCount", default)]
+    updated_count: i64,
+}
+
+/// The `RingCentral` id of a message-store record it could not deliver, and
+/// the token the CRM shows for it. Accepted texts are only rejected later, so
+/// this is the one place a spam block can be seen.
+pub fn undelivered_sms(record: &serde_json::Value) -> Option<(i64, &'static str)> {
+    let status = record["messageStatus"].as_str()?;
+    if !matches!(status, "DeliveryFailed" | "SendingFailed") {
+        return None;
+    }
+    let code = record["deliveryErrorCode"].as_str().unwrap_or_default();
+    // The carrier gave no verdict; the text may well have arrived.
+    if matches!(code, "SMS-CAR-104" | "SMS-CAR-199") {
+        return None;
+    }
+    let id = match &record["id"] {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    }?;
+    let token = match code {
+        "SMS-RC-430" | "SMS-UP-430" | "SMS-CAR-430" => "ringcentral_spam",
+        "SMS-UP-431" => "ringcentral_number_flagged_spam",
+        _ => "ringcentral_undelivered",
+    };
+    Some((id, token))
 }
 
 #[derive(Deserialize, Debug)]
@@ -357,18 +385,17 @@ pub enum NotifiedSms {
 }
 
 impl RingcentralSmsNotification {
-    /// The extension of a `message-store` push that has new texts.
-    pub fn new_sms_extension(&self) -> Option<String> {
+    /// The extension of a `message-store` push with new texts or changed ones
+    /// (how a rejected text is reported).
+    pub fn changed_sms_extension(&self) -> Option<String> {
         if !self.event.contains("/message-store") || self.event.contains("/instant") {
             return None;
         }
-        let new_texts = self
-            .body
-            .as_ref()?
-            .changes
-            .iter()
-            .any(|change| change.kind.as_deref() == Some("SMS") && change.new_count > 0);
-        new_texts
+        let changed_texts = self.body.as_ref()?.changes.iter().any(|change| {
+            change.kind.as_deref() == Some("SMS")
+                && (change.new_count > 0 || change.updated_count > 0)
+        });
+        changed_texts
             .then(|| extension_from_event(&self.event))
             .flatten()
     }
@@ -613,25 +640,47 @@ mod tests {
     }
 
     #[test]
-    fn message_store_push_names_the_extension_with_new_texts() {
+    fn a_rejected_record_says_why() {
+        let record = |status: &str, code: &str| {
+            serde_json::json!({"id": "39", "messageStatus": status, "deliveryErrorCode": code})
+        };
+        assert_eq!(
+            undelivered_sms(&record("DeliveryFailed", "SMS-UP-430")),
+            Some((39, "ringcentral_spam"))
+        );
+        assert_eq!(
+            undelivered_sms(&record("DeliveryFailed", "SMS-UP-431")),
+            Some((39, "ringcentral_number_flagged_spam"))
+        );
+        assert_eq!(
+            undelivered_sms(&record("SendingFailed", "SMS-UP-500")),
+            Some((39, "ringcentral_undelivered"))
+        );
+        assert_eq!(undelivered_sms(&record("Delivered", "")), None);
+        assert_eq!(undelivered_sms(&record("Sent", "")), None);
+        assert_eq!(undelivered_sms(&record("DeliveryFailed", "SMS-CAR-199")), None);
+    }
+
+    #[test]
+    fn message_store_push_names_the_extension_with_changed_texts() {
         let parse =
             |json: &str| -> RingcentralSmsNotification { serde_json::from_str(json).unwrap() };
         let new_sms = parse(
             r#"{"event":"/restapi/v1.0/account/1/extension/2765489027/message-store","body":{"extensionId":2765489027,"changes":[{"type":"SMS","newCount":1,"updatedCount":0}]}}"#,
         );
-        assert_eq!(new_sms.new_sms_extension().as_deref(), Some("2765489027"));
+        assert_eq!(new_sms.changed_sms_extension().as_deref(), Some("2765489027"));
         let only_updated = parse(
             r#"{"event":"/restapi/v1.0/account/1/extension/5/message-store","body":{"changes":[{"type":"SMS","newCount":0,"updatedCount":2}]}}"#,
         );
-        assert!(only_updated.new_sms_extension().is_none());
+        assert_eq!(only_updated.changed_sms_extension().as_deref(), Some("5"));
         let voicemail = parse(
             r#"{"event":"/restapi/v1.0/account/1/extension/5/message-store","body":{"changes":[{"type":"VoiceMail","newCount":1}]}}"#,
         );
-        assert!(voicemail.new_sms_extension().is_none());
+        assert!(voicemail.changed_sms_extension().is_none());
         let instant = parse(
             r#"{"event":"/restapi/v1.0/account/~/extension/5/message-store/instant?type=SMS","body":{"id":5,"type":"SMS","direction":"Inbound","from":{"phoneNumber":"+16468956758"},"to":[{"phoneNumber":"+13173161456"}]}}"#,
         );
-        assert!(instant.new_sms_extension().is_none());
+        assert!(instant.changed_sms_extension().is_none());
     }
 
     #[test]
