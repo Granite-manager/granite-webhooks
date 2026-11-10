@@ -209,6 +209,18 @@
       "usage_check": "unscheduled_planned"
     },
     {
+      "id": "schedule-settings",
+      "version": 1,
+      "points": 10,
+      "checklist": false,
+      "required_steps": 2,
+      "base_keys": [
+        "schedule-settings",
+        "schedule-settings-panel"
+      ],
+      "usage_check": "schedule_prefs_set"
+    },
+    {
       "id": "send-later",
       "version": 1,
       "points": 5,
