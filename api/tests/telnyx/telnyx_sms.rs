@@ -975,9 +975,11 @@ async fn the_inbox_switches_between_a_users_lines(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn a_users_inbox_is_the_threads_of_their_lines(pool: MySqlPool) {
     let setup = setup(&pool).await;
-    // Alice texted Rita's line; Bob the shared line; Carol (1002) Ada's line.
+    // Alice texted Rita's line, then Ada's (not Rita's to see); Bob the
+    // shared line; Carol (1002) Ada's line.
     for (id, from, to, text) in [
         ("in-a", "+13175550100", "+13175550151", "Hi Rita"),
+        ("in-a3", "+13175550100", "+13175550153", "Hi Ada too"),
         ("in-b", "+13175550102", "+13175550152", "Hi showroom"),
         ("in-c", "+13175550103", "+13175550153", "Hi Ada"),
     ] {
@@ -1001,6 +1003,11 @@ async fn a_users_inbox_is_the_threads_of_their_lines(pool: MySqlPool) {
     assert_eq!(alice["last_message_text"], "Hi Rita");
     assert_eq!(alice["last_direction"], "inbound");
     assert_eq!(alice["unread_count"], 1);
+    let thread = setup
+        .get("/v1/sms/telnyx/threads/3175550100", sessions::REP)
+        .await;
+    assert_eq!(thread["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(thread["messages"][0]["text"], "Hi Rita");
 
     // Mark shares only the showroom line.
     let mark = setup.get("/v1/sms/telnyx/threads", sessions::MANAGER).await;
