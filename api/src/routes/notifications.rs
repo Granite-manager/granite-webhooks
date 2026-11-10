@@ -379,6 +379,10 @@ pub struct NotificationItem {
     /// their card when there is no deal).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub customer_id: Option<i32>,
+    /// The project a project task or step notification is about (the phone
+    /// app opens it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<i32>,
 }
 
 /// `GET /v1/notifications`.
@@ -568,6 +572,7 @@ async fn unread_email(
                 action_label: None,
                 deal_id: None,
                 customer_id: None,
+                project_id: None,
             }
         })
         .collect())
@@ -683,6 +688,7 @@ async fn activity(
                 action_label: None,
                 deal_id: row.deal_id.filter(|_| !(alert || texting || port)),
                 customer_id: row.customer_id.filter(|_| !(alert || texting || port)),
+                project_id: row.project_id.filter(|_| !(alert || texting || port)),
             }
         })
         .collect())
@@ -762,6 +768,7 @@ async fn telnyx_calls(
                 action_label: None,
                 deal_id: None,
                 customer_id: None,
+                project_id: None,
             }
         })
         .collect())
@@ -793,6 +800,7 @@ async fn billing(state: &AppState, user_id: i32) -> Result<Vec<NotificationItem>
             action_label: Some(row.action_label),
             deal_id: None,
             customer_id: None,
+            project_id: None,
         })
         .collect())
 }
@@ -911,6 +919,7 @@ fn missed_call_item(call: &crate::routes::users::call_activity::CallActivity) ->
         action_label: None,
         deal_id: None,
         customer_id: None,
+        project_id: None,
     }
 }
 

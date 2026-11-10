@@ -768,6 +768,24 @@ async fn checking_a_step_off_tells_its_people(pool: MySqlPool) {
         ]
     );
 
+    // The phone reads it to open the project.
+    let rita: u64 = sqlx::query_scalar(
+        "SELECT id FROM notifications
+          WHERE notification_type = 'project_step_done' AND user_id = 100",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let item = server(pool.clone())
+        .get(&format!("/v1/notifications/{rita}"))
+        .with_session(sessions::REP)
+        .await;
+    item.assert_status_ok();
+    let item = item.json::<Value>();
+    assert_eq!(item["project_id"].as_i64(), Some(i64::from(project)));
+    assert_eq!(item["type_title"], "Finished a Step");
+    assert_eq!(item["message"], "Send the file");
+
     notify(sessions::ADMIN, json!([]))
         .await
         .assert_status(StatusCode::NO_CONTENT);
