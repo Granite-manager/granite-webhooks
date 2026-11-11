@@ -104,6 +104,96 @@ pub struct ProjectAppointment {
     pub start_date: String,
     /// Waiting for a date on the schedule (`start_date` means nothing yet).
     pub unscheduled: bool,
+    /// The part it is for; null for the project's first part.
+    pub part_id: Option<i32>,
+}
+
+/// A kind of part a company's projects are made of, and the stages it uses.
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct PartType {
+    /// Its id.
+    pub id: i32,
+    /// Its name, e.g. "Cabinets".
+    pub name: String,
+    /// It is templated (Awaiting Template, Templated).
+    pub uses_template: bool,
+    /// It is fabricated (In Fabrication).
+    pub uses_fabrication: bool,
+    /// Its place in the list.
+    pub position: i32,
+}
+
+/// A part type to add, or its new values.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PartTypeInput {
+    /// Its name.
+    pub name: String,
+    /// It is templated.
+    pub uses_template: bool,
+    /// It is fabricated.
+    pub uses_fabrication: bool,
+}
+
+/// A part of a project: it goes through the stages on its own.
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct ProjectPart {
+    /// Its id.
+    pub id: i32,
+    /// The project it belongs to.
+    pub project_id: i32,
+    /// Its type.
+    pub type_id: i32,
+    /// The type's name.
+    pub type_name: String,
+    /// Its name, e.g. "Backsplash".
+    pub name: String,
+    /// Its type is templated.
+    pub uses_template: bool,
+    /// Its type is fabricated.
+    pub uses_fabrication: bool,
+    /// Where it is (never Paid & Completed: that is the whole project's).
+    #[sqlx(try_from = "String")]
+    pub stage_code: Stage,
+    /// The shop marked it fabricated.
+    pub fabricated_at: Option<String>,
+    /// Its template is on the calendar for this time (UTC ISO), not done yet.
+    pub template_date: Option<String>,
+    /// Its installation is on the calendar for this time (UTC ISO), not done yet.
+    pub install_date: Option<String>,
+    /// Its place in the project.
+    pub position: i32,
+}
+
+/// Body of `POST /v1/projects/{id}/parts`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PartInput {
+    /// The new part's type.
+    pub type_id: i32,
+    /// Its name; the type's name when left out.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The first time a project gets parts: the type of the work it already
+    /// has. Left out: the company's first type.
+    #[serde(default)]
+    pub first_type_id: Option<i32>,
+}
+
+/// Body of `PATCH /v1/projects/{id}/parts/{part_id}`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PartUpdate {
+    /// Its new name.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Its new type.
+    #[serde(default)]
+    pub type_id: Option<i32>,
+}
+
+/// Body of `PUT /v1/projects/{id}/appointments/{event_id}/part`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct AppointmentPart {
+    /// The part the template or installation is for.
+    pub part_id: i32,
 }
 
 /// Query of `GET /v1/projects`.
@@ -146,6 +236,8 @@ pub struct ProjectsBoard {
     pub process_steps: Vec<ProcessStep>,
     /// Which of those steps these projects have done.
     pub done_steps: Vec<DoneStep>,
+    /// The parts of the projects that have several (none for the others).
+    pub parts: Vec<ProjectPart>,
     /// How many issues the crew reported on these projects' jobs (only those with any).
     pub issue_counts: Vec<ProjectIssueCount>,
     /// What the caller may do.
@@ -217,6 +309,8 @@ pub struct DoneStep {
     pub project_id: i32,
     /// The step.
     pub step_id: i32,
+    /// The part it was done for; null on a project without parts.
+    pub part_id: Option<i32>,
     /// Who checked it off ("Auto" when its rule did).
     pub done_by: Option<String>,
     /// When (UTC ISO).
@@ -272,6 +366,9 @@ pub struct ProcessStepOrder {
 pub struct StepDone {
     /// Done, or undone.
     pub done: bool,
+    /// The part, on a project with parts; left out: its least finished part.
+    #[serde(default)]
+    pub part_id: Option<i32>,
 }
 
 /// A note on a project.
@@ -375,6 +472,8 @@ pub struct StageChange {
     pub source_action: String,
     /// Why, for a correction or cancel.
     pub reason: Option<String>,
+    /// The part it is about, on a project with parts.
+    pub part_name: Option<String>,
     /// Its author's name.
     pub author: Option<String>,
     /// When it was made, UTC ISO.
@@ -456,6 +555,10 @@ pub struct ProjectWorkspace {
     pub process_steps: Vec<ProcessStep>,
     /// Which of those steps this project has done.
     pub done_steps: Vec<DoneStep>,
+    /// Its parts, when it has several.
+    pub parts: Vec<ProjectPart>,
+    /// The company's part types, to add a part.
+    pub part_types: Vec<PartType>,
     /// What the caller may do.
     pub permissions: Permissions,
     /// The caller's user id (to show which tasks and notes are theirs).
@@ -480,6 +583,9 @@ pub enum ProjectAction {
         version: i32,
         /// The stage.
         stage: Stage,
+        /// The part, on a project with parts; left out: its least finished part.
+        #[serde(rename = "partId", default)]
+        part_id: Option<i32>,
     },
     /// Link the customer's transaction.
     LinkSale {
@@ -539,6 +645,9 @@ pub enum ProjectAction {
     Fabricated {
         /// The project's version as the page has it; a stale page gets a 409.
         version: i32,
+        /// The part, on a project with parts; left out: its least finished part.
+        #[serde(rename = "partId", default)]
+        part_id: Option<i32>,
     },
     /// Move back, with a reason (managers).
     Correct {
@@ -548,6 +657,9 @@ pub enum ProjectAction {
         stage: Stage,
         /// Why, for a correction or cancel.
         reason: String,
+        /// The part, on a project with parts; left out: its least finished part.
+        #[serde(rename = "partId", default)]
+        part_id: Option<i32>,
     },
 }
 
@@ -562,7 +674,7 @@ impl ProjectAction {
             | Self::Cancel { version, .. }
             | Self::Archive { version, .. }
             | Self::CorrectPayment { version, .. }
-            | Self::Fabricated { version }
+            | Self::Fabricated { version, .. }
             | Self::Correct { version, .. } => *version,
         }
     }

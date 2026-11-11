@@ -98,7 +98,9 @@ pub const PROJECT_JOB_SQL: &str = "e.deleted_date IS NULL
 /// Template/Install Scheduled counts as Awaiting Template/In Fabrication). A
 /// stage someone moved it back to by hand (`p.stage_cap`) caps it until
 /// someone moves it forward by hand.
-pub const STAGE_SQL: &str = "ELT(LEAST(FIELD((CASE WHEN s.installed_date IS NOT NULL
+macro_rules! plain_stage_sql {
+    () => {
+        "ELT(LEAST(FIELD((CASE WHEN s.installed_date IS NOT NULL
         THEN IF(s.paid_date IS NOT NULL OR p.qbo_paid_at IS NOT NULL, 'completed', 'installed')
       ELSE ELT(GREATEST(
           FIELD(CASE WHEN p.stage_code IN ('installed', 'completed', 'install_scheduled')
@@ -125,7 +127,74 @@ pub const STAGE_SQL: &str = "ELT(LEAST(FIELD((CASE WHEN s.installed_date IS NOT 
                                              WHEN 'install_scheduled' THEN 'fabrication'
                                              ELSE p.stage_cap END,
         'new', 'templated', 'fabrication', 'installed', 'completed'), 0), 5)),
-      'new', 'templated', 'fabrication', 'installed', 'completed')";
+      'new', 'templated', 'fabrication', 'installed', 'completed')"
+    };
+}
+
+/// The jobs (`events e`) of part `pp` of `projects p`: those booked for it, and
+/// for the project's first part every job of the project booked for no part.
+macro_rules! part_events_sql {
+    () => {
+        "(e.project_part_id = pp.id
+          OR (e.project_part_id IS NULL
+              AND pp.id = (SELECT MIN(fp.id) FROM project_parts fp WHERE fp.project_id = p.id)
+              AND (e.project_id = p.id
+                   OR (e.project_id IS NULL AND e.customer_id = p.customer_id
+                       AND e.created_date >= p.created_at - INTERVAL 1 DAY))))"
+    };
+}
+
+/// Where part `pp` (its type `pt`) of `projects p` (its transaction `sales s`)
+/// is, as a number: 1 Awaiting Template, 2 Templated, 3 In Fabrication, 4
+/// Installed. A part moves like a project does, on its own jobs: its template
+/// maker's Completed, the shop's Fabricated, its installer's Completed, or a
+/// stage someone moved it to by hand; the transaction's installed date counts
+/// for the parts that were there by then. A type with no template starts
+/// ready to fabricate, one with no fabrication waits for its installation.
+macro_rules! part_index_sql {
+    () => {
+        concat!(
+            "LEAST(GREATEST(
+               IF(pt.uses_template = 0, IF(pt.uses_fabrication = 0, 3, 2), 1),
+               IF(pp.stage_code = 'templated' AND pt.uses_fabrication = 0, 3,
+                  FIELD(pp.stage_code, 'new', 'templated', 'fabrication', 'installed')),
+               IF(pp.fabricated_at IS NOT NULL, 3, 1),
+               IF(s.installed_date IS NOT NULL AND pp.created_at <= s.installed_date, 4, 1),
+               (SELECT COALESCE(MAX(CASE WHEN cal.slug = 'installations' THEN 4
+                                         WHEN pt.uses_fabrication = 0 THEN 3 ELSE 2 END), 1)
+                  FROM events e
+                  JOIN calendars cal ON cal.id = e.calendar_id
+                                    AND cal.slug IN ('templates', 'installations')
+                 WHERE e.crew_status = 'completed' AND e.deleted_date IS NULL AND ",
+            part_events_sql!(),
+            ")),
+             COALESCE(NULLIF(FIELD(pp.stage_cap, 'new', 'templated', 'fabrication', 'installed'), 0), 4))"
+        )
+    };
+}
+
+/// [`part_index_sql`] for the parts list.
+pub const PART_INDEX_SQL: &str = part_index_sql!();
+
+/// [`part_events_sql`] for a part's jobs.
+pub const PART_EVENTS_SQL: &str = part_events_sql!();
+
+/// The stage of `projects p` with its transaction `sales s` (LEFT JOIN): with
+/// parts (`project_parts`) the stage of its least finished part, and Paid &
+/// Completed once every part is installed and it is paid; without parts as
+/// described above.
+pub const STAGE_SQL: &str = concat!(
+    "COALESCE((SELECT ELT(IF(MIN(",
+    part_index_sql!(),
+    ") = 4 AND (s.paid_date IS NOT NULL OR p.qbo_paid_at IS NOT NULL), 5, MIN(",
+    part_index_sql!(),
+    ")), 'new', 'templated', 'fabrication', 'installed', 'completed')
+                 FROM project_parts pp
+                 JOIN project_part_types pt ON pt.id = pp.type_id
+                WHERE pp.project_id = p.id), ",
+    plain_stage_sql!(),
+    ")"
+);
 
 /// When the project's next `slug` job (`templates` or `installations`) is on
 /// the calendar, UTC ISO; NULL when none waits (done ones don't count).
@@ -136,6 +205,17 @@ pub fn job_date_sql(slug: &str) -> String {
             JOIN calendars cal ON cal.id = e.calendar_id AND cal.slug = '{slug}'
            WHERE COALESCE(e.unscheduled, 0) = 0 AND COALESCE(e.crew_status, '') <> 'completed'
              AND {PROJECT_JOB_SQL})"
+    )
+}
+
+/// When part `pp`'s next `slug` job is on the calendar (as [`job_date_sql`]).
+pub fn part_job_date_sql(slug: &str) -> String {
+    format!(
+        "(SELECT DATE_FORMAT(MIN(e.start_date), '%Y-%m-%dT%H:%i:%sZ')
+            FROM events e
+            JOIN calendars cal ON cal.id = e.calendar_id AND cal.slug = '{slug}'
+           WHERE COALESCE(e.unscheduled, 0) = 0 AND COALESCE(e.crew_status, '') <> 'completed'
+             AND e.deleted_date IS NULL AND {PART_EVENTS_SQL})"
     )
 }
 

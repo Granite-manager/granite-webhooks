@@ -378,7 +378,44 @@ pub async fn apply(
     let company = viewer.company_id;
     let perms = viewer.permissions;
     let cancelled = p.cancelled_at.is_some() || p.sale_cancelled_at.is_some();
+    // A project with parts moves one part at a time.
+    let parts = super::parts::parts_of(&mut tx, company, &[id]).await?;
     match action {
+        ProjectAction::Stage {
+            stage: to, part_id, ..
+        } if !parts.is_empty() => {
+            Viewer::require(perms.production)?;
+            if cancelled {
+                return Err(conflict("This project is cancelled"));
+            }
+            if p.is_on_hold {
+                return Err(conflict("Take this project off hold before moving it"));
+            }
+            let part = super::parts::target(&parts, part_id)?;
+            super::parts::move_part(&mut tx, viewer, &p, part, to).await?;
+        }
+        ProjectAction::Fabricated { part_id, .. } if !parts.is_empty() => {
+            Viewer::require(perms.production)?;
+            if cancelled {
+                return Err(conflict("This project is cancelled"));
+            }
+            let part = super::parts::target(&parts, part_id)?;
+            super::parts::fabricated(&mut tx, viewer, part).await?;
+        }
+        ProjectAction::Correct {
+            stage: to,
+            reason: raw,
+            part_id,
+            ..
+        } if !parts.is_empty() => {
+            Viewer::require(perms.manage)?;
+            let why = reason(&raw)?;
+            if cancelled {
+                return Err(conflict("This project is cancelled"));
+            }
+            let part = super::parts::target(&parts, part_id)?;
+            super::parts::correct(&mut tx, viewer, &p, part, to, &why).await?;
+        }
         ProjectAction::Stage { stage: to, .. } => {
             Viewer::require(perms.production)?;
             if cancelled {

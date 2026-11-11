@@ -497,7 +497,9 @@ fn own_invoice(method: &Method, path: &str) -> bool {
 /// tasks (`POST .../tasks`, `PATCH|DELETE .../tasks/{id}`), forgetting a task's
 /// time (`POST .../task-times/reset`), its notes and files (`POST
 /// .../notes|files`, `DELETE .../notes|files/{id}`), checking a step off (`PUT
-/// .../steps/{id}`), and starting a deal's project (`POST
+/// .../steps/{id}`), its parts (`GET /v1/projects/part-types`, `POST
+/// .../parts`, `PATCH|DELETE .../parts/{id}`, `PUT
+/// .../appointments/{id}/part`), and starting a deal's project (`POST
 /// /v1/deals/{id}/project`; reading it is under [`DEVICE_READ_ROUTES`]). The
 /// handlers keep their own position checks ([`sections`] and [`skills`]
 /// still apply); setting up the company's steps stays with the CRM session.
@@ -526,7 +528,7 @@ fn project_route(method: &Method, path: &str) -> bool {
     };
     let parts: Vec<&str> = rest.split('/').collect();
     match parts.as_slice() {
-        ["payments" | "process-steps"] => get,
+        ["payments" | "process-steps" | "part-types"] => get,
         ["reorder"] => post,
         [id] => is_id(id) && (get || delete),
         [id, "actions" | "tasks" | "notes" | "files"] => is_id(id) && post,
@@ -534,6 +536,9 @@ fn project_route(method: &Method, path: &str) -> bool {
         [id, "tasks", task] => is_id(id) && is_id(task) && (patch || delete),
         [id, "notes" | "files", item] => is_id(id) && is_id(item) && delete,
         [id, "steps", step] => is_id(id) && is_id(step) && put,
+        [id, "parts"] => is_id(id) && post,
+        [id, "parts", part] => is_id(id) && is_id(part) && (patch || delete),
+        [id, "appointments", event, "part"] => is_id(id) && is_id(event) && put,
         _ => false,
     }
 }
@@ -1250,6 +1255,11 @@ mod tests {
             (Method::POST, "/v1/projects/7/files"),
             (Method::DELETE, "/v1/projects/7/files/3"),
             (Method::PUT, "/v1/projects/7/steps/3"),
+            (Method::GET, "/v1/projects/part-types"),
+            (Method::POST, "/v1/projects/7/parts"),
+            (Method::PATCH, "/v1/projects/7/parts/3"),
+            (Method::DELETE, "/v1/projects/7/parts/3"),
+            (Method::PUT, "/v1/projects/7/appointments/3/part"),
             (Method::GET, "/v1/deals/7/project"),
             (Method::POST, "/v1/deals/7/project"),
         ] {

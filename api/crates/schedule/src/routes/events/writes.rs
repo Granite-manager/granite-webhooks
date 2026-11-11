@@ -122,6 +122,9 @@ pub struct EventInput {
     /// Create only: the project this template or installation is for.
     #[serde(default)]
     pub project_id: Option<i32>,
+    /// Create only: the part of that project it is for.
+    #[serde(default)]
+    pub project_part_id: Option<i32>,
 }
 
 /// `POST /v1/events`.
@@ -533,6 +536,18 @@ pub async fn create(
         }
         None => None,
     };
+    let part = match (project, input.project_part_id.filter(|id| *id > 0)) {
+        (Some(project), Some(part)) => {
+            let found: Option<i32> =
+                sqlx::query_scalar("SELECT id FROM project_parts WHERE id = ? AND project_id = ?")
+                    .bind(part)
+                    .bind(project)
+                    .fetch_optional(pool)
+                    .await?;
+            Some(found.ok_or_else(|| ApiError::BadRequest("No such part on the project".into()))?)
+        }
+        _ => None,
+    };
     let assignee = match input.assigned_user_id.filter(|id| *id > 0) {
         Some(id) => Some(id),
         None => board::sole_template_maker(pool, event.calendar_id).await?,
@@ -541,8 +556,8 @@ pub async fn create(
         "INSERT INTO events (title, description, location, start_date, end_date, all_day,
             unscheduled, color, status, notes, created_user_id, assigned_user_id, sale_id,
             customer_id, calendar_id, rrule, recurrence_until, contact_phone, contact_email,
-            contact_phone_2, contact_email_2, project_id, urgent)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            contact_phone_2, contact_email_2, project_id, project_part_id, urgent)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(event.title)
     .bind(event.description)
@@ -566,6 +581,7 @@ pub async fn create(
     .bind(event.contact_phone_2.flatten())
     .bind(event.contact_email_2.flatten())
     .bind(project)
+    .bind(part)
     .bind(input.urgent.unwrap_or(false))
     .execute(pool)
     .await?
