@@ -83495,6 +83495,13 @@
           "source": {
             "type": "string",
             "description": "Always `photo`."
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "On the crew's job page: `before` (Before photos) or `installed`\n(Installed photos); null for any other comment file."
           }
         }
       },
@@ -93411,6 +93418,14 @@
         },
         "additionalProperties": false
       },
+      "PhotoStage": {
+        "type": "string",
+        "description": "Which photos of the job a file is, on the crew's job page.",
+        "enum": [
+          "before",
+          "installed"
+        ]
+      },
       "PhotosInput": {
         "type": "object",
         "description": "Body of `POST /v1/events/{id}/photos`.",
@@ -93428,6 +93443,17 @@
           "for_customer": {
             "type": "boolean",
             "description": "Job photos the customer sees on their own page (the job card's\nPhotos button). Default: only inside the event."
+          },
+          "stage": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PhotoStage",
+                "description": "On the crew's job page: `before` or `installed` photos. Default: none."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
