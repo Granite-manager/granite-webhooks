@@ -463,7 +463,7 @@ pub struct CallNoteCreated {
 /// Add a note about a call
 ///
 /// Adds a deal note (by the caller) on the call's deal, or else on the
-/// oldest open deal of the call's customer, and tells the deal's people
+/// oldest open deal of the call's customer, and tells the customer's sales rep
 /// like a note written in the CRM. 400 `no_deal` when the call has neither;
 /// 404 for other companies' calls. Device token only.
 #[crate::openapi::path(

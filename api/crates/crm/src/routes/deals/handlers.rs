@@ -831,7 +831,7 @@ pub async fn list_activities(
 
 /// Add an activity to a deal
 ///
-/// Creates a to-do. The deal owner and the customer's sales rep are notified
+/// Creates a to-do. The customer's sales rep is notified
 /// (in the app and on Telegram), and a deadline with a time schedules a
 /// reminder for the owner at that time.
 #[crate::openapi::path(
@@ -911,7 +911,7 @@ pub async fn create_activity(
 /// Update an activity
 ///
 /// Changes the fields sent. Editing name, deadline or priority notifies the
-/// deal's people and reschedules the reminder; `is_completed: true` marks it
+/// customer's sales rep and reschedules the reminder; `is_completed: true` marks it
 /// done (and drops its reminder), `false` reopens it.
 #[crate::openapi::path(
     patch,
@@ -1019,7 +1019,7 @@ pub async fn update_activity(
 
 /// Delete an activity
 ///
-/// Soft-deletes it, drops its reminder and notifies the deal's people.
+/// Soft-deletes it, drops its reminder and notifies the customer's sales rep.
 #[crate::openapi::path(
     delete,
     path = "/v1/deals/{id}/activities/{activity_id}",
@@ -1201,7 +1201,7 @@ pub async fn list_notes(
 
 /// Add a note to a deal
 ///
-/// Up to 5000 characters. Notifies the deal's people.
+/// Up to 5000 characters. Notifies the customer's sales rep.
 #[crate::openapi::path(
     post,
     path = "/v1/deals/{id}/notes",
@@ -1257,7 +1257,7 @@ pub async fn create_note(
 
 /// Edit or pin a note
 ///
-/// Changes the text (notifying the deal's people) and/or pins it.
+/// Changes the text (notifying the customer's sales rep) and/or pins it.
 #[crate::openapi::path(
     patch,
     path = "/v1/deals/{id}/notes/{note_id}",
@@ -1320,7 +1320,7 @@ pub async fn update_note(
 
 /// Delete a note
 ///
-/// Soft-deletes it. When an admin deletes it, the deal's people are notified.
+/// Soft-deletes it. When an admin deletes it, the customer's sales rep is notified.
 #[crate::openapi::path(
     delete,
     path = "/v1/deals/{id}/notes/{note_id}",
@@ -1367,7 +1367,7 @@ pub async fn delete_note(
 /// Comment on a note
 ///
 /// Up to 2000 characters. Only admins' comments carry their name, and only
-/// those notify the deal's people.
+/// those notify the customer's sales rep.
 #[crate::openapi::path(
     post,
     path = "/v1/deals/{id}/notes/{note_id}/comments",
@@ -1431,7 +1431,7 @@ pub async fn create_comment(
 
 /// Delete a comment
 ///
-/// Soft-deletes it. When an admin deletes it, the deal's people are notified.
+/// Soft-deletes it. When an admin deletes it, the customer's sales rep is notified.
 #[crate::openapi::path(
     delete,
     path = "/v1/deals/{id}/notes/{note_id}/comments/{comment_id}",

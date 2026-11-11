@@ -892,12 +892,12 @@ async fn create_activity_notifies_and_schedules_a_reminder(pool: MySqlPool) {
         rows(&pool, &format!("SELECT name, CAST(deadline AS CHAR), CAST(priority AS CHAR), created_by FROM deal_activities WHERE id = {id}")).await,
         vec![vec!["Site visit", "2026-06-01 14:30:00", "high", "Rita Rep"]]
     );
-    // Dina (owner) is notified; Rita (actor and rep) is not. The reminder for
-    // the owner fires at 14:30 Indianapolis (EDT) = 18:30 UTC.
+    // Nobody is notified: Rita is the actor and the rep, and Dina (owner) is
+    // not the rep. The reminder for the owner fires at 14:30 Indianapolis
+    // (EDT) = 18:30 UTC.
     assert_eq!(
         rows(&pool, "SELECT CAST(user_id AS CHAR), notification_type, message, actor_name FROM notifications WHERE deal_id = 8600 ORDER BY id").await,
         vec![
-            vec!["107", "activity_added", "Site visit", "Rita Rep"],
             vec!["107", "activity_deadline_reminder", "Site visit", "NULL"],
         ]
     );
@@ -1154,7 +1154,7 @@ async fn write_notes_and_comments(pool: MySqlPool) {
         .await,
         0
     );
-    // An admin's comment carries the name and notifies.
+    // An admin's comment carries the name and notifies the rep only.
     app.post(&format!("/v1/deals/8601/notes/{note}/comments"))
         .with_session(sessions::ADMIN)
         .json(&json!({ "content": "Approved" }))
@@ -1166,7 +1166,7 @@ async fn write_notes_and_comments(pool: MySqlPool) {
             "SELECT COUNT(*) FROM notifications WHERE notification_type = 'comment_added'"
         )
         .await,
-        2
+        1
     );
     app.delete(&format!("/v1/deals/8601/notes/{note}/comments/{comment}"))
         .with_session(sessions::DEALER)
@@ -1186,8 +1186,8 @@ async fn write_notes_and_comments(pool: MySqlPool) {
             "SELECT COUNT(*) FROM notifications WHERE notification_type = 'note_deleted'"
         )
         .await,
-        2,
-        "admin deletion notifies owner and rep"
+        1,
+        "admin deletion notifies the rep only"
     );
 }
 
