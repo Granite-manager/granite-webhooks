@@ -355,7 +355,7 @@ const SQ_FT: Option<&str> = Some("sq ft");
 const LIN_FT: Option<&str> = Some("lin ft");
 
 /// Slab size of a slab-priced color that has none (the slab layout uses it too).
-const DEFAULT_SLAB: (f64, f64) = (126.0, 63.0);
+pub(crate) const DEFAULT_SLAB: (f64, f64) = (126.0, 63.0);
 /// Share of a slab that ends up in pieces: the rest is offcuts between them.
 const SLAB_YIELD: f64 = 0.85;
 
@@ -365,7 +365,7 @@ struct Laid {
 }
 
 /// Square inches of every piece of an area (counters, splashes, aprons).
-fn pieces_sq_in(doc: &QuoteDoc, area_id: &str) -> f64 {
+pub(crate) fn pieces_sq_in(doc: &QuoteDoc, area_id: &str) -> f64 {
     let mut sum = 0.0;
     for c in doc.counters.iter().filter(|c| c.area_id == area_id) {
         let outline = counter_outline(c);
@@ -379,7 +379,7 @@ fn pieces_sq_in(doc: &QuoteDoc, area_id: &str) -> f64 {
     sum
 }
 
-fn estimated_slab_count(sq_in: f64, size: (f64, f64)) -> f64 {
+pub(crate) fn estimated_slab_count(sq_in: f64, size: (f64, f64)) -> f64 {
     let slab = size.0 * size.1 * SLAB_YIELD;
     if sq_in > 0.0 && slab > 0.0 {
         (sq_in / slab).ceil()

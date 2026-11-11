@@ -420,6 +420,7 @@ fn type_title(kind: &str) -> Option<&'static str> {
         "template_appointment_reminder" => "Template Appointment Reminder",
         "installation_completed" => "Installation Completed",
         "event_issue" => "Reported an Issue",
+        SALES_ORDER => "Sales Order",
         "note_added" => "Added a Note",
         "note_edited" => "Edited a Note",
         "note_deleted" => "Deleted a Note",
@@ -456,6 +457,10 @@ const PROMISES_HREF: &str = "/employee/promises";
 const E911_ALERT: &str = "e911_alert";
 /// Where a 911 alert opens: the admin Phone page.
 const E911_ALERT_HREF: &str = "/admin/phone";
+/// A sold quote's sales order (`api_quotes::quote_pricing::sales_order`), for
+/// the company's Inventory Managers: it opens the Sales orders page.
+const SALES_ORDER: &str = "sales_order";
+const SALES_ORDERS_HREF: &str = "/employee/sales-orders";
 /// Where an event's issue opens when it names no deal or customer.
 const SCHEDULE_HREF: &str = "/employee/schedule";
 /// The 10DLC texting registration's notifications
@@ -620,7 +625,8 @@ async fn activity(
                  OR n.notification_type IN ('e911_alert', 'tendlc_ready', 'tendlc_status',
                                             'phone_port', 'ai_promise_due',
                                             'ai_promise_approval', 'delayed_message_sent',
-                                            'delayed_message_failed', 'event_issue'))
+                                            'delayed_message_failed', 'event_issue',
+                                            'sales_order'))
             -- A project task's reminder shows while the task is open.
             AND (COALESCE(n.notification_type, '') <> 'project_task_reminder' OR EXISTS (
                   SELECT 1 FROM project_activities pa
@@ -659,6 +665,7 @@ async fn activity(
                 _ if alert => E911_ALERT_HREF.to_string(),
                 _ if promise => PROMISES_HREF.to_string(),
                 _ if kind == Some(TENDLC_READY) => TENDLC_READY_HREF.to_string(),
+                _ if kind == Some(SALES_ORDER) => SALES_ORDERS_HREF.to_string(),
                 _ if texting || port => E911_ALERT_HREF.to_string(),
                 _ if row.project_id.is_some() => format!(
                     "/employee/projects/edit/{}",

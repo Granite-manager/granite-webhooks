@@ -126,13 +126,24 @@ const fn admin_tab(key: &'static str, label: &'static str, api: &'static [&'stat
     }
 }
 
+/// The Sales orders page (`/v1/sales-orders`): the slabs a sold quote uses,
+/// for the Inventory Manager to confirm.
+pub const SALES_ORDERS_TAB: &str = "sales_orders";
+
+/// Main-app tabs only the positions given them open: by default only
+/// Inventory Manager. Someone with no listed position, or every other
+/// main-app tab open, gets them only when one of their positions has them,
+/// so the sales rep never sees sales orders.
+pub const OPT_IN_TABS: [&str; 1] = [SALES_ORDERS_TAB];
+
 /// Every tab, in the Company page's order: the main app, then the admin
 /// pages (as their sidebars list them).
-pub const TABS: [Tab; 40] = [
+pub const TABS: [Tab; 41] = [
     main_tab("dashboard", "Dashboard"),
     main_tab("stones", "Stones"),
     main_tab("sinks", "Sinks"),
     main_tab("faucets", "Faucets"),
+    main_tab(SALES_ORDERS_TAB, "Sales Orders"),
     main_tab("customers", "Customers"),
     main_tab("deals", "Deals"),
     main_tab("quotes", "Quotes"),
@@ -233,7 +244,8 @@ pub const TABS: [Tab; 40] = [
 /// API only some tabs use, and those tabs: someone limited to tabs is
 /// refused it when none of them is open. Everything else stays open, since
 /// several pages share it.
-const OWNED_API: [(&str, &[&str]); 3] = [
+const OWNED_API: [(&str, &[&str]); 4] = [
+    ("/v1/sales-orders", &[SALES_ORDERS_TAB]),
     ("/v1/stats", &["dashboard", "admin_statistics"]),
     (
         "/v1/transactions",
@@ -255,7 +267,8 @@ pub fn tab(key: &str) -> Option<&'static Tab> {
 /// The tabs a position opens in a company that has not changed them, in
 /// [`TABS`] order: every main-app tab, except for Shop Manager and Shop
 /// Worker (the Shop app's pages: Schedule, Transactions, Samples), Inventory
-/// Manager and Scheduling Manager.
+/// Manager and Scheduling Manager. Only Inventory Manager opens
+/// [`OPT_IN_TABS`].
 pub fn default_tabs(position_id: i32) -> Vec<&'static str> {
     let keys: &[&str] = match position_id {
         SHOP_MANAGER_POSITION | SHOP_WORKER_POSITION => &SHOP_TABS,
@@ -264,6 +277,7 @@ pub fn default_tabs(position_id: i32) -> Vec<&'static str> {
             "sinks",
             "faucets",
             "customers",
+            SALES_ORDERS_TAB,
             "admin_stones",
             "admin_sinks",
             "admin_faucets",
@@ -272,7 +286,7 @@ pub fn default_tabs(position_id: i32) -> Vec<&'static str> {
         _ => {
             return TABS
                 .iter()
-                .filter(|tab| !tab.admin)
+                .filter(|tab| !tab.admin && !OPT_IN_TABS.contains(&tab.key))
                 .map(|tab| tab.key)
                 .collect();
         }
@@ -480,10 +494,12 @@ pub fn tabs_for(
         .collect();
     let every_main = TABS
         .iter()
-        .filter(|tab| !tab.admin)
+        .filter(|tab| !tab.admin && !OPT_IN_TABS.contains(&tab.key))
         .all(|tab| open.contains(&tab.key));
+    // An opt-in tab is listed: the app shows it only to those who have it.
+    let opt_in = open.iter().any(|key| OPT_IN_TABS.contains(key));
     let adds_admin = !is_admin && open.iter().any(|key| tab(key).is_some_and(|t| t.admin));
-    if every_main && !adds_admin {
+    if every_main && !opt_in && !adds_admin {
         None
     } else {
         Some(open)
@@ -640,7 +656,7 @@ mod tests {
         }
         let main: Vec<&str> = TABS
             .iter()
-            .filter(|tab| !tab.admin)
+            .filter(|tab| !tab.admin && !OPT_IN_TABS.contains(&tab.key))
             .map(|tab| tab.key)
             .collect();
         for position in [1, 2, 5] {
@@ -651,6 +667,24 @@ mod tests {
         assert_eq!(default_tabs(4), SHOP_TABS.to_vec());
         assert!(default_tabs(12).contains(&"admin_stones"));
         assert!(!default_tabs(12).contains(&"transactions"));
+        assert!(default_tabs(12).contains(&SALES_ORDERS_TAB));
+    }
+
+    #[test]
+    fn sales_orders_are_only_for_those_given_them() {
+        let company: Vec<(i32, Vec<&'static str>, bool)> = CONFIGURABLE_POSITIONS
+            .into_iter()
+            .map(|position| (position, default_tabs(position), false))
+            .collect();
+        // A sales rep keeps the whole app, without sales orders.
+        assert_eq!(tabs_for(&[1], false, &company), None);
+        assert!(!Access::Tabs(default_tabs(1)).allows("/v1/sales-orders"));
+        let inventory = tabs_for(&[12], false, &company).unwrap_or_default();
+        assert!(inventory.contains(&SALES_ORDERS_TAB));
+        assert!(Access::Tabs(inventory).allows("/v1/sales-orders/3/confirm"));
+        // A sales rep who is also Inventory Manager: listed, so the app shows it.
+        let both = tabs_for(&[1, 12], true, &company).unwrap_or_default();
+        assert!(both.contains(&SALES_ORDERS_TAB));
     }
 
     #[test]

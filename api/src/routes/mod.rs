@@ -30,6 +30,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(faucets::router())
         .merge(slabs::router())
         .merge(sales::router())
+        .merge(sales_orders::router())
         .merge(catalog::router())
         .merge(checklists::router())
         .merge(uploads::router())
