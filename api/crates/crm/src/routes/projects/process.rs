@@ -4,11 +4,10 @@
 
 use super::access::{Stage, Viewer};
 use super::schemas::{
-    DoneStep, ProcessStep, ProcessStepInput, ProcessStepName, ProcessStepNotify, ProcessStepOrder,
-    StepDone,
+    DoneStep, ProcessStep, ProcessStepAuto, ProcessStepInput, ProcessStepName, ProcessStepNotify,
+    ProcessStepOrder, StepAuto, StepDone,
 };
 use super::service::visible_project;
-use crate::auth::session::SessionUser;
 use crate::auth::{AdminUser, EmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -67,6 +66,23 @@ pub async fn company_steps(
             step.notify.push(user_id);
         }
     }
+    let rules: Vec<(i32, String, Option<i32>, Option<String>, Option<i32>)> = sqlx::query_as(
+        "SELECT id, auto_trigger, auto_ref_id, auto_text, auto_days FROM project_process_steps
+          WHERE company_id = ? AND auto_trigger IS NOT NULL",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (step_id, trigger, ref_id, text, days) in rules {
+        if let Some(step) = steps.iter_mut().find(|step| step.id == step_id) {
+            step.auto = Some(StepAuto {
+                trigger,
+                ref_id,
+                text,
+                days,
+            });
+        }
+    }
     Ok(steps)
 }
 
@@ -79,7 +95,7 @@ pub async fn done_steps(
         return Ok(Vec::new());
     }
     let mut sql = QueryBuilder::<MySql>::new(
-        "SELECT d.project_id, d.step_id, u.name AS done_by,
+        "SELECT d.project_id, d.step_id, IF(d.auto = 1, 'Auto', u.name) AS done_by,
                 DATE_FORMAT(d.done_at, '%Y-%m-%dT%H:%i:%sZ') AS done_at
            FROM project_process_steps_done d
            LEFT JOIN users u ON u.id = d.done_by
@@ -299,9 +315,146 @@ pub async fn set_notify(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// What can check a step off by itself.
+pub const TRIGGERS: [&str; 14] = [
+    "email_template",
+    "text_template",
+    "customer_replied",
+    "file_added",
+    "sent_to_sign",
+    "signed",
+    "questionnaire_filled",
+    "template_booked",
+    "install_booked",
+    "invoice_sent",
+    "payment_any",
+    "payment_full",
+    "task_done",
+    "days_after",
+];
+
+/// The rule to store, or why it can't be.
+async fn clean_auto(
+    conn: &mut MySqlConnection,
+    company_id: i32,
+    auto: StepAuto,
+) -> ApiResult<StepAuto> {
+    let trigger = auto.trigger.trim().to_string();
+    if !TRIGGERS.contains(&trigger.as_str()) {
+        return Err(ApiError::BadRequest("Pick what checks the step off".into()));
+    }
+    let mut clean = StepAuto {
+        trigger,
+        ref_id: None,
+        text: None,
+        days: None,
+    };
+    match clean.trigger.as_str() {
+        "email_template" | "text_template" => {
+            let table = if clean.trigger == "email_template" {
+                "email_templates"
+            } else {
+                "cloudtalk_sms_templates"
+            };
+            let found: Option<i32> = match auto.ref_id {
+                Some(id) => sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                    "SELECT id FROM {table} WHERE id = ? AND company_id = ? AND deleted_at IS NULL"
+                )))
+                .bind(id)
+                .bind(company_id)
+                .fetch_optional(&mut *conn)
+                .await?,
+                None => None,
+            };
+            clean.ref_id =
+                Some(found.ok_or_else(|| ApiError::BadRequest("Pick a template".into()))?);
+        }
+        "sent_to_sign" | "signed" | "task_done" => {
+            let text = auto
+                .text
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(|text| text.chars().take(NAME_MAX).collect::<String>());
+            if clean.trigger == "task_done" && text.is_none() {
+                return Err(ApiError::BadRequest("Name the task".into()));
+            }
+            clean.text = text;
+        }
+        "days_after" => {
+            let days = auto.days.filter(|days| (1..=365).contains(days));
+            clean.days =
+                Some(days.ok_or_else(|| ApiError::BadRequest("Pick 1 to 365 days".into()))?);
+        }
+        _ => {}
+    }
+    Ok(clean)
+}
+
+/// Set what checks a step off by itself
+///
+/// Replaces the step's rule; `null` turns it off. Only what happens after it is
+/// set counts, and only once the step before it is done.
+#[crate::openapi::path(
+    put,
+    path = "/v1/projects/process-steps/{step_id}/auto",
+    operation_id = "set_project_process_step_auto",
+    tag = "projects",
+    params(("step_id" = i32, Path, description = "Step id")),
+    request_body = ProcessStepAuto,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "Unknown action, or a missing template, task name or days", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such step in the company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_auto(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(step_id): Path<i32>,
+    JsonBody(input): JsonBody<ProcessStepAuto>,
+) -> ApiResult<StatusCode> {
+    let mut conn = state.pool.acquire().await?;
+    require_step(&mut conn, user.company_id, step_id).await?;
+    let rule = match input.auto {
+        Some(auto) => Some(clean_auto(&mut conn, user.company_id, auto).await?),
+        None => None,
+    };
+    sqlx::query(
+        "UPDATE project_process_steps
+            SET auto_trigger = ?, auto_ref_id = ?, auto_text = ?, auto_days = ?,
+                auto_since = IF(? IS NULL, NULL, UTC_TIMESTAMP(3))
+          WHERE id = ? AND company_id = ?",
+    )
+    .bind(rule.as_ref().map(|rule| rule.trigger.clone()))
+    .bind(rule.as_ref().and_then(|rule| rule.ref_id))
+    .bind(rule.as_ref().and_then(|rule| rule.text.clone()))
+    .bind(rule.as_ref().and_then(|rule| rule.days))
+    .bind(rule.as_ref().map(|rule| rule.trigger.clone()))
+    .bind(step_id)
+    .bind(user.company_id)
+    .execute(&mut *conn)
+    .await?;
+    // A new rule starts fresh on every project.
+    sqlx::query("DELETE FROM project_process_step_auto_off WHERE step_id = ?")
+        .bind(step_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
 /// Tells the step's people (not the one who checked it) on the bell and
 /// their phones. Logged, never returned: the check-off is saved.
-async fn tell_step_people(state: &AppState, user: &SessionUser, project_id: i32, step_id: i32) {
+pub(super) async fn tell_step_people(
+    state: &AppState,
+    actor_id: Option<i32>,
+    actor_name: Option<&str>,
+    project_id: i32,
+    step_id: i32,
+) {
     let result: sqlx::Result<()> = async {
         let people: Vec<i32> = sqlx::query_scalar(
             "SELECT n.user_id FROM project_process_step_notify n
@@ -309,12 +462,10 @@ async fn tell_step_people(state: &AppState, user: &SessionUser, project_id: i32,
               WHERE n.step_id = ? AND n.user_id <> ?",
         )
         .bind(step_id)
-        .bind(user.id)
+        .bind(actor_id.unwrap_or(0))
         .fetch_all(&state.pool)
         .await?;
-        let actor = user
-            .name
-            .as_deref()
+        let actor = actor_name
             .map(str::trim)
             .filter(|name| !name.is_empty())
             .map(|name| name.chars().take(255).collect::<String>());
@@ -434,10 +585,18 @@ pub async fn set_done(
         .execute(&mut *conn)
         .await?
         .rows_affected();
+        // Checked by hand: its rule may check it again after a later uncheck.
+        sqlx::query(
+            "DELETE FROM project_process_step_auto_off WHERE project_id = ? AND step_id = ?",
+        )
+        .bind(id)
+        .bind(step_id)
+        .execute(&mut *conn)
+        .await?;
         drop(conn);
         // Already done (a second click) tells nobody again.
         if added > 0 {
-            tell_step_people(&state, &user, id, step_id).await;
+            tell_step_people(&state, Some(user.id), user.name.as_deref(), id, step_id).await;
         }
     } else {
         sqlx::query("DELETE FROM project_process_steps_done WHERE project_id = ? AND step_id = ?")
@@ -445,6 +604,15 @@ pub async fn set_done(
             .bind(step_id)
             .execute(&mut *conn)
             .await?;
+        // Unchecked by hand: its rule leaves it alone on this project.
+        sqlx::query(
+            "INSERT IGNORE INTO project_process_step_auto_off (project_id, step_id)
+             SELECT ?, id FROM project_process_steps WHERE id = ? AND auto_trigger IS NOT NULL",
+        )
+        .bind(id)
+        .bind(step_id)
+        .execute(&mut *conn)
+        .await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }

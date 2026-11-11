@@ -555,6 +555,17 @@ pub async fn deliver_now(
     .await
     .map_err(|err| Undelivered::Api(err.into()))?;
     record_template_usage(&state.pool, user, provider, request.template_id).await;
+    crate::routes::projects::log_sent_template(
+        &state.pool,
+        user.company_id,
+        "sms",
+        request.template_id,
+        None,
+        request.customer_id,
+        Some(&digits),
+        None,
+    )
+    .await;
     Ok(ids)
 }
 

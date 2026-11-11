@@ -180,6 +180,7 @@ pub async fn board(
             next.build_query_as().fetch_all(&mut *conn).await?;
         (tasks, appointments)
     };
+    super::auto::run(&state, viewer.company_id, &projects).await;
     let process_steps = super::process::company_steps(&mut conn, viewer.company_id).await?;
     let done_steps = super::process::done_steps(&mut conn, &ids).await?;
     Ok(Json(ProjectsBoard {
@@ -412,6 +413,7 @@ pub async fn get(
             .bind(id)
             .fetch_all(&mut *conn)
             .await?;
+    super::auto::run(&state, company, std::slice::from_ref(&project)).await;
     let process_steps = super::process::company_steps(&mut conn, company).await?;
     let done_steps = super::process::done_steps(&mut conn, &[id]).await?;
     Ok(Json(ProjectWorkspace {

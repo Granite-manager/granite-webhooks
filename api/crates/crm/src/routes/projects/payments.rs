@@ -158,6 +158,20 @@ async fn remember_paid(
         crate::sql::push_in(&mut sql, "id", &ids);
         changed += sql.build().execute(pool).await?.rows_affected();
     }
+    // The first payment seen, for steps that check off on any payment.
+    let ids: Vec<i32> = payments
+        .iter()
+        .filter(|p| matches!(p.status, PaymentStatus::Paid | PaymentStatus::Partial))
+        .map(|p| p.project_id)
+        .collect();
+    if !ids.is_empty() {
+        let mut sql = QueryBuilder::<MySql>::new(
+            "UPDATE projects SET qbo_first_paid_at = UTC_TIMESTAMP() WHERE qbo_first_paid_at IS NULL",
+        );
+        sql.push(" AND company_id = ").push_bind(company_id);
+        crate::sql::push_in(&mut sql, "id", &ids);
+        changed += sql.build().execute(pool).await?.rows_affected();
+    }
     Ok(changed > 0)
 }
 
