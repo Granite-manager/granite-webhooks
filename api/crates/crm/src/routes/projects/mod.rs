@@ -28,6 +28,7 @@ mod issues;
 pub use issues::mark_issue_solved;
 mod payments;
 mod process;
+mod step_events;
 pub mod schemas;
 pub mod service;
 mod tasks;
@@ -58,6 +59,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(process::set_notify))
         .routes(routes!(process::notify_positions))
         .routes(routes!(process::set_auto))
+        .routes(routes!(step_events::set_events))
         .routes(routes!(process::set_done))
         .routes(routes!(issues::report))
         .routes(routes!(issues::solve, issues::delete))

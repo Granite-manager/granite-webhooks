@@ -176,6 +176,9 @@ pub struct ProcessStep {
     /// What checks it off by itself, if anything.
     #[sqlx(skip)]
     pub auto: Option<StepAuto>,
+    /// What checking it off does to the project's schedule events.
+    #[sqlx(skip)]
+    pub event_rules: Vec<super::step_events::StepEventRule>,
 }
 
 /// What checks a process step off by itself.
