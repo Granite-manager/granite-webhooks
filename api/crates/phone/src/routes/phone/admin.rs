@@ -343,6 +343,8 @@ pub async fn list_admin_numbers(
            FROM users u
            LEFT JOIN phone_user_settings s ON s.user_id = u.id AND s.company_id = u.company_id
           WHERE u.company_id = ? AND u.is_deleted = 0 AND {PHONE_USER}
+            AND NOT EXISTS (SELECT 1 FROM users_positions kp
+                             WHERE kp.user_id = u.id AND kp.position_id = 8)
           ORDER BY name, u.id"
     )))
     .bind(user.company_id)

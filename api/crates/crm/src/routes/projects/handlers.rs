@@ -26,10 +26,15 @@ pub const TASK_SELECT: &str = "SELECT t.id, t.project_id, t.name, t.assigned_use
    LEFT JOIN users au ON au.id = t.assigned_user_id
    LEFT JOIN users cu ON cu.id = t.created_by";
 
+/// The company's people to pick from; a check-in kiosk account (position 8)
+/// is not a person and cannot be given work.
 async fn people(conn: &mut MySqlConnection, company_id: i32) -> sqlx::Result<Vec<Person>> {
     sqlx::query_as(
         "SELECT id, COALESCE(NULLIF(TRIM(name), ''), email) AS name FROM users
-          WHERE company_id = ? AND is_deleted = 0 ORDER BY name, id",
+          WHERE company_id = ? AND is_deleted = 0
+            AND NOT EXISTS (SELECT 1 FROM users_positions kp
+                             WHERE kp.user_id = users.id AND kp.position_id = 8)
+          ORDER BY name, id",
     )
     .bind(company_id)
     .fetch_all(&mut *conn)

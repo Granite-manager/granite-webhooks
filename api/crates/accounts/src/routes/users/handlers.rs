@@ -33,7 +33,8 @@ pub async fn sales_reps(
 /// List the company's employees
 ///
 /// The non-deleted employees of the caller's company by name ("User {id}"
-/// when blank), e.g. to hide a calendar from one of them.
+/// when blank), e.g. to hide a calendar from one of them. Check-in kiosk
+/// accounts are left out.
 #[crate::openapi::path(
     get,
     path = "/v1/users/employees",
@@ -54,6 +55,8 @@ pub async fn employees(
     let rows: Vec<(i32, Option<String>)> = sqlx::query_as(
         "SELECT id, name FROM users
           WHERE company_id = ? AND is_deleted = 0 AND is_employee = 1
+            AND NOT EXISTS (SELECT 1 FROM users_positions kp
+                             WHERE kp.user_id = users.id AND kp.position_id = 8)
           ORDER BY name, id",
     )
     .bind(user.company_id)
