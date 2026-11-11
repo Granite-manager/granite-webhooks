@@ -66,18 +66,34 @@ pub async fn company_steps(
             step.notify.push(user_id);
         }
     }
-    let rules: Vec<(i32, String, Option<i32>, Option<String>, Option<i32>)> = sqlx::query_as(
-        "SELECT id, auto_trigger, auto_ref_id, auto_text, auto_days FROM project_process_steps
+    let rules: Vec<(
+        i32,
+        String,
+        Option<i32>,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+    )> = sqlx::query_as(
+        "SELECT id, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days FROM project_process_steps
           WHERE company_id = ? AND auto_trigger IS NOT NULL",
     )
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
-    for (step_id, trigger, ref_id, text, days) in rules {
+    for (step_id, trigger, ref_id, ref_ids, text, days) in rules {
         if let Some(step) = steps.iter_mut().find(|step| step.id == step_id) {
+            let mut ids: Vec<i32> = ref_ids
+                .iter()
+                .flat_map(|list| list.split(','))
+                .filter_map(|id| id.trim().parse().ok())
+                .collect();
+            if ids.is_empty() {
+                ids.extend(ref_id);
+            }
             step.auto = Some(StepAuto {
                 trigger,
                 ref_id,
+                ref_ids: ids,
                 text,
                 days,
             });
@@ -413,6 +429,7 @@ async fn clean_auto(
     let mut clean = StepAuto {
         trigger,
         ref_id: None,
+        ref_ids: Vec::new(),
         text: None,
         days: None,
     };
@@ -423,18 +440,26 @@ async fn clean_auto(
             } else {
                 "cloudtalk_sms_templates"
             };
-            let found: Option<i32> = match auto.ref_id {
-                Some(id) => sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+            let mut wanted = auto.ref_ids.clone();
+            wanted.extend(auto.ref_id);
+            wanted.sort_unstable();
+            wanted.dedup();
+            let mut found: Vec<i32> = Vec::new();
+            for id in wanted {
+                let ok: Option<i32> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
                     "SELECT id FROM {table} WHERE id = ? AND company_id = ? AND deleted_at IS NULL"
                 )))
                 .bind(id)
                 .bind(company_id)
                 .fetch_optional(&mut *conn)
-                .await?,
-                None => None,
-            };
-            clean.ref_id =
-                Some(found.ok_or_else(|| ApiError::BadRequest("Pick a template".into()))?);
+                .await?;
+                found.extend(ok);
+            }
+            if found.is_empty() {
+                return Err(ApiError::BadRequest("Pick a template".into()));
+            }
+            clean.ref_id = found.first().copied();
+            clean.ref_ids = found;
         }
         "sent_to_sign" | "signed" | "task_done" => {
             let text = auto
@@ -493,12 +518,23 @@ pub async fn set_auto(
     };
     sqlx::query(
         "UPDATE project_process_steps
-            SET auto_trigger = ?, auto_ref_id = ?, auto_text = ?, auto_days = ?,
+            SET auto_trigger = ?, auto_ref_id = ?, auto_ref_ids = ?, auto_text = ?, auto_days = ?,
                 auto_since = IF(? IS NULL, NULL, UTC_TIMESTAMP(3))
           WHERE id = ? AND company_id = ?",
     )
     .bind(rule.as_ref().map(|rule| rule.trigger.clone()))
     .bind(rule.as_ref().and_then(|rule| rule.ref_id))
+    .bind(
+        rule.as_ref()
+            .filter(|rule| !rule.ref_ids.is_empty())
+            .map(|rule| {
+                rule.ref_ids
+                    .iter()
+                    .map(i32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            }),
+    )
     .bind(rule.as_ref().and_then(|rule| rule.text.clone()))
     .bind(rule.as_ref().and_then(|rule| rule.days))
     .bind(rule.as_ref().map(|rule| rule.trigger.clone()))

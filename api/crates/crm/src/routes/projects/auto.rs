@@ -20,6 +20,7 @@ struct Rule {
     stage_code: String,
     auto_trigger: Option<String>,
     auto_ref_id: Option<i32>,
+    auto_ref_ids: Option<String>,
     auto_text: Option<String>,
     auto_days: Option<i32>,
     auto_since: Option<NaiveDateTime>,
@@ -48,7 +49,7 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     }
     let mut conn = state.pool.acquire().await?;
     let rules: Vec<Rule> = sqlx::query_as(
-        "SELECT id, stage_code, auto_trigger, auto_ref_id, auto_text, auto_days, auto_since
+        "SELECT id, stage_code, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days, auto_since
            FROM project_process_steps
           WHERE company_id = ?
           ORDER BY FIELD(stage_code, 'new', 'templated', 'fabrication', 'installed'), position, id",
@@ -151,7 +152,7 @@ async fn happened(
         "email_template" | "text_template" => {
             sqlx::query_scalar(
                 "SELECT CAST(MIN(st.sent_at) AS DATETIME(3)) FROM sent_templates st
-                  WHERE st.company_id = ? AND st.kind = ? AND st.template_id = ? AND st.sent_at > ?
+                  WHERE st.company_id = ? AND st.kind = ? AND FIND_IN_SET(st.template_id, ?) > 0 AND st.sent_at > ?
                     AND (st.deal_id = ? OR st.customer_id = ?
                          OR (st.phone10 IS NOT NULL AND st.phone10 = ?)
                          OR (st.email IS NOT NULL AND st.email IN
@@ -159,7 +160,12 @@ async fn happened(
             )
             .bind(company_id)
             .bind(if trigger == "email_template" { "email" } else { "sms" })
-            .bind(rule.auto_ref_id.unwrap_or(0))
+            .bind(
+                rule.auto_ref_ids
+                    .clone()
+                    .filter(|ids| !ids.is_empty())
+                    .unwrap_or_else(|| rule.auto_ref_id.unwrap_or(0).to_string()),
+            )
             .bind(after)
             .bind(project.source_deal_id)
             .bind(project.customer_id)

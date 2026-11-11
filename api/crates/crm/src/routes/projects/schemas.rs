@@ -189,6 +189,9 @@ pub struct StepAuto {
     /// The email or text template (`email_template`, `text_template`).
     #[serde(default)]
     pub ref_id: Option<i32>,
+    /// Several templates; any one of them counts (`email_template`, `text_template`).
+    #[serde(default)]
+    pub ref_ids: Vec<i32>,
     /// Part of the document's or task's name (`sent_to_sign`, `signed`, `task_done`).
     #[serde(default)]
     pub text: Option<String>,
