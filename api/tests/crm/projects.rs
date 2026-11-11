@@ -927,3 +927,111 @@ async fn the_page_and_board_show_the_crews_issues(pool: MySqlPool) {
     let seen = board(&pool, sessions::ADMIN).await;
     assert_eq!(seen["issue_counts"], json!([{ "project_id": id, "count": 2 }]));
 }
+
+#[test_db::test(seed)]
+async fn issues_are_reported_on_a_project_and_marked_solved(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let id = projects_of_8002(&pool).await[0];
+    run(
+        &pool,
+        "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (9881, 100, 'Installations', 'red', 'installations');",
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO events (id, title, start_date, end_date, all_day, unscheduled,
+                             created_user_id, assigned_user_id, calendar_id, project_id)
+         VALUES (9871, 'Install', NOW(), NOW(), 1, 0, 102, 101, 9881, ?)",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    run(
+        &pool,
+        "INSERT INTO event_issues (id, event_id, company_id, description, created_by, created_by_name) VALUES
+           (9901, 9871, 100, 'Sink cutout too small', 101, 'Alex');",
+    )
+    .await;
+
+    let report = async |text: &str| {
+        server(pool.clone())
+            .post(&format!("/v1/projects/{id}/issues"))
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "description": text }))
+            .await
+    };
+    report("   ").await.assert_status(StatusCode::BAD_REQUEST);
+    report("Customer wants an ogee edge")
+        .await
+        .assert_status(StatusCode::CREATED);
+    let page = async || {
+        server(pool.clone())
+            .get(&format!("/v1/projects/{id}"))
+            .with_session(sessions::ADMIN)
+            .await
+            .json::<Value>()
+    };
+    let seen = page().await;
+    let issues = seen["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 2, "{issues:?}");
+    let own = issues.iter().find(|issue| issue["event_id"].is_null()).unwrap();
+    assert_eq!(own["description"], "Customer wants an ogee edge");
+    let own_id = own["id"].as_i64().unwrap();
+    assert_eq!(board(&pool, sessions::ADMIN).await["issue_counts"][0]["count"], 2);
+
+    // The crew's issue, solved from the project; the project's, from... the project.
+    let solve = async |issue: i64, solved: bool| {
+        server(pool.clone())
+            .put(&format!("/v1/projects/{id}/issues/{issue}"))
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "solved": solved }))
+            .await
+    };
+    solve(9901, true).await.assert_status(StatusCode::NO_CONTENT);
+    solve(own_id + 9999, true)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    let seen = page().await;
+    let crew = seen["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|issue| issue["id"] == 9901)
+        .unwrap()
+        .clone();
+    assert!(crew["solved_at"].is_string());
+    assert!(crew["solved_by"].is_string());
+    // Open issues come first.
+    assert_eq!(seen["issues"][0]["id"].as_i64(), Some(own_id));
+    assert_eq!(board(&pool, sessions::ADMIN).await["issue_counts"][0]["count"], 1);
+
+    // On the job card, the crew opens it again.
+    server(pool.clone())
+        .put("/v1/events/9871/issues/9901")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "solved": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let details: Value = server(pool.clone())
+        .get("/v1/events/9871/details")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert!(details["issues"][0]["solved_at"].is_null(), "{details}");
+    assert_eq!(board(&pool, sessions::ADMIN).await["issue_counts"][0]["count"], 2);
+
+    server(pool.clone())
+        .delete(&format!("/v1/projects/{id}/issues/{own_id}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // A job's issue is deleted on the job, not here.
+    server(pool.clone())
+        .delete(&format!("/v1/projects/{id}/issues/9901"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(page().await["issues"].as_array().unwrap().len(), 1);
+}
