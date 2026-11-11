@@ -24,7 +24,8 @@ mod points {
     pub const CALL_VOICEMAIL: i64 = 5;
     pub const CALL_CONVERSATION: i64 = 10;
     pub const SMS_SENT: i64 = 1;
-    pub const EMAIL_SENT: i64 = 1;
+    /// Half a point: emails and the totals that include them are fractional.
+    pub const EMAIL_SENT: f64 = 0.5;
 }
 
 /// Per rep, per customer number, per day (`ACTIVITY_DAILY_CAP_PER_NUMBER`).
@@ -172,13 +173,13 @@ pub async fn leaderboard_rows(
                  CAST(COALESCE(s.points, 0) AS SIGNED) AS stage_points,
                  CAST(COALESCE(cs.call_points, 0) AS SIGNED) AS call_points,
                  CAST(COALESCE(cs.sms_points, 0) AS SIGNED) AS sms_points,
-                 CAST(COALESCE(cs.email_points, 0) AS SIGNED) AS email_points,
+                 CAST(COALESCE(cs.email_points, 0) AS DOUBLE) AS email_points,
                  CAST(COALESCE(cs.conversations, 0) AS SIGNED) AS conversations,
                  CAST(COALESCE(cs.voicemails, 0) AS SIGNED) AS voicemails,
                  CAST(COALESCE(cs.attempts, 0) AS SIGNED) AS attempts,
                  CAST(COALESCE(cs.sms, 0) AS SIGNED) AS sms,
                  CAST(COALESCE(cs.emails, 0) AS SIGNED) AS emails,
-                 CAST({total} AS SIGNED) AS points,
+                 CAST({total} AS DOUBLE) AS points,
                  CAST(r.user_id IS NOT NULL AS SIGNED) AS is_rep,
                  -- Ranked among the reps only; the viewer's own row is NULL.
                  CAST(CASE WHEN r.user_id IS NOT NULL
