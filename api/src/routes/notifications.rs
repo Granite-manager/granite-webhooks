@@ -383,6 +383,10 @@ pub struct NotificationItem {
     /// app opens it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<i32>,
+    /// The schedule event an `event_issue` notification is about (the phone
+    /// app opens its Issue tab).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_id: Option<i32>,
 }
 
 /// `GET /v1/notifications`.
@@ -415,6 +419,7 @@ fn type_title(kind: &str) -> Option<&'static str> {
         "installation_appointment_reminder" => "Installation Reminder",
         "template_appointment_reminder" => "Template Appointment Reminder",
         "installation_completed" => "Installation Completed",
+        "event_issue" => "Reported an Issue",
         "note_added" => "Added a Note",
         "note_edited" => "Edited a Note",
         "note_deleted" => "Deleted a Note",
@@ -451,6 +456,8 @@ const PROMISES_HREF: &str = "/employee/promises";
 const E911_ALERT: &str = "e911_alert";
 /// Where a 911 alert opens: the admin Phone page.
 const E911_ALERT_HREF: &str = "/admin/phone";
+/// Where an event's issue opens when it names no deal or customer.
+const SCHEDULE_HREF: &str = "/employee/schedule";
 /// The 10DLC texting registration's notifications
 /// (`phone::tendlc_registry`), which name no deal either: a company marked
 /// it ready (to superusers; opens the superusers' list of registrations),
@@ -479,6 +486,8 @@ struct ActivityRow {
     deal_id: Option<i64>,
     /// A project task's notification.
     project_id: Option<i32>,
+    /// An `event_issue`'s event.
+    event_id: Option<i32>,
     /// `None` only for a 911 alert.
     customer_id: Option<i32>,
     message: String,
@@ -573,6 +582,7 @@ async fn unread_email(
                 deal_id: None,
                 customer_id: None,
                 project_id: None,
+                event_id: None,
             }
         })
         .collect())
@@ -587,7 +597,7 @@ async fn activity(
 ) -> Result<Vec<NotificationItem>, sqlx::Error> {
     let rows: Vec<ActivityRow> = sqlx::query_as(
         "SELECT CAST(n.id AS SIGNED) AS id, CAST(n.deal_id AS SIGNED) AS deal_id,
-                pr.id AS project_id, c.id AS customer_id, n.message,
+                pr.id AS project_id, n.event_id, c.id AS customer_id, n.message,
                 c.name AS customer_name, n.notification_type, n.actor_name,
                 -- A deadline reminder happens at its deadline, not when it was scheduled.
                 DATE_FORMAT(CASE WHEN n.notification_type IN ('activity_deadline_reminder',
@@ -610,7 +620,7 @@ async fn activity(
                  OR n.notification_type IN ('e911_alert', 'tendlc_ready', 'tendlc_status',
                                             'phone_port', 'ai_promise_due',
                                             'ai_promise_approval', 'delayed_message_sent',
-                                            'delayed_message_failed'))
+                                            'delayed_message_failed', 'event_issue'))
             -- A project task's reminder shows while the task is open.
             AND (COALESCE(n.notification_type, '') <> 'project_task_reminder' OR EXISTS (
                   SELECT 1 FROM project_activities pa
@@ -656,6 +666,7 @@ async fn activity(
                 ),
                 (Some(deal), _) => format!("/employee/deals/edit/{deal}/project"),
                 (None, Some(customer)) => format!("/employee/customers/info/{customer}/documents"),
+                (None, None) if kind == Some("event_issue") => SCHEDULE_HREF.to_string(),
                 (None, None) => E911_ALERT_HREF.to_string(),
             };
             NotificationItem {
@@ -670,6 +681,8 @@ async fn activity(
                     "Morning list".to_string()
                 } else if promise && customer.is_empty() {
                     "Promise".to_string()
+                } else if kind == Some("event_issue") && customer.is_empty() {
+                    "Issue on a job".to_string()
                 } else {
                     customer.clone()
                 },
@@ -689,6 +702,7 @@ async fn activity(
                 deal_id: row.deal_id.filter(|_| !(alert || texting || port)),
                 customer_id: row.customer_id.filter(|_| !(alert || texting || port)),
                 project_id: row.project_id.filter(|_| !(alert || texting || port)),
+                event_id: row.event_id,
             }
         })
         .collect())
@@ -769,6 +783,7 @@ async fn telnyx_calls(
                 deal_id: None,
                 customer_id: None,
                 project_id: None,
+                event_id: None,
             }
         })
         .collect())
@@ -801,6 +816,7 @@ async fn billing(state: &AppState, user_id: i32) -> Result<Vec<NotificationItem>
             deal_id: None,
             customer_id: None,
             project_id: None,
+            event_id: None,
         })
         .collect())
 }
@@ -920,6 +936,7 @@ fn missed_call_item(call: &crate::routes::users::call_activity::CallActivity) ->
         deal_id: None,
         customer_id: None,
         project_id: None,
+        event_id: None,
     }
 }
 

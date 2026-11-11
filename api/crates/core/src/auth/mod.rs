@@ -143,8 +143,8 @@ async fn check_sections(
 /// send now, cancel), as the composers' Send later list has them on the web;
 /// `/v1/me/todos` and `/v1/me/todo-order` are the caller's own to-do list
 /// (the app's To do tab); `/v1/me/undo-send` is the caller's Undo send (Settings ›
-/// General).
-pub const DEVICE_ROUTES: [&str; 8] = [
+/// General); `/v1/me/photo` is the caller's own picture (the app's Profile).
+pub const DEVICE_ROUTES: [&str; 9] = [
     "/v1/emails",
     "/v1/schedule",
     "/v1/events",
@@ -153,6 +153,7 @@ pub const DEVICE_ROUTES: [&str; 8] = [
     "/v1/me/todos",
     "/v1/me/todo-order",
     "/v1/me/undo-send",
+    "/v1/me/photo",
 ];
 
 /// CRM routes the app reads with its device token, `GET` only (my texts
@@ -791,6 +792,7 @@ mod tests {
             "/v1/me/todos/done",
             "/v1/me/todo-order",
             "/v1/me/undo-send",
+            "/v1/me/photo",
         ] {
             assert!(device_route(&Method::GET, path), "{path}");
             assert!(device_route(&Method::POST, path), "{path}");

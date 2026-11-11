@@ -22,7 +22,8 @@ use serde::Deserialize;
 /// `POST /v1/stones/{id}/images` or `POST /v1/deals/{id}/files`; that route
 /// also makes the thumbnail. Inventory folders are for admins; `deals` for
 /// (and `events`) any employee and also take documents; `quotes` and
-/// `template-images` any employee, images only; `emails` for any employee, any
+/// `template-images` and `user-photos` (my own picture, then `PUT /v1/me/photo`)
+/// any employee, images only; `emails` for any employee, any
 /// file, and the response has the `token` `POST /v1/emails` asks for. Types a
 /// browser runs script in (HTML, SVG, XML, JavaScript) are refused everywhere.
 #[crate::openapi::path(
@@ -51,7 +52,7 @@ pub async fn create(
     let is_bug_report = request.folder == UploadFolder::BugReports;
     let is_quote = matches!(
         request.folder,
-        UploadFolder::Quotes | UploadFolder::TemplateImages
+        UploadFolder::Quotes | UploadFolder::TemplateImages | UploadFolder::UserPhotos
     );
     let is_sms = request.folder == UploadFolder::SmsUploads;
     if !(is_deal

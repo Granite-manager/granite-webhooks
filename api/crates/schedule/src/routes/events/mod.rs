@@ -22,6 +22,7 @@ pub mod crew;
 pub mod details;
 pub mod estimate;
 pub mod history;
+pub mod issues;
 pub mod notify;
 pub mod project_notes;
 pub mod reminders;
@@ -48,6 +49,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(details::delete_photo))
         .routes(routes!(details::add_attachments))
         .routes(routes!(details::delete_attachment))
+        .routes(routes!(issues::report))
+        .routes(routes!(issues::delete))
         .routes(routes!(project_notes::list, project_notes::add))
         .routes(routes!(project_notes::sale))
         .routes(routes!(project_notes::delete))

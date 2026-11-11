@@ -10,6 +10,7 @@
 //! - `GET`/`PUT /v1/me/notification-preferences` → Telegram alert settings
 //! - `POST /v1/me/onboarding-feedback` → rate the guided tours (once)
 //! - `PUT /v1/me/sidebar-pin` → keep the desktop sidebar open
+//! - `PUT`/`DELETE /v1/me/photo` → my picture (see [`photo`])
 //! - `GET`/`PUT /v1/me/undo-send` → my sent texts and emails wait with Undo (see [`undo_send`])
 //! - `PUT /v1/me/ai-assistant` → switch my AI personal assistant on or off
 //! - `GET /v1/me/marketing-companies` → companies the user markets for
@@ -17,6 +18,7 @@
 
 pub mod account;
 pub mod handlers;
+pub mod photo;
 pub mod queries;
 pub mod ringcentral;
 pub mod schemas;
@@ -39,6 +41,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::link_notifications_telegram))
         .routes(routes!(handlers::set_sidebar_pin))
         .routes(routes!(undo_send::undo_send, undo_send::set_undo_send))
+        .routes(routes!(photo::set_photo, photo::delete_photo))
         .routes(routes!(handlers::set_ai_assistant))
         .routes(routes!(handlers::onboarding_feedback))
         .routes(routes!(
