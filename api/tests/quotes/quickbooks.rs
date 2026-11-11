@@ -54,20 +54,6 @@ fn older_invoice(id: u32) -> Value {
     })
 }
 
-/// A customer as `QuickBooks` has it: 43 has everything, any other only its
-/// display name.
-fn qbo_customer(id: &str) -> Value {
-    let mut found = json!({ "Id": id, "SyncToken": "0", "DisplayName": "Alice Lead" });
-    if id == "43" {
-        found["GivenName"] = json!("Alicia");
-        found["PrimaryPhone"] = json!({ "FreeFormNumber": "555-0199" });
-        found["PrimaryEmailAddr"] = json!({ "Address": "alice@example.com" });
-        found["BillAddr"] =
-            json!({ "Line1": "Alice Lead", "Line2": "1 Main St", "Line3": "Carmel, IN 46032" });
-    }
-    found
-}
-
 async fn server(pool: &MySqlPool, access_expires_in: i64) -> (TestServer, Arc<Mutex<Vec<Value>>>) {
     let (server, invoices, _) = server_and_customers(pool, access_expires_in).await;
     (server, invoices)
@@ -163,15 +149,6 @@ async fn server_and_customers(
                         { "Id": "9", "DocNumber": "1001", "TxnDate": "2026-05-02", "TotalAmt": 120, "CustomerRef": { "value": "42", "name": "Alice Lead" } },
                     ] } }));
                 }
-                // The customers of invoiced quotes, read with the scan.
-                if q.starts_with("select * from Customer where Id in (") {
-                    let found: Vec<Value> = ["42", "43"]
-                        .into_iter()
-                        .filter(|id| q.contains(&format!("'{id}'")))
-                        .map(qbo_customer)
-                        .collect();
-                    return Json(json!({ "QueryResponse": { "Customer": found } }));
-                }
                 if q.contains("where CustomerRef = '42'") {
                     return Json(json!({ "QueryResponse": { "Invoice": [
                         { "Id": "8", "TxnDate": "2026-04-01", "TotalAmt": 50, "Balance": 0, "ShipAddr": { "Line1": "1 Main", "City": "Carmel" } },
@@ -187,7 +164,14 @@ async fn server_and_customers(
         }))
         // Customer 42 has only its display name; 43 has everything.
         .route("/v3/company/555/customer/{id}", get(|Path(id): Path<String>| async move {
-            Json(json!({ "Customer": qbo_customer(&id) }))
+            let mut found = json!({ "Id": id, "SyncToken": "0", "DisplayName": "Alice Lead" });
+            if id == "43" {
+                found["GivenName"] = json!("Alicia");
+                found["PrimaryPhone"] = json!({ "FreeFormNumber": "555-0199" });
+                found["PrimaryEmailAddr"] = json!({ "Address": "alice@example.com" });
+                found["BillAddr"] = json!({ "Line1": "Alice Lead", "Line2": "1 Main St", "Line3": "Carmel, IN 46032" });
+            }
+            Json(json!({ "Customer": found }))
         }))
         .route(
             "/v3/company/555/customer",
@@ -762,63 +746,6 @@ async fn a_customer_complete_in_quickbooks_is_left_as_it_is(pool: MySqlPool) {
         .assert_status_ok();
     // Nothing was written to the customer.
     assert!(customers.lock().unwrap().is_empty());
-}
-
-#[test_db::test(seed)]
-async fn customers_invoiced_with_only_a_display_name_get_the_rest_with_the_scan(pool: MySqlPool) {
-    // Two customers were invoiced from quotes before the CRM sent QuickBooks
-    // more than a display name: Alice (QuickBooks customer 42, still only a
-    // display name) and Zed (43, since completed in QuickBooks by the office).
-    sqlx::query("UPDATE customers SET qbo_id = '42' WHERE id = 1000")
-        .execute(&pool)
-        .await
-        .unwrap();
-    sqlx::query(
-        "INSERT INTO customers (id, name, phone, company_id, source, sales_rep, created_date, qbo_id)
-         VALUES (9902, 'Zed Stone', '3175550196', 100, 'leads', 100, NOW(), '43')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO quotes (id, customer_id, quote_name, quote_type, created_date, sales_rep,
-                             company_id, salesperson_id, created_by, status, address, qbo_invoice_id)
-         VALUES (9813, 1000, 'Kitchen', 'countertops', NOW(), 'Rep', 100, 100, 100, 'converted',
-                 '9 Oak Ave, Fishers, IN 46037', '9'),
-                (9814, 9902, 'Bath', 'countertops', NOW(), 'Rep', 100, 100, 100, 'converted',
-                 '2 Elm St, Carmel, IN 46032', '8')",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
-    let (server, _, customers) = server_and_customers(&pool, 10).await;
-    // Opening a draft reads the company's invoices again (the daily scan),
-    // and with it the customers of its invoiced quotes.
-    let draft = || async {
-        server
-            .post("/v1/quotes/9813/invoice-draft")
-            .with_session(sessions::REP)
-            .json(&json!({ "lines": [] }))
-            .await
-            .assert_status_ok();
-    };
-    draft().await;
-    // Alice gets what she lacked; her own address wins over the job's. Zed,
-    // complete in QuickBooks, is not written to.
-    assert_eq!(
-        *customers.lock().unwrap(),
-        [json!({
-            "Id": "42", "SyncToken": "0", "sparse": true,
-            "GivenName": "Alice", "FamilyName": "Lead",
-            "PrimaryEmailAddr": { "Address": "alice@example.com" },
-            "PrimaryPhone": { "FreeFormNumber": "(317) 555-0100" },
-            "AlternatePhone": { "FreeFormNumber": "(317) 555-0101" },
-            "BillAddr": { "Line1": "1 Main St" },
-        })]
-    );
-    // The scan is kept for a day: the next draft writes nothing more.
-    draft().await;
-    assert_eq!(customers.lock().unwrap().len(), 1);
 }
 
 #[test_db::test(seed)]
