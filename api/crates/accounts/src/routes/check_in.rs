@@ -1,10 +1,9 @@
 //! Walk-in check-in tablets: the walk-in form runs on a paired tablet, with
 //! no user account and no password (see [`crate::auth::check_in`]).
 //!
-//! - `GET    /v1/check-in/tablets`            → the company's tablets and waiting codes (admins)
-//! - `POST   /v1/check-in/tablets`            → a new 6-digit pairing code (admins)
-//! - `DELETE /v1/check-in/tablets/{id}`       → remove a tablet, or cancel its code (admins)
-//! - `POST   /v1/check-in/pair`               → this browser becomes the tablet of a code
+//! - `GET    /v1/check-in/tablets`             → the company's paired tablets (admins)
+//! - `POST   /v1/check-in/tablets/this-device` → this browser becomes a tablet; the admin is signed out
+//! - `DELETE /v1/check-in/tablets/{id}`        → remove a tablet (admins)
 //! - `GET    /v1/check-in/kiosk`              → the paired tablet's company (none when not paired)
 //! - `GET    /v1/check-in/kiosk/duplicates`   → a customer who already has the phone or email
 //! - `POST   /v1/check-in/kiosk/customers`    → save a walk-in
@@ -14,12 +13,10 @@ use crate::auth::check_in::{CHECK_IN_COOKIE, CheckInTablet, find_tablet, request
 use crate::auth::cookie::{SESSION_MAX_AGE_SECONDS, request_session_id};
 use crate::auth::device::{new_token, token_hash};
 use crate::auth::session::{find_session_user, user_positions};
-use crate::auth::sha256_hex;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::{IntoParams, ToSchema};
 use crate::openapi::{OpenApiRouter, routes};
-use crate::routes::auth::{client_ip, record_failed_login, too_many_failures};
 use crate::routes::company::queries::company_features;
 use crate::routes::customers::ReferralSource;
 use crate::routes::customers::duplicates::phone_last10;
@@ -35,9 +32,9 @@ use sqlx::{FromRow, MySqlPool};
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(list_tablets, add_tablet))
+        .routes(routes!(list_tablets))
+        .routes(routes!(this_device))
         .routes(routes!(remove_tablet))
-        .routes(routes!(pair))
         .routes(routes!(kiosk))
         .routes(routes!(kiosk_duplicates))
         .routes(routes!(kiosk_customer))
@@ -49,47 +46,33 @@ const CHECK_IN_POSITION: i32 = 8;
 const DEFAULT_NAME: &str = "Walk-in tablet";
 /// Longest tablet name kept.
 const NAME_CHARS: usize = 100;
-/// How long a pairing code works.
-const CODE_MINUTES: i64 = 15;
 /// The source walk-ins are saved with.
 const WALK_IN_SOURCE: &str = "check-in";
 
 const ISO: &str = "'%Y-%m-%dT%H:%i:%sZ'";
 
-/// A walk-in tablet, or a code waiting to be typed on one.
+/// A paired walk-in tablet.
 #[derive(Debug, Serialize, FromRow, ToSchema)]
 pub struct Tablet {
     /// Tablet id.
     pub id: i32,
     /// Its name.
     pub name: String,
-    /// The 6-digit code to type on the tablet, while it waits to be paired.
-    pub code: Option<String>,
-    /// When the code stops working (UTC).
-    pub code_expires_at: Option<String>,
-    /// When it was paired (UTC); null while it waits.
+    /// When it was paired (UTC).
     pub paired_at: Option<String>,
     /// When it last opened the form (UTC).
     pub last_seen_at: Option<String>,
-    /// Who made its code (null for a tablet that was a check-in account).
+    /// The admin who set it up (null for a tablet that was a check-in account).
     pub created_by_name: Option<String>,
 }
 
-/// Body of `POST /v1/check-in/tablets`.
+/// Body of `POST /v1/check-in/tablets/this-device`.
 #[derive(Debug, Default, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NewTablet {
     /// Its name, e.g. "Front desk" ("Walk-in tablet" when blank).
     #[serde(default)]
     pub name: Option<String>,
-}
-
-/// Body of `POST /v1/check-in/pair`.
-#[derive(Debug, Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PairInput {
-    /// The 6-digit code from Company (spaces and dashes are ignored).
-    pub code: String,
 }
 
 /// What a paired tablet shows.
@@ -114,7 +97,7 @@ pub struct Kiosk {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct KioskStatus {
     /// The paired tablet's form; null when this browser is not a paired
-    /// tablet (the pairing screen shows).
+    /// tablet (the set-up screen shows).
     pub kiosk: Option<Kiosk>,
 }
 
@@ -167,27 +150,9 @@ fn blank_to_none(value: Option<&str>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The digits of a typed code, when they are exactly six.
-fn code_digits(code: &str) -> Option<String> {
-    let digits: String = code.chars().filter(char::is_ascii_digit).collect();
-    let rest_is_spacing = code
-        .chars()
-        .all(|c| c.is_ascii_digit() || c.is_whitespace() || c == '-');
-    (digits.len() == 6 && rest_is_spacing).then_some(digits)
-}
-
-/// A random 6-digit code.
-fn random_code() -> ApiResult<String> {
-    let mut bytes = [0u8; 4];
-    getrandom::fill(&mut bytes).map_err(|err| ApiError::Internal(err.to_string()))?;
-    Ok(format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000))
-}
-
 fn tablet_select(filter: &str) -> String {
     format!(
         "SELECT d.id, d.name,
-                IF(d.paired_at IS NULL, d.pairing_code, NULL) AS code,
-                IF(d.paired_at IS NULL, DATE_FORMAT(d.pairing_expires_at, {ISO}), NULL) AS code_expires_at,
                 DATE_FORMAT(d.paired_at, {ISO}) AS paired_at,
                 DATE_FORMAT(d.last_seen_at, {ISO}) AS last_seen_at,
                 NULLIF(TRIM(u.name), '') AS created_by_name
@@ -197,21 +162,9 @@ fn tablet_select(filter: &str) -> String {
     )
 }
 
-/// Codes that ran out before anyone typed them are dropped.
-async fn drop_expired_codes(pool: &MySqlPool) -> sqlx::Result<()> {
-    sqlx::query(
-        "DELETE FROM check_in_devices
-          WHERE paired_at IS NULL AND pairing_expires_at < UTC_TIMESTAMP() LIMIT 100",
-    )
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 /// List walk-in tablets
 ///
-/// The company's paired walk-in tablets (newest first) and the pairing codes
-/// still waiting to be typed on one.
+/// The company's paired walk-in tablets, newest first.
 #[crate::openapi::path(
     get,
     path = "/v1/check-in/tablets",
@@ -230,13 +183,9 @@ pub async fn list_tablets(
     AdminUser(user): AdminUser,
 ) -> ApiResult<Json<Vec<Tablet>>> {
     let pool = &state.pool;
-    drop_expired_codes(pool).await?;
     let tablets = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "{} ORDER BY d.paired_at IS NULL DESC, d.id DESC",
-        tablet_select(
-            "d.company_id = ? AND d.revoked_at IS NULL
-             AND (d.paired_at IS NOT NULL OR d.pairing_expires_at > UTC_TIMESTAMP())"
-        )
+        "{} ORDER BY d.id DESC",
+        tablet_select("d.company_id = ? AND d.revoked_at IS NULL AND d.paired_at IS NOT NULL")
     )))
     .bind(user.company_id)
     .fetch_all(pool)
@@ -244,72 +193,10 @@ pub async fn list_tablets(
     Ok(Json(tablets))
 }
 
-/// Add a walk-in tablet
-///
-/// Makes a 6-digit pairing code that works for 15 minutes. Typed on the
-/// tablet's walk-in page (`/check-in`), it turns that browser into the
-/// company's walk-in tablet.
-#[crate::openapi::path(
-    post,
-    path = "/v1/check-in/tablets",
-    operation_id = "add_check_in_tablet",
-    tag = "check-in",
-    request_body = NewTablet,
-    responses(
-        (status = 201, description = "The waiting tablet, with its code", body = Tablet),
-        (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not an admin", body = ErrorBody),
-        (status = 500, description = "Database error", body = ErrorBody),
-    ),
-    security(("session_cookie" = []))
-)]
-pub async fn add_tablet(
-    State(state): State<AppState>,
-    AdminUser(user): AdminUser,
-    JsonBody(input): JsonBody<NewTablet>,
-) -> ApiResult<(StatusCode, Json<Tablet>)> {
-    let pool = &state.pool;
-    drop_expired_codes(pool).await?;
-    let name: String = blank_to_none(input.name.as_deref())
-        .unwrap_or_else(|| DEFAULT_NAME.to_string())
-        .chars()
-        .take(NAME_CHARS)
-        .collect();
-    let mut id = None;
-    // A code still waiting elsewhere is taken: try another.
-    for _ in 0..5 {
-        let inserted = sqlx::query(
-            "INSERT INTO check_in_devices (company_id, name, pairing_code, pairing_expires_at, created_by)
-             VALUES (?, ?, ?, UTC_TIMESTAMP() + INTERVAL ? MINUTE, ?)",
-        )
-        .bind(user.company_id)
-        .bind(&name)
-        .bind(random_code()?)
-        .bind(CODE_MINUTES)
-        .bind(user.id)
-        .execute(pool)
-        .await;
-        match inserted {
-            Ok(done) => {
-                id = Some(done.last_insert_id());
-                break;
-            }
-            Err(sqlx::Error::Database(err)) if err.is_unique_violation() => {}
-            Err(err) => return Err(err.into()),
-        }
-    }
-    let id = id.ok_or_else(|| ApiError::Internal("Could not make a pairing code".into()))?;
-    let tablet: Tablet = sqlx::query_as(sqlx::AssertSqlSafe(tablet_select("d.id = ?")))
-        .bind(id)
-        .fetch_one(pool)
-        .await?;
-    Ok((StatusCode::CREATED, Json(tablet)))
-}
-
 /// Remove a walk-in tablet
 ///
-/// The tablet no longer opens the walk-in form (it shows the pairing screen
-/// again), or a waiting code stops working.
+/// The tablet no longer opens the walk-in form: it shows the set-up screen
+/// again.
 #[crate::openapi::path(
     delete,
     path = "/v1/check-in/tablets/{id}",
@@ -332,7 +219,7 @@ pub async fn remove_tablet(
 ) -> ApiResult<StatusCode> {
     let done = sqlx::query(
         "UPDATE check_in_devices
-            SET revoked_at = UTC_TIMESTAMP(), pairing_code = NULL, token_hash = NULL
+            SET revoked_at = UTC_TIMESTAMP(), token_hash = NULL
           WHERE id = ? AND company_id = ? AND revoked_at IS NULL",
     )
     .bind(id)
@@ -388,95 +275,88 @@ fn with_key(body: impl Serialize, state: &AppState, key: &str, extra: Vec<String
     response
 }
 
-/// Pair a walk-in tablet
+/// Make this device a walk-in tablet
 ///
-/// With a code from `POST /v1/check-in/tablets` that is still waiting, this
-/// browser becomes that tablet: its key is stored in the `granite_check_in`
-/// cookie and the walk-in form opens. A tablet paired again drops its old
-/// pairing. Too many wrong codes from one address are refused for a while.
+/// Run on the tablet by an admin signed in there: this browser becomes a
+/// paired walk-in tablet of the company (its key goes in the
+/// `granite_check_in` cookie) and the admin is signed out of it at once, so
+/// the CRM is never left open on the tablet. A browser that already was a
+/// tablet drops its old pairing.
 #[crate::openapi::path(
     post,
-    path = "/v1/check-in/pair",
-    operation_id = "pair_check_in_tablet",
+    path = "/v1/check-in/tablets/this-device",
+    operation_id = "make_check_in_tablet",
     tag = "check-in",
-    request_body = PairInput,
+    request_body = NewTablet,
     responses(
-        (status = 200, description = "Paired; the cookie is set", body = Kiosk),
-        (status = 400, description = "Not a working code", body = ErrorBody),
-        (status = 429, description = "Too many wrong codes", body = ErrorBody),
+        (status = 200, description = "Paired; the tablet cookie is set and the session ended", body = Kiosk),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
-    )
+    ),
+    security(("session_cookie" = []))
 )]
-pub async fn pair(
+pub async fn this_device(
     State(state): State<AppState>,
+    AdminUser(user): AdminUser,
     headers: HeaderMap,
-    JsonBody(input): JsonBody<PairInput>,
+    JsonBody(input): JsonBody<NewTablet>,
 ) -> ApiResult<Response> {
-    let Some(code) = code_digits(&input.code) else {
-        return Err(ApiError::BadRequest("Type the 6-digit code.".into()));
-    };
     let pool = &state.pool;
-    let ip = client_ip(&headers);
-    let throttle_key = sha256_hex(&format!("check-in-pair:{ip}"));
-    let ip_hash = sha256_hex(&ip);
-    if too_many_failures(pool, &throttle_key, &ip_hash).await? {
-        return Err(ApiError::TooManyRequests(
-            "Too many wrong codes. Please wait 15 minutes and try again.".into(),
-        ));
-    }
-    let waiting: Option<CheckInTablet> = sqlx::query_as(
-        "SELECT d.id, d.company_id, d.name FROM check_in_devices d
-           JOIN company co ON co.id = d.company_id AND co.deleted_at IS NULL
-          WHERE d.pairing_code = ? AND d.paired_at IS NULL AND d.revoked_at IS NULL
-            AND d.pairing_expires_at > UTC_TIMESTAMP()",
-    )
-    .bind(&code)
-    .fetch_optional(pool)
-    .await?;
-    let Some(tablet) = waiting else {
-        record_failed_login(pool, &throttle_key, &ip_hash).await?;
-        return Err(ApiError::BadRequest(
-            "That code doesn't work. Check it, or make a new one on Company.".into(),
-        ));
-    };
+    let name: String = blank_to_none(input.name.as_deref())
+        .unwrap_or_else(|| DEFAULT_NAME.to_string())
+        .chars()
+        .take(NAME_CHARS)
+        .collect();
     let key = new_token().map_err(|err| ApiError::Internal(err.to_string()))?;
-    let done = sqlx::query(
-        "UPDATE check_in_devices
-            SET token_hash = ?, pairing_code = NULL, pairing_expires_at = NULL,
-                paired_at = UTC_TIMESTAMP(), last_seen_at = UTC_TIMESTAMP()
-          WHERE id = ? AND paired_at IS NULL AND revoked_at IS NULL",
+    let id = sqlx::query(
+        "INSERT INTO check_in_devices (company_id, name, token_hash, paired_at, last_seen_at, created_by)
+         VALUES (?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), ?)",
     )
+    .bind(user.company_id)
+    .bind(&name)
     .bind(token_hash(&key))
-    .bind(tablet.id)
+    .bind(user.id)
     .execute(pool)
-    .await?;
-    if done.rows_affected() == 0 {
-        return Err(ApiError::BadRequest(
-            "That code doesn't work. Check it, or make a new one on Company.".into(),
-        ));
-    }
-    sqlx::query("DELETE FROM login_attempts WHERE email_hash = ?")
-        .bind(&throttle_key)
-        .execute(pool)
-        .await?;
-    // The same browser paired before: that pairing ends (one row per tablet).
+    .await?
+    .last_insert_id();
+    // The same browser was a tablet before: that pairing ends (one row per tablet).
     if let Some(old_key) = request_key(&headers)
         && let Some(old) = find_tablet(pool, &old_key).await?
-        && old.id != tablet.id
     {
-        sqlx::query("UPDATE check_in_devices SET revoked_at = UTC_TIMESTAMP(), token_hash = NULL WHERE id = ?")
-            .bind(old.id)
+        sqlx::query(
+            "UPDATE check_in_devices SET revoked_at = UTC_TIMESTAMP(), token_hash = NULL WHERE id = ?",
+        )
+        .bind(old.id)
+        .execute(pool)
+        .await?;
+    }
+    // Signed out, as `POST /v1/auth/logout` does.
+    if let Some(session_id) = request_session_id(&headers, &state.session_secret) {
+        sqlx::query("UPDATE sessions SET is_deleted = 1 WHERE id = ?")
+            .bind(&session_id)
             .execute(pool)
             .await?;
+        crate::phone::revoke::revoke_web_session(
+            &state,
+            &session_id,
+            crate::phone::revoke::RevokeReason::SignedOut,
+        )
+        .await?;
     }
+    let tablet = CheckInTablet {
+        id: i32::try_from(id).unwrap_or(i32::MAX),
+        company_id: user.company_id,
+        name,
+    };
     let body = kiosk_for(pool, &tablet).await?;
-    Ok(with_key(body, &state, &key, Vec::new()))
+    Ok(with_key(body, &state, &key, state.cookie.clear_session()))
 }
 
 /// A tablet still signed in with an old check-in account (from before
 /// tablets were paired) becomes a paired tablet of the account's company:
 /// its session ends, and the account is deleted once none of its sessions
-/// is left. No code is needed: the account could already open the form.
+/// is left. Nothing to set up: the account could already open the form.
 async fn adopt_check_in_account(
     state: &AppState,
     headers: &HeaderMap,
@@ -699,28 +579,4 @@ pub async fn kiosk_customer(
     tx.commit().await?;
     state.webhooks.sync_contacts(tablet.company_id, id).await;
     Ok((StatusCode::CREATED, Json(SavedWalkIn { id })))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn codes_are_six_digits_with_spacing() {
-        assert_eq!(code_digits("123456").as_deref(), Some("123456"));
-        assert_eq!(code_digits(" 123 456 ").as_deref(), Some("123456"));
-        assert_eq!(code_digits("123-456").as_deref(), Some("123456"));
-        assert_eq!(code_digits("12345"), None);
-        assert_eq!(code_digits("1234567"), None);
-        assert_eq!(code_digits("12345a"), None);
-    }
-
-    #[test]
-    fn random_codes_are_six_digits() {
-        for _ in 0..50 {
-            let code = random_code().unwrap();
-            assert_eq!(code.len(), 6);
-            assert!(code.chars().all(|c| c.is_ascii_digit()));
-        }
-    }
 }
