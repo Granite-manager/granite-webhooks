@@ -800,6 +800,8 @@ async fn create_project(
     .bind(company_id)
     .execute(&mut *conn)
     .await?;
+    // A sale's events planned for a part type give the project its parts.
+    super::parts::materialize(&mut *conn, company_id, id).await;
     Ok(id)
 }
 
@@ -883,6 +885,9 @@ async fn try_start(
         Some(id) => id,
         None => create_project(&mut tx, company_id, deal_id, actor_id).await?,
     };
+    // The project was there already: the events this sale just added still
+    // need their parts.
+    super::parts::materialize(&mut tx, company_id, project).await;
     if let Some(note) = note.map(str::trim).filter(|note| !note.is_empty()) {
         sqlx::query(
             "INSERT INTO project_notes (project_id, company_id, content, created_by)

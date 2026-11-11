@@ -100786,6 +100786,21 @@
               "$ref": "#/components/schemas/TriggerOption"
             },
             "description": "Single options of catalog extras that tick this event in Mark as Sold\nwhen the quote has a line of that extra with that option (its\n`catalogId` and `optionId`)."
+          },
+          "part_type_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part type (`GET /v1/projects/part-types`) the event is for: when\nthe sale adds it, the sold job's project gets a part of that type and\nthe event belongs to it. Null: the project's first part."
+          },
+          "part_type_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That part type's name; null with `part_type_id`."
           }
         }
       },
@@ -100827,6 +100842,14 @@
               "$ref": "#/components/schemas/TriggerOption"
             },
             "description": "Single options of catalog extras that tick this event in Mark as Sold\nwhen the quote has one. Options not in the company's catalog are\ndropped. Default none."
+          },
+          "part_type_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "A part type of the company (`GET /v1/projects/part-types`): the sale's\nevent is for a part of that type on the job's project, added when the\nproject has none. Default none: the project's first part."
           }
         },
         "additionalProperties": false
