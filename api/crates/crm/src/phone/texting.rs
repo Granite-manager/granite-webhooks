@@ -120,6 +120,18 @@ pub async fn user_line(
     lines::user_line(pool, company_id, user_id).await
 }
 
+/// The Notification number automated texts go out from, when the company
+/// texts through Telnyx and has one.
+pub async fn notification_line(
+    pool: &MySqlPool,
+    company_id: i32,
+) -> sqlx::Result<Option<CallerId>> {
+    if texting_setup(pool, company_id).await?.is_none() {
+        return Ok(None);
+    }
+    lines::notification_line(pool, company_id).await
+}
+
 /// Every line `user_id` may text from, when the company texts through Telnyx.
 pub async fn own_lines(
     pool: &MySqlPool,

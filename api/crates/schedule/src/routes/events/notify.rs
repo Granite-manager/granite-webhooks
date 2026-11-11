@@ -229,8 +229,8 @@ pub async fn office_manager(
     .await
 }
 
-/// How a Scheduling Manager texts on `provider`: on Telnyx from their line
-/// (`None` without one).
+/// How a Scheduling Manager texts on `provider`: on Telnyx from the
+/// Notification number, else their line (`None` without one).
 pub async fn manager_seat(
     pool: &MySqlPool,
     company_id: i32,
@@ -238,14 +238,16 @@ pub async fn manager_seat(
     manager: &OfficeManager,
 ) -> Result<Option<Seat>, sqlx::Error> {
     if provider == SmsProvider::Telnyx {
-        return Ok(
-            crate::phone::texting::user_line(pool, company_id, manager.id)
-                .await?
-                .map(|line| Seat {
-                    agent_id: manager.agent_id.clone(),
-                    line: Some(line),
-                }),
-        );
+        // Automated notices go out from the Notification number when the
+        // company has one, else from the manager's own line.
+        let line = match crate::phone::texting::notification_line(pool, company_id).await? {
+            Some(line) => Some(line),
+            None => crate::phone::texting::user_line(pool, company_id, manager.id).await?,
+        };
+        return Ok(line.map(|line| Seat {
+            agent_id: manager.agent_id.clone(),
+            line: Some(line),
+        }));
     }
     Ok(Some(Seat {
         agent_id: manager.agent_id.clone(),
