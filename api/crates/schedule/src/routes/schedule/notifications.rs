@@ -2758,6 +2758,12 @@ pub async fn send_due(state: &AppState) -> Result<RuleRun, sqlx::Error> {
             // `send_on_complete` sends these when the crew taps Completed.
             Direction::Completed => continue,
         };
+        // Customer texts go only for jobs whose status is Confirmed.
+        let confirmed_only = if Channel::parse(&rule.channel) == Channel::Sms {
+            "AND e.status = 'confirmed'"
+        } else {
+            ""
+        };
         let events: Vec<Appointment> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT e.id, e.start_date, e.end_date, COALESCE(e.all_day, 0) <> 0 AS all_day,
                     e.location, e.created_date, e.created_user_id,
@@ -2769,6 +2775,7 @@ pub async fn send_due(state: &AppState) -> Result<RuleRun, sqlx::Error> {
                {EVENT_CUSTOMER}
               WHERE r.id = ? AND e.deleted_date IS NULL AND e.unscheduled = 0 AND NULLIF(TRIM(e.rrule), '') IS NULL
                 AND {when}
+                {confirmed_only}
                 AND NOT EXISTS (SELECT 1 FROM schedule_notification_sends n
                                  WHERE n.rule_id = r.id AND n.event_id = e.id AND n.start_date = e.start_date)
               ORDER BY e.start_date, e.id LIMIT ?"
