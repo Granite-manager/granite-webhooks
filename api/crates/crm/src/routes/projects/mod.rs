@@ -56,6 +56,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(process::rename, process::delete))
         .routes(routes!(process::reorder))
         .routes(routes!(process::set_notify))
+        .routes(routes!(process::scheduling_managers))
         .routes(routes!(process::set_auto))
         .routes(routes!(process::set_done))
         .routes(routes!(issues::report))

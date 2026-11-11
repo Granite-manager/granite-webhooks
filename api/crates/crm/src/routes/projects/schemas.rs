@@ -171,6 +171,8 @@ pub struct ProcessStep {
     /// Who is told when a project checks it off (user ids).
     #[sqlx(skip)]
     pub notify: Vec<i32>,
+    /// Also tells the sales rep assigned to the project.
+    pub notify_sales_rep: bool,
     /// What checks it off by itself, if anything.
     #[sqlx(skip)]
     pub auto: Option<StepAuto>,
@@ -236,6 +238,9 @@ pub struct ProcessStepName {
 pub struct ProcessStepNotify {
     /// Users of the company; empty tells nobody.
     pub user_ids: Vec<i32>,
+    /// Also tell the sales rep assigned to the project.
+    #[serde(default)]
+    pub sales_rep: bool,
 }
 
 /// A stage's steps, in their new order.

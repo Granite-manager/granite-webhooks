@@ -4,7 +4,7 @@
 
 use super::access::{Stage, Viewer};
 use super::schemas::{
-    DoneStep, ProcessStep, ProcessStepAuto, ProcessStepInput, ProcessStepName, ProcessStepNotify,
+    DoneStep, Person, ProcessStep, ProcessStepAuto, ProcessStepInput, ProcessStepName, ProcessStepNotify,
     ProcessStepOrder, StepAuto, StepDone,
 };
 use super::service::visible_project;
@@ -45,7 +45,7 @@ pub async fn company_steps(
     company_id: i32,
 ) -> sqlx::Result<Vec<ProcessStep>> {
     let mut steps: Vec<ProcessStep> = sqlx::query_as(
-        "SELECT id, stage_code, name, position FROM project_process_steps
+        "SELECT id, stage_code, name, position, notify_sales_rep FROM project_process_steps
           WHERE company_id = ?
           ORDER BY FIELD(stage_code, 'new', 'templated', 'fabrication', 'installed'), position, id",
     )
@@ -300,6 +300,11 @@ pub async fn set_notify(
         }
     }
     let mut tx = state.pool.begin().await?;
+    sqlx::query("UPDATE project_process_steps SET notify_sales_rep = ? WHERE id = ?")
+        .bind(input.sales_rep)
+        .bind(step_id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM project_process_step_notify WHERE step_id = ?")
         .bind(step_id)
         .execute(&mut *tx)
@@ -313,6 +318,40 @@ pub async fn set_notify(
     }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The company's Scheduling Managers
+///
+/// Who a step's Notify can pick from under the Scheduling Manager position.
+#[crate::openapi::path(
+    get,
+    path = "/v1/projects/process-steps/scheduling-managers",
+    operation_id = "list_project_step_scheduling_managers",
+    tag = "projects",
+    responses(
+        (status = 200, description = "The Scheduling Managers by name", body = Vec<Person>),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn scheduling_managers(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+) -> ApiResult<Json<Vec<Person>>> {
+    let people: Vec<Person> = sqlx::query_as(
+        "SELECT u.id, COALESCE(NULLIF(TRIM(u.name), ''), CONCAT('User ', u.id)) AS name
+           FROM users u
+           JOIN users_positions up ON up.user_id = u.id AND up.position_id = ?
+          WHERE u.company_id = ? AND u.is_deleted = 0
+          ORDER BY name, u.id",
+    )
+    .bind(crate::auth::sections::SCHEDULING_MANAGER_POSITION)
+    .bind(user.company_id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(people))
 }
 
 /// What can check a step off by itself.
@@ -459,9 +498,17 @@ pub(super) async fn tell_step_people(
         let people: Vec<i32> = sqlx::query_scalar(
             "SELECT n.user_id FROM project_process_step_notify n
                JOIN users u ON u.id = n.user_id AND u.is_deleted = 0
-              WHERE n.step_id = ? AND n.user_id <> ?",
+              WHERE n.step_id = ? AND n.user_id <> ?
+             UNION
+             SELECT p.sales_rep_id FROM projects p
+               JOIN project_process_steps s ON s.id = ? AND s.notify_sales_rep = 1
+               JOIN users u ON u.id = p.sales_rep_id AND u.is_deleted = 0
+              WHERE p.id = ? AND p.sales_rep_id <> ?",
         )
         .bind(step_id)
+        .bind(actor_id.unwrap_or(0))
+        .bind(step_id)
+        .bind(project_id)
         .bind(actor_id.unwrap_or(0))
         .fetch_all(&state.pool)
         .await?;
