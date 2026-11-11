@@ -14,7 +14,8 @@
 //! keys (`skills` of `GET /v1/app/shell`).
 
 use crate::auth::sections::{
-    CONFIGURABLE_POSITIONS, SCHEDULING_MANAGER_POSITION, configured_positions,
+    CONFIGURABLE_POSITIONS, INVENTORY_MANAGER_POSITION, SCHEDULING_MANAGER_POSITION,
+    configured_positions,
 };
 use crate::auth::session::{SessionUser, UserPositionRow};
 use crate::error::ApiError;
@@ -43,6 +44,10 @@ pub const BEST_DAYS: &str = "best_days";
 /// See the schedule's scheduled and unscheduled events on a map
 /// (`POST /v1/schedule/geocode`).
 pub const EVENTS_MAP: &str = "events_map";
+/// Get each quote marked sold as a sales order (bell, phone push, the red
+/// count on Transactions) and save or confirm its slabs
+/// (`PUT /v1/sales-orders/{id}`, `POST /v1/sales-orders/{id}/confirm`).
+pub const CONFIRM_SALES_ORDERS: &str = "confirm_sales_orders";
 
 /// One skill a position may have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +62,7 @@ pub struct Skill {
 }
 
 /// Every skill, in the Company page's order.
-pub const SKILLS: [Skill; 8] = [
+pub const SKILLS: [Skill; 9] = [
     Skill {
         key: SELL_SLABS,
         label: "Sell slabs",
@@ -98,6 +103,11 @@ pub const SKILLS: [Skill; 8] = [
         label: "Events map",
         description: "See the schedule's scheduled and unscheduled events on a map.",
     },
+    Skill {
+        key: CONFIRM_SALES_ORDERS,
+        label: "Confirm sales orders",
+        description: "Get every quote marked sold as a sales order, change its slabs and confirm them.",
+    },
 ];
 
 /// The skill with this key.
@@ -109,8 +119,9 @@ pub fn skill(key: &str) -> Option<&'static Skill> {
 ///
 /// In [`SKILLS`] order: every position sells slabs and works with
 /// transactions and quotes, as before skills; only Scheduling Manager plans
-/// the schedule, sees readiness, sends SMS from events and has the events map.
-/// [`BEST_DAYS`] is off until a company gives it.
+/// the schedule, sees readiness, sends SMS from events and has the events map;
+/// only Inventory Manager confirms sales orders. [`BEST_DAYS`] is off until a
+/// company gives it.
 pub fn default_skills(position_id: i32) -> Vec<&'static str> {
     SKILLS
         .iter()
@@ -119,6 +130,7 @@ pub fn default_skills(position_id: i32) -> Vec<&'static str> {
             *key != BEST_DAYS
                 && (![PLAN_SCHEDULE, SEE_READINESS, SEND_SMS, EVENTS_MAP].contains(key)
                     || position_id == SCHEDULING_MANAGER_POSITION)
+                && (*key != CONFIRM_SALES_ORDERS || position_id == INVENTORY_MANAGER_POSITION)
         })
         .collect()
 }
@@ -227,6 +239,9 @@ pub fn required(method: &Method, path: &str) -> Option<&'static [&'static str]> 
         ["v1", "events", id, "confirmation"] if is_id(id) => Some(&[SEND_SMS]),
         ["v1", "schedule", "best-days"] => Some(&[BEST_DAYS]),
         ["v1", "schedule", "geocode"] => Some(&[EVENTS_MAP]),
+        ["v1", "sales-orders", id] | ["v1", "sales-orders", id, "confirm"] if is_id(id) => {
+            Some(&[CONFIRM_SALES_ORDERS])
+        }
         _ => None,
     }
 }
@@ -320,7 +335,17 @@ mod tests {
             required(&post, "/v1/schedule/geocode"),
             Some(&[EVENTS_MAP][..])
         );
+        assert_eq!(
+            required(&Method::PUT, "/v1/sales-orders/5"),
+            Some(&[CONFIRM_SALES_ORDERS][..])
+        );
+        assert_eq!(
+            required(&post, "/v1/sales-orders/5/confirm"),
+            Some(&[CONFIRM_SALES_ORDERS][..])
+        );
         for (method, path) in [
+            (Method::GET, "/v1/sales-orders"),
+            (Method::GET, "/v1/sales-orders/5"),
             (Method::GET, "/v1/sales/12"),
             (Method::GET, "/v1/quotes/3"),
             (Method::GET, "/v1/transactions/4"),
@@ -342,13 +367,22 @@ mod tests {
 
     #[test]
     fn defaults_keep_what_each_position_did_before_skills() {
-        for position in [1, 2, 3, 5, 10, 12] {
+        for position in [1, 2, 3, 5, 10] {
             assert_eq!(
                 default_skills(position),
                 vec![SELL_SLABS, EDIT_TRANSACTIONS, EDIT_QUOTES],
                 "{position}"
             );
         }
+        assert_eq!(
+            default_skills(12),
+            vec![
+                SELL_SLABS,
+                EDIT_TRANSACTIONS,
+                EDIT_QUOTES,
+                CONFIRM_SALES_ORDERS
+            ]
+        );
         assert_eq!(
             default_skills(13),
             vec![

@@ -130,8 +130,9 @@ const fn admin_tab(key: &'static str, label: &'static str, api: &'static [&'stat
 /// for the Inventory Manager to confirm.
 pub const SALES_ORDERS_TAB: &str = "sales_orders";
 
-/// Main-app tabs only the positions given them open: by default only
-/// Inventory Manager. Someone with no listed position, or every other
+/// Main-app tabs only the positions given them open.
+///
+/// By default only Inventory Manager. Someone with no listed position, or every other
 /// main-app tab open, gets them only when one of their positions has them,
 /// so the sales rep never sees sales orders.
 pub const OPT_IN_TABS: [&str; 1] = [SALES_ORDERS_TAB];
@@ -264,8 +265,9 @@ pub fn tab(key: &str) -> Option<&'static Tab> {
     TABS.iter().find(|tab| tab.key == key)
 }
 
-/// The tabs a position opens in a company that has not changed them, in
-/// [`TABS`] order: every main-app tab, except for Shop Manager and Shop
+/// The tabs a position opens in a company that has not changed them.
+///
+/// In [`TABS`] order: every main-app tab, except for Shop Manager and Shop
 /// Worker (the Shop app's pages: Schedule, Transactions, Samples), Inventory
 /// Manager and Scheduling Manager. Only Inventory Manager opens
 /// [`OPT_IN_TABS`].
@@ -278,6 +280,7 @@ pub fn default_tabs(position_id: i32) -> Vec<&'static str> {
             "faucets",
             "customers",
             SALES_ORDERS_TAB,
+            "transactions",
             "admin_stones",
             "admin_sinks",
             "admin_faucets",
@@ -666,7 +669,8 @@ mod tests {
         assert_eq!(default_tabs(13), vec!["customers", "schedule"]);
         assert_eq!(default_tabs(4), SHOP_TABS.to_vec());
         assert!(default_tabs(12).contains(&"admin_stones"));
-        assert!(!default_tabs(12).contains(&"transactions"));
+        assert!(default_tabs(12).contains(&"transactions"));
+        assert!(!default_tabs(12).contains(&"deals"));
         assert!(default_tabs(12).contains(&SALES_ORDERS_TAB));
     }
 
