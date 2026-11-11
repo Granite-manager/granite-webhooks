@@ -16,7 +16,6 @@ openapi = ["dep:utoipa", "dep:utoipa-axum", "api-crm/openapi", "api-accounts/ope
 api-crm = { path = "../crm" }
 api-accounts = { path = "../accounts" }
 api-schedule = { path = "../schedule" }
-bcrypt = "0.17"
 common = { path = "../../../common" }
 axum = "0.8"
 base64 = "0.22"

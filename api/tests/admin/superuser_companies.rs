@@ -170,15 +170,10 @@ async fn creating_a_company_seeds_it(pool: MySqlPool) {
         count("SELECT COUNT(*) FROM customer_sources WHERE company_id = ? AND is_system = 1").await,
         4
     );
-    let walk_in: (String, String) =
-        sqlx::query_as("SELECT name, email FROM users WHERE company_id = ? AND is_employee = 1")
-            .bind(id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    // No account for the walk-in form: an admin pairs a tablet instead.
     assert_eq!(
-        walk_in,
-        ("Walk-in".into(), "walk-in@granite-new.com".into())
+        count("SELECT COUNT(*) FROM users WHERE company_id = ?").await,
+        0
     );
     // A free mail domain is high risk without asking DNS.
     let trust: Value = server

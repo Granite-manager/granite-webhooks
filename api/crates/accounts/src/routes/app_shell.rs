@@ -27,6 +27,8 @@ const SALES_MANAGER: i32 = 2;
 const SHOP_MANAGER: i32 = 3;
 const MANAGER: i32 = 5;
 const INSTALLER: i32 = 6;
+/// Old check-in accounts only (from before walk-in tablets): their walk-in
+/// page turns the browser into a paired tablet (`check_in`) and retires them.
 const CHECK_IN: i32 = 8;
 const MARKETING: i32 = 7;
 const SHOP_WORKER: i32 = 4;

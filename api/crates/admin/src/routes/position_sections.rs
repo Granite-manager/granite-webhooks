@@ -100,8 +100,8 @@ pub struct PositionSectionsInput {
 /// List position access
 ///
 /// Every tab of the app, and for each position the company may change (all
-/// but Super Admin and the portal ones: Installer, Marketing, Walk-in,
-/// Template Guy) the tabs it opens, its defaults and whether the company
+/// but Super Admin and the portal ones: Installer, Marketing, Template
+/// Guy) the tabs it opens, its defaults and whether the company
 /// changed them. Shop Worker stays in the Shop app: its tabs are that app's
 /// Transactions, Samples and Schedule. Someone with several positions gets
 /// all their tabs together. By default every position opens the whole main
@@ -179,7 +179,7 @@ fn configurable(position_id: i32) -> ApiResult<()> {
         Ok(())
     } else {
         Err(ApiError::BadRequest(
-            "This position's tabs can't be changed: Super Admin keeps the whole app, and Installer, Marketing, Walk-in and Template Guy keep their own apps".into(),
+            "This position's tabs can't be changed: Super Admin keeps the whole app, and Installer, Marketing and Template Guy keep their own apps".into(),
         ))
     }
 }
