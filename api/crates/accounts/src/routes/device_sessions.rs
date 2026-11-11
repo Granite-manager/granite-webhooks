@@ -165,6 +165,9 @@ pub struct PhoneUser {
     /// `has_projects_board` has it: the app shows its Projects tab (`GET
     /// /v1/projects` with the device token) only then.
     pub has_projects_board: bool,
+    /// The user's own picture (`PUT /v1/me/photo`); null when they have
+    /// none (the app shows their initials).
+    pub photo_url: Option<String>,
 }
 
 /// The [`PhoneUser`] of a signed-in user.
@@ -174,7 +177,13 @@ pub async fn phone_user(pool: &MySqlPool, user: &SessionUser) -> sqlx::Result<Ph
         .fetch_optional(pool)
         .await?;
     let positions = user_positions(pool, user.id).await?;
+    let photo_url: Option<Option<String>> =
+        sqlx::query_scalar("SELECT photo_url FROM users WHERE id = ?")
+            .bind(user.id)
+            .fetch_optional(pool)
+            .await?;
     Ok(PhoneUser {
+        photo_url: photo_url.flatten().filter(|url| !url.trim().is_empty()),
         portal: crate::routes::app_shell::user_portal(user, &positions),
         id: user.id,
         name: user.name.clone().unwrap_or_default(),

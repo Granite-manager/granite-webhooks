@@ -931,6 +931,131 @@
         ]
       }
     },
+    "/v1/me/photo": {
+      "put": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Set my picture",
+        "description": "Makes an uploaded image my picture: first `POST /v1/uploads` with folder\n`user-photos`, `PUT` the file to its `upload_url`, then send its `url`\nhere. The picture I had before is deleted from storage. 400 when `url`\nis not a `user-photos` file of my company, or was never uploaded.",
+        "operationId": "set_my_photo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhotoInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "My picture now",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyPhoto"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not an uploaded `user-photos` file of my company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database or storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Remove my picture",
+        "description": "I have no picture afterwards (my initials show); the file is deleted\nfrom storage. Fine to call when I have none.",
+        "operationId": "delete_my_photo",
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/me/ai-assistant": {
       "put": {
         "tags": [
@@ -11522,7 +11647,7 @@
           "uploads"
         ],
         "summary": "Start an upload",
-        "description": "Returns a presigned URL to `PUT` the file to (straight to storage, any\nsize) and the public URL the file will have. Then pass `url` to the\nrecord's route, e.g. `PUT /v1/stones/{id}` (`image_url`),\n`POST /v1/stones/{id}/images` or `POST /v1/deals/{id}/files`; that route\nalso makes the thumbnail. Inventory folders are for admins; `deals` for\n(and `events`) any employee and also take documents; `quotes` and\n`template-images` any employee, images only; `emails` for any employee, any\nfile, and the response has the `token` `POST /v1/emails` asks for. Types a\nbrowser runs script in (HTML, SVG, XML, JavaScript) are refused everywhere.",
+        "description": "Returns a presigned URL to `PUT` the file to (straight to storage, any\nsize) and the public URL the file will have. Then pass `url` to the\nrecord's route, e.g. `PUT /v1/stones/{id}` (`image_url`),\n`POST /v1/stones/{id}/images` or `POST /v1/deals/{id}/files`; that route\nalso makes the thumbnail. Inventory folders are for admins; `deals` for\n(and `events`) any employee and also take documents; `quotes` and\n`template-images` and `user-photos` (my own picture, then `PUT /v1/me/photo`)\nany employee, images only; `emails` for any employee, any\nfile, and the response has the `token` `POST /v1/emails` asks for. Types a\nbrowser runs script in (HTML, SVG, XML, JavaScript) are refused everywhere.",
         "operationId": "create_upload",
         "requestBody": {
           "content": {
@@ -18621,6 +18746,98 @@
           },
           "403": {
             "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-steps/{step_id}/notify": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Set who is told when a step is checked off",
+        "description": "Replaces the list. Each person gets a bell notification and a phone push\nwhen someone checks the step off a project (not when they do it themselves).",
+        "operationId": "set_project_process_step_notify",
+        "parameters": [
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepNotify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Someone outside the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such step in the company",
             "content": {
               "application/json": {
                 "schema": {
@@ -41677,6 +41894,180 @@
         ]
       }
     },
+    "/v1/events/{id}/issues": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Report an issue on an event",
+        "description": "Files a problem with the job (the app's Issue tab, for the crew and\nanyone else on the schedule): a description and, optionally, pictures\nuploaded to the `events` folder first. The job's sales rep (the sale's\nseller, else the deal's owner, else the customer's sales rep, else\nwhoever made the event) gets a bell notification of type `event_issue`\nand a phone push, unless they reported it themselves. `GET\n/v1/events/{id}/details` lists the event's issues.",
+        "operationId": "report_event_issue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Reported"
+          },
+          "400": {
+            "description": "No description, one over 2000 characters, over 20 pictures, or a URL that was not uploaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database or storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/events/{id}/issues/{issue_id}": {
+      "delete": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Delete an issue I reported",
+        "description": "Only the reporter, an admin or a superuser can delete it; its pictures\ngo from storage. The sales rep's notification stays.",
+        "operationId": "delete_event_issue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not an issue on this event the caller may delete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/events/{id}/project-notes": {
       "get": {
         "tags": [
@@ -59772,7 +60163,7 @@
           "phone"
         ],
         "summary": "Create a contact group",
-        "description": "A new group of the company, with me as its maker, and optionally its\nfirst members; every user of the company sees it at the top of their\nContacts (until they hide it). At most 100 groups per company (400\n`too_many_groups`) and 500 members per group (400 `too_many_members`).\n400 `name_taken`, `unknown_contact`, `unknown_coworker`, or what is\nwrong with the name. Device token only.",
+        "description": "A new group with me as its maker, and optionally its first members. Made\nby a Manager, a Sales Manager, an admin or a superuser it is the\ncompany's (`shared` true): every user of the company sees it at the top\nof their Contacts (until they hide it). Made by anyone else it is their\nown (`shared` false): only they see it. `GET /v1/phone/contact-groups`\n`canShare` says which mine will be. At most 100 groups that I see (400\n`too_many_groups`) and 500 members per group (400 `too_many_members`).\n400 `name_taken`, `unknown_contact`, `unknown_coworker`, or what is\nwrong with the name. Device token only.",
         "operationId": "create_phone_contact_group",
         "requestBody": {
           "content": {
@@ -59839,7 +60230,7 @@
           "phone"
         ],
         "summary": "Delete a contact group",
-        "description": "Deletes the group for everyone at the company (its customers and\ncoworkers themselves stay). To only take it off the top of my Contacts,\nhide it instead (`PATCH /v1/phone/contact-groups/{id}` `hidden`). 404\nwhen the group is not my company's. Device token only.",
+        "description": "Deletes the group for everyone who sees it (its customers and coworkers\nthemselves stay). To only take it off the top of my Contacts, hide it\ninstead (`PATCH /v1/phone/contact-groups/{id}` `hidden`). 403 for the\ncompany's group unless I am a Manager, a Sales Manager, an admin or a\nsuperuser (`canEdit`); 404 when the group is not one I see. Device token\nonly.",
         "operationId": "delete_phone_contact_group",
         "parameters": [
           {
@@ -59867,8 +60258,18 @@
               }
             }
           },
+          "403": {
+            "description": "The company's group, and I am not a Manager, a Sales Manager, an admin or a superuser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "Not a group of my company",
+            "description": "Not a group I see",
             "content": {
               "application/json": {
                 "schema": {
@@ -59899,7 +60300,7 @@
           "phone"
         ],
         "summary": "Rename, hide or show a contact group",
-        "description": "`name` renames the group for everyone at the company (400 as for\n`POST /v1/phone/contact-groups`); `hidden` hides it from the top of my\nown Contacts or shows it there again (other users' tops are left alone;\nthe group and its members stay). Send either or both. 404 when the group\nis not my company's. Device token only.",
+        "description": "`name` renames the group for everyone who sees it (400 as for\n`POST /v1/phone/contact-groups`; 403 for the company's group unless I am\na Manager, a Sales Manager, an admin or a superuser: `canEdit`);\n`hidden` hides it from the top of my own Contacts or shows it there\nagain (other users' tops are left alone; the group and its members\nstay), which anyone may do. Send either or both. 404 when the group is\nnot one I see. Device token only.",
         "operationId": "update_phone_contact_group",
         "parameters": [
           {
@@ -59954,8 +60355,18 @@
               }
             }
           },
+          "403": {
+            "description": "Renaming the company's group without being a Manager, a Sales Manager, an admin or a superuser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "Not a group of my company",
+            "description": "Not a group I see",
             "content": {
               "application/json": {
                 "schema": {
@@ -60048,7 +60459,7 @@
           "phone"
         ],
         "summary": "Set a contact group's members",
-        "description": "Makes the group's members exactly the customers and coworkers sent\n(send the whole list: who is left out is taken out; empty lists empty\nthe group). For everyone at the company. At most 500 members (400\n`too_many_members`); 400 `unknown_contact` / `unknown_coworker` for ids\nthat are not my company's live customers / users. 404 when the group is\nnot my company's. Device token only.",
+        "description": "Makes the group's members exactly the customers and coworkers sent\n(send the whole list: who is left out is taken out; empty lists empty\nthe group). For everyone who sees the group. At most 500 members (400\n`too_many_members`); 400 `unknown_contact` / `unknown_coworker` for ids\nthat are not my company's live customers / users. 403 for the company's\ngroup unless I am a Manager, a Sales Manager, an admin or a superuser\n(`canEdit`); 404 when the group is not one I see. Device token only.",
         "operationId": "set_phone_contact_group_members",
         "parameters": [
           {
@@ -60103,8 +60514,18 @@
               }
             }
           },
+          "403": {
+            "description": "The company's group, and I am not a Manager, a Sales Manager, an admin or a superuser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
-            "description": "Not a group of my company",
+            "description": "Not a group I see",
             "content": {
               "application/json": {
                 "schema": {
@@ -77116,7 +77537,9 @@
           "name",
           "hidden",
           "customerIds",
-          "userIds"
+          "userIds",
+          "shared",
+          "canEdit"
         ],
         "properties": {
           "id": {
@@ -77155,6 +77578,14 @@
             ],
             "format": "int32",
             "description": "The user who made the group; null once that user is gone."
+          },
+          "shared": {
+            "type": "boolean",
+            "description": "True: the company's group, every user sees it. False: my own group,\nonly I see it."
+          },
+          "canEdit": {
+            "type": "boolean",
+            "description": "I may rename it, delete it and change who is in it: always for my\nown group; for the company's only a Manager, a Sales Manager, an\nadmin or a superuser."
           }
         }
       },
@@ -77163,6 +77594,7 @@
         "description": "`GET /v1/phone/contact-groups`.",
         "required": [
           "coworkersHidden",
+          "canShare",
           "groups"
         ],
         "properties": {
@@ -77170,12 +77602,16 @@
             "type": "boolean",
             "description": "I hid the built-in Coworkers group (everyone at the company with a\nphone number) from the top of my Contacts."
           },
+          "canShare": {
+            "type": "boolean",
+            "description": "A group I make now is the company's, seen by every user (I am a\nManager, a Sales Manager, an admin or a superuser). False: it is my\nown, seen only by me."
+          },
           "groups": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ContactGroup"
             },
-            "description": "The company's groups, by name."
+            "description": "The company's groups and my own, by name."
           }
         }
       },
@@ -82599,6 +83035,7 @@
           "comments",
           "photos",
           "attachments",
+          "issues",
           "history",
           "creator",
           "automated"
@@ -82624,6 +83061,13 @@
               "$ref": "#/components/schemas/EventAttachment"
             },
             "description": "Attachments, oldest first."
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EventIssue"
+            },
+            "description": "Problems reported on the job (`POST /v1/events/{id}/issues`), oldest\nfirst, each with its pictures."
           },
           "history": {
             "type": "array",
@@ -82926,6 +83370,62 @@
               "null"
             ],
             "description": "Its number as shown in QuickBooks."
+          }
+        }
+      },
+      "EventIssue": {
+        "type": "object",
+        "description": "A problem reported on an event.",
+        "required": [
+          "id",
+          "event_id",
+          "description",
+          "photos"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The issue's id."
+          },
+          "event_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The event it is on."
+          },
+          "description": {
+            "type": "string",
+            "description": "What is wrong, as the reporter wrote it (1 to 2000 characters)."
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was reported (UTC)."
+          },
+          "created_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The reporter's user id; null once that user is gone."
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The reporter's name."
+          },
+          "photos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IssuePhoto"
+            },
+            "description": "Its pictures, in the order they were sent."
           }
         }
       },
@@ -86597,6 +87097,45 @@
           "error"
         ]
       },
+      "IssueInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/events/{id}/issues`.",
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What is wrong: 1 to 2000 characters (trimmed)."
+          },
+          "urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Pictures of it: `url`s that `POST /v1/uploads` (folder `events`)\nreturned, after each file was `PUT` to its `upload_url`. At most 20;\nmay be empty."
+          }
+        }
+      },
+      "IssuePhoto": {
+        "type": "object",
+        "description": "A picture of an issue.",
+        "required": [
+          "id",
+          "url"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The picture's id."
+          },
+          "url": {
+            "type": "string",
+            "description": "Its public URL (a `-icon` thumbnail exists beside it)."
+          }
+        }
+      },
       "Item": {
         "type": "object",
         "description": "One item.",
@@ -88786,6 +89325,19 @@
           }
         }
       },
+      "MyPhoto": {
+        "type": "object",
+        "description": "My picture now.",
+        "properties": {
+          "photo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Public URL of my picture; null when I have none."
+          }
+        }
+      },
       "MyScheduleSettingsInput": {
         "type": "object",
         "description": "`PUT /v1/schedule/settings/me`: only the fields sent change.",
@@ -89999,6 +90551,22 @@
             ],
             "format": "int32",
             "description": "The customer an activity notification is about (the phone app opens\ntheir card when there is no deal)."
+          },
+          "project_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The project a project task or step notification is about (the phone\napp opens it)."
+          },
+          "event_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The schedule event an `event_issue` notification is about (the phone\napp opens its Issue tab)."
           }
         }
       },
@@ -92819,8 +93387,29 @@
           "hasProjectsBoard": {
             "type": "boolean",
             "description": "The user has a Projects board, as `GET /v1/app/shell`\n`has_projects_board` has it: the app shows its Projects tab (`GET\n/v1/projects` with the device token) only then."
+          },
+          "photoUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user's own picture (`PUT /v1/me/photo`); null when they have\nnone (the app shows their initials)."
           }
         }
+      },
+      "PhotoInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/me/photo`.",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The `url` that `POST /v1/uploads` (folder `user-photos`) returned,\nafter the picture was `PUT` to its `upload_url`."
+          }
+        },
+        "additionalProperties": false
       },
       "PhotosInput": {
         "type": "object",
@@ -95415,7 +96004,8 @@
           "id",
           "stage_code",
           "name",
-          "position"
+          "position",
+          "notify"
         ],
         "properties": {
           "id": {
@@ -95435,6 +96025,14 @@
             "type": "integer",
             "format": "int32",
             "description": "Its place in the stage."
+          },
+          "notify": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Who is told when a project checks it off (user ids)."
           }
         }
       },
@@ -95466,6 +96064,23 @@
           "name": {
             "type": "string",
             "description": "What to do."
+          }
+        }
+      },
+      "ProcessStepNotify": {
+        "type": "object",
+        "description": "Who to tell when a project checks a step off.",
+        "required": [
+          "user_ids"
+        ],
+        "properties": {
+          "user_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Users of the company; empty tells nobody."
           }
         }
       },
@@ -110048,7 +110663,8 @@
           "sms-uploads",
           "supplier-files",
           "company-logos",
-          "quote-forms"
+          "quote-forms",
+          "user-photos"
         ]
       },
       "UploadRequest": {

@@ -111,6 +111,9 @@ pub struct EventDetails {
     pub photos: Vec<EventPhoto>,
     /// Attachments, oldest first.
     pub attachments: Vec<EventAttachment>,
+    /// Problems reported on the job (`POST /v1/events/{id}/issues`), oldest
+    /// first, each with its pictures.
+    pub issues: Vec<super::issues::EventIssue>,
     /// History, oldest first.
     pub history: Vec<EventHistoryItem>,
     /// Who made the event. For an `automated` event, whoever sold the quote.
@@ -150,6 +153,15 @@ async fn people(pool: &MySqlPool, company_id: i32, event_id: i32) -> ApiResult<E
     .fetch_optional(pool)
     .await?;
     found.ok_or(ApiError::NotFound)
+}
+
+/// 404 unless the event is a live one of the company.
+pub(super) async fn event_exists(
+    pool: &MySqlPool,
+    company_id: i32,
+    event_id: i32,
+) -> ApiResult<()> {
+    people(pool, company_id, event_id).await.map(|_| ())
 }
 
 fn last_segment(url: &str) -> &str {
@@ -215,6 +227,7 @@ pub async fn details(
     .bind(user.company_id)
     .fetch_all(pool)
     .await?;
+    let issues = super::issues::list(pool, user.company_id, id).await?;
     let photos = images
         .into_iter()
         .map(|(photo_id, url, created_at, created_by)| EventPhoto {
@@ -241,6 +254,7 @@ pub async fn details(
         comments,
         photos,
         attachments,
+        issues,
         history,
         creator: EventPerson {
             id: event.created_user_id,

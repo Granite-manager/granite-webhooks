@@ -278,11 +278,7 @@ async fn the_sidebar_pin_is_saved(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn undo_send_is_on_until_switched_off(pool: MySqlPool) {
     let server = common::server(pool);
-    let read = |server: &TestServer| {
-        server
-            .get("/v1/me/undo-send")
-            .with_session(sessions::REP)
-    };
+    let read = |server: &TestServer| server.get("/v1/me/undo-send").with_session(sessions::REP);
     read(&server).await.assert_json(&json!({ "on": true }));
     server
         .put("/v1/me/undo-send")
@@ -430,4 +426,81 @@ async fn onboarding_is_rated_once(pool: MySqlPool) {
     rate(json!({ "rating": 5 }))
         .await
         .assert_status(StatusCode::CONFLICT);
+}
+
+#[test_db::test(seed)]
+async fn my_photo_is_an_uploaded_picture_of_mine(pool: MySqlPool) {
+    let (server, storage) = common::server_with_storage(pool.clone());
+    let saved = |pool: MySqlPool| async move {
+        sqlx::query_scalar::<_, Option<String>>("SELECT photo_url FROM users WHERE id = 100")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let upload = |server: &TestServer| {
+        server.post("/v1/uploads").with_session(sessions::REP).json(
+            &json!({ "folder": "user-photos", "file_name": "me.png", "content_type": "image/png" }),
+        )
+    };
+    // Pictures only.
+    server
+        .post("/v1/uploads")
+        .with_session(sessions::REP)
+        .json(&json!({ "folder": "user-photos", "file_name": "me.pdf", "content_type": "application/pdf" }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    let mut urls = Vec::new();
+    for _ in 0..2 {
+        let res = upload(&server).await;
+        res.assert_status(StatusCode::CREATED);
+        let url = res.json::<serde_json::Value>()["url"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        storage
+            .put(
+                &storage.key_for_url(&url).unwrap(),
+                common::png(8, 8),
+                "image/png",
+            )
+            .await
+            .unwrap();
+        urls.push(url);
+    }
+    // Not a file of the folder: refused, nothing saved.
+    server
+        .put("/v1/me/photo")
+        .with_session(sessions::REP)
+        .json(&json!({ "url": "https://elsewhere.test/me.png" }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(saved(pool.clone()).await, None);
+
+    server
+        .put("/v1/me/photo")
+        .with_session(sessions::REP)
+        .json(&json!({ "url": urls[0] }))
+        .await
+        .assert_json(&json!({ "photo_url": urls[0] }));
+    assert_eq!(saved(pool.clone()).await.as_deref(), Some(urls[0].as_str()));
+    // A new picture replaces it; the old file goes.
+    server
+        .put("/v1/me/photo")
+        .with_session(sessions::REP)
+        .json(&json!({ "url": urls[1] }))
+        .await
+        .assert_status_ok();
+    assert!(
+        storage
+            .get(&storage.key_for_url(&urls[0]).unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    server
+        .delete("/v1/me/photo")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(saved(pool.clone()).await, None);
 }

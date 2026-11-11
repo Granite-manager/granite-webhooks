@@ -24,6 +24,7 @@ pub fn notification_type_title(notification_type: &str) -> &'static str {
         "installation_appointment_reminder" => "Installation Reminder",
         "template_appointment_reminder" => "Template Appointment Reminder",
         "installation_completed" => "Installation Completed",
+        "event_issue" => "Reported an Issue",
         "project_task_assigned" => "Gave You a Task",
         "project_task_reminder" => "Task Due",
         "project_task_done" => "Finished Your Task",

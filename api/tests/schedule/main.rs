@@ -9,6 +9,7 @@ mod calendars;
 mod crew;
 mod estimates;
 mod events;
+mod issues;
 mod job_time;
 mod schedule;
 mod schedule_board;

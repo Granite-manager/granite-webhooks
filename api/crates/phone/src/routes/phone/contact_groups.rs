@@ -1,11 +1,14 @@
 //! Contact groups in the app's Contacts (like the built-in Coworkers):
-//! `/v1/phone/contact-groups`. Groups are the company's: every user of the
-//! company sees each group and its members, and anyone may create, rename or
-//! delete one and change who is in it. Hiding a group (or Coworkers) from
-//! the top of Contacts is each user's own.
+//! `/v1/phone/contact-groups`. A group made by a Manager, a Sales Manager, an
+//! admin or a superuser is the company's (`shared`): every user of the
+//! company sees it and its members, and only those people rename, delete or
+//! refill it. A group made by anyone else is their own: only they see and
+//! change it. Hiding a group (or Coworkers) from the top of Contacts is each
+//! user's own.
 
 use super::bad_request;
 use crate::auth::device::DeviceUser;
+use crate::auth::session::SessionUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
@@ -19,8 +22,11 @@ use std::collections::{BTreeSet, HashMap};
 
 /// The longest group name, in characters.
 pub const MAX_NAME_CHARS: usize = 60;
-/// The most groups a company may have.
+/// The most groups a user may see: the company's and their own.
 pub const MAX_GROUPS: i64 = 100;
+/// Sales Manager and Manager: with admins and superusers, they make and
+/// change the company's groups.
+const SHARING_POSITIONS: [i32; 2] = [2, 5];
 /// The most members (customers and coworkers together) a group may have.
 pub const MAX_MEMBERS: usize = 500;
 
@@ -44,6 +50,13 @@ pub struct ContactGroup {
     pub user_ids: Vec<i32>,
     /// The user who made the group; null once that user is gone.
     pub created_by: Option<i32>,
+    /// True: the company's group, every user sees it. False: my own group,
+    /// only I see it.
+    pub shared: bool,
+    /// I may rename it, delete it and change who is in it: always for my
+    /// own group; for the company's only a Manager, a Sales Manager, an
+    /// admin or a superuser.
+    pub can_edit: bool,
 }
 
 /// `GET /v1/phone/contact-groups`.
@@ -53,7 +66,11 @@ pub struct ContactGroups {
     /// I hid the built-in Coworkers group (everyone at the company with a
     /// phone number) from the top of my Contacts.
     pub coworkers_hidden: bool,
-    /// The company's groups, by name.
+    /// A group I make now is the company's, seen by every user (I am a
+    /// Manager, a Sales Manager, an admin or a superuser). False: it is my
+    /// own, seen only by me.
+    pub can_share: bool,
+    /// The company's groups and my own, by name.
     pub groups: Vec<ContactGroup>,
 }
 
@@ -115,6 +132,7 @@ struct GroupRow {
     name: String,
     hidden: bool,
     created_by: Option<i32>,
+    shared: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -125,19 +143,45 @@ struct MemberRow {
     user_id: Option<i32>,
 }
 
-/// The company's groups as `me` sees them (one, with `only`), by name.
+/// The user makes and changes the company's groups: a superuser, an admin,
+/// or a Sales Manager or Manager of the company.
+async fn may_share(pool: &MySqlPool, user: &SessionUser) -> sqlx::Result<bool> {
+    if user.is_superuser || user.is_admin {
+        return Ok(true);
+    }
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users_positions
+                        WHERE user_id = ? AND company_id = ? AND position_id IN (?, ?))",
+    )
+    .bind(user.id)
+    .bind(user.company_id)
+    .bind(SHARING_POSITIONS[0])
+    .bind(SHARING_POSITIONS[1])
+    .fetch_one(pool)
+    .await
+}
+
+/// The groups `me` sees (the company's and their own; one, with `only`), by
+/// name. `sharer`: `me` may change the company's groups.
 async fn load(
     pool: &MySqlPool,
     company_id: i32,
     me: i32,
+    sharer: bool,
     only: Option<i64>,
 ) -> sqlx::Result<Vec<ContactGroup>> {
     let mut query = QueryBuilder::<MySql>::new(
-        "SELECT g.id, g.name, h.id IS NOT NULL AS hidden, g.created_by
+        "SELECT g.id, g.name, h.id IS NOT NULL AS hidden, g.created_by, g.shared <> 0 AS shared
            FROM phone_contact_groups g
            LEFT JOIN phone_contact_group_hidden h ON h.group_id = g.id AND h.user_id = ",
     );
-    query.push_bind(me).push(" WHERE g.company_id = ").push_bind(company_id);
+    query
+        .push_bind(me)
+        .push(" WHERE g.company_id = ")
+        .push_bind(company_id)
+        .push(" AND (g.shared <> 0 OR g.created_by = ")
+        .push_bind(me)
+        .push(")");
     if let Some(id) = only {
         query.push(" AND g.id = ").push_bind(id);
     }
@@ -182,17 +226,42 @@ async fn load(
                 customer_ids,
                 user_ids,
                 created_by: row.created_by,
+                shared: row.shared,
+                can_edit: if row.shared {
+                    sharer
+                } else {
+                    row.created_by == Some(me)
+                },
             }
         })
         .collect())
 }
 
-/// One group of my company as I see it; 404 when there is none.
+/// One group as I see it; 404 when there is none (another company's, or
+/// another user's own).
 async fn one(pool: &MySqlPool, device: &DeviceUser, id: i64) -> ApiResult<ContactGroup> {
-    load(pool, device.user.company_id, device.user.id, Some(id))
-        .await?
-        .pop()
-        .ok_or(ApiError::NotFound)
+    let sharer = may_share(pool, &device.user).await?;
+    load(
+        pool,
+        device.user.company_id,
+        device.user.id,
+        sharer,
+        Some(id),
+    )
+    .await?
+    .pop()
+    .ok_or(ApiError::NotFound)
+}
+
+/// [`one`], when I may change it; 403 for the company's group when I am not
+/// a Manager, a Sales Manager, an admin or a superuser.
+async fn editable(pool: &MySqlPool, device: &DeviceUser, id: i64) -> ApiResult<ContactGroup> {
+    let group = one(pool, device, id).await?;
+    if group.can_edit {
+        Ok(group)
+    } else {
+        Err(ApiError::Forbidden)
+    }
 }
 
 /// A group name as stored; 400 when it is empty or too long.
@@ -208,7 +277,11 @@ fn checked_name(name: &str) -> ApiResult<String> {
 
 /// Sorted, without repeats.
 fn distinct(ids: &[i32]) -> Vec<i32> {
-    ids.iter().copied().collect::<BTreeSet<_>>().into_iter().collect()
+    ids.iter()
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// The members, checked against the company: 400 `unknown_contact`,
@@ -258,18 +331,22 @@ async fn lock_company(tx: &mut Transaction<'_, MySql>, company_id: i32) -> sqlx:
     Ok(())
 }
 
-/// 400 `name_taken` when another group of the company has this name.
+/// 400 `name_taken` when another group I see (the company's, or my own) has
+/// this name.
 async fn check_free_name(
     tx: &mut Transaction<'_, MySql>,
     company_id: i32,
+    me: i32,
     name: &str,
     except: Option<i64>,
 ) -> ApiResult<()> {
     let taken: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM phone_contact_groups
-          WHERE company_id = ? AND LOWER(name) = LOWER(?) AND id <> ?",
+          WHERE company_id = ? AND (shared <> 0 OR created_by = ?)
+            AND LOWER(name) = LOWER(?) AND id <> ?",
     )
     .bind(company_id)
+    .bind(me)
     .bind(name)
     .bind(except.unwrap_or(0))
     .fetch_one(&mut **tx)
@@ -306,9 +383,8 @@ async fn write_members(
         .map(|member| member.id)
         .collect();
     if !gone.is_empty() {
-        let mut query = QueryBuilder::<MySql>::new(
-            "DELETE FROM phone_contact_group_members WHERE group_id = ",
-        );
+        let mut query =
+            QueryBuilder::<MySql>::new("DELETE FROM phone_contact_group_members WHERE group_id = ");
         query.push_bind(group_id);
         crate::sql::push_in(&mut query, "id", &gone);
         query.build().execute(&mut **tx).await?;
@@ -369,7 +445,8 @@ pub async fn list_contact_groups(
 ) -> ApiResult<Json<ContactGroups>> {
     let user = &device.user;
     let pool = &state.pool;
-    let groups = load(pool, user.company_id, user.id, None).await?;
+    let can_share = may_share(pool, user).await?;
+    let groups = load(pool, user.company_id, user.id, can_share, None).await?;
     let coworkers_hidden: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM phone_contact_group_hidden
           WHERE user_id = ? AND builtin = 'coworkers'",
@@ -379,15 +456,19 @@ pub async fn list_contact_groups(
     .await?;
     Ok(Json(ContactGroups {
         coworkers_hidden: coworkers_hidden > 0,
+        can_share,
         groups,
     }))
 }
 
 /// Create a contact group
 ///
-/// A new group of the company, with me as its maker, and optionally its
-/// first members; every user of the company sees it at the top of their
-/// Contacts (until they hide it). At most 100 groups per company (400
+/// A new group with me as its maker, and optionally its first members. Made
+/// by a Manager, a Sales Manager, an admin or a superuser it is the
+/// company's (`shared` true): every user of the company sees it at the top
+/// of their Contacts (until they hide it). Made by anyone else it is their
+/// own (`shared` false): only they see it. `GET /v1/phone/contact-groups`
+/// `canShare` says which mine will be. At most 100 groups that I see (400
 /// `too_many_groups`) and 500 members per group (400 `too_many_members`).
 /// 400 `name_taken`, `unknown_contact`, `unknown_coworker`, or what is
 /// wrong with the name. Device token only.
@@ -417,21 +498,27 @@ pub async fn create_contact_group(
         checked_members(pool, user.company_id, &input.customer_ids, &input.user_ids).await?;
     let mut tx = pool.begin().await?;
     lock_company(&mut tx, user.company_id).await?;
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM phone_contact_groups WHERE company_id = ?")
-            .bind(user.company_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let shared = may_share(pool, user).await?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM phone_contact_groups
+          WHERE company_id = ? AND (shared <> 0 OR created_by = ?)",
+    )
+    .bind(user.company_id)
+    .bind(user.id)
+    .fetch_one(&mut *tx)
+    .await?;
     if count >= MAX_GROUPS {
         return Err(bad_request("too_many_groups"));
     }
-    check_free_name(&mut tx, user.company_id, &name, None).await?;
+    check_free_name(&mut tx, user.company_id, user.id, &name, None).await?;
     let id = sqlx::query(
-        "INSERT INTO phone_contact_groups (company_id, name, created_by) VALUES (?, ?, ?)",
+        "INSERT INTO phone_contact_groups (company_id, name, created_by, shared)
+         VALUES (?, ?, ?, ?)",
     )
     .bind(user.company_id)
     .bind(&name)
     .bind(user.id)
+    .bind(shared)
     .execute(&mut *tx)
     .await?
     .last_insert_id();
@@ -443,11 +530,13 @@ pub async fn create_contact_group(
 
 /// Rename, hide or show a contact group
 ///
-/// `name` renames the group for everyone at the company (400 as for
-/// `POST /v1/phone/contact-groups`); `hidden` hides it from the top of my
-/// own Contacts or shows it there again (other users' tops are left alone;
-/// the group and its members stay). Send either or both. 404 when the group
-/// is not my company's. Device token only.
+/// `name` renames the group for everyone who sees it (400 as for
+/// `POST /v1/phone/contact-groups`; 403 for the company's group unless I am
+/// a Manager, a Sales Manager, an admin or a superuser: `canEdit`);
+/// `hidden` hides it from the top of my own Contacts or shows it there
+/// again (other users' tops are left alone; the group and its members
+/// stay), which anyone may do. Send either or both. 404 when the group is
+/// not one I see. Device token only.
 #[crate::openapi::path(
     patch,
     path = "/v1/phone/contact-groups/{id}",
@@ -459,7 +548,8 @@ pub async fn create_contact_group(
         (status = 200, description = "The group now", body = ContactGroup),
         (status = 400, description = "`name_taken`, or what is wrong", body = ErrorBody),
         (status = 401, description = "No valid device token", body = ErrorBody),
-        (status = 404, description = "Not a group of my company", body = ErrorBody),
+        (status = 403, description = "Renaming the company's group without being a Manager, a Sales Manager, an admin or a superuser", body = ErrorBody),
+        (status = 404, description = "Not a group I see", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("device_token" = []))
@@ -472,15 +562,18 @@ pub async fn update_contact_group(
 ) -> ApiResult<Json<ContactGroup>> {
     let user = &device.user;
     let pool = &state.pool;
-    one(pool, &device, id).await?;
+    let group = one(pool, &device, id).await?;
     if input.name.is_none() && input.hidden.is_none() {
         return Err(ApiError::BadRequest("Send a name or hidden.".into()));
+    }
+    if input.name.is_some() && !group.can_edit {
+        return Err(ApiError::Forbidden);
     }
     if let Some(name) = input.name.as_deref() {
         let name = checked_name(name)?;
         let mut tx = pool.begin().await?;
         lock_company(&mut tx, user.company_id).await?;
-        check_free_name(&mut tx, user.company_id, &name, Some(id)).await?;
+        check_free_name(&mut tx, user.company_id, user.id, &name, Some(id)).await?;
         sqlx::query("UPDATE phone_contact_groups SET name = ? WHERE id = ? AND company_id = ?")
             .bind(&name)
             .bind(id)
@@ -500,11 +593,13 @@ pub async fn update_contact_group(
             .await?;
         }
         Some(false) => {
-            sqlx::query("DELETE FROM phone_contact_group_hidden WHERE user_id = ? AND group_id = ?")
-                .bind(user.id)
-                .bind(id)
-                .execute(pool)
-                .await?;
+            sqlx::query(
+                "DELETE FROM phone_contact_group_hidden WHERE user_id = ? AND group_id = ?",
+            )
+            .bind(user.id)
+            .bind(id)
+            .execute(pool)
+            .await?;
         }
         None => {}
     }
@@ -550,10 +645,12 @@ pub async fn update_coworkers_group(
 
 /// Delete a contact group
 ///
-/// Deletes the group for everyone at the company (its customers and
-/// coworkers themselves stay). To only take it off the top of my Contacts,
-/// hide it instead (`PATCH /v1/phone/contact-groups/{id}` `hidden`). 404
-/// when the group is not my company's. Device token only.
+/// Deletes the group for everyone who sees it (its customers and coworkers
+/// themselves stay). To only take it off the top of my Contacts, hide it
+/// instead (`PATCH /v1/phone/contact-groups/{id}` `hidden`). 403 for the
+/// company's group unless I am a Manager, a Sales Manager, an admin or a
+/// superuser (`canEdit`); 404 when the group is not one I see. Device token
+/// only.
 #[crate::openapi::path(
     delete,
     path = "/v1/phone/contact-groups/{id}",
@@ -563,7 +660,8 @@ pub async fn update_coworkers_group(
     responses(
         (status = 204, description = "Deleted"),
         (status = 401, description = "No valid device token", body = ErrorBody),
-        (status = 404, description = "Not a group of my company", body = ErrorBody),
+        (status = 403, description = "The company's group, and I am not a Manager, a Sales Manager, an admin or a superuser", body = ErrorBody),
+        (status = 404, description = "Not a group I see", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("device_token" = []))
@@ -573,6 +671,7 @@ pub async fn delete_contact_group(
     device: DeviceUser,
     Path(id): Path<i64>,
 ) -> ApiResult<StatusCode> {
+    editable(&state.pool, &device, id).await?;
     let deleted = sqlx::query("DELETE FROM phone_contact_groups WHERE id = ? AND company_id = ?")
         .bind(id)
         .bind(device.user.company_id)
@@ -589,10 +688,11 @@ pub async fn delete_contact_group(
 ///
 /// Makes the group's members exactly the customers and coworkers sent
 /// (send the whole list: who is left out is taken out; empty lists empty
-/// the group). For everyone at the company. At most 500 members (400
+/// the group). For everyone who sees the group. At most 500 members (400
 /// `too_many_members`); 400 `unknown_contact` / `unknown_coworker` for ids
-/// that are not my company's live customers / users. 404 when the group is
-/// not my company's. Device token only.
+/// that are not my company's live customers / users. 403 for the company's
+/// group unless I am a Manager, a Sales Manager, an admin or a superuser
+/// (`canEdit`); 404 when the group is not one I see. Device token only.
 #[crate::openapi::path(
     put,
     path = "/v1/phone/contact-groups/{id}/members",
@@ -604,7 +704,8 @@ pub async fn delete_contact_group(
         (status = 200, description = "The group now", body = ContactGroup),
         (status = 400, description = "`too_many_members`, `unknown_contact` or `unknown_coworker`", body = ErrorBody),
         (status = 401, description = "No valid device token", body = ErrorBody),
-        (status = 404, description = "Not a group of my company", body = ErrorBody),
+        (status = 403, description = "The company's group, and I am not a Manager, a Sales Manager, an admin or a superuser", body = ErrorBody),
+        (status = 404, description = "Not a group I see", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("device_token" = []))
@@ -617,7 +718,7 @@ pub async fn set_contact_group_members(
 ) -> ApiResult<Json<ContactGroup>> {
     let user = &device.user;
     let pool = &state.pool;
-    one(pool, &device, id).await?;
+    editable(pool, &device, id).await?;
     let (customers, users) =
         checked_members(pool, user.company_id, &input.customer_ids, &input.user_ids).await?;
     let mut tx = pool.begin().await?;
