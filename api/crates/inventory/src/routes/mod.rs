@@ -11,6 +11,7 @@ pub mod fixtures;
 pub mod image_library;
 pub mod places;
 pub mod sales;
+pub mod sales_orders;
 pub mod shop;
 pub mod sinks;
 pub mod slabs;

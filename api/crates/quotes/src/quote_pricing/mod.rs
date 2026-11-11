@@ -23,6 +23,7 @@ pub mod geometry;
 pub mod js;
 pub mod price_list;
 pub mod pricing;
+pub mod sales_order;
 pub mod takeoff;
 
 use crate::error::{ApiError, ApiResult};
@@ -843,6 +844,13 @@ pub async fn mark_quote_sold(
     .execute(pool)
     .await?;
     add_waiting_jobs(pool, &quote, user_id, jobs).await?;
+    // Sold with an option: the Inventory Manager gets its sales order. A
+    // failure there must not undo the sale.
+    if let Some(index) = option_index
+        && let Err(error) = sales_order::create(pool, &quote, index, deal_id, user_id, amount).await
+    {
+        lambda_http::tracing::warn!(quote_id = quote.id, ?error, "sales order not created");
+    }
     // Sold: the job goes to Projects, with the waiting events just added.
     if let Some(deal_id) = deal_id {
         api_crm::routes::projects::service::start_for_won_deal(
