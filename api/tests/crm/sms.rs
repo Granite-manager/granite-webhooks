@@ -701,3 +701,67 @@ async fn a_reps_texts_are_theirs_by_user_or_by_number(pool: MySqlPool) {
     post(&pool, "/v1/sms/mine/threads/3175550302/unread").await;
     assert_eq!(get(&pool, count, sessions::REP).await["count"], 3);
 }
+
+#[test_db::test(seed)]
+async fn scheduling_managers_share_one_inbox(pool: MySqlPool) {
+    seed(&pool).await;
+    // A booking text went out as Mark, on Telnyx; Bob's thread is Mark's too.
+    sqlx::raw_sql(
+        "INSERT INTO telnyx_sms (id, sender, recipient, text, direction, status, agent, sender_user_id,
+                                 company_id, created_date, sender10, recipient10, phone_digits, is_echo,
+                                 is_automated) VALUES
+           (9200, 3175550950, 3175550305, 'Your template is booked', 'outbound', 'sent', '101', 101, 100,
+            '2025-06-08 10:00:00', '3175550950', '3175550305', '3175550305', 0, 1);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let listed = async || -> Vec<String> {
+        let mine = get(&pool, "/v1/sms/mine/threads", sessions::REP).await;
+        phones(&mine).into_iter().map(str::to_string).collect()
+    };
+    let texts = async |phone: &str| -> Vec<String> {
+        let thread = get(
+            &pool,
+            &format!("/v1/sms/mine/threads/{phone}"),
+            sessions::REP,
+        )
+        .await;
+        thread["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["text"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let shared = ["3175550102".to_string(), "3175550305".to_string()];
+
+    // Not Rita's while only Mark is a Scheduling Manager.
+    sqlx::raw_sql(
+        "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (101, 13, 100)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let before = listed().await;
+    assert!(
+        shared.iter().all(|phone| !before.contains(phone)),
+        "{before:?}"
+    );
+    assert!(texts("3175550305").await.is_empty());
+
+    // Both are: what Mark sent, on either provider, is Rita's too.
+    sqlx::raw_sql(
+        "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (100, 13, 100)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let after = listed().await;
+    assert!(
+        shared.iter().all(|phone| after.contains(phone)),
+        "{after:?}"
+    );
+    assert_eq!(texts("3175550305").await, ["Your template is booked"]);
+    assert_eq!(texts("3175550102").await, ["Hi Bob", "Need a quote"]);
+}

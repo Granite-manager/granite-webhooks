@@ -11,6 +11,10 @@
 //!
 //! Telnyx: the user's numbers are the ones they may call from (a shared line
 //! is a shared inbox); the rep filter takes the rep's user id.
+//!
+//! Scheduling Managers share one inbox: what any of them sent, and what is
+//! on a number of any of them (the line the company's notices go out on), is
+//! every Scheduling Manager's.
 
 use super::provider::{Param, SAMPLE_PHONES, SmsProvider, marks, phone10};
 use crate::auth::session::SessionUser;
@@ -100,7 +104,8 @@ pub struct Narrowing {
 #[derive(Debug, Clone)]
 pub struct RepRows {
     agents: Vec<String>,
-    sender_user_id: Option<i32>,
+    /// The rep, and the Scheduling Managers they share an inbox with.
+    senders: Vec<i32>,
     /// The rep's numbers (last ten digits).
     lines: Vec<String>,
     /// Untagged rows on these lines, or on none, are visible too; `None`:
@@ -113,9 +118,13 @@ const ROW_LINE: &str = "(CASE WHEN s.direction = 'inbound' THEN s.recipient10 EL
 
 impl RepRows {
     fn new(ids: RepIds, shared_lines: Option<Vec<String>>) -> Option<Self> {
-        (!ids.agents.is_empty() || ids.user_id.is_some() || !ids.lines.is_empty()).then_some(Self {
+        (!ids.agents.is_empty()
+            || ids.user_id.is_some()
+            || !ids.peers.is_empty()
+            || !ids.lines.is_empty())
+        .then_some(Self {
             agents: ids.agents,
-            sender_user_id: ids.user_id,
+            senders: ids.user_id.into_iter().chain(ids.peers).collect(),
             lines: ids.lines,
             shared_lines,
         })
@@ -130,9 +139,12 @@ impl RepRows {
             parts.push(format!("s.agent IN ({})", marks(self.agents.len())));
             params.extend(self.agents.iter().map(Param::from));
         }
-        if let Some(user_id) = self.sender_user_id {
-            parts.push("s.sender_user_id = ?".to_string());
-            params.push(user_id.into());
+        if !self.senders.is_empty() {
+            parts.push(format!(
+                "s.sender_user_id IN ({})",
+                marks(self.senders.len())
+            ));
+            params.extend(self.senders.iter().map(|id| Param::from(*id)));
         }
         if !self.lines.is_empty() {
             let (on_lines, line_params) = on_lines(&self.lines);
@@ -165,8 +177,121 @@ impl RepRows {
 /// never one rep's.
 struct RepIds {
     user_id: Option<i32>,
+    /// The other Scheduling Managers, when the rep is one.
+    peers: Vec<i32>,
     agents: Vec<String>,
     lines: Vec<String>,
+}
+
+impl RepIds {
+    /// With the ids of the Scheduling Managers the rep shares an inbox with.
+    fn with(mut self, shared: Option<Self>) -> Self {
+        let Some(shared) = shared else {
+            return self;
+        };
+        self.peers = shared.peers;
+        let agents: BTreeSet<String> = self.agents.into_iter().chain(shared.agents).collect();
+        let lines: BTreeSet<String> = self.lines.into_iter().chain(shared.lines).collect();
+        self.agents = agents.into_iter().collect();
+        self.lines = lines.into_iter().collect();
+        self
+    }
+}
+
+/// The ids on `provider` of the company's other Scheduling Managers, when
+/// `user_id` is one (`None` otherwise, or when there is no other): their
+/// agent ids and numbers, as [`rep_ids`] reads a rep's own.
+async fn scheduling_peers(
+    pool: &MySqlPool,
+    provider: SmsProvider,
+    company_id: i32,
+    user_id: i32,
+    company_lines: &[String],
+) -> Result<Option<RepIds>, sqlx::Error> {
+    let peers: Vec<i32> = sqlx::query_scalar(
+        "SELECT DISTINCT u.id FROM users u
+           JOIN users_positions up ON up.user_id = u.id
+          WHERE up.company_id = ? AND up.position_id = ? AND u.is_deleted = 0 AND u.id <> ?
+            AND EXISTS (SELECT 1 FROM users_positions me
+                         WHERE me.user_id = ? AND me.company_id = up.company_id
+                           AND me.position_id = up.position_id)
+          ORDER BY u.id",
+    )
+    .bind(company_id)
+    .bind(crate::auth::sections::SCHEDULING_MANAGER_POSITION)
+    .bind(user_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await?;
+    if peers.is_empty() {
+        return Ok(None);
+    }
+    let mut agents = BTreeSet::new();
+    let mut lines = BTreeSet::new();
+    if let (Some(agent), Some(phone)) = (provider.agent_column(), provider.phone_column()) {
+        let mut params: Vec<Param> = vec![company_id.into()];
+        params.extend(peers.iter().map(|id| Param::from(*id)));
+        let current: Vec<(Option<String>, Option<String>)> = super::provider::fetch_all(
+            pool,
+            format!(
+                "SELECT TRIM({agent}), {phone} FROM users WHERE company_id = ? AND id IN ({})",
+                marks(peers.len())
+            ),
+            &params,
+        )
+        .await?;
+        for (agent, phone) in current {
+            agents.extend(agent.filter(|agent| !agent.is_empty()));
+            lines.extend(phone.as_deref().map(phone10));
+        }
+        params.push(provider.as_str().into());
+        let remembered: Vec<(String, String)> = super::provider::fetch_all(
+            pool,
+            format!(
+                "SELECT CAST(kind AS CHAR), value FROM user_sms_identities
+                  WHERE company_id = ? AND user_id IN ({}) AND (kind = 'line' OR provider = ?)",
+                marks(peers.len())
+            ),
+            &params,
+        )
+        .await?;
+        for (kind, value) in remembered {
+            if kind == "agent" {
+                agents.insert(value);
+            } else {
+                lines.insert(value);
+            }
+        }
+        lines.retain(|line| line.len() == 10 && !company_lines.contains(line));
+    } else {
+        // Telnyx: their user id is their agent id; their lines are the
+        // ones they may call from.
+        for peer in &peers {
+            agents.insert(peer.to_string());
+            lines.extend(crate::phone::texting::inbox_lines(pool, company_id, *peer).await?);
+        }
+    }
+    Ok(Some(RepIds {
+        user_id: None,
+        peers,
+        agents: agents.into_iter().collect(),
+        lines: lines.into_iter().collect(),
+    }))
+}
+
+/// `ids` with those of the Scheduling Managers its rep shares an inbox with.
+async fn with_peers(
+    pool: &MySqlPool,
+    provider: SmsProvider,
+    company_id: i32,
+    ids: RepIds,
+    company_lines: &[String],
+) -> Result<RepIds, sqlx::Error> {
+    let Some(rep) = ids.user_id else {
+        return Ok(ids);
+    };
+    let shared = scheduling_peers(pool, provider, company_id, rep, company_lines).await?;
+    Ok(ids.with(shared))
 }
 
 /// The caller's own agent ids and numbers on `provider` (see [`RepIds`]),
@@ -199,6 +324,7 @@ async fn rep_ids(
         ) else {
             return Ok(RepIds {
                 user_id: None,
+                peers: Vec::new(),
                 agents: Vec::new(),
                 lines: Vec::new(),
             });
@@ -247,13 +373,15 @@ async fn rep_ids(
     lines.retain(|line| line.len() == 10 && !company_lines.contains(line));
     Ok(RepIds {
         user_id,
+        peers: Vec::new(),
         agents: agents.into_iter().collect(),
         lines: lines.into_iter().collect(),
     })
 }
 
-/// The rows of the caller, or with `scope=all` of the filtered rep; `None`
-/// when that rep has nothing of theirs on `provider`.
+/// The rows of the caller, or with `scope=all` of the filtered rep (a
+/// Scheduling Manager's with the other Scheduling Managers'); `None` when
+/// that rep has nothing of theirs on `provider`.
 async fn rep_rows(
     pool: &MySqlPool,
     provider: SmsProvider,
@@ -266,19 +394,51 @@ async fn rep_rows(
         let (rep, lines) = telnyx_lines(pool, user, scope, filter_agent).await?;
         let ids = RepIds {
             user_id: rep,
+            peers: Vec::new(),
             agents: rep.map(|id| id.to_string()).into_iter().collect(),
             lines,
         };
+        let ids = with_peers(pool, provider, user.company_id, ids, company_lines).await?;
         return Ok(RepRows::new(ids, None));
     }
     let ids = rep_ids(pool, provider, user, scope, filter_agent, company_lines).await?;
+    let ids = with_peers(pool, provider, user.company_id, ids, company_lines).await?;
     Ok(RepRows::new(ids, Some(company_lines.to_vec())))
 }
 
 /// Whether `user` has anything of theirs on `provider`: an agent id or
 /// number they have or had (on Telnyx, a line they may call from now), or a
-/// text they sent (on Telnyx, also one tagged with their user id).
+/// text they sent (on Telnyx, also one tagged with their user id); for a
+/// Scheduling Manager, also a text of another Scheduling Manager's.
 pub async fn has_own(
+    pool: &MySqlPool,
+    provider: SmsProvider,
+    user: &SessionUser,
+) -> Result<bool, sqlx::Error> {
+    if has_own_alone(pool, provider, user).await? {
+        return Ok(true);
+    }
+    let company_lines = company_lines(pool, provider, user.company_id).await?;
+    let shared = scheduling_peers(pool, provider, user.company_id, user.id, &company_lines).await?;
+    let Some(rows) = shared.and_then(|ids| RepRows::new(ids, None)) else {
+        return Ok(false);
+    };
+    let (mine, mine_params) = rows.mine();
+    let mut params: Vec<Param> = vec![user.company_id.into()];
+    params.extend(mine_params);
+    exists(
+        pool,
+        format!(
+            "SELECT 1 FROM {} s WHERE s.company_id = ? AND s.is_echo = 0 AND ({}) LIMIT 1",
+            provider.sms_table(),
+            mine.join(" OR ")
+        ),
+        &params,
+    )
+    .await
+}
+
+async fn has_own_alone(
     pool: &MySqlPool,
     provider: SmsProvider,
     user: &SessionUser,
@@ -362,15 +522,19 @@ async fn own_threads(
         .await?;
         threads.extend(rows.into_iter().map(|(phone,)| phone));
     }
-    if let Some(user_id) = own.sender_user_id {
+    if !own.senders.is_empty() {
         // idx_{provider}_sms_sender_user (sender_user_id).
+        let mut params: Vec<Param> = own.senders.iter().map(|id| Param::from(*id)).collect();
+        params.push(company_id.into());
         let rows: Vec<(String,)> = super::provider::fetch_all(
             pool,
             format!(
                 "SELECT DISTINCT s.phone_digits FROM {table} s
-                  WHERE s.sender_user_id = ? AND s.company_id = ? AND s.phone_digits IS NOT NULL"
+                  WHERE s.sender_user_id IN ({}) AND s.company_id = ?
+                    AND s.phone_digits IS NOT NULL",
+                marks(own.senders.len())
             ),
-            &[user_id.into(), company_id.into()],
+            &params,
         )
         .await?;
         threads.extend(rows.into_iter().map(|(phone,)| phone));
