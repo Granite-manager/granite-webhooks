@@ -18956,6 +18956,723 @@
         ]
       }
     },
+    "/v1/projects/part-types": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "The company's part types",
+        "description": "What a project's parts can be, and the stages each one uses. A company\nstarts with Countertops, Backsplash and Cabinets.",
+        "operationId": "list_project_part_types",
+        "responses": {
+          "200": {
+            "description": "The part types, in order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PartType"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Add a part type",
+        "operationId": "create_project_part_type",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PartTypeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedId"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or long name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/part-types/{type_id}": {
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Delete a part type",
+        "description": "It can no longer be picked; the parts that already have it keep it.",
+        "operationId": "delete_project_part_type",
+        "parameters": [
+          {
+            "name": "type_id",
+            "in": "path",
+            "description": "Part type id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such part type in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It is the company's last part type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Change a part type",
+        "description": "Its name and the stages it uses; every part of that type follows.",
+        "operationId": "update_project_part_type",
+        "parameters": [
+          {
+            "name": "type_id",
+            "in": "path",
+            "description": "Part type id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PartTypeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Missing or long name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such part type in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/parts": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Add a part to a project",
+        "description": "The part starts at the first stage its type uses, so the project goes back\nthere. The first time, the work the project already has becomes its first\npart (`first_type_id`, else the company's first type), in the stage the\nproject is in, with the steps it has done and its jobs.",
+        "operationId": "add_project_part",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PartInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedId"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown part type, or a long name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's position can't change a project's parts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/parts/{part_id}": {
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Remove a part from a project",
+        "description": "With the steps checked off for it. A part with jobs on the schedule stays\nuntil they are moved to another part or deleted, and a project keeps its\nlast part.",
+        "operationId": "delete_project_part",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "part_id",
+            "in": "path",
+            "description": "Part id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Removed"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's position can't change a project's parts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see, or part on it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "It has jobs, is the last part, or the project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Rename a part, or change its type",
+        "operationId": "update_project_part",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "part_id",
+            "in": "path",
+            "description": "Part id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PartUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Unknown part type, or a missing or long name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's position can't change a project's parts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see, or part on it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/appointments/{event_id}/part": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Say which part a template or installation is for",
+        "operationId": "set_project_appointment_part",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "event_id",
+            "in": "path",
+            "description": "The template or installation (event id)",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppointmentPart"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's position can't change a project's parts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see, part or job on it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/calendars": {
       "get": {
         "tags": [
@@ -72955,6 +73672,20 @@
           }
         }
       },
+      "AppointmentPart": {
+        "type": "object",
+        "description": "Body of `PUT /v1/projects/{id}/appointments/{event_id}/part`.",
+        "required": [
+          "part_id"
+        ],
+        "properties": {
+          "part_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The part the template or installation is for."
+          }
+        }
+      },
       "AreaNameSuggestion": {
         "type": "object",
         "description": "An area name used on earlier quotes.",
@@ -82028,12 +82759,20 @@
             "format": "int32",
             "description": "The step."
           },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part it was done for; null on a project without parts."
+          },
           "done_by": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Who checked it off."
+            "description": "Who checked it off (\"Auto\" when its rule did)."
           },
           "done_at": {
             "type": "string",
@@ -83828,6 +84567,14 @@
             ],
             "format": "int32",
             "description": "Create only: the project this template or installation is for."
+          },
+          "project_part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Create only: the part of that project it is for."
           }
         }
       },
@@ -93113,6 +93860,114 @@
           }
         }
       },
+      "PartInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/projects/{id}/parts`.",
+        "required": [
+          "type_id"
+        ],
+        "properties": {
+          "type_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The new part's type."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its name; the type's name when left out."
+          },
+          "first_type_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The first time a project gets parts: the type of the work it already\nhas. Left out: the company's first type."
+          }
+        }
+      },
+      "PartType": {
+        "type": "object",
+        "description": "A kind of part a company's projects are made of, and the stages it uses.",
+        "required": [
+          "id",
+          "name",
+          "uses_template",
+          "uses_fabrication",
+          "position"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name, e.g. \"Cabinets\"."
+          },
+          "uses_template": {
+            "type": "boolean",
+            "description": "It is templated (Awaiting Template, Templated)."
+          },
+          "uses_fabrication": {
+            "type": "boolean",
+            "description": "It is fabricated (In Fabrication)."
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its place in the list."
+          }
+        }
+      },
+      "PartTypeInput": {
+        "type": "object",
+        "description": "A part type to add, or its new values.",
+        "required": [
+          "name",
+          "uses_template",
+          "uses_fabrication"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Its name."
+          },
+          "uses_template": {
+            "type": "boolean",
+            "description": "It is templated."
+          },
+          "uses_fabrication": {
+            "type": "boolean",
+            "description": "It is fabricated."
+          }
+        }
+      },
+      "PartUpdate": {
+        "type": "object",
+        "description": "Body of `PATCH /v1/projects/{id}/parts/{part_id}`.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its new name."
+          },
+          "type_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Its new type."
+          }
+        }
+      },
       "PartialCut": {
         "type": "object",
         "description": "Body of `POST /v1/transactions/{id}/slabs/{slab_id}/partial-cut`.",
@@ -96783,6 +97638,14 @@
                 "$ref": "#/components/schemas/Stage",
                 "description": "The stage."
               },
+              "partId": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "The part, on a project with parts; left out: its least finished part."
+              },
               "intent": {
                 "type": "string",
                 "enum": [
@@ -96997,6 +97860,14 @@
                 "format": "int32",
                 "description": "The project's version as the page has it; a stale page gets a 409."
               },
+              "partId": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "The part, on a project with parts; left out: its least finished part."
+              },
               "intent": {
                 "type": "string",
                 "enum": [
@@ -97027,6 +97898,14 @@
               "reason": {
                 "type": "string",
                 "description": "Why, for a correction or cancel."
+              },
+              "partId": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "The part, on a project with parts; left out: its least finished part."
               },
               "intent": {
                 "type": "string",
@@ -97076,6 +97955,14 @@
           "unscheduled": {
             "type": "boolean",
             "description": "Waiting for a date on the schedule (`start_date` means nothing yet)."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part it is for; null for the project's first part."
           }
         }
       },
@@ -97342,6 +98229,84 @@
           }
         }
       },
+      "ProjectPart": {
+        "type": "object",
+        "description": "A part of a project: it goes through the stages on its own.",
+        "required": [
+          "id",
+          "project_id",
+          "type_id",
+          "type_name",
+          "name",
+          "uses_template",
+          "uses_fabrication",
+          "stage_code",
+          "position"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its id."
+          },
+          "project_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The project it belongs to."
+          },
+          "type_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its type."
+          },
+          "type_name": {
+            "type": "string",
+            "description": "The type's name."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name, e.g. \"Backsplash\"."
+          },
+          "uses_template": {
+            "type": "boolean",
+            "description": "Its type is templated."
+          },
+          "uses_fabrication": {
+            "type": "boolean",
+            "description": "Its type is fabricated."
+          },
+          "stage_code": {
+            "$ref": "#/components/schemas/Stage",
+            "description": "Where it is (never Paid & Completed: that is the whole project's)."
+          },
+          "fabricated_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The shop marked it fabricated."
+          },
+          "template_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its template is on the calendar for this time (UTC ISO), not done yet."
+          },
+          "install_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its installation is on the calendar for this time (UTC ISO), not done yet."
+          },
+          "position": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its place in the project."
+          }
+        }
+      },
       "ProjectPayment": {
         "type": "object",
         "description": "One project's payment.",
@@ -97536,6 +98501,7 @@
           "notes",
           "files",
           "job_photos",
+          "issues",
           "history",
           "sales",
           "people",
@@ -97543,6 +98509,8 @@
           "appointments",
           "process_steps",
           "done_steps",
+          "parts",
+          "part_types",
           "permissions",
           "user_id"
         ],
@@ -97585,6 +98553,13 @@
               "$ref": "#/components/schemas/ProjectJobPhoto"
             },
             "description": "The crew's job photos from its appointments, newest first."
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectIssue"
+            },
+            "description": "The problems the crew reported on its jobs, newest first."
           },
           "history": {
             "type": "array",
@@ -97635,6 +98610,20 @@
             },
             "description": "Which of those steps this project has done."
           },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectPart"
+            },
+            "description": "Its parts, when it has several."
+          },
+          "part_types": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PartType"
+            },
+            "description": "The company's part types, to add a part."
+          },
           "permissions": {
             "$ref": "#/components/schemas/Permissions",
             "description": "What the caller may do."
@@ -97657,6 +98646,8 @@
           "tasks",
           "process_steps",
           "done_steps",
+          "parts",
+          "issue_counts",
           "permissions",
           "page",
           "has_next"
@@ -97710,6 +98701,20 @@
               "$ref": "#/components/schemas/DoneStep"
             },
             "description": "Which of those steps these projects have done."
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectPart"
+            },
+            "description": "The parts of the projects that have several (none for the others)."
+          },
+          "issue_counts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectIssueCount"
+            },
+            "description": "How many issues the crew reported on these projects' jobs (only those with any)."
           },
           "permissions": {
             "$ref": "#/components/schemas/Permissions",
@@ -105631,6 +106636,13 @@
             ],
             "description": "Why, for a correction or cancel."
           },
+          "part_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The part it is about, on a project with parts."
+          },
           "author": {
             "type": [
               "string",
@@ -105841,6 +106853,14 @@
           "done": {
             "type": "boolean",
             "description": "Done, or undone."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part, on a project with parts; left out: its least finished part."
           }
         }
       },
