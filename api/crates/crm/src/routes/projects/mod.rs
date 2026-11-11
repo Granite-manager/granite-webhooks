@@ -29,7 +29,7 @@ pub use auto::log_sent_template;
 mod handlers;
 mod issues;
 pub use issues::mark_issue_solved;
-mod parts;
+pub mod parts;
 mod payments;
 mod process;
 mod step_events;

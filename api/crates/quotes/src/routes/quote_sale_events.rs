@@ -85,6 +85,12 @@ pub struct QuoteSaleEvent {
     /// when the quote has a line of that extra with that option (its
     /// `catalogId` and `optionId`).
     pub trigger_options: Vec<TriggerOption>,
+    /// The part type (`GET /v1/projects/part-types`) the event is for: when
+    /// the sale adds it, the sold job's project gets a part of that type and
+    /// the event belongs to it. Null: the project's first part.
+    pub part_type_id: Option<i32>,
+    /// That part type's name; null with `part_type_id`.
+    pub part_type_name: Option<String>,
 }
 
 /// One option of a catalog extra (`arrOptions[].id` of a `GET /v1/quote-extras` item).
@@ -107,6 +113,8 @@ struct SaleEventRow {
     title_text: String,
     trigger_extra_ids: Option<String>,
     trigger_options: Option<String>,
+    part_type_id: Option<i32>,
+    part_type_name: Option<String>,
 }
 
 impl From<SaleEventRow> for QuoteSaleEvent {
@@ -126,6 +134,8 @@ impl From<SaleEventRow> for QuoteSaleEvent {
                 .trigger_options
                 .and_then(|options| serde_json::from_str(&options).ok())
                 .unwrap_or_default(),
+            part_type_id: row.part_type_id,
+            part_type_name: row.part_type_name,
         }
     }
 }
@@ -157,6 +167,11 @@ pub struct QuoteSaleEventInput {
     /// dropped. Default none.
     #[serde(default)]
     pub trigger_options: Vec<TriggerOption>,
+    /// A part type of the company (`GET /v1/projects/part-types`): the sale's
+    /// event is for a part of that type on the job's project, added when the
+    /// project has none. Default none: the project's first part.
+    #[serde(default)]
+    pub part_type_id: Option<i32>,
 }
 
 /// `POST /v1/quote-sale-events`.
@@ -284,10 +299,14 @@ pub async fn sale_events(
                 CAST(t.title_variable AS CHAR) AS title_variable, t.title_before,
                 t.title_text,
                 CAST(t.trigger_extra_ids AS CHAR) AS trigger_extra_ids,
-                CAST(t.trigger_options AS CHAR) AS trigger_options
+                CAST(t.trigger_options AS CHAR) AS trigger_options,
+                pt.id AS part_type_id, pt.name AS part_type_name
            FROM quote_sale_event_templates t
            JOIN calendars c ON c.id = t.calendar_id AND c.company_id = t.company_id
                            AND c.deleted_at IS NULL
+           LEFT JOIN project_part_types pt ON pt.id = t.part_type_id
+                                          AND pt.company_id = t.company_id
+                                          AND pt.deleted_at IS NULL
           WHERE t.company_id = ?
           ORDER BY t.id",
     )
@@ -303,6 +322,7 @@ struct Checked {
     text: String,
     triggers: String,
     options: String,
+    part_type_id: Option<i32>,
 }
 
 /// The `arrOptions[].id`s of a catalog extra's `item_json`.
@@ -372,11 +392,26 @@ async fn check(
     triggers.sort_unstable();
     triggers.dedup();
     let options = kept_options(&input.trigger_options, &catalog);
+    let part_type_id = match input.part_type_id.filter(|id| *id > 0) {
+        Some(id) => {
+            let found: Option<i32> = sqlx::query_scalar(
+                "SELECT id FROM project_part_types
+                  WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
+            )
+            .bind(id)
+            .bind(company_id)
+            .fetch_optional(pool)
+            .await?;
+            Some(found.ok_or_else(|| ApiError::BadRequest("Pick a part type".into()))?)
+        }
+        None => None,
+    };
     Ok(Checked {
         before,
         text,
         triggers: serde_json::to_string(&triggers).unwrap_or_else(|_| "[]".into()),
         options: serde_json::to_string(&options).unwrap_or_else(|_| "[]".into()),
+        part_type_id,
     })
 }
 
@@ -452,8 +487,8 @@ pub async fn create_sale_event(
     let id = sqlx::query(
         "INSERT INTO quote_sale_event_templates
            (company_id, calendar_id, title_variable, title_before, title_text,
-            trigger_extra_ids, trigger_options, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            trigger_extra_ids, trigger_options, part_type_id, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user.company_id)
     .bind(input.calendar_id)
@@ -462,6 +497,7 @@ pub async fn create_sale_event(
     .bind(checked.text)
     .bind(checked.triggers)
     .bind(checked.options)
+    .bind(checked.part_type_id)
     .bind(user.id)
     .execute(&state.pool)
     .await?
@@ -501,7 +537,7 @@ pub async fn update_sale_event(
     sqlx::query(
         "UPDATE quote_sale_event_templates
             SET calendar_id = ?, title_variable = ?, title_before = ?, title_text = ?,
-                trigger_extra_ids = ?, trigger_options = ?
+                trigger_extra_ids = ?, trigger_options = ?, part_type_id = ?
           WHERE id = ? AND company_id = ?",
     )
     .bind(input.calendar_id)
@@ -510,6 +546,7 @@ pub async fn update_sale_event(
     .bind(checked.text)
     .bind(checked.triggers)
     .bind(checked.options)
+    .bind(checked.part_type_id)
     .bind(id)
     .bind(user.company_id)
     .execute(&state.pool)

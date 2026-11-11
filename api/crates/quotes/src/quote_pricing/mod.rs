@@ -968,8 +968,18 @@ async fn add_waiting_jobs(
             .title(quote_name, name.as_deref(), &fallback),
     );
     // The template and installation jobs, then the event templates' events.
-    let mut events = built_in_jobs(&calendars, jobs, &titles);
+    // The full-height backsplash jobs are for the company's Backsplash part.
+    let backsplash = if jobs.full_height_backsplash
+        || jobs.fh_backsplash_template
+        || jobs.fh_backsplash_installation
+    {
+        backsplash_type(pool, quote.company_id).await?
+    } else {
+        None
+    };
+    let mut events = built_in_jobs(&calendars, jobs, &titles, backsplash);
     events.extend(extra.into_iter().map(|(template, notes, urgent)| NewJob {
+        part_type_id: template.part_type_id,
         calendar_id: template.calendar_id,
         title: sale_event_title(
             template.title_variable,
@@ -989,13 +999,28 @@ async fn add_waiting_jobs(
     Ok(())
 }
 
+/// The company's Backsplash part type (by its name, the one the company
+/// started with), which the full-height backsplash jobs are for; none when the
+/// company has no such type. The company's first part types are made if it
+/// had none.
+async fn backsplash_type(pool: &MySqlPool, company_id: i32) -> Result<Option<i32>, sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    let types = api_crm::routes::projects::parts::part_types(&mut conn, company_id).await?;
+    Ok(types
+        .iter()
+        .find(|kind| kind.name.trim().eq_ignore_ascii_case("backsplash"))
+        .map(|kind| kind.id))
+}
+
 /// The template and installation jobs on `calendars` (id, is the templates
 /// calendar), titled `titles` (template, installation), each followed (Full
-/// Height Backsplash) by its FH Backsplash job.
+/// Height Backsplash) by its FH Backsplash job, which is for part type
+/// `backsplash`.
 fn built_in_jobs(
     calendars: &[(i32, bool)],
     jobs: &SaleJobs,
     titles: &(String, String),
+    backsplash: Option<i32>,
 ) -> Vec<NewJob> {
     let fh_title = |title: &str| -> String {
         format!("{title} - FH Backsplash")
@@ -1026,6 +1051,7 @@ fn built_in_jobs(
                 &jobs.install_notes
             };
             NewJob {
+                part_type_id: if fh { backsplash } else { None },
                 calendar_id,
                 title: {
                     let title = if template { &titles.0 } else { &titles.1 };
@@ -1087,8 +1113,8 @@ async fn insert_job(
     let id = sqlx::query(
         "INSERT INTO events (title, location, notes, start_date, end_date, all_day, unscheduled,
             color, status, created_user_id, assigned_user_id, customer_id, calendar_id, urgent,
-            quote_id)
-         VALUES (?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
+            quote_id, planned_part_type_id)
+         VALUES (?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&job.title)
     .bind(address)
@@ -1102,6 +1128,7 @@ async fn insert_job(
     .bind(job.calendar_id)
     .bind(job.urgent)
     .bind(quote.id)
+    .bind(job.part_type_id)
     .execute(pool)
     .await?
     .last_insert_id();
@@ -1115,6 +1142,8 @@ async fn insert_job(
 
 /// An event `add_waiting_jobs` adds.
 struct NewJob {
+    /// The part type the event is for (`events.planned_part_type_id`).
+    part_type_id: Option<i32>,
     calendar_id: i32,
     title: String,
     notes: Option<String>,
@@ -1137,12 +1166,26 @@ pub async fn remove_waiting_jobs(
     .bind(company_id)
     .fetch_all(pool)
     .await?;
+    // The projects whose parts the sale may have added.
+    let projects: Vec<i32> = sqlx::query_scalar(
+        "SELECT DISTINCT p.id FROM projects p
+           JOIN events e ON e.project_id = p.id AND e.quote_id = ?
+          WHERE p.company_id = ?",
+    )
+    .bind(quote_id)
+    .bind(company_id)
+    .fetch_all(pool)
+    .await?;
     for id in ids {
         sqlx::query("UPDATE events SET deleted_date = CURRENT_TIMESTAMP WHERE id = ?")
             .bind(id)
             .execute(pool)
             .await?;
         crate::routes::events::reminders::cancel(pool, id).await?;
+    }
+    if !projects.is_empty() {
+        let mut conn = pool.acquire().await?;
+        api_crm::routes::projects::parts::drop_empty_auto_parts(&mut conn, &projects).await?;
     }
     Ok(())
 }

@@ -13,7 +13,7 @@ use super::access::{
 use super::schemas::{
     AppointmentPart, PartInput, PartType, PartTypeInput, PartUpdate, Project, ProjectPart,
 };
-use super::service::visible_project;
+use super::service::{load_project, visible_project};
 use crate::auth::{AdminUser, EmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -120,6 +120,192 @@ pub async fn parts_of(
     sql.build_query_as().fetch_all(&mut *conn).await
 }
 
+/// The work a project already has becomes its first part, of `type_id`: in
+/// the stage the project is in, with the steps checked off so far and its
+/// jobs. A sale's events planned for another part type are left for
+/// [`materialize`]; later jobs find their part ([`adopt_jobs`]).
+async fn make_first_part(
+    conn: &mut MySqlConnection,
+    project: &Project,
+    type_id: i32,
+) -> sqlx::Result<i32> {
+    let stage = project.stage_code.min(Stage::Installed);
+    let first = sqlx::query(
+        "INSERT INTO project_parts
+            (project_id, company_id, type_id, name, stage_code, stage_cap, fabricated_at,
+             position, created_by, created_at)
+         SELECT p.id, p.company_id, pt.id, pt.name, ?,
+                CASE p.stage_cap WHEN 'template_scheduled' THEN 'new'
+                                 WHEN 'install_scheduled' THEN 'fabrication'
+                                 WHEN 'completed' THEN NULL
+                                 ELSE p.stage_cap END,
+                p.fabricated_at, 0, p.created_by, p.created_at
+           FROM projects p JOIN project_part_types pt ON pt.id = ?
+          WHERE p.id = ?",
+    )
+    .bind(stage.as_str())
+    .bind(type_id)
+    .bind(project.id)
+    .execute(&mut *conn)
+    .await?
+    .last_insert_id();
+    let first = i32::try_from(first).unwrap_or_default();
+    for table in [
+        "project_process_steps_done",
+        "project_process_step_auto_off",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE {table} SET part_id = ? WHERE project_id = ? AND part_id = 0"
+        )))
+        .bind(first)
+        .bind(project.id)
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "UPDATE events e JOIN projects p ON p.id = ?
+            SET e.project_part_id = ?, e.project_id = p.id
+          WHERE {PROJECT_JOB_SQL} AND e.project_part_id IS NULL
+            AND e.planned_part_type_id IS NULL"
+    )))
+    .bind(project.id)
+    .bind(first)
+    .execute(&mut *conn)
+    .await?;
+    Ok(first)
+}
+
+/// Puts the sale's events on their parts. A template linked to a part type
+/// (Admin › Quotes › Automation › Event templates), or the full-height
+/// backsplash jobs, plan an event for a type; once the sold job has its
+/// project, the project gets a part of that type when it has none (named after
+/// the type, added by the sale) and the event goes on it. A project with no
+/// parts first makes its existing work the first part, of the company's first
+/// type. Done again for what is already in place, it changes nothing. Logged,
+/// never returned: the sale is saved.
+pub async fn materialize(conn: &mut MySqlConnection, company_id: i32, project_id: i32) {
+    if let Err(error) = materialize_parts(conn, company_id, project_id).await {
+        lambda_http::tracing::error!(?error, project_id, "could not add the sale's parts");
+    }
+}
+
+async fn materialize_parts(
+    conn: &mut MySqlConnection,
+    company_id: i32,
+    project_id: i32,
+) -> sqlx::Result<()> {
+    let planned: Vec<(i32, i32)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT e.id, e.planned_part_type_id
+           FROM projects p
+           JOIN events e ON {PROJECT_JOB_SQL} AND e.project_part_id IS NULL
+                        AND e.planned_part_type_id IS NOT NULL
+          WHERE p.id = ? AND p.company_id = ?
+          ORDER BY e.id"
+    )))
+    .bind(project_id)
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    if planned.is_empty() {
+        return Ok(());
+    }
+    let existing: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM project_parts WHERE project_id = ?")
+            .bind(project_id)
+            .fetch_one(&mut *conn)
+            .await?;
+    if existing == 0 {
+        let first: Option<i32> = sqlx::query_scalar(
+            "SELECT id FROM project_part_types
+              WHERE company_id = ? AND deleted_at IS NULL ORDER BY position, id LIMIT 1",
+        )
+        .bind(company_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some(first) = first else {
+            return Ok(());
+        };
+        let project = load_project(&mut *conn, company_id, project_id)
+            .await
+            .map_err(|_| sqlx::Error::RowNotFound)?;
+        make_first_part(&mut *conn, &project, first).await?;
+    }
+    for (event_id, type_id) in planned {
+        let found: Option<i32> = sqlx::query_scalar(
+            "SELECT id FROM project_parts WHERE project_id = ? AND type_id = ?
+              ORDER BY position, id LIMIT 1",
+        )
+        .bind(project_id)
+        .bind(type_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let part = match found {
+            Some(part) => part,
+            None => {
+                let added = sqlx::query(
+                    "INSERT INTO project_parts
+                        (project_id, company_id, type_id, name, position, auto, created_by,
+                         created_at)
+                     SELECT p.id, p.company_id, pt.id, pt.name,
+                            (SELECT COALESCE(MAX(position) + 1, 0) FROM project_parts
+                              WHERE project_id = p.id),
+                            1, p.created_by, UTC_TIMESTAMP()
+                       FROM projects p JOIN project_part_types pt ON pt.id = ?
+                      WHERE p.id = ?",
+                )
+                .bind(type_id)
+                .bind(project_id)
+                .execute(&mut *conn)
+                .await?
+                .last_insert_id();
+                i32::try_from(added).unwrap_or_default()
+            }
+        };
+        sqlx::query(
+            "UPDATE events SET project_part_id = ?, project_id = ?, planned_part_type_id = NULL
+              WHERE id = ?",
+        )
+        .bind(part)
+        .bind(project_id)
+        .bind(event_id)
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query("UPDATE projects SET version = version + 1 WHERE id = ? AND company_id = ?")
+        .bind(project_id)
+        .bind(company_id)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Undo sale: takes away the parts a sale added by itself on these projects
+/// that have no job left and nothing done on them.
+pub async fn drop_empty_auto_parts(
+    conn: &mut MySqlConnection,
+    project_ids: &[i32],
+) -> sqlx::Result<()> {
+    if project_ids.is_empty() {
+        return Ok(());
+    }
+    let mut sql = QueryBuilder::<MySql>::new(
+        "SELECT pp.id FROM project_parts pp
+          WHERE pp.auto = 1
+            AND NOT EXISTS (SELECT 1 FROM events e
+                             WHERE e.project_part_id = pp.id AND e.deleted_date IS NULL)
+            AND NOT EXISTS (SELECT 1 FROM project_process_steps_done d WHERE d.part_id = pp.id)",
+    );
+    crate::sql::push_in(&mut sql, "pp.project_id", project_ids);
+    let ids: Vec<i32> = sql.build_query_scalar().fetch_all(&mut *conn).await?;
+    for id in ids {
+        sqlx::query("DELETE FROM project_parts WHERE id = ?")
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Gives the templates and installations booked for no part to a part, on
 /// the projects that have parts: the first part (of a type that is templated,
 /// for a template) with no such job yet, else the first one. So a template
@@ -132,6 +318,19 @@ pub async fn adopt_jobs(
 ) -> sqlx::Result<()> {
     if project_ids.is_empty() {
         return Ok(());
+    }
+    // The sale's events planned for a part type first get their part.
+    let mut planned = QueryBuilder::<MySql>::new(format!(
+        "SELECT DISTINCT p.id FROM projects p
+           JOIN events e ON {PROJECT_JOB_SQL} AND e.project_part_id IS NULL
+                        AND e.planned_part_type_id IS NOT NULL
+          WHERE p.company_id = "
+    ));
+    planned.push_bind(company_id);
+    crate::sql::push_in(&mut planned, "p.id", project_ids);
+    let waiting: Vec<i32> = planned.build_query_scalar().fetch_all(&mut *conn).await?;
+    for project_id in waiting {
+        materialize(&mut *conn, company_id, project_id).await;
     }
     let mut sql = QueryBuilder::<MySql>::new(format!(
         "SELECT e.id, p.id, cal.slug
@@ -630,48 +829,7 @@ pub async fn add_part(
                 .map(|first| first.id)
                 .ok_or_else(|| ApiError::BadRequest("Pick a part type".into()))?,
         };
-        let stage = project.stage_code.min(Stage::Installed);
-        let first = sqlx::query(
-            "INSERT INTO project_parts
-                (project_id, company_id, type_id, name, stage_code, stage_cap, fabricated_at,
-                 position, created_by, created_at)
-             SELECT p.id, p.company_id, pt.id, pt.name, ?,
-                    CASE p.stage_cap WHEN 'template_scheduled' THEN 'new'
-                                     WHEN 'install_scheduled' THEN 'fabrication'
-                                     WHEN 'completed' THEN NULL
-                                     ELSE p.stage_cap END,
-                    p.fabricated_at, 0, p.created_by, p.created_at
-               FROM projects p JOIN project_part_types pt ON pt.id = ?
-              WHERE p.id = ?",
-        )
-        .bind(stage.as_str())
-        .bind(first_type)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?
-        .last_insert_id();
-        for table in [
-            "project_process_steps_done",
-            "project_process_step_auto_off",
-        ] {
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "UPDATE {table} SET part_id = ? WHERE project_id = ? AND part_id = 0"
-            )))
-            .bind(first)
-            .bind(id)
-            .execute(&mut *tx)
-            .await?;
-        }
-        // Its jobs so far are that part's; later ones find theirs (`adopt_jobs`).
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "UPDATE events e JOIN projects p ON p.id = ?
-                SET e.project_part_id = ?, e.project_id = p.id
-              WHERE {PROJECT_JOB_SQL} AND e.project_part_id IS NULL"
-        )))
-        .bind(id)
-        .bind(first)
-        .execute(&mut *tx)
-        .await?;
+        make_first_part(&mut tx, &project, first_type).await?;
     }
     let part_id = sqlx::query(
         "INSERT INTO project_parts

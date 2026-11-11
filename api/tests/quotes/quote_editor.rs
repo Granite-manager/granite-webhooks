@@ -1021,6 +1021,8 @@ async fn admins_add_events_a_sold_quote_puts_on_the_schedule(pool: MySqlPool) {
                 "title_text": "Plumbing",
                 "trigger_extra_ids": [],
                 "trigger_options": [],
+                "part_type_id": null,
+                "part_type_name": null,
             },
             {
                 "id": electric,
@@ -1030,6 +1032,8 @@ async fn admins_add_events_a_sold_quote_puts_on_the_schedule(pool: MySqlPool) {
                 "title_text": "Electrical",
                 "trigger_extra_ids": [],
                 "trigger_options": [],
+                "part_type_id": null,
+                "part_type_name": null,
             },
         ])
     );
@@ -1241,4 +1245,149 @@ async fn mark_as_sold_puts_project_notes_on_the_project_it_starts(pool: MySqlPoo
     .await
     .unwrap();
     assert_eq!(notes, ["Gate code 1234"]);
+}
+
+#[test_db::test(seed)]
+async fn a_sale_gives_the_project_the_parts_of_its_events(pool: MySqlPool) {
+    let (server, _) = server(&pool).await;
+    price_list(&server, &pool).await;
+    sqlx::query(
+        "INSERT INTO calendars (company_id, name, color, slug) VALUES
+           (100, 'Templates', 'green', 'templates'),
+           (100, 'Installations', 'blue', 'installations'),
+           (100, 'Cabinet crew', 'red', NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE company SET auto_unscheduled_jobs = 1, sale_installation_job = 1,
+                auto_project = 1 WHERE id = 100",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let cabinet_crew: i32 = sqlx::query_scalar(
+        "SELECT id FROM calendars WHERE company_id = 100 AND name = 'Cabinet crew'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    // A company starts with Countertops, Backsplash and Cabinets.
+    let types = server
+        .get("/v1/projects/part-types")
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<Value>();
+    let cabinets = types[2]["id"].as_i64().unwrap();
+    // An event template linked to a part type; another company's type is refused.
+    server
+        .post("/v1/quote-sale-events")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "calendar_id": cabinet_crew, "title_text": "Cabinets", "part_type_id": 999_999 }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    let res = server
+        .post("/v1/quote-sale-events")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "calendar_id": cabinet_crew, "title_text": "Cabinets", "part_type_id": cabinets }))
+        .await;
+    res.assert_status(StatusCode::CREATED);
+    let template = res.json::<Value>()["id"].as_i64().unwrap();
+    let listed = server
+        .get("/v1/quote-sale-events")
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    assert_eq!(listed[0]["part_type_id"], cabinets);
+    assert_eq!(listed[0]["part_type_name"], "Cabinets");
+
+    let id = create(
+        &server,
+        json!({ "customer_id": 1004, "quote_name": "Ostrom Kitchen" }),
+    )
+    .await;
+    let path = format!("/v1/quotes/{id}");
+    server
+        .put(&format!("{path}/drawing"))
+        .with_session(sessions::REP)
+        .json(&json!({ "doc": doc("Ubatuba") }))
+        .await
+        .assert_status_ok();
+    server
+        .post(&format!("{path}/sale"))
+        .with_session(sessions::REP)
+        .json(&json!({
+            "option": 0,
+            "full_height_backsplash": true,
+            "extra_events": [{ "template_id": template }],
+        }))
+        .await
+        .assert_status_ok();
+    let jobs = || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, Option<String>)>(
+                "SELECT e.title, pp.name FROM events e
+                   LEFT JOIN project_parts pp ON pp.id = e.project_part_id
+                  WHERE e.quote_id = ? AND e.deleted_date IS NULL ORDER BY e.id",
+            )
+            .bind(id)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    // The main template and installation are the countertops'; the full-height
+    // backsplash ones the backsplash's; the template's event the cabinets'.
+    let part = |name: &str| Some(name.to_string());
+    assert_eq!(
+        jobs().await,
+        [
+            ("Ostrom Kitchen".to_string(), part("Countertops")),
+            (
+                "Ostrom Kitchen - FH Backsplash".to_string(),
+                part("Backsplash")
+            ),
+            ("Ostrom Kitchen".to_string(), part("Countertops")),
+            (
+                "Ostrom Kitchen - FH Backsplash".to_string(),
+                part("Backsplash")
+            ),
+            ("Ostrom Kitchen - Cabinets".to_string(), part("Cabinets")),
+        ]
+    );
+    let project: i32 = sqlx::query_scalar("SELECT id FROM projects WHERE customer_id = 1004")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let parts = || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT name FROM project_parts WHERE project_id = ? ORDER BY position, id",
+            )
+            .bind(project)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(parts().await, ["Countertops", "Backsplash", "Cabinets"]);
+    // Selling it again adds nothing.
+    server
+        .post(&format!("{path}/sale"))
+        .with_session(sessions::REP)
+        .json(&json!({ "option": 0, "full_height_backsplash": true }))
+        .await
+        .assert_status_ok();
+    assert_eq!(parts().await.len(), 3);
+
+    // Undo sale takes the parts it added away again; the first stays.
+    server
+        .delete(&format!("{path}/sale"))
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(parts().await, ["Countertops"]);
 }
