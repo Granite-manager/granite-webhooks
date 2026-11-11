@@ -197,7 +197,6 @@ dependencies = [
  "api-schedule",
  "axum",
  "base64",
- "bcrypt",
  "chrono",
  "common",
  "futures-util",

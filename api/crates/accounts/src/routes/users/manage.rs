@@ -252,14 +252,15 @@ fn is_employee(positions: &[i32]) -> bool {
             .any(|id| *id != EXTERNAL_MARKETING && *id != SHOP_WORKER)
 }
 
-/// Only superusers grant Super Admin and check-in.
+/// Only superusers grant Super Admin. Nobody grants check-in: the walk-in
+/// form runs on a paired tablet (`routes::check_in`), not an account.
 fn grantable(user: &SessionUser, positions: &[i32]) -> Vec<i32> {
     let mut seen = HashSet::new();
     positions
         .iter()
         .copied()
         .filter(|id| POSITIONS.contains(id))
-        .filter(|id| user.is_superuser || (*id != SUPER_ADMIN && *id != CHECK_IN))
+        .filter(|id| *id != CHECK_IN && (user.is_superuser || *id != SUPER_ADMIN))
         .filter(|id| seen.insert(*id))
         .collect()
 }
@@ -748,8 +749,9 @@ struct PositionRow {
 /// Save a user
 ///
 /// Saves the user's details and positions. Positions that stay keep their
-/// rows (Telegram lead buttons point at them). Non-superusers keep the
-/// user's company, Super Admin and check-in positions and Super Admin
+/// rows (Telegram lead buttons point at them). An old check-in account
+/// keeps its check-in position (nobody grants or removes it). Non-superusers
+/// keep the user's company, Super Admin positions and Super Admin
 /// companies as they are, and may only grant marketing for the user's own
 /// company (or remove companies a superuser granted). Super Admins are
 /// always admins. The `RingCentral` extension follows the number. A user
@@ -828,18 +830,24 @@ pub async fn update(
     let mut company_id = input.company_id;
     let mut marketing = input.marketing_company_ids.clone();
     let mut superadmin = input.superadmin_company_ids.clone();
+    // An old check-in account stays one: without it, it would open the
+    // whole CRM. It goes away once its tablet is paired (`check_in`).
+    if existing_rows.iter().any(|row| row.position_id == CHECK_IN) && !positions.contains(&CHECK_IN)
+    {
+        positions.push(CHECK_IN);
+    }
     if !user.is_superuser {
         company_id = existing_company;
         superadmin = existing_for(SUPER_ADMIN);
         let mut allowed: HashSet<i32> = existing_for(EXTERNAL_MARKETING).into_iter().collect();
         allowed.insert(existing_company);
         marketing.retain(|company| allowed.contains(company));
-        for row in &existing_rows {
-            if (row.position_id == SUPER_ADMIN || row.position_id == CHECK_IN)
-                && !positions.contains(&row.position_id)
-            {
-                positions.push(row.position_id);
-            }
+        if existing_rows
+            .iter()
+            .any(|row| row.position_id == SUPER_ADMIN)
+            && !positions.contains(&SUPER_ADMIN)
+        {
+            positions.push(SUPER_ADMIN);
         }
     }
     let is_admin = input.is_admin || positions.contains(&SUPER_ADMIN);
