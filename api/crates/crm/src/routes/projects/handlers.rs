@@ -1,8 +1,8 @@
 use super::access::{STAGE_SQL, Stage, Viewer};
 use super::schemas::{
     BoardQuery, Calendar, ConvertedDeal, DealProject, LinkableSale, Person, Project, ProjectAction,
-    ProjectAppointment, ProjectFile, ProjectJobPhoto, ProjectNote, ProjectTask, ProjectWorkspace,
-    ProjectsBoard, ReorderProjects, StageChange,
+    ProjectAppointment, ProjectFile, ProjectIssue, ProjectIssueCount, ProjectJobPhoto, ProjectNote,
+    ProjectTask, ProjectWorkspace, ProjectsBoard, ReorderProjects, StageChange,
 };
 use super::service::{self, project_select, visible_project};
 use crate::auth::EmployeeUser;
@@ -188,6 +188,22 @@ pub async fn board(
     super::auto::run(&state, viewer.company_id, &projects).await;
     let process_steps = super::process::company_steps(&mut conn, viewer.company_id).await?;
     let done_steps = super::process::done_steps(&mut conn, &ids).await?;
+    let issue_counts: Vec<ProjectIssueCount> = if ids.is_empty() {
+        Vec::new()
+    } else {
+        let mut sql = QueryBuilder::<MySql>::new(format!(
+            "SELECT p.id AS project_id, COUNT(DISTINCT ei.id) AS count
+               FROM projects p
+               JOIN events e ON {PROJECT_EVENTS}
+               JOIN event_issues ei ON ei.event_id = e.id AND ei.company_id = p.company_id
+                                   AND ei.deleted_at IS NULL
+              WHERE p.company_id = "
+        ));
+        sql.push_bind(viewer.company_id);
+        crate::sql::push_in(&mut sql, "p.id", &ids);
+        sql.push(" GROUP BY p.id");
+        sql.build_query_as().fetch_all(&mut *conn).await?
+    };
     Ok(Json(ProjectsBoard {
         projects,
         stages: Stage::ALL.to_vec(),
@@ -196,6 +212,7 @@ pub async fn board(
         tasks,
         process_steps,
         done_steps,
+        issue_counts,
         permissions: viewer.permissions,
         page,
         has_next,
@@ -352,6 +369,38 @@ pub async fn get(
     .bind(company)
     .fetch_all(&mut *conn)
     .await?;
+    // The crew's issues, from the same jobs as the photos.
+    let mut issues: Vec<ProjectIssue> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT ei.id, ei.event_id,
+                CASE WHEN cal.slug IN ('templates', 'installations') THEN cal.slug END AS kind,
+                IF(e.unscheduled = 1, NULL, DATE_FORMAT(e.start_date, '%Y-%m-%dT%H:%i:%sZ')) AS job_date,
+                ei.description, ei.created_by_name AS author,
+                DATE_FORMAT(ei.created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at
+           FROM projects p
+           JOIN events e ON {PROJECT_EVENTS}
+           JOIN event_issues ei ON ei.event_id = e.id AND ei.company_id = p.company_id
+                               AND ei.deleted_at IS NULL
+           LEFT JOIN calendars cal ON cal.id = e.calendar_id
+          WHERE p.id = ? AND p.company_id = ?
+          ORDER BY ei.created_at DESC, ei.id DESC LIMIT 200"
+    )))
+    .bind(id)
+    .bind(company)
+    .fetch_all(&mut *conn)
+    .await?;
+    if !issues.is_empty() {
+        let ids: Vec<i32> = issues.iter().map(|issue| issue.id).collect();
+        let mut sql =
+            QueryBuilder::<MySql>::new("SELECT issue_id, url FROM event_issue_images WHERE 1 = 1");
+        crate::sql::push_in(&mut sql, "issue_id", &ids);
+        sql.push(" ORDER BY id");
+        let photos: Vec<(i32, String)> = sql.build_query_as().fetch_all(&mut *conn).await?;
+        for (issue_id, url) in photos {
+            if let Some(issue) = issues.iter_mut().find(|issue| issue.id == issue_id) {
+                issue.photos.push(url);
+            }
+        }
+    }
     // Stage moves, and the template maker's and installer's Completed (the
     // jobs that move it on their own, see `STAGE_SQL`).
     let history: Vec<StageChange> = sqlx::query_as(
@@ -428,6 +477,7 @@ pub async fn get(
         notes,
         files,
         job_photos,
+        issues,
         history,
         sales,
         people: people(&mut conn, company).await?,
@@ -598,3 +648,10 @@ pub async fn convert_deal(
         created,
     }))
 }
+
+/// Joins a project (`p`) to its jobs (`e`): those booked on it, and the
+/// customer's from a day before it started (as the job photos and history).
+const PROJECT_EVENTS: &str = "e.deleted_date IS NULL
+    AND (e.project_id = p.id
+         OR (e.project_id IS NULL AND e.customer_id = p.customer_id
+             AND e.created_date >= p.created_at - INTERVAL 1 DAY))";

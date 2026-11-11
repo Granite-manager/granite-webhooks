@@ -877,3 +877,53 @@ async fn steps_check_themselves_off_by_their_rules(pool: MySqlPool) {
     let seen = board(&pool, sessions::ADMIN).await;
     assert_eq!(seen["process_steps"][0]["auto"], Value::Null);
 }
+
+#[test_db::test(seed)]
+async fn the_page_and_board_show_the_crews_issues(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let id = projects_of_8002(&pool).await[0];
+    run(
+        &pool,
+        "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (9881, 100, 'Installations', 'red', 'installations');",
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO events (id, title, start_date, end_date, all_day, unscheduled,
+                             created_user_id, assigned_user_id, calendar_id, project_id)
+         VALUES (9871, 'Install', NOW(), NOW(), 1, 0, 102, 101, 9881, ?)",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    // Two issues, one with pictures, and a deleted one.
+    run(
+        &pool,
+        "INSERT INTO event_issues (id, event_id, company_id, description, created_by, created_by_name, deleted_at) VALUES
+           (9901, 9871, 100, 'Sink cutout too small', 101, 'Alex', NULL),
+           (9902, 9871, 100, 'Seam is off', 101, 'Alex', NULL),
+           (9903, 9871, 100, 'Gone', 101, 'Alex', NOW());
+         INSERT INTO event_issue_images (issue_id, url) VALUES
+           (9901, 'https://cdn.example/a.jpg'), (9901, 'https://cdn.example/b.jpg');",
+    )
+    .await;
+    let page: Value = server(pool.clone())
+        .get(&format!("/v1/projects/{id}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    let issues = page["issues"].as_array().unwrap();
+    assert_eq!(issues.len(), 2, "{issues:?}");
+    let sink = issues.iter().find(|issue| issue["id"] == 9901).unwrap();
+    assert_eq!(sink["description"], "Sink cutout too small");
+    assert_eq!(sink["kind"], "installations");
+    assert_eq!(sink["author"], "Alex");
+    assert_eq!(
+        sink["photos"],
+        json!(["https://cdn.example/a.jpg", "https://cdn.example/b.jpg"])
+    );
+    let seen = board(&pool, sessions::ADMIN).await;
+    assert_eq!(seen["issue_counts"], json!([{ "project_id": id, "count": 2 }]));
+}

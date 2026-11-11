@@ -146,6 +146,8 @@ pub struct ProjectsBoard {
     pub process_steps: Vec<ProcessStep>,
     /// Which of those steps these projects have done.
     pub done_steps: Vec<DoneStep>,
+    /// How many issues the crew reported on these projects' jobs (only those with any).
+    pub issue_counts: Vec<ProjectIssueCount>,
     /// What the caller may do.
     pub permissions: Permissions,
     /// This page, from 1.
@@ -282,6 +284,38 @@ pub struct ProjectFile {
     pub created_at: String,
 }
 
+/// A problem the crew reported on one of the project's jobs (the job card's
+/// Issues).
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct ProjectIssue {
+    /// Its id.
+    pub id: i32,
+    /// The job it was reported on.
+    pub event_id: i32,
+    /// `templates` or `installations`; null for another calendar.
+    pub kind: Option<String>,
+    /// When the job is (UTC ISO); null while it waits for a date.
+    pub job_date: Option<String>,
+    /// What is wrong.
+    pub description: String,
+    /// Who reported it.
+    pub author: Option<String>,
+    /// When, UTC ISO.
+    pub created_at: String,
+    /// Its pictures (URLs the browser can open).
+    #[sqlx(skip)]
+    pub photos: Vec<String>,
+}
+
+/// How many issues the crew reported on a project's jobs.
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct ProjectIssueCount {
+    /// The project.
+    pub project_id: i32,
+    /// Its issues.
+    pub count: i64,
+}
+
 /// A job photo the crew took on one of the project's appointments (the job
 /// card's Job photos, which the customer also sees on their page).
 #[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
@@ -378,6 +412,8 @@ pub struct ProjectWorkspace {
     pub files: Vec<ProjectFile>,
     /// The crew's job photos from its appointments, newest first.
     pub job_photos: Vec<ProjectJobPhoto>,
+    /// The problems the crew reported on its jobs, newest first.
+    pub issues: Vec<ProjectIssue>,
     /// What happened, newest first.
     pub history: Vec<StageChange>,
     /// Transactions to link (empty once one is linked).
