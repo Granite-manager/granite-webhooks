@@ -5,6 +5,7 @@ pub use api_crm::routes::*;
 
 pub mod app_shell;
 pub mod auth;
+pub mod check_in;
 pub mod device_sessions;
 pub mod leaderboard;
 pub mod me;

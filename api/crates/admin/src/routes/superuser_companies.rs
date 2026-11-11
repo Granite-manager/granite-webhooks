@@ -478,9 +478,9 @@ struct DefaultTemplate {
 /// Create a company
 ///
 /// Creates the company with its system calendars, the default company email
-/// templates and customer sources, the statistics widgets hidden, a
-/// `walk-in@<subdomain>.com` employee for the check-in kiosk, and checks
-/// its domain's deliverability.
+/// templates and customer sources and the statistics widgets hidden, and
+/// checks its domain's deliverability. The walk-in form needs no account:
+/// an admin pairs a tablet on Company.
 #[crate::openapi::path(
     post,
     path = "/v1/superuser/companies",
@@ -507,7 +507,6 @@ pub async fn create_company(
     if subdomain_taken(&state, &clean.subdomain, 0).await? {
         return Err(ApiError::Conflict("Subdomain is already in use".into()));
     }
-    let password = bcrypt::hash("1111", 10).map_err(|e| ApiError::Internal(e.to_string()))?;
     let mut tx = state.pool.begin().await?;
     let id = sqlx::query(
         "INSERT INTO company (name, subdomain, address, state_taxes, domain, cloudtalk_access_key,
@@ -552,15 +551,6 @@ pub async fn create_company(
         .execute(&mut *tx)
         .await?;
     }
-    sqlx::query(
-        "INSERT INTO users (name, email, password, company_id, is_employee, is_admin)
-         VALUES ('Walk-in', ?, ?, ?, 1, 0)",
-    )
-    .bind(format!("walk-in@{}.com", clean.subdomain))
-    .bind(password)
-    .bind(id)
-    .execute(&mut *tx)
-    .await?;
     sqlx::query(
         "INSERT INTO customer_sources (company_id, source_key, label, is_system) VALUES
            (?, 'check-in', 'Walk-in', 1), (?, 'leads', 'Leads', 1),

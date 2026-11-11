@@ -8,6 +8,7 @@
 //! `api.google.place-details` routes.
 
 use crate::auth::CurrentUser;
+use crate::auth::check_in::UserOrTablet;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::maps::StreetCheck;
 use crate::openapi::{IntoParams, ToSchema};
@@ -159,6 +160,7 @@ fn component<'a>(place: &'a Value, kind: &str, text: &str) -> Option<&'a str> {
 ///
 /// US addresses for typed text (3 characters or more), with their parts.
 /// A suggestion without a ZIP gets one from the place, else from geocoding.
+/// A paired walk-in tablet may ask too (its form has an address field).
 #[crate::openapi::path(
     get,
     path = "/v1/places/autocomplete",
@@ -167,14 +169,14 @@ fn component<'a>(place: &'a Value, kind: &str, text: &str) -> Option<&'a str> {
     params(AutocompleteQuery),
     responses(
         (status = 200, description = "Suggestions", body = [Suggestion]),
-        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 401, description = "No valid session or walk-in tablet", body = ErrorBody),
         (status = 502, description = "Google refused", body = ErrorBody),
     ),
     security(("session_cookie" = []))
 )]
 pub async fn autocomplete(
     State(state): State<AppState>,
-    _user: CurrentUser,
+    _caller: UserOrTablet,
     Query(query): Query<AutocompleteQuery>,
 ) -> ApiResult<Json<Vec<Suggestion>>> {
     let q = query.q.trim();
@@ -249,7 +251,8 @@ pub struct PlaceDetails {
 
 /// Get a place's address
 ///
-/// The address parts of a suggestion picked from the autocomplete.
+/// The address parts of a suggestion picked from the autocomplete (also
+/// for a paired walk-in tablet).
 #[crate::openapi::path(
     get,
     path = "/v1/places/{place_id}",
@@ -258,14 +261,14 @@ pub struct PlaceDetails {
     params(("place_id" = String, Path, description = "Google place id")),
     responses(
         (status = 200, description = "Place", body = PlaceDetails),
-        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 401, description = "No valid session or walk-in tablet", body = ErrorBody),
         (status = 502, description = "Google refused", body = ErrorBody),
     ),
     security(("session_cookie" = []))
 )]
 pub async fn place(
     State(state): State<AppState>,
-    _user: CurrentUser,
+    _caller: UserOrTablet,
     Path(place_id): Path<String>,
 ) -> ApiResult<Json<PlaceDetails>> {
     let place = state

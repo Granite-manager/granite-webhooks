@@ -33,7 +33,7 @@ pub enum ReferralSource {
 }
 
 impl ReferralSource {
-    const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Google => "google",
             Self::Facebook => "facebook",
