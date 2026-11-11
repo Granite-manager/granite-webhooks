@@ -25,7 +25,7 @@
 //!    bucket (speaker labels on), writes the note with the CRM's call-note
 //!    prompts (the voicemail prompt for voicemails), tidies it the way the
 //!    CRM does (`call_notes::sanitize`), adds it to the call's deal (by
-//!    "Granite Manager"; the deal's people are notified as for a CRM note)
+//!    "Granite Manager"; the customer's sales rep is notified as for a CRM note)
 //!    and keeps it on the call (`aiNote`); a rep's answered call of 31 to 89
 //!    seconds with a customer also gets the CRM's call check on that
 //!    transcript (a conversation stops their flows and moves the deal on);
@@ -196,7 +196,7 @@ pub struct PhoneJobRun {
 /// phone index that matches calls to customers in step (customers changed
 /// or added since the last run; each company's first fill, at most 5,000
 /// customers a run), writes up to 3 AI notes (transcript, note tidied like
-/// the CRM's, on the call and its deal, the deal's people notified), gives
+/// the CRM's, on the call and its deal, the customer's sales rep notified), gives
 /// answered outbound calls their call points (provider `telnyx`), deletes
 /// Telnyx's copies of copied recordings whose delete failed, retries failed
 /// recording copies (5 attempts), brings port-in orders up to date from

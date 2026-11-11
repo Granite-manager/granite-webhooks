@@ -14982,7 +14982,7 @@
           "deals"
         ],
         "summary": "Add an activity to a deal",
-        "description": "Creates a to-do. The deal owner and the customer's sales rep are notified\n(in the app and on Telegram), and a deadline with a time schedules a\nreminder for the owner at that time.",
+        "description": "Creates a to-do. The customer's sales rep is notified\n(in the app and on Telegram), and a deadline with a time schedules a\nreminder for the owner at that time.",
         "operationId": "create_deal_activity",
         "parameters": [
           {
@@ -15081,7 +15081,7 @@
           "deals"
         ],
         "summary": "Delete an activity",
-        "description": "Soft-deletes it, drops its reminder and notifies the deal's people.",
+        "description": "Soft-deletes it, drops its reminder and notifies the customer's sales rep.",
         "operationId": "delete_deal_activity",
         "parameters": [
           {
@@ -15161,7 +15161,7 @@
           "deals"
         ],
         "summary": "Update an activity",
-        "description": "Changes the fields sent. Editing name, deadline or priority notifies the\ndeal's people and reschedules the reminder; `is_completed: true` marks it\ndone (and drops its reminder), `false` reopens it.",
+        "description": "Changes the fields sent. Editing name, deadline or priority notifies the\ncustomer's sales rep and reschedules the reminder; `is_completed: true` marks it\ndone (and drops its reminder), `false` reopens it.",
         "operationId": "update_deal_activity",
         "parameters": [
           {
@@ -15473,7 +15473,7 @@
           "deals"
         ],
         "summary": "Add a note to a deal",
-        "description": "Up to 5000 characters. Notifies the deal's people.",
+        "description": "Up to 5000 characters. Notifies the customer's sales rep.",
         "operationId": "create_deal_note",
         "parameters": [
           {
@@ -15572,7 +15572,7 @@
           "deals"
         ],
         "summary": "Delete a note",
-        "description": "Soft-deletes it. When an admin deletes it, the deal's people are notified.",
+        "description": "Soft-deletes it. When an admin deletes it, the customer's sales rep is notified.",
         "operationId": "delete_deal_note",
         "parameters": [
           {
@@ -15652,7 +15652,7 @@
           "deals"
         ],
         "summary": "Edit or pin a note",
-        "description": "Changes the text (notifying the deal's people) and/or pins it.",
+        "description": "Changes the text (notifying the customer's sales rep) and/or pins it.",
         "operationId": "update_deal_note",
         "parameters": [
           {
@@ -15754,7 +15754,7 @@
           "deals"
         ],
         "summary": "Comment on a note",
-        "description": "Up to 2000 characters. Only admins' comments carry their name, and only\nthose notify the deal's people.",
+        "description": "Up to 2000 characters. Only admins' comments carry their name, and only\nthose notify the customer's sales rep.",
         "operationId": "create_deal_note_comment",
         "parameters": [
           {
@@ -15863,7 +15863,7 @@
           "deals"
         ],
         "summary": "Delete a comment",
-        "description": "Soft-deletes it. When an admin deletes it, the deal's people are notified.",
+        "description": "Soft-deletes it. When an admin deletes it, the customer's sales rep is notified.",
         "operationId": "delete_deal_note_comment",
         "parameters": [
           {
@@ -20174,7 +20174,7 @@
           "questionnaires"
         ],
         "summary": "Save a deal's questionnaire answers",
-        "description": "Upserts each answer (questions of questionnaires the caller cannot use\nare ignored). With `create_note`, the non-empty answers are also added to\nthe deal as a note (which notifies the deal's people); that needs at\nleast one answer and fits 5000 characters.",
+        "description": "Upserts each answer (questions of questionnaires the caller cannot use\nare ignored). With `create_note`, the non-empty answers are also added to\nthe deal as a note (which notifies the customer's sales rep); that needs at\nleast one answer and fits 5000 characters.",
         "operationId": "save_deal_questionnaire_answers",
         "parameters": [
           {
@@ -52124,7 +52124,7 @@
           "jobs"
         ],
         "summary": "Run Granite Manager's upkeep",
-        "description": "Signs out the phones of users who may no longer use Granite Manager (or\nwhose company was deleted) and browser phones whose CRM sign-in ended, deletes\nleftover Telnyx credentials of signed-out phones (backing off on\nfailures), deletes Telnyx callbacks older than 30 days, closes calls\nTelnyx never reported the end of (after 6 hours), keeps the customer\nphone index that matches calls to customers in step (customers changed\nor added since the last run; each company's first fill, at most 5,000\ncustomers a run), writes up to 3 AI notes (transcript, note tidied like\nthe CRM's, on the call and its deal, the deal's people notified), gives\nanswered outbound calls their call points (provider `telnyx`), deletes\nTelnyx's copies of copied recordings whose delete failed, retries failed\nrecording copies (5 attempts), brings port-in orders up to date from\nTelnyx (adding ported numbers to the company), asks Telnyx again about\nsent texts with no final status yet (so one that did not go out shows as\nfailed), and last reads sent 10DLC\ntexting registrations and pending number assignments again. Bounded work per run, and\nno new work after 20 seconds; the next run takes the rest. Returns what\nwas done.",
+        "description": "Signs out the phones of users who may no longer use Granite Manager (or\nwhose company was deleted) and browser phones whose CRM sign-in ended, deletes\nleftover Telnyx credentials of signed-out phones (backing off on\nfailures), deletes Telnyx callbacks older than 30 days, closes calls\nTelnyx never reported the end of (after 6 hours), keeps the customer\nphone index that matches calls to customers in step (customers changed\nor added since the last run; each company's first fill, at most 5,000\ncustomers a run), writes up to 3 AI notes (transcript, note tidied like\nthe CRM's, on the call and its deal, the customer's sales rep notified), gives\nanswered outbound calls their call points (provider `telnyx`), deletes\nTelnyx's copies of copied recordings whose delete failed, retries failed\nrecording copies (5 attempts), brings port-in orders up to date from\nTelnyx (adding ported numbers to the company), asks Telnyx again about\nsent texts with no final status yet (so one that did not go out shows as\nfailed), and last reads sent 10DLC\ntexting registrations and pending number assignments again. Bounded work per run, and\nno new work after 20 seconds; the next run takes the rest. Returns what\nwas done.",
         "operationId": "run_phone_job",
         "responses": {
           "200": {
@@ -61382,7 +61382,7 @@
           "phone"
         ],
         "summary": "Add a note about a call",
-        "description": "Adds a deal note (by the caller) on the call's deal, or else on the\noldest open deal of the call's customer, and tells the deal's people\nlike a note written in the CRM. 400 `no_deal` when the call has neither;\n404 for other companies' calls. Device token only.",
+        "description": "Adds a deal note (by the caller) on the call's deal, or else on the\noldest open deal of the call's customer, and tells the customer's sales rep\nlike a note written in the CRM. 400 `no_deal` when the call has neither;\n404 for other companies' calls. Device token only.",
         "operationId": "add_phone_call_note",
         "parameters": [
           {

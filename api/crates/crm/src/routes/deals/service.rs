@@ -371,7 +371,6 @@ fn clip_message(message: &str) -> String {
 
 #[derive(sqlx::FromRow)]
 struct DealPeople {
-    user_id: Option<i32>,
     sales_rep: Option<i32>,
     customer_name: Option<String>,
 }
@@ -382,7 +381,7 @@ struct TelegramTarget {
     telegram_activity_notifications: bool,
 }
 
-/// Tells the deal's owner and the customer's sales rep (not the actor).
+/// Tells the customer's sales rep (not the actor, not the deal's owner).
 ///
 /// A `notifications` row each, pushed to their phones, and a Telegram
 /// message when they linked the notifications bot (`notifyDealAssignee`).
@@ -410,7 +409,7 @@ async fn try_notify(
     kind: Notification,
 ) -> Result<(), sqlx::Error> {
     let people: Option<DealPeople> = sqlx::query_as(
-        "SELECT d.user_id, c.sales_rep, c.name AS customer_name
+        "SELECT c.sales_rep, c.name AS customer_name
          FROM deals d JOIN customers c ON c.id = d.customer_id
          WHERE d.id = ? AND d.deleted_at IS NULL LIMIT 1",
     )
@@ -420,12 +419,12 @@ async fn try_notify(
     let Some(people) = people else {
         return Ok(());
     };
-    let mut recipients: Vec<i32> = Vec::new();
-    for id in [people.user_id, people.sales_rep].into_iter().flatten() {
-        if id != actor_id && !recipients.contains(&id) {
-            recipients.push(id);
-        }
-    }
+    // Only the sales rep hears of it, never the deal's owner (owner, 2026-11-11).
+    let recipients: Vec<i32> = people
+        .sales_rep
+        .into_iter()
+        .filter(|id| *id != actor_id)
+        .collect();
     let message = clip_message(message);
     for recipient in recipients {
         let notification_id = sqlx::query(

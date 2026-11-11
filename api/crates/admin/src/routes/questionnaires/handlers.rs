@@ -513,7 +513,7 @@ fn answers_note(questions: &[UsableQuestion], answers: &HashMap<i32, String>) ->
 ///
 /// Upserts each answer (questions of questionnaires the caller cannot use
 /// are ignored). With `create_note`, the non-empty answers are also added to
-/// the deal as a note (which notifies the deal's people); that needs at
+/// the deal as a note (which notifies the customer's sales rep); that needs at
 /// least one answer and fits 5000 characters.
 #[crate::openapi::path(
     put,

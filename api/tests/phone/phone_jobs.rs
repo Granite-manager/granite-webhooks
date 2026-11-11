@@ -176,22 +176,21 @@ async fn the_job_writes_ai_notes_on_calls_and_their_deals(pool: MySqlPool) {
     .unwrap();
     assert_eq!(
         note,
-        (931_101, 100, NOTE.to_string(), "Granite Manager".to_string())
+        (
+            931_101,
+            100,
+            NOTE.to_string(),
+            "Granite Manager".to_string()
+        )
     );
-    // The deal's rep and the customer's rep hear about it.
+    // Only the customer's rep hears about it, not the deal's owner.
     let told: Vec<(i32, String, String)> = sqlx::query_as(
         "SELECT user_id, notification_type, actor_name FROM notifications WHERE deal_id = 931101 ORDER BY user_id",
     )
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(
-        told,
-        [
-            (100, "note_added".into(), "Granite Manager".into()),
-            (101, "note_added".into(), "Granite Manager".into())
-        ]
-    );
+    assert_eq!(told, [(101, "note_added".into(), "Granite Manager".into())]);
     // The voicemail: no deal, the note (tidied as the CRM tidies one) stays
     // on the call.
     let (status, _, ai_note, note_id, _) = note_state(&pool, 981_002).await;
