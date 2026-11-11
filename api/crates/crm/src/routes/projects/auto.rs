@@ -27,6 +27,9 @@ struct Rule {
 
 /// Checks off what the rules say for these projects. Logged, never returned:
 /// the page still loads.
+///
+/// Call it holding no connection: the pool has one, so a caller that keeps
+/// its own waits out the acquire timeout here and nothing is checked.
 pub async fn run(state: &AppState, company_id: i32, projects: &[Project]) {
     if let Err(error) = check(state, company_id, projects).await {
         tracing::error!(?error, company_id, "project step automation failed");
@@ -68,6 +71,8 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     crate::sql::push_in(&mut sql, "project_id", &ids);
     let off: Vec<(i32, i32)> = sql.build_query_as().fetch_all(&mut *conn).await?;
     let now = Utc::now().naive_utc();
+    // Told once the connection is back in the pool: telling needs it.
+    let mut checked: Vec<(i32, i32)> = Vec::new();
 
     for project in live {
         let stage = project.stage_code.as_str();
@@ -109,11 +114,14 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
             .await?
             .rows_affected();
             if added > 0 {
-                super::process::tell_step_people(state, None, Some("Auto"), project.id, rule.id)
-                    .await;
+                checked.push((project.id, rule.id));
             }
             before = Some(at);
         }
+    }
+    drop(conn);
+    for (project_id, step_id) in checked {
+        super::process::tell_step_people(state, None, Some("Auto"), project_id, step_id).await;
     }
     Ok(())
 }

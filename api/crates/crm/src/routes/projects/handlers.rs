@@ -157,6 +157,8 @@ pub async fn board(
     let has_next = projects.len() > PAGE as usize;
     projects.truncate(PAGE as usize);
 
+    // Before this handler takes the pool's one connection.
+    super::auto::run(&state, viewer.company_id, &projects).await;
     let mut conn = state.pool.acquire().await?;
     let owners = people(&mut conn, viewer.company_id).await?;
     let ids: Vec<i32> = projects.iter().map(|project| project.id).collect();
@@ -185,7 +187,6 @@ pub async fn board(
             next.build_query_as().fetch_all(&mut *conn).await?;
         (tasks, appointments)
     };
-    super::auto::run(&state, viewer.company_id, &projects).await;
     let process_steps = super::process::company_steps(&mut conn, viewer.company_id).await?;
     let done_steps = super::process::done_steps(&mut conn, &ids).await?;
     let issue_counts: Vec<ProjectIssueCount> = if ids.is_empty() {
@@ -470,7 +471,10 @@ pub async fn get(
             .bind(id)
             .fetch_all(&mut *conn)
             .await?;
+    // The pool's one connection goes back while the rules are checked.
+    drop(conn);
     super::auto::run(&state, company, std::slice::from_ref(&project)).await;
+    let mut conn = state.pool.acquire().await?;
     let process_steps = super::process::company_steps(&mut conn, company).await?;
     let done_steps = super::process::done_steps(&mut conn, &[id]).await?;
     Ok(Json(ProjectWorkspace {
