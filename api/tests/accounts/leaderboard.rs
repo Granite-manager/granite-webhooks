@@ -13,7 +13,7 @@ use sqlx::MySqlPool;
 // - calls: a conversation (10) and one of two attempts to one number (2) this
 //   month, a voicemail (5) last month; a pending call scores nothing
 // - texts: three of four to one number on one day (1 each); an automated one never
-// - emails: two sent this month, one last month (1 each); a draft and one
+// - emails: two sent this month, one last month (0.5 each); a draft and one
 //   never sent do not count
 // - tours: 40 points, counted only while tours are on
 // Mark (101, manager) won 8008 this month (25).
@@ -35,7 +35,7 @@ async fn run(pool: &MySqlPool, sql: &str) {
         .unwrap();
 }
 
-fn names_and_points(board: &Value) -> Vec<(String, i64, Option<i64>)> {
+fn names_and_points(board: &Value) -> Vec<(String, f64, Option<i64>)> {
     board["entries"]
         .as_array()
         .unwrap()
@@ -43,7 +43,7 @@ fn names_and_points(board: &Value) -> Vec<(String, i64, Option<i64>)> {
         .map(|entry| {
             (
                 entry["name"].as_str().unwrap().to_string(),
-                entry["points"].as_i64().unwrap(),
+                entry["points"].as_f64().unwrap(),
                 entry["rank"].as_i64(),
             )
         })
@@ -60,9 +60,9 @@ async fn all_time_board_scores_every_source(pool: MySqlPool) {
             "entries": [{
                 "user_id": 100,
                 "name": "Rita Rep",
-                "points": 104,
+                "points": 102.5,
                 "rank": 1,
-                "breakdown": { "tours": 0, "deals": 75, "progress": 6, "calls": 17, "sms": 3, "emails": 3 },
+                "breakdown": { "tours": 0, "deals": 75, "progress": 6, "calls": 17, "sms": 3, "emails": 1.5 },
                 "activity": { "conversations": 1, "voicemails": 1, "attempts": 1, "sms": 3, "emails": 3 }
             }],
             "viewer": null
@@ -79,9 +79,9 @@ async fn month_board_starts_at_the_first(pool: MySqlPool) {
         json!({
             "user_id": 100,
             "name": "Rita Rep",
-            "points": 70,
+            "points": 69.0,
             "rank": 1,
-            "breakdown": { "tours": 0, "deals": 50, "progress": 3, "calls": 12, "sms": 3, "emails": 2 },
+            "breakdown": { "tours": 0, "deals": 50, "progress": 3, "calls": 12, "sms": 3, "emails": 1.0 },
             "activity": { "conversations": 1, "voicemails": 0, "attempts": 1, "sms": 3, "emails": 2 }
         })
     );
@@ -92,16 +92,16 @@ async fn a_viewer_who_is_not_a_rep_gets_an_unranked_row(pool: MySqlPool) {
     let manager = board(pool, "", sessions::MANAGER).await;
     assert_eq!(
         names_and_points(&manager),
-        vec![("Rita Rep".into(), 104, Some(1))]
+        vec![("Rita Rep".into(), 102.5, Some(1))]
     );
     assert_eq!(
         manager["viewer"],
         json!({
             "user_id": 101,
             "name": "Mark Manager",
-            "points": 25,
+            "points": 25.0,
             "rank": null,
-            "breakdown": { "tours": 0, "deals": 25, "progress": 0, "calls": 0, "sms": 0, "emails": 0 },
+            "breakdown": { "tours": 0, "deals": 25, "progress": 0, "calls": 0, "sms": 0, "emails": 0.0 },
             "activity": { "conversations": 0, "voicemails": 0, "attempts": 0, "sms": 0, "emails": 0 }
         })
     );
@@ -123,12 +123,12 @@ async fn tour_points_count_while_tours_are_on(pool: MySqlPool) {
     assert_eq!(all["includes_tours"], true);
     // 40 (seed) + 0 (clamped) + nothing before the tours' start date.
     assert_eq!(all["entries"][0]["breakdown"]["tours"], 40);
-    assert_eq!(all["entries"][0]["points"], 144);
+    assert_eq!(all["entries"][0]["points"], 142.5);
 }
 
 #[test_db::test(seed)]
 async fn reps_are_ranked_with_ties_and_name_fallbacks(pool: MySqlPool) {
-    // Nina ties Rita (both rank 1, name order); a rep with a blank name is
+    // Nina ties Rita (both rank 1, name order: 4 won deals and 5 emails); a rep with a blank name is
     // shown by email, with 0 points and the next rank after the tie. A
     // deleted rep is never listed.
     run(
@@ -148,16 +148,17 @@ async fn reps_are_ranked_with_ties_and_name_fallbacks(pool: MySqlPool) {
            (9900, 's', 'b', '2026-02-01', '<n1>', 900, 100),
            (9901, 's', 'b', '2026-02-01', '<n2>', 900, 100),
            (9902, 's', 'b', '2026-02-01', '<n3>', 900, 100),
-           (9903, 's', 'b', '2026-02-01', '<n4>', 900, 100);",
+           (9903, 's', 'b', '2026-02-01', '<n4>', 900, 100),
+           (9904, 's', 'b', '2026-02-01', '<n5>', 900, 100);",
     )
     .await;
     let all = board(pool, "", sessions::REP).await;
     assert_eq!(
         names_and_points(&all),
         vec![
-            ("Nina".into(), 104, Some(1)),
-            ("Rita Rep".into(), 104, Some(1)),
-            ("blank@acme.test".into(), 0, Some(3)),
+            ("Nina".into(), 102.5, Some(1)),
+            ("Rita Rep".into(), 102.5, Some(1)),
+            ("blank@acme.test".into(), 0.0, Some(3)),
         ]
     );
 }
@@ -172,7 +173,7 @@ async fn sources_without_a_start_date_score_nothing(pool: MySqlPool) {
     let all = board(pool, "", sessions::REP).await;
     assert_eq!(all["entries"][0]["breakdown"]["deals"], 0);
     assert_eq!(all["entries"][0]["breakdown"]["calls"], 0);
-    assert_eq!(all["entries"][0]["points"], 12);
+    assert_eq!(all["entries"][0]["points"], 10.5);
 }
 
 #[test_db::test(seed)]

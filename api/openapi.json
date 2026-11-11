@@ -87316,9 +87316,9 @@
             "description": "Display name: the user's name, else their email, else \"Colleague\"."
           },
           "points": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Total points."
+            "type": "number",
+            "format": "double",
+            "description": "Total points (emails score half a point, so it can end in .5)."
           },
           "rank": {
             "type": [
@@ -93224,9 +93224,9 @@
             "description": "Texts sent by hand (1 each)."
           },
           "emails": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Emails sent by hand (1 each)."
+            "type": "number",
+            "format": "double",
+            "description": "Emails sent by hand (0.5 each)."
           }
         }
       },

@@ -23,7 +23,7 @@ pub struct LeaderboardQuery {
 }
 
 /// The company's points leaderboard for one period.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct PointsLeaderboard {
     /// The period counted.
     pub period: LeaderboardPeriod,
@@ -40,14 +40,14 @@ pub struct PointsLeaderboard {
 }
 
 /// One person's points.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct LeaderboardEntry {
     /// User id.
     pub user_id: i32,
     /// Display name: the user's name, else their email, else "Colleague".
     pub name: String,
-    /// Total points.
-    pub points: i64,
+    /// Total points (emails score half a point, so it can end in .5).
+    pub points: f64,
     /// Rank among the reps (ties share a rank, 1 is the top); null for the
     /// `viewer` row.
     pub rank: Option<i64>,
@@ -58,7 +58,7 @@ pub struct LeaderboardEntry {
 }
 
 /// Points per source. Each source counts only from its own start date.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, ToSchema)]
 pub struct PointsBreakdown {
     /// Guided tours finished (each task's points net of resets, never below 0).
     pub tours: i64,
@@ -70,8 +70,8 @@ pub struct PointsBreakdown {
     pub calls: i64,
     /// Texts sent by hand (1 each).
     pub sms: i64,
-    /// Emails sent by hand (1 each).
-    pub emails: i64,
+    /// Emails sent by hand (0.5 each).
+    pub emails: f64,
 }
 
 /// Counts behind the call, text and email points, after the daily caps.
@@ -93,13 +93,13 @@ pub struct LeaderboardActivity {
 pub struct LeaderboardRow {
     pub user_id: i32,
     pub name: String,
-    pub points: i64,
+    pub points: f64,
     pub tour_points: i64,
     pub deal_points: i64,
     pub stage_points: i64,
     pub call_points: i64,
     pub sms_points: i64,
-    pub email_points: i64,
+    pub email_points: f64,
     pub conversations: i64,
     pub voicemails: i64,
     pub attempts: i64,
