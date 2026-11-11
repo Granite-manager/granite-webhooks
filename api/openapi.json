@@ -72046,7 +72046,8 @@
           "active",
           "forwardOnly",
           "assignments",
-          "schedulingManagers"
+          "schedulingManagers",
+          "notifications"
         ],
         "properties": {
           "id": {
@@ -72109,6 +72110,10 @@
           "schedulingManagers": {
             "type": "boolean",
             "description": "The company's Scheduling Manager number: everyone with that position\nhas it."
+          },
+          "notifications": {
+            "type": "boolean",
+            "description": "The company's Notification number: every automated text goes out\nfrom it, and Scheduling Managers read its replies."
           }
         }
       },
@@ -91548,6 +91553,13 @@
               "null"
             ],
             "description": "True: this becomes the company's one Scheduling Manager number (a\ndirect line turns shared); false: it stops being it; left out: no\nchange."
+          },
+          "notifications": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "True: this becomes the company's one Notification number (a direct\nline turns shared; it can't also be the Scheduling Manager number);\nfalse: it stops being it; left out: no change."
           }
         }
       },
@@ -93507,7 +93519,8 @@
         "required": [
           "id",
           "name",
-          "recordingVoice"
+          "recordingVoice",
+          "hasNumber"
         ],
         "properties": {
           "id": {
@@ -93522,6 +93535,10 @@
           "recordingVoice": {
             "type": "boolean",
             "description": "Their calls say the recording notice (`recording_voice`; on by default)."
+          },
+          "hasNumber": {
+            "type": "boolean",
+            "description": "They have a number: one assigned to them or one their position gives."
           }
         }
       },

@@ -37,6 +37,28 @@ pub struct CallerId {
     pub kind: NumberKind,
 }
 
+/// The Scheduling Manager position: it reads and answers the Notification
+/// number's threads (`telnyx_numbers.notifications`).
+const NOTIFICATION_POSITION: i32 = 13;
+
+/// The company's Notification number: automated texts go out from it. `None`
+/// when the company has none (or it is off).
+pub async fn notification_line(
+    pool: &MySqlPool,
+    company_id: i32,
+) -> sqlx::Result<Option<CallerId>> {
+    sqlx::query_as(
+        "SELECT n.id AS number_id, n.e164, n.label, CAST(n.kind AS CHAR) AS kind
+           FROM telnyx_numbers n
+          WHERE n.company_id = ? AND n.notifications <> 0 AND n.active <> 0
+            AND n.released_at IS NULL
+          ORDER BY n.id LIMIT 1",
+    )
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Gives each number linked to a position (`telnyx_numbers.position_id`) to
 /// exactly the company's users with that position: it rings them and they
 /// call and text from it. A user assigned by hand keeps that assignment, but
@@ -50,26 +72,33 @@ pub async fn sync_position_lines(
         "DELETE nu FROM telnyx_number_users nu
            JOIN telnyx_numbers n ON n.id = nu.number_id
           WHERE n.company_id = ? AND nu.via_position <> 0
-            AND (n.position_id IS NULL OR NOT EXISTS (
+            AND (COALESCE(n.position_id, IF(n.notifications <> 0, ?, NULL)) IS NULL OR NOT EXISTS (
                   SELECT 1 FROM users_positions up
                     JOIN users u ON u.id = up.user_id AND u.company_id = n.company_id
                                 AND u.is_deleted = 0
-                   WHERE up.user_id = nu.user_id AND up.position_id = n.position_id
+                   WHERE up.user_id = nu.user_id
+                     AND up.position_id = COALESCE(n.position_id, IF(n.notifications <> 0, ?, NULL))
                      AND up.company_id = n.company_id))",
     )
     .bind(company_id)
+    .bind(NOTIFICATION_POSITION)
+    .bind(NOTIFICATION_POSITION)
     .execute(&mut *conn)
     .await?;
     sqlx::query(
         "INSERT INTO telnyx_number_users (number_id, user_id, rings, can_call_from, via_position)
          SELECT DISTINCT n.id, up.user_id, n.forward_only = 0, 1, 1
            FROM telnyx_numbers n
-           JOIN users_positions up ON up.position_id = n.position_id AND up.company_id = n.company_id
+           JOIN users_positions up ON up.company_id = n.company_id
+                AND up.position_id = COALESCE(n.position_id, IF(n.notifications <> 0, ?, NULL))
            JOIN users u ON u.id = up.user_id AND u.company_id = n.company_id AND u.is_deleted = 0
-          WHERE n.company_id = ? AND n.position_id IS NOT NULL AND n.released_at IS NULL
+          WHERE n.company_id = ? AND n.released_at IS NULL
+            AND COALESCE(n.position_id, IF(n.notifications <> 0, ?, NULL)) IS NOT NULL
          ON DUPLICATE KEY UPDATE can_call_from = 1",
     )
+    .bind(NOTIFICATION_POSITION)
     .bind(company_id)
+    .bind(NOTIFICATION_POSITION)
     .execute(&mut *conn)
     .await?;
     Ok(())
