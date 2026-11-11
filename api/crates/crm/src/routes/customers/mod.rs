@@ -30,8 +30,6 @@ pub mod service;
 pub mod signatures;
 mod write;
 
-pub use write::ReferralSource;
-
 use crate::openapi::{OpenApiRouter, routes};
 use crate::state::AppState;
 

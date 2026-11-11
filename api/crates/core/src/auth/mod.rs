@@ -12,8 +12,6 @@
 //! | `ShopOrEmployeeUser` | `getShopOrEmployeeUser` | an employee, or a shop manager / worker of the company |
 //! | `device::DeviceUser` | (Granite Manager app)  | a live `X-Granite-Device` token of an employee, admin or superuser |
 //! | `device::PhoneCaller` | (app or CRM)        | the device token when sent, else `EmployeeUser`'s cookie rules |
-//! | `check_in::CheckInTablet` | (walk-in form)   | a paired walk-in tablet's `granite_check_in` cookie |
-//! | `check_in::UserOrTablet` | (address lookup)  | `CurrentUser`, else a paired walk-in tablet |
 //!
 //! *`CurrentUser` also applies the super-admin elevation and company switch, so
 //! `company_id` is always the company the request acts in.
@@ -66,7 +64,6 @@
 //! admin (`is_admin`, so `AdminUser` and the handlers' own checks agree).
 
 pub mod agent;
-pub mod check_in;
 pub mod cookie;
 pub mod device;
 pub mod job;

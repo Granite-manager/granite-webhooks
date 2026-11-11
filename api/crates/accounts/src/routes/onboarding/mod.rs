@@ -310,7 +310,7 @@ pub struct SetupStatus {
     pub has_sales_rep: bool,
     /// The company has an installer.
     pub has_installer: bool,
-    /// A walk-in tablet is paired, or a walk-in has checked in.
+    /// A walk-in has checked in.
     pub has_walk_in_login: bool,
     /// The company has a logo.
     pub has_logo: bool,
@@ -411,16 +411,6 @@ async fn setup_status(
         .bind(company)
         .fetch_optional(pool)
         .await?;
-        // Best effort: false before the tablets' migration.
-        let tablet: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM check_in_devices
-              WHERE company_id = ? AND paired_at IS NOT NULL AND revoked_at IS NULL LIMIT 1",
-        )
-        .bind(company)
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten();
         let price_list: Option<i32> = sqlx::query_scalar(
             "SELECT 1 FROM supplier_files sf JOIN suppliers s ON s.id = sf.supplier_id
               WHERE s.company_id = ? AND sf.status = 'ready' AND s.supplier_name <> ? LIMIT 1",
@@ -432,7 +422,7 @@ async fn setup_status(
         status.is_admin = true;
         status.has_sales_rep = positions.contains(&SALES_REP);
         status.has_installer = positions.contains(&INSTALLER);
-        status.has_walk_in_login = walk_in.is_some() || tablet.is_some();
+        status.has_walk_in_login = walk_in.is_some();
         status.has_logo = logo.is_some_and(|logo| !logo.trim().is_empty());
         status.has_sales_tax = taxes;
         status.has_quick_books = features.quickbooks_connected;

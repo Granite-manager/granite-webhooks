@@ -128,15 +128,13 @@ pub fn normalize_emails(emails: &[String]) -> Vec<String> {
 
 /// `syncCustomerEmails`: the customer's addresses become exactly `emails`,
 /// the first one primary. An address of another live customer of the
-/// company is refused (`Conflict`). `created_by` is the user who added
-/// them (none for a walk-in tablet).
+/// company is refused (`Conflict`).
 pub async fn sync_emails(
     tx: &mut Transaction<'_, MySql>,
     customer_id: i32,
     emails: &[String],
-    created_by: impl Into<Option<i32>> + Send,
+    created_by: i32,
 ) -> Result<(), ApiError> {
-    let created_by: Option<i32> = created_by.into();
     let wanted = normalize_emails(emails);
     let existing: Vec<(i32, String)> = sqlx::query_as(
         "SELECT id, email FROM customers_emails WHERE customer_id = ? ORDER BY created_at, id",
