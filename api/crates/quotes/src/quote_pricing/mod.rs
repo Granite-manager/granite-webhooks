@@ -631,10 +631,12 @@ pub fn option_color_text(doc: &QuoteDoc, index: usize) -> Option<String> {
 }
 
 /// What selling a quote did: its deal and the amount put on it.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QuoteSale {
     pub deal_id: Option<i64>,
     pub amount: Option<f64>,
+    /// Bell notifications of the new sales order, to push to phones.
+    pub sales_order_notifications: Vec<i64>,
 }
 
 /// SET clause for marking a deal won (`DEAL_MARK_WON_SET`).
@@ -685,7 +687,7 @@ async fn create_won_deal(
 }
 
 /// Which deal a sale marks won.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SaleDeal {
     /// The quote's own deal, else the customer's open deal (never a won or
     /// lost one); none makes a new won deal.
@@ -846,10 +848,14 @@ pub async fn mark_quote_sold(
     add_waiting_jobs(pool, &quote, user_id, jobs).await?;
     // Sold with an option: the Inventory Manager gets its sales order. A
     // failure there must not undo the sale.
-    if let Some(index) = option_index
-        && let Err(error) = sales_order::create(pool, &quote, index, deal_id, user_id, amount).await
-    {
-        lambda_http::tracing::warn!(quote_id = quote.id, ?error, "sales order not created");
+    let mut sales_order_notifications = Vec::new();
+    if let Some(index) = option_index {
+        match sales_order::create(pool, &quote, index, deal_id, user_id, amount).await {
+            Ok(ids) => sales_order_notifications = ids,
+            Err(error) => {
+                lambda_http::tracing::warn!(quote_id = quote.id, ?error, "sales order not created");
+            }
+        }
     }
     // Sold: the job goes to Projects, with the waiting events just added.
     if let Some(deal_id) = deal_id {
@@ -862,7 +868,11 @@ pub async fn mark_quote_sold(
         )
         .await;
     }
-    Ok(Some(QuoteSale { deal_id, amount }))
+    Ok(Some(QuoteSale {
+        deal_id,
+        amount,
+        sales_order_notifications,
+    }))
 }
 
 /// A sold quote's jobs on the schedule, unscheduled for the schedule manager
@@ -1187,9 +1197,9 @@ pub async fn sell_quote_for_signed_contract(
     company_id: i32,
     customer_id: Option<i64>,
     filename: &str,
-) -> ApiResult<()> {
+) -> ApiResult<Vec<i64>> {
     let Some(customer_id) = customer_id else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     type QuoteRow = (i32, Option<String>, Option<i32>, Option<String>);
     let quotes: Vec<QuoteRow> = sqlx::query_as(
@@ -1212,13 +1222,13 @@ pub async fn sell_quote_for_signed_contract(
     .fetch_all(pool)
     .await?;
     let Some(quote) = quote_for_contract_file(filename, &forms, &quotes, |q| q.1.as_deref()) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let options = QuoteDoc::from_stored(&json_value(quote.3.as_deref()))
         .color_options
         .len();
     let option_index = quote.2.or_else(|| (options == 1).then_some(0));
-    mark_quote_sold(
+    let sold = mark_quote_sold(
         pool,
         quote.0,
         company_id,
@@ -1231,7 +1241,9 @@ pub async fn sell_quote_for_signed_contract(
         },
     )
     .await?;
-    Ok(())
+    Ok(sold
+        .map(|sold| sold.sales_order_notifications)
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
