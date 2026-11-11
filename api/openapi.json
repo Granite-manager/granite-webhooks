@@ -50882,7 +50882,7 @@
           "quickbooks"
         ],
         "summary": "Make a quote's invoice draft the company's way",
-        "description": "Applies the changes the company's recent invoices keep making to such a\ndraft: lines reworded or left out (text lines only; amounts never change),\nand the class, CC and product they usually get, from invoices made here\nand, for a company that just connected, its newest `QuickBooks` invoices.\nNothing is saved.",
+        "description": "Applies the changes the company's recent invoices keep making to such a\ndraft: lines reworded or left out (text lines only; amounts never change),\nand the class, CC and product they usually get, from invoices made here\n(as they are in `QuickBooks` now, so what the office changes there counts)\nand the company's newest `QuickBooks` invoices. The class is the one named\nafter the quote's sales rep unless the company's invoices carry a fixed\none. Also says where the addresses go and when the invoice is due, as the\ncompany's invoices usually have it. Nothing is saved.",
         "operationId": "apply_invoice_draft_rules",
         "parameters": [
           {
@@ -51101,6 +51101,237 @@
           },
           "502": {
             "description": "QuickBooks or the AI failed; nothing was saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/qbo/invoice-style": {
+      "get": {
+        "tags": [
+          "quickbooks"
+        ],
+        "summary": "Read what the AI learned from the company's invoices",
+        "description": "The rules every new invoice draft follows because the company's own\n`QuickBooks` invoices are written that way (lines left out, lines\nreworded), when they were learned and from how many invoices. Empty\nbefore the first time. The invoice instructions win over these.",
+        "operationId": "get_qbo_invoice_style",
+        "responses": {
+          "200": {
+            "description": "What was learned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceStyle"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "quickbooks"
+        ],
+        "summary": "Learn how the company writes its invoices",
+        "description": "The AI reads the company's newest `QuickBooks` invoices and what became\nof earlier invoice drafts (also what the office changed in `QuickBooks`\nafterwards), and proposes which lines to leave out and how to reword\nothers. Each rule is checked against those invoices before it is kept,\nand new drafts then follow the kept ones. Learned at most once in 20\nhours: sooner, what was learned is returned as it is, unless an admin\nsends `force`. Meant to be called in the background when Create invoice\nopens (`style_due` of `POST /v1/quotes/{id}/invoice-draft`); it can take\nup to 25 seconds.",
+        "operationId": "learn_qbo_invoice_style",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LearnInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What was learned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceStyle"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin, or is an installer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "QuickBooks is not connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The AI failed; what was learned before stays",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/quotes/{id}/invoice-fields": {
+      "post": {
+        "tags": [
+          "quickbooks"
+        ],
+        "summary": "Fill in a new invoice's custom fields from its quote",
+        "description": "The custom fields the company's `QuickBooks` invoices usually fill (e.g.\n\"Room & Color\", \"Sink & Stove\", \"Edge & BS\"), each with the value for\nthis quote written the way the company's own invoices write it. The AI\nwrites the values from the quote's lines, the field's recent values and\nthe values the office gave earlier invoices made from quotes. They are a\nsuggestion for the editor: send the ones to keep as `custom_fields` of\nthe invoice when creating it. Without the AI, or when it does not answer\nin 12 seconds, the fields come with null values. Nothing is saved.",
+        "operationId": "fill_invoice_custom_fields",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Quote id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FieldsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The fields with this quote's values",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftFields"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin, or is an installer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such quote in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
             "content": {
               "application/json": {
                 "schema": {
@@ -70897,6 +71128,26 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "Lines with the phrase stay as drafted: nothing learned from past\ninvoices leaves them out or rewords them.",
+            "required": [
+              "line",
+              "type"
+            ],
+            "properties": {
+              "line": {
+                "type": "string",
+                "description": "The phrase."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "keep"
+                ]
+              }
+            }
           }
         ],
         "description": "What a rule does."
@@ -78849,6 +79100,31 @@
           }
         }
       },
+      "CustomFieldValue": {
+        "type": "object",
+        "description": "One custom field of an invoice.",
+        "required": [
+          "definition_id",
+          "value"
+        ],
+        "properties": {
+          "definition_id": {
+            "type": "string",
+            "description": "`QuickBooks`' id of the field."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its name, e.g. \"Room & Color\"."
+          },
+          "value": {
+            "type": "string",
+            "description": "The text (at most 31 characters are kept)."
+          }
+        }
+      },
       "CustomerDeal": {
         "type": "object",
         "description": "A deal of a customer, with a preview of its notes and activities.",
@@ -81671,6 +81947,34 @@
           }
         }
       },
+      "DraftAddresses": {
+        "type": "object",
+        "description": "The addresses a new invoice opens with.",
+        "properties": {
+          "bill": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Address",
+                "description": "The billing address, written as the company's invoices write it: the\ncustomer's name, then their address, or the address alone. Null\nleaves it to `QuickBooks`, which fills in the billing address its\ncustomer already has."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ship": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Address",
+                "description": "The shipping (job) address. Null when the company's invoices carry\nnone and the job is at the billing address."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "DraftAttachment": {
         "type": "object",
         "description": "A file of a draft.",
@@ -81694,6 +81998,55 @@
           }
         },
         "additionalProperties": false
+      },
+      "DraftField": {
+        "type": "object",
+        "description": "One custom field of a new invoice.",
+        "required": [
+          "definition_id",
+          "name",
+          "examples"
+        ],
+        "properties": {
+          "definition_id": {
+            "type": "string",
+            "description": "`QuickBooks`' id of the field: sent back with the value when the\ninvoice is created."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name, e.g. \"Room & Color\"."
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The value for this quote, written the company's way (at most 31\ncharacters); null when the AI could not tell, or did not answer."
+          },
+          "examples": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A few values the company gave it on recent invoices."
+          }
+        }
+      },
+      "DraftFields": {
+        "type": "object",
+        "description": "`POST /v1/quotes/{id}/invoice-fields`.",
+        "required": [
+          "fields"
+        ],
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DraftField"
+            },
+            "description": "The custom fields the company's invoices usually fill, in\n`QuickBooks`' order; empty when it uses none."
+          }
+        }
       },
       "DraftInput": {
         "type": "object",
@@ -81755,7 +82108,8 @@
         "description": "`POST /v1/quotes/{id}/invoice-draft`.",
         "required": [
           "lines",
-          "removed"
+          "removed",
+          "style_due"
         ],
         "properties": {
           "lines": {
@@ -81799,6 +82153,29 @@
               "null"
             ],
             "description": "Its name."
+          },
+          "addresses": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DraftAddresses",
+                "description": "The billing and shipping addresses the invoice opens with, placed\nwhere the company's invoices put them; null keeps the draft's own\n(the CRM knows no address)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "due_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The company's invoices are usually due this many days after their\ndate (0: on the day); null when they follow no one habit."
+          },
+          "style_due": {
+            "type": "boolean",
+            "description": "The AI has not read the company's invoice wording yet, or not for a\nday: `POST /v1/qbo/invoice-style` is worth calling in the background."
           }
         }
       },
@@ -82154,6 +82531,13 @@
               "null"
             ],
             "description": "Whether `QuickBooks` emailed it: `EmailSent`, `NeedToSend` or\n`NotSet` (read only)."
+          },
+          "custom_fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomFieldValue"
+            },
+            "description": "The text custom fields the company's invoices fill (e.g. \"Room &\nColor\"; from `POST /v1/quotes/{id}/invoice-fields`). Set on a new\ninvoice only; saving an existing invoice leaves them as they are."
           }
         }
       },
@@ -84160,6 +84544,19 @@
           "text",
           "skip"
         ]
+      },
+      "FieldsInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/quotes/{id}/invoice-fields`.",
+        "properties": {
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The texts of the draft's lines, as the quote makes them."
+          }
+        }
       },
       "FileReadiness": {
         "type": "object",
@@ -86968,6 +87365,42 @@
           }
         }
       },
+      "InvoiceStyle": {
+        "type": "object",
+        "description": "`GET`/`POST /v1/qbo/invoice-style`.",
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InstructionRule"
+            },
+            "description": "The rules every new invoice draft follows, each checked against the\ncompany's invoices: `hide` and `rename` only."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "What the AI noticed and could not make a rule of."
+          },
+          "learned_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it was last learned (UTC); null before the first time."
+          },
+          "invoices_read": {
+            "type": "integer",
+            "description": "How many of the company's `QuickBooks` invoices it was learned from.",
+            "minimum": 0
+          },
+          "tidying": {
+            "$ref": "#/components/schemas/Tidying",
+            "description": "How many of the invoices created from quotes the office still changes\nin `QuickBooks` afterwards: whether the drafts are getting closer."
+          }
+        }
+      },
       "InvoiceSummary": {
         "type": "object",
         "description": "An invoice in a list.",
@@ -87945,6 +88378,23 @@
           "invalid_reasons": {
             "$ref": "#/components/schemas/InvalidReasons",
             "description": "Lost or invalid leads by reason."
+          }
+        }
+      },
+      "LearnInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/qbo/invoice-style`.",
+        "properties": {
+          "force": {
+            "type": "boolean",
+            "description": "Learn now even when it was learned today (admins only; ignored for\nothers)."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The lines of the draft that is open, as the quote makes them: the\nkinds of line the rules are about."
           }
         }
       },
@@ -109987,6 +110437,53 @@
               "type": "string"
             },
             "description": "Steps that failed (PostHog or GitHub unreachable); retried next tick."
+          }
+        }
+      },
+      "Tidied": {
+        "type": "object",
+        "description": "The invoices created from quotes in one period.",
+        "required": [
+          "invoices",
+          "changed"
+        ],
+        "properties": {
+          "invoices": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many were created.",
+            "minimum": 0
+          },
+          "changed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many of them the office then changed in `QuickBooks`: a line\ndeleted or reworded, or another class, CC or product.",
+            "minimum": 0
+          }
+        }
+      },
+      "Tidying": {
+        "type": "object",
+        "description": "How many of the invoices created from quotes the office still tidies in\n`QuickBooks` afterwards, lately and before that: fewer means the drafts\ncome out more the company's way.",
+        "required": [
+          "days",
+          "recent",
+          "before"
+        ],
+        "properties": {
+          "days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The days each period covers.",
+            "minimum": 0
+          },
+          "recent": {
+            "$ref": "#/components/schemas/Tidied",
+            "description": "The last `days` days."
+          },
+          "before": {
+            "$ref": "#/components/schemas/Tidied",
+            "description": "The `days` days before those."
           }
         }
       },

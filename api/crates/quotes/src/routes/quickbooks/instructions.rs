@@ -8,7 +8,8 @@
 //! its `when_lacks` (a phrase matches at the start of a word, any case:
 //! "cabinet" matches "Cabinets"). Instructions win over what is learned from
 //! the company's invoices; like learned rules, they never change an amount
-//! or leave out a priced line.
+//! or leave out a priced line. A `keep` rule shields lines from everything
+//! learned: "always keep the Fabrication line".
 
 use super::QboItem;
 use super::invoice::Line;
@@ -80,6 +81,12 @@ pub enum Action {
         /// The email address.
         email: String,
     },
+    /// Lines with the phrase stay as drafted: nothing learned from past
+    /// invoices leaves them out or rewords them.
+    Keep {
+        /// The phrase.
+        line: String,
+    },
 }
 
 /// One rule the AI made of the instructions.
@@ -127,6 +134,7 @@ ACTION is one of:
 - {"type": "hide", "line": "<phrase>"}: text lines containing the phrase are left out of the invoice.
 - {"type": "rename", "line": "<phrase>", "to": "<new text>"}: the phrase is replaced in the lines that have it.
 - {"type": "add_line", "text": "<text>"}: a text line is added at the end of the invoice.
+- {"type": "keep", "line": "<phrase>"}: lines containing the phrase always stay exactly as drafted. The CRM also learns from the company's past invoices which lines to leave out or reword; "keep" overrules that. Use it for "always show", "never remove", "don't rename".
 - {"type": "class", "class": "<exact name from classes>"}
 - {"type": "cc", "email": "<email address>"}
 
@@ -163,7 +171,7 @@ async fn stored(pool: &MySqlPool, company_id: i32) -> sqlx::Result<InvoiceInstru
 }
 
 /// A phrase at the start of a word, any case; group 1 is what precedes it.
-fn phrase_regex(phrase: &str) -> Option<Regex> {
+pub(super) fn phrase_regex(phrase: &str) -> Option<Regex> {
     let phrase = phrase.trim();
     if phrase.is_empty() {
         return None;
@@ -228,10 +236,36 @@ pub(super) fn cc(holding: &[&InstructionRule]) -> Option<String> {
     })
 }
 
+/// The lines the holding `keep` rules shield from what was learned.
+#[derive(Debug, Default)]
+pub(super) struct Kept(Vec<Regex>);
+
+impl Kept {
+    pub(super) fn of(holding: &[&InstructionRule]) -> Self {
+        Self(
+            holding
+                .iter()
+                .filter_map(|rule| match &rule.action {
+                    Action::Keep { line } => phrase_regex(line),
+                    _ => None,
+                })
+                .collect(),
+        )
+    }
+
+    /// The line stays as drafted.
+    pub(super) fn holds(&self, line: &Line) -> bool {
+        line.description
+            .as_deref()
+            .is_some_and(|text| self.0.iter().any(|re| re.is_match(text)))
+    }
+}
+
 /// The holding rules' line changes: phrases renamed, text lines left out
-/// (into `removed`), text lines added.
+/// (into `removed`), text lines added. Lines in `kept` stay as they are.
 pub(super) fn apply_lines(
     holding: &[&InstructionRule],
+    kept: &Kept,
     lines: &mut Vec<Line>,
     removed: &mut Vec<Line>,
 ) {
@@ -241,7 +275,7 @@ pub(super) fn apply_lines(
                 let Some(re) = phrase_regex(phrase) else {
                     continue;
                 };
-                for line in lines.iter_mut() {
+                for line in lines.iter_mut().filter(|line| !kept.holds(line)) {
                     let Some(text) = line.description.as_deref() else {
                         continue;
                     };
@@ -260,6 +294,7 @@ pub(super) fn apply_lines(
                 let (hidden, kept): (Vec<Line>, Vec<Line>) =
                     std::mem::take(lines).into_iter().partition(|line| {
                         line.detail_type == "DescriptionOnly"
+                            && !kept.holds(line)
                             && line
                                 .description
                                 .as_deref()
@@ -370,6 +405,12 @@ pub(super) fn compile(
                 Some(text) => Action::AddLine { text },
                 None => continue,
             },
+            "keep" => {
+                let Some(line) = clean_phrase(&action["line"]) else {
+                    continue;
+                };
+                Action::Keep { line }
+            }
             "class" => {
                 let name = named("class");
                 match classes
@@ -579,6 +620,7 @@ mod tests {
             { "action": { "type": "rename", "line": "template", "to": "Laser template" } },
             { "action": { "type": "add_line", "text": "Balance due at installation" } },
             { "action": { "type": "cc", "email": "office@example.com" } },
+            { "action": { "type": "keep", "line": "Shaker" } },
             { "action": { "type": "product", "product": "Granite Package" } },
             { "action": { "type": "class", "class": "Nobody" } },
             { "action": { "type": "discount", "percent": 5 } },
@@ -588,7 +630,13 @@ mod tests {
     #[test]
     fn the_ai_reply_becomes_checked_rules() {
         let (rules, not_understood) = compile(&reply(), &items(), &["Dema".into()]);
-        assert_eq!(rules.len(), 7);
+        assert_eq!(rules.len(), 8);
+        assert_eq!(
+            rules[7].action,
+            Action::Keep {
+                line: "shaker".into()
+            }
+        );
         assert_eq!(rules[0].when_has, ["cabinet"]);
         assert_eq!(
             rules[0].action,
@@ -634,7 +682,12 @@ mod tests {
         assert!(avoided(&holding_rules).is_empty());
         assert_eq!(cc(&holding_rules).as_deref(), Some("office@example.com"));
         let (mut lines, mut removed) = (cabinets, Vec::new());
-        apply_lines(&holding_rules, &mut lines, &mut removed);
+        apply_lines(
+            &holding_rules,
+            &Kept::of(&holding_rules),
+            &mut lines,
+            &mut removed,
+        );
         assert_eq!(
             texts(&lines),
             [
@@ -651,12 +704,52 @@ mod tests {
         assert_eq!(product(&holding_rules).unwrap().0, "5");
         assert_eq!(avoided(&holding_rules), HashSet::from(["30".to_string()]));
         let (mut lines, mut removed) = (counters, Vec::new());
-        apply_lines(&holding_rules, &mut lines, &mut removed);
+        apply_lines(
+            &holding_rules,
+            &Kept::of(&holding_rules),
+            &mut lines,
+            &mut removed,
+        );
         assert!(removed.is_empty());
         assert_eq!(
             lines[1].description.as_deref(),
             Some("73.3 sq ft Fabrication")
         );
+    }
+
+    #[test]
+    fn a_kept_line_is_never_left_out_or_reworded() {
+        let rule = |action| InstructionRule {
+            when_has: vec![],
+            when_lacks: vec![],
+            action,
+        };
+        let rules = vec![
+            rule(Action::Hide {
+                line: "fabrication".into(),
+            }),
+            rule(Action::Rename {
+                line: "template".into(),
+                to: "Laser template".into(),
+            }),
+            rule(Action::Keep {
+                line: "fabrication".into(),
+            }),
+            rule(Action::Keep {
+                line: "templ".into(),
+            }),
+        ];
+        let mut lines = draft(false);
+        let mut removed = Vec::new();
+        let holding_rules = holding(&rules, &texts(&lines));
+        apply_lines(
+            &holding_rules,
+            &Kept::of(&holding_rules),
+            &mut lines,
+            &mut removed,
+        );
+        assert!(removed.is_empty());
+        assert_eq!(texts(&lines), texts(&draft(false)));
     }
 
     #[test]
@@ -685,7 +778,12 @@ mod tests {
         ];
         let mut removed = Vec::new();
         let holding_rules = holding(&rules, &texts(&lines));
-        apply_lines(&holding_rules, &mut lines, &mut removed);
+        apply_lines(
+            &holding_rules,
+            &Kept::of(&holding_rules),
+            &mut lines,
+            &mut removed,
+        );
         assert!(removed.is_empty());
         assert_eq!(
             texts(&lines),

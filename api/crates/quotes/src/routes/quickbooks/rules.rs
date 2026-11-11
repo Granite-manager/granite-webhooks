@@ -10,10 +10,20 @@
 //! reword or leave out text lines and fill class and CC; they never touch an
 //! amount or leave out a priced line. The product is learned from the
 //! invoices' words ([`super::products`]).
+//!
+//! What the office changes afterwards in `QuickBooks` itself counts too
+//! ([`super::reconcile`]), the wording of the company's own invoices is
+//! learned by the AI as checked rules ([`super::style`]), and addresses, due
+//! dates and terms follow what its invoices usually have
+//! ([`super::habits`]).
 
-use super::instructions;
+use super::customer::{CustomerRow, parse_address};
+use super::fields::CustomFields;
+use super::habits::{DraftAddresses, Habits, Places};
+use super::instructions::{self, Kept};
 use super::invoice::{EditableInvoice, Line, rows, text};
 use super::products::Model;
+use super::{reconcile, style};
 use crate::auth::EmployeeUser;
 use crate::auth::session::SessionUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -292,12 +302,14 @@ fn is_editable(line: &Line) -> bool {
 
 /// The draft with the rules that hold on it (its quote has these `words`)
 /// applied: lines reworded in place, text lines left out returned apart (so
-/// the editor can bring them back). Priced lines are only ever reworded.
+/// the editor can bring them back). Priced lines are only ever reworded, and
+/// lines an admin said to keep (`shielded`) stay as they are.
 #[allow(clippy::implicit_hasher)]
-pub fn apply(
+pub(super) fn apply(
     lines: Vec<Line>,
     rules: &HashMap<String, ShapeRule>,
     words: &[String],
+    shielded: &Kept,
 ) -> (Vec<Line>, Vec<Line>) {
     let mut kept = Vec::with_capacity(lines.len());
     let mut removed = Vec::new();
@@ -305,7 +317,7 @@ pub fn apply(
         let rule = line
             .description
             .as_deref()
-            .filter(|_| is_editable(&line))
+            .filter(|_| is_editable(&line) && !shielded.holds(&line))
             .and_then(|text| rules.get(&shape(text)))
             .filter(|rule| {
                 rule.when
@@ -334,6 +346,8 @@ pub struct LineOutcome {
     pub shape: String,
     pub draft_text: String,
     pub outcome: Outcome,
+    /// The line's id in the editor.
+    pub line_id: String,
 }
 
 fn trimmed(text: Option<&str>) -> &str {
@@ -361,6 +375,7 @@ pub fn line_outcomes(draft: &[Line], saved: &[Line]) -> Vec<LineOutcome> {
                 shape: shape(text),
                 draft_text: text.chars().take(1000).collect(),
                 outcome,
+                line_id: before.id.clone().unwrap_or_default(),
             })
         })
         .collect()
@@ -368,6 +383,41 @@ pub fn line_outcomes(draft: &[Line], saved: &[Line]) -> Vec<LineOutcome> {
 
 fn same(a: &str, b: &str) -> bool {
     a.trim().eq_ignore_ascii_case(b.trim())
+}
+
+fn folded(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// A class or CC is named after a rep.
+///
+/// By their full name (or email), their first name of three letters or more
+/// ("Marina" for Marina Valera, as the sales widget reads classes), or the
+/// first name with the last name's start ("Marina V.").
+pub fn names_rep(value: &str, rep: &str) -> bool {
+    let (value, rep) = (folded(value), folded(rep));
+    if value.is_empty() || rep.is_empty() {
+        return false;
+    }
+    if value == rep {
+        return true;
+    }
+    let mut words = rep.split(' ');
+    let Some(first) = words.next().filter(|first| first.chars().count() >= 3) else {
+        return false;
+    };
+    if value == first {
+        return true;
+    }
+    let initial = value
+        .strip_prefix(first)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .map(|rest| rest.trim_end_matches('.'))
+        .filter(|rest| !rest.is_empty());
+    matches!((initial, words.next_back()), (Some(initial), Some(last)) if last.starts_with(initial))
 }
 
 /// How a class or CC was set: not at all, to the sales rep (any of `reps`:
@@ -379,13 +429,86 @@ fn same(a: &str, b: &str) -> bool {
 pub fn header_outcome(saved: Option<&str>, reps: &[&str]) -> Outcome {
     match saved.map(str::trim).filter(|s| !s.is_empty()) {
         None => Outcome::new("none", None),
-        Some(value) if reps.iter().any(|rep| same(rep, value)) => Outcome::new("sales_rep", None),
+        Some(value) if reps.iter().any(|rep| names_rep(value, rep)) => {
+            Outcome::new("sales_rep", None)
+        }
         Some(value) => match value.rsplit_once(':') {
-            Some((parent, leaf)) if reps.iter().any(|rep| same(rep, leaf)) => {
+            Some((parent, leaf)) if reps.iter().any(|rep| names_rep(leaf, rep)) => {
                 Outcome::new("sales_rep", Some(parent.trim()))
             }
             _ => Outcome::new("value", Some(value)),
         },
+    }
+}
+
+/// The `QuickBooks` class named after `rep` among `classes` (full names).
+///
+/// Under `parent` when the company's rep classes sit under one
+/// ("Countertops:Tania"), else a top-level one, else the only one anywhere.
+/// A class spelled as the rep's full name wins over one by their first
+/// name; none when several fit equally (two classes for the same first
+/// name).
+pub fn rep_class(classes: &[String], parent: Option<&str>, rep: &str) -> Option<String> {
+    // The classes named after the rep: full name, parent, own name.
+    let named: Vec<(&str, Option<&str>, &str)> = classes
+        .iter()
+        .map(|class| match class.rsplit_once(':') {
+            Some((parent, leaf)) => (class.as_str(), Some(parent.trim()), leaf.trim()),
+            None => (class.as_str(), None, class.trim()),
+        })
+        .filter(|(_, _, leaf)| names_rep(leaf, rep))
+        .collect();
+    let pick = |among: Vec<&(&str, Option<&str>, &str)>| -> Option<String> {
+        let exact: Vec<_> = among
+            .iter()
+            .filter(|(_, _, leaf)| same(leaf, rep))
+            .collect();
+        match (exact.as_slice(), among.as_slice()) {
+            ([only], _) => Some(only.0.to_string()),
+            ([], [only]) => Some(only.0.to_string()),
+            _ => None,
+        }
+    };
+    let under = |wanted: &str| {
+        named
+            .iter()
+            .filter(|(_, parent, _)| parent.is_some_and(|parent| same(parent, wanted)))
+            .collect()
+    };
+    parent
+        .and_then(|wanted| pick(under(wanted)))
+        .or_else(|| {
+            pick(
+                named
+                    .iter()
+                    .filter(|(_, parent, _)| parent.is_none())
+                    .collect(),
+            )
+        })
+        .or_else(|| pick(named.iter().collect()))
+}
+
+/// The class a new invoice gets: the fixed class the company's invoices
+/// carry, else the class named after the quote's rep (under the parent its
+/// rep classes sit under). A company whose invoices carried no class still
+/// gets the rep's own class when it has one: such classes exist to count
+/// that rep's sales.
+fn draft_class(rule: Option<&Outcome>, classes: &[String], rep: Option<&str>) -> Option<String> {
+    let known = |name: &String| classes.is_empty() || classes.iter().any(|c| same(c, name));
+    match rule {
+        Some(rule) if rule.outcome == "value" => rule
+            .value
+            .clone()
+            .filter(known)
+            .or_else(|| rep_class(classes, None, rep?)),
+        // The classes could not be read: the name as it was learned.
+        Some(rule) if classes.is_empty() => header_value(Some(rule), rep),
+        rule => rep_class(
+            classes,
+            rule.filter(|rule| rule.outcome == "sales_rep")
+                .and_then(|rule| rule.value.as_deref()),
+            rep?,
+        ),
     }
 }
 
@@ -434,6 +557,45 @@ async fn quote_rep(pool: &MySqlPool, company_id: i32, quote_id: i32) -> sqlx::Re
     .await
 }
 
+/// The quote's job address and its customer, as the CRM knows them.
+#[derive(Debug, Default, sqlx::FromRow)]
+struct Site {
+    job_address: Option<String>,
+    #[sqlx(flatten)]
+    customer: CustomerRow,
+}
+
+async fn quote_site(pool: &MySqlPool, company_id: i32, quote_id: i32) -> sqlx::Result<Site> {
+    let site: Option<Site> = sqlx::query_as(
+        "SELECT q.address AS job_address, c.name,
+                NULLIF(TRIM(CAST(c.qbo_id AS CHAR)), '') AS qbo_id, ce.email, c.phone, c.phone_2,
+                c.company_name, c.address, c.city, c.state, c.postal_code
+           FROM quotes q
+           LEFT JOIN customers c
+             ON c.id = q.customer_id AND c.company_id = q.company_id AND c.deleted_at IS NULL
+           LEFT JOIN customers_emails ce ON ce.id = c.email_id AND ce.customer_id = c.id
+          WHERE q.id = ? AND q.company_id = ? AND q.deleted_at IS NULL",
+    )
+    .bind(quote_id)
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(site.unwrap_or_default())
+}
+
+/// The billing address the customer has in `QuickBooks`; none when it is not
+/// linked yet, has none, or `QuickBooks` does not answer.
+async fn qbo_billing(state: &AppState, company_id: i32, qbo_id: Option<&str>) -> Option<Value> {
+    let qbo_id = qbo_id.filter(|id| crate::qbo::valid_id(id))?;
+    let access = state.qbo.access(&state.pool, company_id).await.ok()?;
+    let found = state
+        .qbo
+        .get(&access, &format!("customer/{}", qbo_id.trim()))
+        .await
+        .ok()?;
+    Some(found["Customer"]["BillAddr"].clone()).filter(Value::is_object)
+}
+
 /// A class, CC or product as an invoice had it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(super) struct Seen {
@@ -475,6 +637,139 @@ struct Scan {
     /// Classes were read from lines too.
     #[serde(default)]
     line_classes: bool,
+    /// Where the invoices put addresses, when they are due, whether their
+    /// lines carry service dates; none in a scan kept before these were read.
+    #[serde(default)]
+    habits: Option<Habits>,
+    /// The newest invoices' lines, for the AI to read the company's wording.
+    #[serde(default)]
+    samples: Vec<Vec<SampleLine>>,
+    /// The custom fields the invoices fill, and how.
+    #[serde(default)]
+    custom: CustomFields,
+}
+
+/// One line of a sampled invoice.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SampleLine {
+    pub(super) text: String,
+    /// Its product, on a priced line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) product: Option<String>,
+    /// It charges an amount.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(super) priced: bool,
+}
+
+/// Newest invoices sampled.
+const SAMPLED: usize = 30;
+/// Lines kept of each, and characters of each line.
+const SAMPLE_LINES: usize = 25;
+const SAMPLE_CHARS: usize = 160;
+
+/// The lines of the newest invoices that have any.
+fn samples(invoices: &[Value]) -> Vec<Vec<SampleLine>> {
+    invoices
+        .iter()
+        .map(|invoice| {
+            rows(&invoice["Line"])
+                .iter()
+                .filter_map(|line| {
+                    let priced = line["DetailType"] == "SalesItemLineDetail";
+                    if !priced && line["DetailType"] != "DescriptionOnly" {
+                        return None;
+                    }
+                    let product = text(&line["SalesItemLineDetail"]["ItemRef"]["name"]);
+                    let said = line["Description"].as_str().map_or("", str::trim);
+                    if said.is_empty() && product.is_none() {
+                        return None;
+                    }
+                    Some(SampleLine {
+                        text: said.chars().take(SAMPLE_CHARS).collect(),
+                        product,
+                        priced,
+                    })
+                })
+                .take(SAMPLE_LINES)
+                .collect::<Vec<_>>()
+        })
+        .filter(|lines| !lines.is_empty())
+        .take(SAMPLED)
+        .collect()
+}
+
+/// What the AI reads of a company's invoices to learn its wording, and what
+/// its rules are checked against.
+#[derive(Debug, Default)]
+pub(super) struct Wording {
+    /// The newest invoices' lines.
+    pub(super) samples: Vec<Vec<SampleLine>>,
+    /// The words of each scanned invoice (sorted and distinct).
+    pub(super) invoice_words: Vec<Vec<String>>,
+}
+
+/// The company's invoice wording from its scan (read again when a day old);
+/// none without `QuickBooks`.
+pub(super) async fn wording(state: &AppState, company_id: i32) -> sqlx::Result<Option<Wording>> {
+    Ok(scan(state, company_id).await?.map(|scan| Wording {
+        samples: scan.samples,
+        invoice_words: scan
+            .item
+            .into_iter()
+            .map(|seen| seen.words)
+            .filter(|words| !words.is_empty())
+            .collect(),
+    }))
+}
+
+/// The custom fields the company's invoices fill, from its scan (read again
+/// when a day old); none without `QuickBooks`.
+pub(super) async fn custom_fields(state: &AppState, company_id: i32) -> sqlx::Result<CustomFields> {
+    Ok(scan(state, company_id)
+        .await?
+        .map(|scan| scan.custom)
+        .unwrap_or_default())
+}
+
+/// The draft lines of the company's invoices made here, by invoice id.
+async fn draft_lines(
+    pool: &MySqlPool,
+    company_id: i32,
+) -> sqlx::Result<HashMap<String, Vec<String>>> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT qbo_invoice_id, draft_text FROM qbo_invoice_draft_outcomes
+          WHERE company_id = ? AND field = 'line' AND qbo_invoice_id IS NOT NULL
+            AND draft_text IS NOT NULL
+          ORDER BY id LIMIT ?",
+    )
+    .bind(company_id)
+    .bind(LINE_HISTORY)
+    .fetch_all(pool)
+    .await?;
+    let mut drafts: HashMap<String, Vec<String>> = HashMap::new();
+    for (invoice, line) in rows {
+        drafts.entry(invoice).or_default().push(line);
+    }
+    Ok(drafts)
+}
+
+/// What the company's invoices usually have and the custom fields they
+/// fill, from the scan last kept (never read again here: creating an invoice
+/// does not wait for a scan).
+pub(super) async fn kept_habits(pool: &MySqlPool, company_id: i32) -> (Habits, CustomFields) {
+    let kept: Option<String> = sqlx::query_scalar(
+        "SELECT CAST(stats_json AS CHAR) FROM qbo_invoice_scans WHERE company_id = ?",
+    )
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or_else(|err| {
+        tracing::warn!(error = %err, company_id, "invoice scan not read");
+        None
+    });
+    kept.and_then(|json| serde_json::from_str::<Scan>(&json).ok())
+        .map(|scan| (scan.habits.unwrap_or_default(), scan.custom))
+        .unwrap_or_default()
 }
 
 /// What an invoice filled in besides its customer, lines, dates and amounts:
@@ -616,7 +911,7 @@ pub(super) fn words<'a>(texts: impl Iterator<Item = &'a str>) -> Vec<String> {
 
 /// The first priced line's product of a `QuickBooks` invoice, with the
 /// invoice's words.
-fn first_item(invoice: &Value) -> Option<Seen> {
+pub(super) fn first_item(invoice: &Value) -> Option<Seen> {
     let lines = invoice["Line"].as_array()?;
     let item = lines
         .iter()
@@ -633,7 +928,7 @@ fn first_item(invoice: &Value) -> Option<Seen> {
 
 /// An invoice's class: its own, or its first priced line's for a company
 /// that sets classes per line.
-fn invoice_class(invoice: &Value) -> Option<String> {
+pub(super) fn invoice_class(invoice: &Value) -> Option<String> {
     text(&invoice["ClassRef"]["name"]).or_else(|| {
         rows(&invoice["Line"])
             .iter()
@@ -712,6 +1007,14 @@ async fn fresh_scan(state: &AppState, company_id: i32) -> Option<Scan> {
         item: invoices.iter().filter_map(first_item).collect(),
         fields: Some(invoices.iter().map(filled).collect()),
         line_classes: true,
+        habits: Some(Habits::read(&invoices)),
+        samples: samples(&invoices),
+        custom: CustomFields::read(
+            &invoices,
+            &draft_lines(&state.pool, company_id)
+                .await
+                .unwrap_or_default(),
+        ),
         classes: classes
             .iter()
             .filter_map(|c| text(&c["FullyQualifiedName"]).or_else(|| text(&c["Name"])))
@@ -729,6 +1032,11 @@ async fn fresh_scan(state: &AppState, company_id: i32) -> Option<Scan> {
     {
         tracing::warn!(error = %err, company_id, "invoice scan not kept");
     }
+    // What the office changed in QuickBooks since an invoice was created
+    // here is the company's way as much as what reps change in the editor.
+    if let Err(err) = reconcile::reconcile(&state.pool, company_id, &invoices, &names).await {
+        tracing::warn!(error = %err, company_id, "invoice outcomes not read back");
+    }
     Some(scan)
 }
 
@@ -742,12 +1050,12 @@ async fn scan(state: &AppState, company_id: i32) -> sqlx::Result<Option<Scan>> {
     .bind(company_id)
     .fetch_optional(&state.pool)
     .await?;
-    // A scan kept before invoices' words, fields or line classes were read
-    // is read again.
+    // A scan kept before invoices' words, fields, line classes or habits
+    // were read is read again.
     if let Some(scan) = kept
         .and_then(|json| serde_json::from_str::<Scan>(&json).ok())
         .filter(|scan| scan.item.is_empty() || scan.item.iter().any(|seen| !seen.words.is_empty()))
-        .filter(|scan| scan.fields.is_some() && scan.line_classes)
+        .filter(|scan| scan.fields.is_some() && scan.line_classes && scan.habits.is_some())
     {
         return Ok(Some(scan));
     }
@@ -920,6 +1228,16 @@ pub struct DraftRules {
     pub item_id: Option<String>,
     /// Its name.
     pub item_name: Option<String>,
+    /// The billing and shipping addresses the invoice opens with, placed
+    /// where the company's invoices put them; null keeps the draft's own
+    /// (the CRM knows no address).
+    pub addresses: Option<DraftAddresses>,
+    /// The company's invoices are usually due this many days after their
+    /// date (0: on the day); null when they follow no one habit.
+    pub due_days: Option<i64>,
+    /// The AI has not read the company's invoice wording yet, or not for a
+    /// day: `POST /v1/qbo/invoice-style` is worth calling in the background.
+    pub style_due: bool,
 }
 
 /// Make a quote's invoice draft the company's way
@@ -927,8 +1245,11 @@ pub struct DraftRules {
 /// Applies the changes the company's recent invoices keep making to such a
 /// draft: lines reworded or left out (text lines only; amounts never change),
 /// and the class, CC and product they usually get, from invoices made here
-/// and, for a company that just connected, its newest `QuickBooks` invoices.
-/// Nothing is saved.
+/// (as they are in `QuickBooks` now, so what the office changes there counts)
+/// and the company's newest `QuickBooks` invoices. The class is the one named
+/// after the quote's sales rep unless the company's invoices carry a fixed
+/// one. Also says where the addresses go and when the invoice is due, as the
+/// company's invoices usually have it. Nothing is saved.
 #[crate::openapi::path(
     post,
     path = "/v1/quotes/{id}/invoice-draft",
@@ -955,6 +1276,9 @@ pub async fn invoice_draft(
     let rep = quote_rep(&state.pool, company_id, quote_id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    // First: a scan a day old is read again, and with it what the office
+    // changed in QuickBooks since (the histories below then have it).
+    let scan = scan(&state, company_id).await?.unwrap_or_default();
     let (history, common) = line_history(&state.pool, company_id).await?;
     let rules = line_rules(&history, &common);
     let draft_words = words(
@@ -968,19 +1292,31 @@ pub async fn invoice_draft(
         .iter()
         .filter_map(|line| line.description.clone())
         .collect();
-    let (mut lines, mut removed) = apply(input.lines, &rules, &draft_words);
     let told = instructions::load(&state.pool, company_id).await;
     let told = instructions::holding(&told, &texts);
-    let scan = scan(&state, company_id).await?.unwrap_or_default();
-    let class_name = header_value(
-        decided_header(
-            &header_history(&state.pool, company_id, "class").await?,
-            &scan.class,
+    let shielded = Kept::of(&told);
+    let (mut lines, mut removed) = apply(input.lines, &rules, &draft_words, &shielded);
+    // The wording the AI learned from the company's own invoices, then what
+    // an admin told it (which wins).
+    let learned = style::load(&state.pool, company_id).await;
+    let style_due = state.ai.is_enabled()
+        && !scan.samples.is_empty()
+        && learned.as_ref().is_none_or(|learned| learned.stale);
+    let learned = learned.map(|learned| learned.rules).unwrap_or_default();
+    instructions::apply_lines(
+        &instructions::holding(&learned, &texts),
+        &shielded,
+        &mut lines,
+        &mut removed,
+    );
+    let class_made = header_history(&state.pool, company_id, "class").await?;
+    let class_name = instructions::class(&told).or_else(|| {
+        draft_class(
+            decided_header(&class_made, &scan.class).as_ref(),
+            &scan.classes,
+            rep.name.as_deref(),
         )
-        .as_ref(),
-        rep.name.as_deref(),
-    )
-    .filter(|name| scan.classes.is_empty() || scan.classes.iter().any(|c| same(c, name)));
+    });
     let bill_email_cc = header_value(
         decided_header(
             &header_history(&state.pool, company_id, "cc").await?,
@@ -989,7 +1325,6 @@ pub async fn invoice_draft(
         .as_ref(),
         rep.email.as_deref(),
     );
-    let class_name = instructions::class(&told).or(class_name);
     let bill_email_cc = instructions::cc(&told).or(bill_email_cc);
     let (item_id, item_name) = match instructions::product(&told) {
         Some(told) => Some(told),
@@ -1009,7 +1344,19 @@ pub async fn invoice_draft(
             line.item_ref_name.clone_from(&item_name);
         }
     }
-    instructions::apply_lines(&told, &mut lines, &mut removed);
+    instructions::apply_lines(&told, &shielded, &mut lines, &mut removed);
+    let habits = scan.habits.unwrap_or_default();
+    let site = quote_site(&state.pool, company_id, quote_id).await?;
+    let job = site.job_address.as_deref().and_then(parse_address);
+    let own = site.customer.own_address();
+    let billing = qbo_billing(&state, company_id, site.customer.qbo_id.as_deref()).await;
+    let addresses = habits.addresses(&Places {
+        name: site.customer.name.as_deref().unwrap_or_default(),
+        business: site.customer.is_business(),
+        own: own.as_ref(),
+        job: job.as_ref(),
+        qbo_billing: billing.as_ref(),
+    });
     Ok(Json(DraftRules {
         lines,
         removed,
@@ -1017,6 +1364,9 @@ pub async fn invoice_draft(
         bill_email_cc,
         item_id,
         item_name,
+        addresses,
+        due_days: habits.usual_due().map(|due| due.days),
+        style_due,
     }))
 }
 
@@ -1030,11 +1380,13 @@ async fn insert(
     shape: Option<&str>,
     draft_text: Option<&str>,
     outcome: &Outcome,
+    qbo_line_id: Option<&str>,
 ) -> sqlx::Result<()> {
     sqlx::query(
         "INSERT INTO qbo_invoice_draft_outcomes
-           (company_id, user_id, quote_id, qbo_invoice_id, field, draft_shape, draft_text, outcome, saved_value)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+           (company_id, user_id, quote_id, qbo_invoice_id, field, draft_shape, draft_text, outcome,
+            saved_value, qbo_line_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(user.company_id)
     .bind(user.id)
@@ -1044,22 +1396,48 @@ async fn insert(
     .bind(shape.map(|s| s.chars().take(255).collect::<String>()))
     .bind(draft_text)
     .bind(&outcome.outcome)
-    .bind(outcome.value.as_deref().map(|v| v.chars().take(1000).collect::<String>()))
+    .bind(
+        outcome
+            .value
+            .as_deref()
+            .map(|v| v.chars().take(1000).collect::<String>()),
+    )
+    .bind(qbo_line_id)
     .execute(pool)
     .await
     .map(|_| ())
 }
 
-/// Keeps what became of a draft in the invoice created from it: each draft
-/// line (`draft`, before rules), and the class, CC and product.
+/// The `QuickBooks` line id each of the editor's lines got: `QuickBooks`
+/// keeps the sent lines in order. None when the two do not line up.
+fn made_line_ids(saved: &[Line], made: &[Line]) -> HashMap<String, String> {
+    let sent: Vec<&Line> = saved.iter().filter(|line| is_editable(line)).collect();
+    let made: Vec<&Line> = made.iter().filter(|line| is_editable(line)).collect();
+    if sent.len() != made.len() {
+        return HashMap::new();
+    }
+    sent.into_iter()
+        .zip(made)
+        .filter_map(|(sent, made)| Some((sent.id.clone()?, made.id.clone()?)))
+        .collect()
+}
+
+/// Keeps what became of a draft in the invoice created from it.
+///
+/// Each draft line (`draft`, before rules), and the class, CC and product.
+/// `made` is the invoice as `QuickBooks` created it: its line ids are kept,
+/// so what the office changes there later is read back
+/// ([`super::reconcile`]).
 pub async fn record(
     pool: &MySqlPool,
     user: &SessionUser,
     quote_id: Option<i32>,
-    invoice_id: &str,
     draft: &[Line],
     saved: &EditableInvoice,
+    made: &EditableInvoice,
 ) -> sqlx::Result<()> {
+    let invoice_id = made.id.as_str();
+    let line_ids = made_line_ids(&saved.lines, &made.lines);
     let rep = match quote_id {
         Some(id) => quote_rep(pool, user.company_id, id)
             .await?
@@ -1088,6 +1466,7 @@ pub async fn record(
             Some(&line.shape),
             Some(&line.draft_text),
             &line.outcome,
+            line_ids.get(&line.line_id).map(String::as_str),
         )
         .await?;
     }
@@ -1096,14 +1475,17 @@ pub async fn record(
         &Vec::from_iter(rep.name.as_deref()),
     );
     insert(
-        pool, user, quote_id, invoice_id, "class", None, None, &class,
+        pool, user, quote_id, invoice_id, "class", None, None, &class, None,
     )
     .await?;
     let cc = header_outcome(
         saved.bill_email_cc.as_deref(),
         &Vec::from_iter(rep.email.as_deref()),
     );
-    insert(pool, user, quote_id, invoice_id, "cc", None, None, &cc).await?;
+    insert(
+        pool, user, quote_id, invoice_id, "cc", None, None, &cc, None,
+    )
+    .await?;
     if let Some(line) = saved
         .lines
         .iter()
@@ -1119,6 +1501,7 @@ pub async fn record(
             None,
             line.item_ref_name.as_deref(),
             &item,
+            None,
         )
         .await?;
     }
@@ -1312,6 +1695,7 @@ mod tests {
             ],
             &rules,
             &[],
+            &Kept::default(),
         );
         let texts: Vec<_> = kept
             .iter()
@@ -1377,12 +1761,12 @@ mod tests {
         let draft = |extra: &str| vec![text("a", "40 sq ft Fabrication"), text("b", extra)];
         let with = draft("10 Cabinets");
         let with_words = words(with.iter().filter_map(|l| l.description.as_deref()));
-        let (kept_lines, removed_lines) = apply(with, &rules, &with_words);
+        let (kept_lines, removed_lines) = apply(with, &rules, &with_words, &Kept::default());
         assert_eq!(kept_lines.len(), 1);
         assert_eq!(removed_lines[0].id.as_deref(), Some("a"));
         let without = draft("Granite Zurich");
         let without_words = words(without.iter().filter_map(|l| l.description.as_deref()));
-        let (kept_lines, removed_lines) = apply(without, &rules, &without_words);
+        let (kept_lines, removed_lines) = apply(without, &rules, &without_words, &Kept::default());
         assert_eq!(kept_lines.len(), 2);
         assert!(removed_lines.is_empty());
 
@@ -1515,5 +1899,141 @@ mod tests {
         assert_eq!(decided_header(&[seen(o("none", None))], &scanned), None);
         let mixed = [rep(), rep(), gmail(), gmail(), seen(o("none", None))];
         assert_eq!(decided_header(&[], &mixed), None);
+    }
+
+    #[test]
+    fn a_class_is_the_reps_by_full_or_first_name() {
+        assert!(names_rep("Marina", "Marina Valera"));
+        assert!(names_rep(" marina  valera ", "Marina Valera"));
+        assert!(names_rep("Marina V.", "Marina Valera"));
+        assert!(names_rep("Marina Val", "Marina Valera"));
+        // Not another Marina, a short first name, or a look-alike.
+        assert!(!names_rep("Marina K", "Marina Valera"));
+        assert!(!names_rep("Al", "Al Stone"));
+        assert!(!names_rep("Marinara", "Marina Valera"));
+        assert!(!names_rep("Valera", "Marina Valera"));
+        assert!(!names_rep("", "Marina Valera"));
+        // QuickBooks invoices whose class is a rep's first name are the rep's.
+        assert_eq!(
+            header_outcome(Some("Marina"), &["Dema Stone", "Marina Valera"]),
+            o("sales_rep", None)
+        );
+        assert_eq!(
+            header_outcome(Some("Countertops:Marina"), &["Marina Valera"]),
+            o("sales_rep", Some("Countertops"))
+        );
+    }
+
+    #[test]
+    fn a_new_invoice_gets_the_class_named_after_the_quotes_rep() {
+        let classes = |names: &[&str]| names.iter().map(|n| (*n).to_string()).collect::<Vec<_>>();
+        let plain = classes(&["Dema", "Marina", "Showroom"]);
+        // No habit yet, or invoices that carried no class: the rep's class.
+        assert_eq!(
+            draft_class(None, &plain, Some("Marina Valera")).as_deref(),
+            Some("Marina")
+        );
+        assert_eq!(
+            draft_class(Some(&o("none", None)), &plain, Some("Marina Valera")).as_deref(),
+            Some("Marina")
+        );
+        assert_eq!(
+            draft_class(Some(&o("sales_rep", None)), &plain, Some("Dema Stone")).as_deref(),
+            Some("Dema")
+        );
+        // A fixed class the company's invoices carry stays.
+        assert_eq!(
+            draft_class(
+                Some(&o("value", Some("Showroom"))),
+                &plain,
+                Some("Marina Valera")
+            )
+            .as_deref(),
+            Some("Showroom")
+        );
+        // No class of theirs, or no rep: none.
+        assert_eq!(draft_class(None, &plain, Some("Kyle Reed")), None);
+        assert_eq!(draft_class(None, &plain, None), None);
+        // Rep classes under a parent: the learned parent, else a top-level
+        // class, else nothing when two fit equally.
+        let nested = classes(&["Countertops:Marina", "Cabinets:Marina", "Cabinets:Dema"]);
+        assert_eq!(
+            draft_class(
+                Some(&o("sales_rep", Some("Countertops"))),
+                &nested,
+                Some("Marina Valera")
+            )
+            .as_deref(),
+            Some("Countertops:Marina")
+        );
+        assert_eq!(draft_class(None, &nested, Some("Marina Valera")), None);
+        assert_eq!(
+            draft_class(None, &nested, Some("Dema Stone")).as_deref(),
+            Some("Cabinets:Dema")
+        );
+        // The full name wins over the first name.
+        let both = classes(&["Rita", "Rita Rep"]);
+        assert_eq!(
+            draft_class(None, &both, Some("Rita Rep")).as_deref(),
+            Some("Rita Rep")
+        );
+        // Classes not read: the name as it was learned.
+        assert_eq!(
+            draft_class(Some(&o("sales_rep", None)), &[], Some("Dema")).as_deref(),
+            Some("Dema")
+        );
+    }
+
+    #[test]
+    fn the_lines_quickbooks_made_are_matched_to_the_editors() {
+        let saved = [
+            sale("new:quote-0", "Kitchen", 500.0),
+            text("new:quote-1", "Flat edge"),
+        ];
+        let subtotal = Line {
+            detail_type: "SubTotalLineDetail".into(),
+            ..Line::default()
+        };
+        let made = [
+            sale("1", "Kitchen", 500.0),
+            text("2", "Flat edge"),
+            subtotal,
+        ];
+        let ids = made_line_ids(&saved, &made);
+        assert_eq!(ids["new:quote-0"], "1");
+        assert_eq!(ids["new:quote-1"], "2");
+        // QuickBooks answered with other lines: none is guessed.
+        assert!(made_line_ids(&saved, &made[..1]).is_empty());
+    }
+
+    #[test]
+    fn a_scan_samples_the_lines_of_the_newest_invoices() {
+        let invoices = [
+            serde_json::json!({ "Line": [
+                { "DetailType": "SalesItemLineDetail", "Description": " Kitchen based @ 59.2 sqft ",
+                  "SalesItemLineDetail": { "ItemRef": { "value": "30", "name": "Countertops" } } },
+                { "DetailType": "DescriptionOnly", "Description": "Eased edge" },
+                { "DetailType": "DescriptionOnly", "Description": " " },
+                { "DetailType": "SubTotalLineDetail", "Amount": 100 },
+            ] }),
+            serde_json::json!({ "Line": [{ "DetailType": "SubTotalLineDetail" }] }),
+        ];
+        let sampled = samples(&invoices);
+        assert_eq!(sampled.len(), 1);
+        assert_eq!(
+            sampled[0],
+            [
+                SampleLine {
+                    text: "Kitchen based @ 59.2 sqft".into(),
+                    product: Some("Countertops".into()),
+                    priced: true,
+                },
+                SampleLine {
+                    text: "Eased edge".into(),
+                    product: None,
+                    priced: false,
+                },
+            ]
+        );
     }
 }

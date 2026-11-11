@@ -205,6 +205,18 @@ pub struct Line {
     pub class_name: Option<String>,
 }
 
+/// One custom field of an invoice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct CustomFieldValue {
+    /// `QuickBooks`' id of the field.
+    pub definition_id: String,
+    /// Its name, e.g. "Room & Color".
+    #[serde(default)]
+    pub name: Option<String>,
+    /// The text (at most 31 characters are kept).
+    pub value: String,
+}
+
 /// An invoice as the editor shows it.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EditableInvoice {
@@ -247,6 +259,11 @@ pub struct EditableInvoice {
     /// `NotSet` (read only).
     #[serde(default)]
     pub email_status: Option<String>,
+    /// The text custom fields the company's invoices fill (e.g. "Room &
+    /// Color"; from `POST /v1/quotes/{id}/invoice-fields`). Set on a new
+    /// invoice only; saving an existing invoice leaves them as they are.
+    #[serde(default)]
+    pub custom_fields: Vec<CustomFieldValue>,
 }
 
 pub(super) fn rows(value: &Value) -> Vec<Value> {
@@ -300,6 +317,16 @@ pub fn editable(value: &Value) -> Option<EditableInvoice> {
         bill_email_cc: text(&value["BillEmailCc"]["Address"]),
         bill_email_bcc: text(&value["BillEmailBcc"]["Address"]),
         email_status: text(&value["EmailStatus"]),
+        custom_fields: rows(&value["CustomField"])
+            .iter()
+            .filter_map(|field| {
+                Some(CustomFieldValue {
+                    definition_id: text(&field["DefinitionId"])?,
+                    name: text(&field["Name"]),
+                    value: text(&field["StringValue"])?,
+                })
+            })
+            .collect(),
     })
 }
 
@@ -546,44 +573,45 @@ impl Classes {
     }
 }
 
-/// A new invoice for `customer` (its `QuickBooks` id).
-///
-/// It has the editor's lines and CC, in `classes` (set on each priced line
-/// for a company that sets classes per line, where a line may have its
-/// own), and is emailed to `email` when `QuickBooks` sends it.
-pub fn create_payload(
-    customer: &str,
-    edited: &EditableInvoice,
-    email: Option<&str>,
-    classes: &Classes,
-) -> Result<Value, String> {
-    let mut lines = Vec::new();
-    for line in &edited.lines {
-        match line.detail_type.as_str() {
-            "SalesItemLineDetail" if line.item_ref_value.is_none() => {
-                return Err("Sales line requires a QuickBooks item".into());
-            }
-            "SalesItemLineDetail" | "DescriptionOnly" => {
-                let mut built = new_line(line);
-                if classes.per_line
-                    && built["DetailType"] == "SalesItemLineDetail"
-                    && let Some(class) = classes.of(line)
-                {
-                    built["SalesItemLineDetail"]["ClassRef"] = json!({ "value": class });
-                }
-                lines.push(built);
-            }
-            _ => {}
-        }
-    }
-    if !lines
+/// What a new invoice gets because the company's own invoices usually have
+/// it ([`super::habits`]).
+#[derive(Debug, Default)]
+pub struct Usual {
+    /// Priced lines carry the invoice's date as their service date.
+    pub service_dates: bool,
+    /// The terms of an invoice due this many days after its date.
+    pub term: Option<(i64, String)>,
+    /// The custom fields the company's invoices fill: `QuickBooks`' id and
+    /// name of each. Only these are sent.
+    pub fields: Vec<(String, String)>,
+}
+
+/// The editor's custom fields as `QuickBooks` takes them: those the
+/// company's invoices fill, one line of at most 31 characters each.
+fn custom_fields(edited: &EditableInvoice, usual: &Usual) -> Vec<Value> {
+    usual
+        .fields
         .iter()
-        .any(|line| line["DetailType"] == "SalesItemLineDetail")
-    {
-        return Err("The invoice needs a line with a product or service".into());
-    }
-    let mut payload = json!({ "CustomerRef": { "value": customer }, "Line": lines });
-    set_fields(&mut payload, edited);
+        .filter_map(|(id, name)| {
+            let value = edited
+                .custom_fields
+                .iter()
+                .find(|field| field.definition_id == *id)
+                .and_then(|field| super::fields::clean_value(&field.value))?;
+            Some(json!({
+                "DefinitionId": id, "Name": name, "Type": "StringType", "StringValue": value,
+            }))
+        })
+        .collect()
+}
+
+fn day(text: Option<&str>) -> Option<chrono::NaiveDate> {
+    chrono::NaiveDate::parse_from_str(text?.trim(), "%Y-%m-%d").ok()
+}
+
+/// Who `QuickBooks` emails the invoice to: the customer, and the editor's
+/// CC and BCC.
+fn set_emails(payload: &mut Value, edited: &EditableInvoice, email: Option<&str>) {
     if let Some(email) = email.map(str::trim).filter(|email| !email.is_empty()) {
         payload["BillEmail"] = json!({ "Address": email });
     }
@@ -603,10 +631,71 @@ pub fn create_payload(
     {
         payload["BillEmailBcc"] = json!({ "Address": bcc });
     }
+}
+
+/// A new invoice for `customer` (its `QuickBooks` id).
+///
+/// It has the editor's lines and CC, in `classes` (set on each priced line
+/// for a company that sets classes per line, where a line may have its
+/// own), and is emailed to `email` when `QuickBooks` sends it. `usual`
+/// adds the service dates and terms the company's invoices usually have;
+/// the terms only while the invoice is due when such invoices are.
+pub fn create_payload(
+    customer: &str,
+    edited: &EditableInvoice,
+    email: Option<&str>,
+    classes: &Classes,
+    usual: &Usual,
+) -> Result<Value, String> {
+    let made = day(edited.txn_date.as_deref());
+    let service_date = made.filter(|_| usual.service_dates);
+    let mut lines = Vec::new();
+    for line in &edited.lines {
+        match line.detail_type.as_str() {
+            "SalesItemLineDetail" if line.item_ref_value.is_none() => {
+                return Err("Sales line requires a QuickBooks item".into());
+            }
+            "SalesItemLineDetail" | "DescriptionOnly" => {
+                let mut built = new_line(line);
+                if built["DetailType"] == "SalesItemLineDetail" {
+                    if classes.per_line
+                        && let Some(class) = classes.of(line)
+                    {
+                        built["SalesItemLineDetail"]["ClassRef"] = json!({ "value": class });
+                    }
+                    if let Some(date) = service_date {
+                        built["SalesItemLineDetail"]["ServiceDate"] =
+                            json!(date.format("%Y-%m-%d").to_string());
+                    }
+                }
+                lines.push(built);
+            }
+            _ => {}
+        }
+    }
+    if !lines
+        .iter()
+        .any(|line| line["DetailType"] == "SalesItemLineDetail")
+    {
+        return Err("The invoice needs a line with a product or service".into());
+    }
+    let mut payload = json!({ "CustomerRef": { "value": customer }, "Line": lines });
+    set_fields(&mut payload, edited);
+    set_emails(&mut payload, edited, email);
     if !classes.per_line
         && let Some(class) = &classes.invoice
     {
         payload["ClassRef"] = json!({ "value": class });
+    }
+    if let Some((days, term)) = &usual.term
+        && let Some((made, due)) = made.zip(day(edited.due_date.as_deref()))
+        && (due - made).num_days() == *days
+    {
+        payload["SalesTermRef"] = json!({ "value": term });
+    }
+    let fields = custom_fields(edited, usual);
+    if !fields.is_empty() {
+        payload["CustomField"] = Value::Array(fields);
     }
     Ok(payload)
 }
@@ -751,7 +840,14 @@ mod tests {
             invoice: Some("7".into()),
             ..Classes::default()
         };
-        let payload = create_payload("42", &invoice, Some(" a@x.test "), &classes).unwrap();
+        let payload = create_payload(
+            "42",
+            &invoice,
+            Some(" a@x.test "),
+            &classes,
+            &Usual::default(),
+        )
+        .unwrap();
         assert_eq!(payload["CustomerRef"]["value"], "42");
         let lines = payload["Line"].as_array().unwrap();
         assert_eq!(lines.len(), 2);
@@ -773,7 +869,7 @@ mod tests {
             per_line: true,
             by_name: HashMap::from([("Cabinets".to_string(), "8".to_string())]),
         };
-        let payload = create_payload("42", &invoice, None, &classes).unwrap();
+        let payload = create_payload("42", &invoice, None, &classes, &Usual::default()).unwrap();
         assert!(payload.get("ClassRef").is_none());
         assert_eq!(
             payload["Line"][0]["SalesItemLineDetail"]["ClassRef"]["value"],
@@ -785,13 +881,73 @@ mod tests {
             "8"
         );
 
-        invoice.lines[0].item_ref_value = None;
         let none = Classes::default();
-        assert!(create_payload("42", &invoice, None, &none).is_err());
+        invoice.lines[0].item_ref_value = None;
+        assert!(create_payload("42", &invoice, None, &none, &Usual::default()).is_err());
         invoice
             .lines
             .retain(|line| line.detail_type != "SalesItemLineDetail");
-        assert!(create_payload("42", &invoice, None, &none).is_err());
+        assert!(create_payload("42", &invoice, None, &none, &Usual::default()).is_err());
+    }
+
+    #[test]
+    fn a_new_invoice_gets_what_the_companys_invoices_usually_have() {
+        let mut invoice = editable(&current()).unwrap();
+        invoice.lines[0].id = Some("new:a".into());
+        invoice.lines[1].id = Some("new:b".into());
+        let none = Classes::default();
+        // What the company's invoices usually have: a service date on each
+        // priced line, and the terms while the invoice is due as usual.
+        let usual = Usual {
+            service_dates: true,
+            term: Some((30, "3".into())),
+            fields: vec![
+                ("1".into(), "Room & Color".into()),
+                ("2".into(), "Sink & Stove".into()),
+            ],
+        };
+        invoice.custom_fields = vec![
+            CustomFieldValue {
+                definition_id: "1".into(),
+                name: None,
+                value: " Kitchen,  Calacatta Miraggio Cove Polished".into(),
+            },
+            CustomFieldValue {
+                definition_id: "2".into(),
+                name: None,
+                value: "  ".into(),
+            },
+            // Not a field of the company's invoices: never sent.
+            CustomFieldValue {
+                definition_id: "99".into(),
+                name: Some("Internal".into()),
+                value: "x".into(),
+            },
+        ];
+        invoice.txn_date = Some("2026-10-28".into());
+        invoice.due_date = Some("2026-11-27".into());
+        let payload = create_payload("42", &invoice, None, &none, &usual).unwrap();
+        assert_eq!(
+            payload["Line"][0]["SalesItemLineDetail"]["ServiceDate"],
+            "2026-10-28"
+        );
+        assert!(payload["Line"][1].get("SalesItemLineDetail").is_none());
+        assert_eq!(payload["SalesTermRef"]["value"], "3");
+        assert_eq!(
+            payload["CustomField"],
+            json!([{ "DefinitionId": "1", "Name": "Room & Color", "Type": "StringType",
+                     "StringValue": "Kitchen, Calacatta Miraggio Cov" }])
+        );
+        // The rep moved the due date: no terms that would say otherwise.
+        invoice.due_date = Some("2026-11-05".into());
+        let payload = create_payload("42", &invoice, None, &none, &usual).unwrap();
+        assert!(payload.get("SalesTermRef").is_none());
+        let plain = create_payload("42", &invoice, None, &none, &Usual::default()).unwrap();
+        assert!(
+            plain["Line"][0]["SalesItemLineDetail"]
+                .get("ServiceDate")
+                .is_none()
+        );
     }
 
     fn note(id: &str, text: &str) -> Line {
