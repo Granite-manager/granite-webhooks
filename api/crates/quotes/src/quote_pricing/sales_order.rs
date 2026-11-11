@@ -22,7 +22,7 @@ pub const SALES_ORDER_NOTIFICATION: &str = "sales_order";
 
 /// One color of the sold option.
 #[derive(Debug, Default, PartialEq)]
-struct Color {
+struct Picked {
     product: String,
     color: String,
     rooms: Vec<String>,
@@ -32,12 +32,12 @@ struct Color {
 }
 
 /// The colors of option `index`, in the order their rooms come.
-fn colors(quote: &Quote, index: usize) -> Vec<Color> {
+fn colors(quote: &Quote, index: usize) -> Vec<Picked> {
     let doc = quote.doc();
     let Some(option) = doc.color_options.get(index) else {
         return Vec::new();
     };
-    let mut found: Vec<Color> = Vec::new();
+    let mut found: Vec<Picked> = Vec::new();
     for area in &doc.areas {
         let Some(picked) = option.by_area.get(&area.id) else {
             continue;
@@ -46,15 +46,15 @@ fn colors(quote: &Quote, index: usize) -> Vec<Color> {
         if color.is_empty() {
             continue;
         }
-        let key = |c: &Color| {
+        let key = |c: &Picked| {
             c.color.eq_ignore_ascii_case(color)
                 && c.product.eq_ignore_ascii_case(picked.product.trim())
         };
         let pos = found.iter().position(key).unwrap_or_else(|| {
-            found.push(Color {
+            found.push(Picked {
                 product: picked.product.trim().to_string(),
                 color: color.to_string(),
-                ..Color::default()
+                ..Picked::default()
             });
             found.len() - 1
         });
@@ -75,7 +75,7 @@ fn colors(quote: &Quote, index: usize) -> Vec<Color> {
 
 /// Slabs a color asks for: each room's laid-out slabs, or its estimate from
 /// its pieces on slabs of `size`.
-fn slabs_asked(quote: &Quote, color: &Color, size: (f64, f64)) -> i32 {
+fn slabs_asked(quote: &Quote, color: &Picked, size: (f64, f64)) -> i32 {
     let doc = quote.doc();
     let count: f64 = color
         .laid
@@ -95,8 +95,12 @@ fn slabs_asked(quote: &Quote, color: &Color, size: (f64, f64)) -> i32 {
     count
 }
 
-/// Makes the pending order of quote `quote` sold with option `index`, unless
-/// it has a pending or confirmed one, and tells the Inventory Managers.
+/// Makes the pending sales order of a quote sold with option `index`.
+///
+/// Not when the quote has a pending or confirmed one. Tells the Inventory
+/// Managers: returns the ids of their new bell notifications, for the caller
+/// to push to their phones at once.
+#[allow(clippy::too_many_lines)]
 pub async fn create(
     pool: &MySqlPool,
     quote: &Quote,
@@ -104,9 +108,9 @@ pub async fn create(
     deal_id: Option<i64>,
     user_id: Option<i32>,
     amount: Option<f64>,
-) -> ApiResult<()> {
+) -> ApiResult<Vec<i64>> {
     let Ok(option) = usize::try_from(index) else {
-        return Ok(());
+        return Ok(Vec::new());
     };
     let existing: Option<i32> = sqlx::query_scalar(
         "SELECT id FROM sales_orders
@@ -118,7 +122,7 @@ pub async fn create(
     .await?;
     let colors = colors(quote, option);
     if existing.is_some() || colors.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let mut tx = pool.begin().await?;
     let order_id = sqlx::query(
@@ -229,8 +233,9 @@ pub async fn create(
     .bind(INVENTORY_MANAGER_POSITION)
     .fetch_all(&mut *tx)
     .await?;
+    let mut notifications = Vec::with_capacity(managers.len());
     for manager in managers {
-        sqlx::query(
+        let id = sqlx::query(
             "INSERT INTO notifications (user_id, customer_id, message, notification_type, due_at)
              VALUES (?, ?, ?, ?, NOW())",
         )
@@ -239,10 +244,12 @@ pub async fn create(
         .bind(&message)
         .bind(SALES_ORDER_NOTIFICATION)
         .execute(&mut *tx)
-        .await?;
+        .await?
+        .last_insert_id();
+        notifications.push(i64::try_from(id).unwrap_or_default());
     }
     tx.commit().await?;
-    Ok(())
+    Ok(notifications)
 }
 
 /// Undo sale: the quote's pending order is cancelled (a confirmed one stays:

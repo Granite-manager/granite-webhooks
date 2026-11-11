@@ -236,16 +236,25 @@ async fn apply_event(state: &AppState, document_id: &str, kind: &str) -> ApiResu
         notify(state, id, company_id, event).await;
     }
     // A signed contract from a quote is a sale: the quote is sold, its deal won.
-    if next == "signed"
-        && let Err(err) = quote_pricing::sell_quote_for_signed_contract(
+    if next == "signed" {
+        match quote_pricing::sell_quote_for_signed_contract(
             &state.pool,
             company_id,
             customer_id,
             &filename,
         )
         .await
-    {
-        tracing::error!(error = %err, request = id, "Failed to mark the quote sold after a signed contract");
+        {
+            // The Inventory Managers' phones hear of the new sales order.
+            Ok(notifications) => {
+                for notification in notifications {
+                    crate::phone::crm_push::push_notification_logged(state, notification).await;
+                }
+            }
+            Err(err) => {
+                tracing::error!(error = %err, request = id, "Failed to mark the quote sold after a signed contract");
+            }
+        }
     }
     Ok(())
 }

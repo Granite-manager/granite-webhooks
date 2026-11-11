@@ -2035,6 +2035,10 @@ pub async fn mark_sold(
     )
     .await?
     .ok_or(ApiError::NotFound)?;
+    // The Inventory Managers' phones hear of the new sales order at once.
+    for id in sold.sales_order_notifications {
+        crate::phone::crm_push::push_notification_logged(&state, id).await;
+    }
     Ok(Json(SaleResult {
         deal_id: sold.deal_id,
     }))
