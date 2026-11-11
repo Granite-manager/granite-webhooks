@@ -43999,7 +43999,7 @@
           "schedule"
         ],
         "summary": "Where the crew is",
-        "description": "Every installer and template maker of the company with their phone's\nlatest position (Granite Manager sends it from 5 AM until 9 PM), and the\nshop or job they are at. Admins only.",
+        "description": "Every installer and template maker of the company with their phone's\nlatest position (Granite Manager sends it from 5 AM until 9 PM), and the\nshop or job they are at. Any signed-in user of the company; the schedule's\nmap of today shows it.",
         "operationId": "get_crew_positions",
         "responses": {
           "200": {
@@ -44017,16 +44017,6 @@
           },
           "401": {
             "description": "No valid session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not an admin",
             "content": {
               "application/json": {
                 "schema": {
