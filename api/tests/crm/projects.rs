@@ -801,7 +801,9 @@ async fn steps_check_themselves_off_by_their_rules(pool: MySqlPool) {
     win_8002(&pool).await;
     let project = projects_of_8002(&pool).await[0];
     let id = async |name: &str| {
-        add_step(&pool, sessions::ADMIN, "new", name).await.json::<Value>()["id"]
+        add_step(&pool, sessions::ADMIN, "new", name)
+            .await
+            .json::<Value>()["id"]
             .as_i64()
             .unwrap()
     };
@@ -823,15 +825,23 @@ async fn steps_check_themselves_off_by_their_rules(pool: MySqlPool) {
     auto(file, sessions::ADMIN, json!({ "trigger": "task_done" }))
         .await
         .assert_status(StatusCode::BAD_REQUEST);
-    auto(file, sessions::ADMIN, json!({ "trigger": "email_template", "ref_id": 999_999 }))
-        .await
-        .assert_status(StatusCode::BAD_REQUEST);
+    auto(
+        file,
+        sessions::ADMIN,
+        json!({ "trigger": "email_template", "ref_id": 999_999 }),
+    )
+    .await
+    .assert_status(StatusCode::BAD_REQUEST);
     auto(file, sessions::ADMIN, json!({ "trigger": "file_added" }))
         .await
         .assert_status(StatusCode::NO_CONTENT);
-    auto(wait, sessions::ADMIN, json!({ "trigger": "days_after", "days": 2 }))
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
+    auto(
+        wait,
+        sessions::ADMIN,
+        json!({ "trigger": "days_after", "days": 2 }),
+    )
+    .await
+    .assert_status(StatusCode::NO_CONTENT);
 
     let seen = board(&pool, sessions::ADMIN).await;
     assert_eq!(seen["process_steps"][0]["auto"]["trigger"], "file_added");
@@ -856,10 +866,12 @@ async fn steps_check_themselves_off_by_their_rules(pool: MySqlPool) {
     assert_eq!(done[0]["step_id"].as_i64(), Some(file));
     assert_eq!(done[0]["done_by"], "Auto");
 
-    sqlx::query("UPDATE project_process_steps_done SET done_at = UTC_TIMESTAMP(3) - INTERVAL 3 DAY")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE project_process_steps_done SET done_at = UTC_TIMESTAMP(3) - INTERVAL 3 DAY",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let seen = board(&pool, sessions::ADMIN).await;
     assert_eq!(seen["done_steps"].as_array().unwrap().len(), 2);
 
@@ -919,11 +931,13 @@ async fn rules_are_checked_on_a_one_connection_pool(pool: MySqlPool) {
         .await
         .unwrap();
     let told = async || -> i64 {
-        sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE project_id = ? AND user_id = 101")
-            .bind(project)
-            .fetch_one(&pool)
-            .await
-            .unwrap()
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notifications WHERE project_id = ? AND user_id = 101",
+        )
+        .bind(project)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
     };
 
     let seen = board(&single, sessions::ADMIN).await;
@@ -936,7 +950,10 @@ async fn rules_are_checked_on_a_one_connection_pool(pool: MySqlPool) {
         .with_session(sessions::ADMIN)
         .await;
     page.assert_status_ok();
-    assert_eq!(page.json::<Value>()["done_steps"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        page.json::<Value>()["done_steps"].as_array().unwrap().len(),
+        1
+    );
     assert_eq!(told().await, 2);
 }
 
@@ -987,7 +1004,10 @@ async fn the_page_and_board_show_the_crews_issues(pool: MySqlPool) {
         json!(["https://cdn.example/a.jpg", "https://cdn.example/b.jpg"])
     );
     let seen = board(&pool, sessions::ADMIN).await;
-    assert_eq!(seen["issue_counts"], json!([{ "project_id": id, "count": 2 }]));
+    assert_eq!(
+        seen["issue_counts"],
+        json!([{ "project_id": id, "count": 2 }])
+    );
 }
 
 #[test_db::test(seed)]
@@ -1038,10 +1058,16 @@ async fn issues_are_reported_on_a_project_and_marked_solved(pool: MySqlPool) {
     let seen = page().await;
     let issues = seen["issues"].as_array().unwrap();
     assert_eq!(issues.len(), 2, "{issues:?}");
-    let own = issues.iter().find(|issue| issue["event_id"].is_null()).unwrap();
+    let own = issues
+        .iter()
+        .find(|issue| issue["event_id"].is_null())
+        .unwrap();
     assert_eq!(own["description"], "Customer wants an ogee edge");
     let own_id = own["id"].as_i64().unwrap();
-    assert_eq!(board(&pool, sessions::ADMIN).await["issue_counts"][0]["count"], 2);
+    assert_eq!(
+        board(&pool, sessions::ADMIN).await["issue_counts"][0]["count"],
+        2
+    );
 
     // The crew's issue, solved from the project; the project's, from... the project.
     let solve = async |issue: i64, solved: bool| {
@@ -1051,7 +1077,9 @@ async fn issues_are_reported_on_a_project_and_marked_solved(pool: MySqlPool) {
             .json(&json!({ "solved": solved }))
             .await
     };
-    solve(9901, true).await.assert_status(StatusCode::NO_CONTENT);
+    solve(9901, true)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
     solve(own_id + 9999, true)
         .await
         .assert_status(StatusCode::NOT_FOUND);
@@ -1067,7 +1095,10 @@ async fn issues_are_reported_on_a_project_and_marked_solved(pool: MySqlPool) {
     assert!(crew["solved_by"].is_string());
     // Open issues come first.
     assert_eq!(seen["issues"][0]["id"].as_i64(), Some(own_id));
-    assert_eq!(board(&pool, sessions::ADMIN).await["issue_counts"][0]["count"], 1);
+    assert_eq!(
+        board(&pool, sessions::ADMIN).await["issue_counts"][0]["count"],
+        1
+    );
 
     // On the job card, the crew opens it again.
     server(pool.clone())
@@ -1082,7 +1113,10 @@ async fn issues_are_reported_on_a_project_and_marked_solved(pool: MySqlPool) {
         .await
         .json();
     assert!(details["issues"][0]["solved_at"].is_null(), "{details}");
-    assert_eq!(board(&pool, sessions::ADMIN).await["issue_counts"][0]["count"], 2);
+    assert_eq!(
+        board(&pool, sessions::ADMIN).await["issue_counts"][0]["count"],
+        2
+    );
 
     server(pool.clone())
         .delete(&format!("/v1/projects/{id}/issues/{own_id}"))
@@ -1096,4 +1130,237 @@ async fn issues_are_reported_on_a_project_and_marked_solved(pool: MySqlPool) {
         .await
         .assert_status(StatusCode::NOT_FOUND);
     assert_eq!(page().await["issues"].as_array().unwrap().len(), 1);
+}
+
+// Parts: a project made of several, each with its own template and installation.
+
+#[test_db::test(seed)]
+async fn a_project_with_parts_sits_with_its_least_finished_part(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let id = projects_of_8002(&pool).await[0];
+    let stage = || {
+        let pool = pool.clone();
+        async move { board(&pool, sessions::ADMIN).await["projects"][0]["stage_code"].clone() }
+    };
+    let page = || {
+        let pool = pool.clone();
+        async move {
+            let page: Value = server(pool)
+                .get(&format!("/v1/projects/{id}"))
+                .with_session(sessions::ADMIN)
+                .await
+                .json();
+            page
+        }
+    };
+    let job = |event: i32, calendar: i32, part: Option<i64>| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO events (id, title, start_date, end_date, all_day, unscheduled,
+                                     created_user_id, assigned_user_id, calendar_id, project_id,
+                                     project_part_id, crew_status)
+                 VALUES (?, 'Job', UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, 0, 102, 101, ?, ?, ?,
+                         'completed')",
+            )
+            .bind(event)
+            .bind(calendar)
+            .bind(id)
+            .bind(part)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    run(
+        &pool,
+        "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (9880, 100, 'Templates', 'blue', 'templates'),
+           (9881, 100, 'Installations', 'red', 'installations');",
+    )
+    .await;
+    // The countertops are templated before the project has any part.
+    job(9870, 9880, None).await;
+    assert_eq!(stage().await, "templated");
+    assert_eq!(page().await["parts"], json!([]));
+
+    // A company starts with three part types; Cabinets skip template and fabrication.
+    let types = page().await["part_types"].clone();
+    let names: Vec<&str> = types
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|kind| kind["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Countertops", "Backsplash", "Cabinets"]);
+    assert_eq!(types[2]["uses_template"], false);
+    assert_eq!(types[2]["uses_fabrication"], false);
+    let add = |body: Value| {
+        let pool = pool.clone();
+        async move {
+            let res = server(pool)
+                .post(&format!("/v1/projects/{id}/parts"))
+                .with_session(sessions::ADMIN)
+                .json(&body)
+                .await;
+            res.assert_status(StatusCode::CREATED);
+            res.json::<Value>()["id"].as_i64().unwrap()
+        }
+    };
+
+    // A step done before the project had parts stays with its first part.
+    let step = add_step(&pool, sessions::ADMIN, "templated", "Confirm the file")
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    let check = |body: Value| {
+        let pool = pool.clone();
+        async move {
+            server(pool)
+                .put(&format!("/v1/projects/{id}/steps/{step}"))
+                .with_session(sessions::ADMIN)
+                .json(&body)
+                .await
+                .assert_status(StatusCode::NO_CONTENT);
+        }
+    };
+    check(json!({ "done": true })).await;
+
+    // Adding a backsplash: the work so far becomes the first part, where the
+    // project was, and the project goes back to Awaiting Template.
+    let backsplash = add(json!({ "type_id": types[1]["id"] })).await;
+    let parts = page().await["parts"].clone();
+    assert_eq!(parts.as_array().unwrap().len(), 2, "{parts:?}");
+    assert_eq!(parts[0]["name"], "Countertops");
+    assert_eq!(parts[0]["stage_code"], "templated");
+    assert_eq!(parts[1]["name"], "Backsplash");
+    assert_eq!(parts[1]["stage_code"], "new");
+    assert_eq!(stage().await, "new");
+    let countertops = parts[0]["id"].as_i64().unwrap();
+    assert_eq!(page().await["done_steps"][0]["part_id"], countertops);
+    assert_eq!(
+        board(&pool, sessions::ADMIN).await["parts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // Cabinets only wait for their installation, so they hold nothing back.
+    let cabinets = add(json!({ "type_id": types[2]["id"], "name": "Kitchen cabinets" })).await;
+    let parts = page().await["parts"].clone();
+    assert_eq!(parts[2]["name"], "Kitchen cabinets");
+    assert_eq!(parts[2]["stage_code"], "fabrication");
+    assert_eq!(stage().await, "new");
+    act(
+        &pool,
+        id,
+        sessions::ADMIN,
+        json!({ "intent": "stage", "version": version(&pool, id).await, "stage": "new",
+                "partId": cabinets }),
+    )
+    .await
+    .assert_status(StatusCode::CONFLICT);
+
+    // The backsplash's own template moves only the backsplash.
+    // Booked for no part: it goes to the part still waiting for a template.
+    job(9871, 9880, None).await;
+    let parts = page().await["parts"].clone();
+    assert_eq!(parts[1]["stage_code"], "templated");
+    assert_eq!(stage().await, "templated");
+    // A step is checked off for one part: without a part, the least finished.
+    check(json!({ "done": true, "part_id": backsplash })).await;
+    let done = page().await["done_steps"].clone();
+    assert_eq!(done.as_array().unwrap().len(), 2, "{done:?}");
+    check(json!({ "done": false, "part_id": backsplash })).await;
+    assert_eq!(page().await["done_steps"].as_array().unwrap().len(), 1);
+
+    // Moved back by hand, one part: its finished template no longer counts.
+    act(
+        &pool,
+        id,
+        sessions::ADMIN,
+        json!({ "intent": "stage", "version": version(&pool, id).await, "stage": "new",
+                "partId": backsplash }),
+    )
+    .await
+    .assert_status_ok();
+    assert_eq!(page().await["parts"][1]["stage_code"], "new");
+    assert_eq!(page().await["parts"][0]["stage_code"], "templated");
+    assert_eq!(stage().await, "new");
+    let history = page().await["history"].clone();
+    assert!(
+        history
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line["source_action"] == "moved-back" && line["part_name"] == "Backsplash"),
+        "{history:?}"
+    );
+
+    // The cabinets are installed: the project still waits for the other parts.
+    job(9872, 9881, Some(cabinets)).await;
+    assert_eq!(page().await["parts"][2]["stage_code"], "installed");
+    assert_eq!(stage().await, "new");
+
+    // A part with jobs stays; its job can be moved to another part first.
+    let remove = |part: i64| {
+        let pool = pool.clone();
+        async move {
+            server(pool)
+                .delete(&format!("/v1/projects/{id}/parts/{part}"))
+                .with_session(sessions::ADMIN)
+                .await
+                .status_code()
+        }
+    };
+    assert_eq!(remove(backsplash).await, StatusCode::CONFLICT);
+    server(pool.clone())
+        .put(&format!("/v1/projects/{id}/appointments/9871/part"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "part_id": countertops }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(remove(backsplash).await, StatusCode::NO_CONTENT);
+    assert_eq!(page().await["parts"].as_array().unwrap().len(), 2);
+    assert_eq!(stage().await, "templated");
+
+    // A sales rep sees the part types but only admins change them.
+    server(pool.clone())
+        .get("/v1/projects/part-types")
+        .with_session(sessions::REP)
+        .await
+        .assert_status_ok();
+    server(pool.clone())
+        .post("/v1/projects/part-types")
+        .with_session(sessions::REP)
+        .json(&json!({ "name": "Tile", "uses_template": false, "uses_fabrication": false }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    let tile = server(pool.clone())
+        .post("/v1/projects/part-types")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "Tile", "uses_template": true, "uses_fabrication": false }))
+        .await;
+    tile.assert_status(StatusCode::CREATED);
+    let tile = tile.json::<Value>()["id"].as_i64().unwrap();
+    server(pool.clone())
+        .patch(&format!("/v1/projects/part-types/{tile}"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "Tile work", "uses_template": false, "uses_fabrication": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    server(pool.clone())
+        .delete(&format!("/v1/projects/part-types/{tile}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let left: Value = server(pool.clone())
+        .get("/v1/projects/part-types")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(left.as_array().unwrap().len(), 3);
 }

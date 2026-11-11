@@ -43,7 +43,7 @@ async fn people(conn: &mut MySqlConnection, company_id: i32) -> sqlx::Result<Vec
 
 const APPOINTMENT_SELECT: &str = "SELECT e.id, e.project_id, cal.slug AS kind, e.title,
         DATE_FORMAT(e.start_date, '%Y-%m-%dT%H:%i:%sZ') AS start_date,
-        COALESCE(e.unscheduled, 0) <> 0 AS unscheduled
+        COALESCE(e.unscheduled, 0) <> 0 AS unscheduled, e.project_part_id AS part_id
    FROM events e
    JOIN calendars cal ON cal.id = e.calendar_id AND cal.deleted_at IS NULL
                      AND cal.slug IN ('templates', 'installations')";
@@ -189,6 +189,8 @@ pub async fn board(
     };
     let process_steps = super::process::company_steps(&mut conn, viewer.company_id).await?;
     let done_steps = super::process::done_steps(&mut conn, &ids).await?;
+    super::parts::adopt_jobs(&mut conn, viewer.company_id, &ids).await?;
+    let parts = super::parts::parts_of(&mut conn, viewer.company_id, &ids).await?;
     let issue_counts: Vec<ProjectIssueCount> = if ids.is_empty() {
         Vec::new()
     } else {
@@ -214,6 +216,7 @@ pub async fn board(
         tasks,
         process_steps,
         done_steps,
+        parts,
         issue_counts,
         permissions: viewer.permissions,
         page,
@@ -312,6 +315,8 @@ pub async fn get(
     let mut conn = state.pool.acquire().await?;
     let project = visible_project(&mut conn, &viewer, id).await?;
     let company = viewer.company_id;
+    // Before its jobs are read: each one is given its part.
+    super::parts::adopt_jobs(&mut conn, company, &[id]).await?;
     let task_sql = format!(
         "{TASK_SELECT} WHERE t.project_id = ? AND t.company_id = ? AND t.deleted_at IS NULL
           ORDER BY t.completed_at IS NOT NULL, t.deadline IS NULL, t.deadline, t.id"
@@ -408,15 +413,18 @@ pub async fn get(
     // Stage moves, and the template maker's and installer's Completed (the
     // jobs that move it on their own, see `STAGE_SQL`).
     let history: Vec<StageChange> = sqlx::query_as(
-        "SELECT id, from_stage, to_stage, source_action, reason, author, created_at FROM (
-           SELECT h.id, h.from_stage, h.to_stage, h.source_action, h.reason, u.name AS author,
+        "SELECT id, from_stage, to_stage, source_action, reason, part_name, author, created_at FROM (
+           SELECT h.id, h.from_stage, h.to_stage, h.source_action, h.reason,
+                  hp.name AS part_name, u.name AS author,
                   DATE_FORMAT(h.created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at, h.created_at AS at
              FROM project_stage_history h LEFT JOIN users u ON u.id = h.actor_id
+             LEFT JOIN project_parts hp ON hp.id = h.part_id
             WHERE h.project_id = ? AND h.company_id = ?
            UNION ALL
            SELECT -e.id, NULL, IF(cal.slug = 'templates', 'templated', 'installed'),
                   IF(cal.slug = 'templates', 'template-completed', 'install-completed'),
-                  NULL, u.name, DATE_FORMAT(e.completed_at, '%Y-%m-%dT%H:%i:%sZ'), e.completed_at
+                  NULL, ep.name, u.name, DATE_FORMAT(e.completed_at, '%Y-%m-%dT%H:%i:%sZ'),
+                  e.completed_at
              FROM projects p
              JOIN events e ON e.deleted_date IS NULL AND e.crew_status = 'completed'
                           AND e.completed_at IS NOT NULL
@@ -426,6 +434,7 @@ pub async fn get(
              JOIN calendars cal ON cal.id = e.calendar_id
                                AND cal.slug IN ('templates', 'installations')
              LEFT JOIN users u ON u.id = e.assigned_user_id
+             LEFT JOIN project_parts ep ON ep.id = e.project_part_id
             WHERE p.id = ? AND p.company_id = ?
          ) entries ORDER BY at DESC LIMIT 100",
     )
@@ -477,6 +486,8 @@ pub async fn get(
     let mut conn = state.pool.acquire().await?;
     let process_steps = super::process::company_steps(&mut conn, company).await?;
     let done_steps = super::process::done_steps(&mut conn, &[id]).await?;
+    let parts = super::parts::parts_of(&mut conn, company, &[id]).await?;
+    let part_types = super::parts::part_types(&mut conn, company).await?;
     Ok(Json(ProjectWorkspace {
         project,
         tasks,
@@ -492,6 +503,8 @@ pub async fn get(
         appointments,
         process_steps,
         done_steps,
+        parts,
+        part_types,
         permissions: viewer.permissions,
         user_id: viewer.user_id,
     }))

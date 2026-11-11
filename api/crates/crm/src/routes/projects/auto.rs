@@ -62,26 +62,41 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     }
     let ids: Vec<i32> = live.iter().map(|p| p.id).collect();
     let mut sql = QueryBuilder::<MySql>::new(
-        "SELECT project_id, step_id, CAST(done_at AS DATETIME(3)) FROM project_process_steps_done WHERE 1 = 1",
+        "SELECT project_id, part_id, step_id, CAST(done_at AS DATETIME(3)) FROM project_process_steps_done WHERE 1 = 1",
     );
     crate::sql::push_in(&mut sql, "project_id", &ids);
-    let done: Vec<(i32, i32, NaiveDateTime)> = sql.build_query_as().fetch_all(&mut *conn).await?;
+    let done: Vec<(i32, i32, i32, NaiveDateTime)> =
+        sql.build_query_as().fetch_all(&mut *conn).await?;
     let mut sql = QueryBuilder::<MySql>::new(
-        "SELECT project_id, step_id FROM project_process_step_auto_off WHERE 1 = 1",
+        "SELECT project_id, part_id, step_id FROM project_process_step_auto_off WHERE 1 = 1",
     );
     crate::sql::push_in(&mut sql, "project_id", &ids);
-    let off: Vec<(i32, i32)> = sql.build_query_as().fetch_all(&mut *conn).await?;
+    let off: Vec<(i32, i32, i32)> = sql.build_query_as().fetch_all(&mut *conn).await?;
+    let parts = super::parts::parts_of(&mut conn, company_id, &ids).await?;
     let now = Utc::now().naive_utc();
     // Told once the connection is back in the pool: telling needs it.
-    let mut checked: Vec<(i32, i32)> = Vec::new();
+    let mut checked: Vec<(i32, i32, i32)> = Vec::new();
 
+    // A project with parts walks each part's stage (part 0: a project without).
+    let mut tracks: Vec<(&Project, i32, &str)> = Vec::new();
     for project in live {
-        let stage = project.stage_code.as_str();
+        let own: Vec<_> = parts
+            .iter()
+            .filter(|part| part.project_id == project.id)
+            .collect();
+        if own.is_empty() {
+            tracks.push((project, 0, project.stage_code.as_str()));
+        }
+        for part in own {
+            tracks.push((project, part.id, part.stage_code.as_str()));
+        }
+    }
+    for (project, part, stage) in tracks {
         let mut before: Option<NaiveDateTime> = None;
         for rule in rules.iter().filter(|rule| rule.stage_code == stage) {
-            if let Some((_, _, at)) = done
+            if let Some((_, _, _, at)) = done
                 .iter()
-                .find(|(p, s, _)| *p == project.id && *s == rule.id)
+                .find(|(p, d, s, _)| *p == project.id && *d == part && *s == rule.id)
             {
                 before = Some(*at);
                 continue;
@@ -90,7 +105,7 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
             else {
                 break;
             };
-            if off.contains(&(project.id, rule.id)) {
+            if off.contains(&(project.id, part, rule.id)) {
                 break;
             }
             let after = before.map_or(since, |at| at.max(since));
@@ -105,25 +120,28 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
                 break;
             };
             let added = sqlx::query(
-                "INSERT IGNORE INTO project_process_steps_done (project_id, step_id, done_by, done_at, auto)
-                 VALUES (?, ?, NULL, ?, 1)",
+                "INSERT IGNORE INTO project_process_steps_done
+                    (project_id, step_id, part_id, done_by, done_at, auto)
+                 VALUES (?, ?, ?, NULL, ?, 1)",
             )
             .bind(project.id)
             .bind(rule.id)
+            .bind(part)
             .bind(at)
             .execute(&mut *conn)
             .await?
             .rows_affected();
             if added > 0 {
-                super::step_events::apply(&mut conn, None, project.id, rule.id).await;
-                checked.push((project.id, rule.id));
+                super::step_events::apply(&mut conn, None, project.id, rule.id, part).await;
+                checked.push((project.id, rule.id, part));
             }
             before = Some(at);
         }
     }
     drop(conn);
-    for (project_id, step_id) in checked {
-        super::process::tell_step_people(state, None, Some("Auto"), project_id, step_id).await;
+    for (project_id, step_id, part_id) in checked {
+        super::process::tell_step_people(state, None, Some("Auto"), project_id, step_id, part_id)
+            .await;
     }
     Ok(())
 }

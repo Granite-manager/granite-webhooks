@@ -112,7 +112,8 @@ pub async fn done_steps(
         return Ok(Vec::new());
     }
     let mut sql = QueryBuilder::<MySql>::new(
-        "SELECT d.project_id, d.step_id, IF(d.auto = 1, 'Auto', u.name) AS done_by,
+        "SELECT d.project_id, d.step_id, NULLIF(d.part_id, 0) AS part_id,
+                IF(d.auto = 1, 'Auto', u.name) AS done_by,
                 DATE_FORMAT(d.done_at, '%Y-%m-%dT%H:%i:%sZ') AS done_at
            FROM project_process_steps_done d
            LEFT JOIN users u ON u.id = d.done_by
@@ -564,6 +565,7 @@ pub(super) async fn tell_step_people(
     actor_name: Option<&str>,
     project_id: i32,
     step_id: i32,
+    part_id: i32,
 ) {
     let result: sqlx::Result<()> = async {
         let people: Vec<i32> = sqlx::query_scalar(
@@ -591,11 +593,16 @@ pub(super) async fn tell_step_people(
             let id = sqlx::query(
                 "INSERT INTO notifications
                     (user_id, project_id, message, notification_type, actor_name, due_at)
-                 SELECT ?, ?, LEFT(name, 255), ?, ?, NOW()
+                 SELECT ?, ?,
+                        LEFT(CONCAT(name, COALESCE((SELECT CONCAT(' (', pp.name, ')')
+                                                      FROM project_parts pp WHERE pp.id = ?), '')),
+                             255),
+                        ?, ?, NOW()
                    FROM project_process_steps WHERE id = ?",
             )
             .bind(person)
             .bind(project_id)
+            .bind(part_id)
             .bind(STEP_DONE)
             .bind(&actor)
             .bind(step_id)
@@ -692,45 +699,68 @@ pub async fn set_done(
         ));
     }
     require_step(&mut conn, viewer.company_id, step_id).await?;
+    // On a project with parts a step is done for one part (0: no parts).
+    let parts = super::parts::parts_of(&mut conn, viewer.company_id, &[id]).await?;
+    let part = if parts.is_empty() {
+        0
+    } else {
+        super::parts::target(&parts, input.part_id)?.id
+    };
     if input.done {
         let added = sqlx::query(
-            "INSERT IGNORE INTO project_process_steps_done (project_id, step_id, done_by)
-             VALUES (?, ?, ?)",
+            "INSERT IGNORE INTO project_process_steps_done (project_id, step_id, part_id, done_by)
+             VALUES (?, ?, ?, ?)",
         )
         .bind(id)
         .bind(step_id)
+        .bind(part)
         .bind(user.id)
         .execute(&mut *conn)
         .await?
         .rows_affected();
         // Checked by hand: its rule may check it again after a later uncheck.
         sqlx::query(
-            "DELETE FROM project_process_step_auto_off WHERE project_id = ? AND step_id = ?",
+            "DELETE FROM project_process_step_auto_off
+              WHERE project_id = ? AND step_id = ? AND part_id = ?",
         )
         .bind(id)
         .bind(step_id)
+        .bind(part)
         .execute(&mut *conn)
         .await?;
         if added > 0 {
-            super::step_events::apply(&mut conn, Some(user.id), id, step_id).await;
+            super::step_events::apply(&mut conn, Some(user.id), id, step_id, part).await;
         }
         drop(conn);
         // Already done (a second click) tells nobody again.
         if added > 0 {
-            tell_step_people(&state, Some(user.id), user.name.as_deref(), id, step_id).await;
+            tell_step_people(
+                &state,
+                Some(user.id),
+                user.name.as_deref(),
+                id,
+                step_id,
+                part,
+            )
+            .await;
         }
     } else {
-        sqlx::query("DELETE FROM project_process_steps_done WHERE project_id = ? AND step_id = ?")
-            .bind(id)
-            .bind(step_id)
-            .execute(&mut *conn)
-            .await?;
-        // Unchecked by hand: its rule leaves it alone on this project.
         sqlx::query(
-            "INSERT IGNORE INTO project_process_step_auto_off (project_id, step_id)
-             SELECT ?, id FROM project_process_steps WHERE id = ? AND auto_trigger IS NOT NULL",
+            "DELETE FROM project_process_steps_done
+              WHERE project_id = ? AND step_id = ? AND part_id = ?",
         )
         .bind(id)
+        .bind(step_id)
+        .bind(part)
+        .execute(&mut *conn)
+        .await?;
+        // Unchecked by hand: its rule leaves it alone on this project.
+        sqlx::query(
+            "INSERT IGNORE INTO project_process_step_auto_off (project_id, step_id, part_id)
+             SELECT ?, id, ? FROM project_process_steps WHERE id = ? AND auto_trigger IS NOT NULL",
+        )
+        .bind(id)
+        .bind(part)
         .bind(step_id)
         .execute(&mut *conn)
         .await?;

@@ -168,8 +168,9 @@ pub(super) async fn apply(
     actor_id: Option<i32>,
     project_id: i32,
     step_id: i32,
+    part_id: i32,
 ) {
-    if let Err(error) = apply_rules(conn, actor_id, project_id, step_id).await {
+    if let Err(error) = apply_rules(conn, actor_id, project_id, step_id, part_id).await {
         tracing::error!(?error, project_id, step_id, "step event rules failed");
     }
 }
@@ -179,6 +180,7 @@ async fn apply_rules(
     actor_id: Option<i32>,
     project_id: i32,
     step_id: i32,
+    part_id: i32,
 ) -> sqlx::Result<()> {
     let rules: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT target, readiness, shop_status FROM project_process_step_events WHERE step_id = ?",
@@ -230,7 +232,11 @@ async fn apply_rules(
                     e.shop_status_by = IF(? IS NULL, e.shop_status_by, ?)
               WHERE {PROJECT_EVENTS}
                 AND (cal.slug = ? OR e.calendar_id = ?)
-                AND RIGHT(e.title, CHAR_LENGTH(?)) = ?"
+                AND RIGHT(e.title, CHAR_LENGTH(?)) = ?
+                AND (? = 0 OR e.project_part_id = ?
+                     OR (e.project_part_id IS NULL
+                         AND ? = (SELECT MIN(fp.id) FROM project_parts fp
+                                   WHERE fp.project_id = p.id)))"
         );
         sqlx::query(sqlx::AssertSqlSafe(sql))
             .bind(project_id)
@@ -247,6 +253,9 @@ async fn apply_rules(
             .bind(calendar_id)
             .bind(&ending)
             .bind(&ending)
+            .bind(part_id)
+            .bind(part_id)
+            .bind(part_id)
             .execute(&mut *conn)
             .await?;
     }

@@ -16,6 +16,9 @@
 //! - `/v1/projects/{id}/files[/{file_id}]`         → files from `POST /v1/uploads` (POST, DELETE)
 //! - `/v1/projects/process-steps[/{step_id}]`      → the company's own steps, for admins (GET, POST, PATCH, DELETE, reorder, notify, auto)
 //! - `PUT    /v1/projects/{id}/steps/{step_id}`    → check a step off a project
+//! - `/v1/projects/part-types[/{type_id}]`        → the company's part types (GET; POST, PATCH, DELETE for admins)
+//! - `/v1/projects/{id}/parts[/{part_id}]`         → a project's parts (POST, PATCH, DELETE)
+//! - `PUT    /v1/projects/{id}/appointments/{event_id}/part` → which part a job is for
 //! - `/v1/projects/{id}/issues[/{issue_id}]`       → report an issue, mark one solved, delete one (POST, PUT, DELETE)
 //!
 //! Who sees what is in [`access`].
@@ -26,6 +29,7 @@ pub use auto::log_sent_template;
 mod handlers;
 mod issues;
 pub use issues::mark_issue_solved;
+mod parts;
 mod payments;
 mod process;
 mod step_events;
@@ -61,6 +65,11 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(process::set_auto))
         .routes(routes!(step_events::set_events))
         .routes(routes!(process::set_done))
+        .routes(routes!(parts::list_types, parts::create_type))
+        .routes(routes!(parts::update_type, parts::delete_type))
+        .routes(routes!(parts::add_part))
+        .routes(routes!(parts::update_part, parts::delete_part))
+        .routes(routes!(parts::set_appointment_part))
         .routes(routes!(issues::report))
         .routes(routes!(issues::solve, issues::delete))
 }
