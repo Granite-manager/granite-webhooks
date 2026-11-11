@@ -45,8 +45,33 @@ impl SmsScope {
     }
 }
 
+/// The admin inbox's rep filter value for the Scheduling Managers' shared
+/// inbox (Telnyx): the lines the company's notices and its Scheduling
+/// Managers' texts go out on.
+pub const SCHEDULE_FILTER: &str = "schedule";
+
+/// The first Scheduling Manager of the company: the Scheduling Managers share
+/// one inbox, so filtering as any of them shows it.
+pub async fn scheduling_manager(
+    pool: &MySqlPool,
+    company_id: i32,
+) -> Result<Option<i32>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT u.id FROM users u
+           JOIN users_positions up ON up.user_id = u.id AND up.company_id = u.company_id
+                                  AND up.position_id = ?
+          WHERE u.company_id = ? AND u.is_deleted = 0
+          ORDER BY u.id LIMIT 1",
+    )
+    .bind(crate::auth::sections::SCHEDULING_MANAGER_POSITION)
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await
+}
+
 /// A company user with `agent_id`, when the scope is `all`; anything else
-/// filters nothing.
+/// filters nothing. On Telnyx, `schedule` is the Scheduling Managers' shared
+/// inbox.
 pub async fn filter_agent(
     pool: &MySqlPool,
     provider: SmsProvider,
@@ -60,6 +85,11 @@ pub async fn filter_agent(
     }
     let Some(column) = provider.agent_column() else {
         // Telnyx: the rep's user id.
+        if wanted == SCHEDULE_FILTER {
+            return Ok(scheduling_manager(pool, user.company_id)
+                .await?
+                .map(|id| id.to_string()));
+        }
         let Ok(rep) = wanted.parse::<i32>() else {
             return Ok(None);
         };

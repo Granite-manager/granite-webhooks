@@ -567,7 +567,9 @@ pub(super) async fn provider_alerts(
 ///
 /// The company's users with an agent (`CloudTalk`) or extension
 /// (`RingCentral`) id, or with a Telnyx line (`agent_id` = their user id),
-/// for the admin inbox's rep filter.
+/// for the admin inbox's rep filter. On Telnyx the list starts with
+/// `schedule` (named "Schedule") when the company has a Scheduling Manager:
+/// their shared inbox, the Notification number's texts included.
 #[crate::openapi::path(
     get,
     path = "/v1/sms/{provider}/sales-reps",
@@ -588,14 +590,25 @@ pub async fn sales_reps(
     Path(provider): Path<SmsProvider>,
 ) -> ApiResult<Json<Vec<SalesRep>>> {
     let Some(column) = provider.agent_column() else {
-        // Telnyx: the users with a line, by their user id.
-        let reps = crate::phone::texting::texting_users(&state.pool, user.company_id)
+        // Telnyx: the users with a line, by their user id, after "Schedule":
+        // the Scheduling Managers' shared inbox (the notices' lines too).
+        let schedule = super::scope::scheduling_manager(&state.pool, user.company_id)
             .await?
+            .map(|_| SalesRep {
+                agent_id: super::scope::SCHEDULE_FILTER.to_string(),
+                name: "Schedule".to_string(),
+            });
+        let reps = schedule
             .into_iter()
-            .map(|(id, name)| SalesRep {
-                agent_id: id.to_string(),
-                name,
-            })
+            .chain(
+                crate::phone::texting::texting_users(&state.pool, user.company_id)
+                    .await?
+                    .into_iter()
+                    .map(|(id, name)| SalesRep {
+                        agent_id: id.to_string(),
+                        name,
+                    }),
+            )
             .collect();
         return Ok(Json(reps));
     };
