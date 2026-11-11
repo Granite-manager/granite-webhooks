@@ -99,6 +99,7 @@ pub async fn company_steps(
             });
         }
     }
+    super::step_events::load(&mut *conn, &mut steps).await?;
     Ok(steps)
 }
 
@@ -189,7 +190,11 @@ pub async fn create(
 }
 
 /// Stops here unless the step is the company's.
-async fn require_step(conn: &mut MySqlConnection, company_id: i32, step_id: i32) -> ApiResult<()> {
+pub(super) async fn require_step(
+    conn: &mut MySqlConnection,
+    company_id: i32,
+    step_id: i32,
+) -> ApiResult<()> {
     sqlx::query_scalar::<_, i32>(
         "SELECT id FROM project_process_steps WHERE id = ? AND company_id = ?",
     )
@@ -315,6 +320,8 @@ pub async fn set_notify(
             return Err(ApiError::BadRequest("Pick people from your company".into()));
         }
     }
+    // The pool holds one connection: free ours before the transaction takes it.
+    drop(conn);
     let mut tx = state.pool.begin().await?;
     sqlx::query("UPDATE project_process_steps SET notify_sales_rep = ? WHERE id = ?")
         .bind(input.sales_rep)
@@ -704,6 +711,9 @@ pub async fn set_done(
         .bind(step_id)
         .execute(&mut *conn)
         .await?;
+        if added > 0 {
+            super::step_events::apply(&mut conn, Some(user.id), id, step_id).await;
+        }
         drop(conn);
         // Already done (a second click) tells nobody again.
         if added > 0 {

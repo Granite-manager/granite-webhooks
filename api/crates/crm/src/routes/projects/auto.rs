@@ -115,6 +115,7 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
             .await?
             .rows_affected();
             if added > 0 {
+                super::step_events::apply(&mut conn, None, project.id, rule.id).await;
                 checked.push((project.id, rule.id));
             }
             before = Some(at);
