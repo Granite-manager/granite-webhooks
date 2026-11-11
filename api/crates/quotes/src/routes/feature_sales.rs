@@ -24,7 +24,7 @@ pub fn router() -> OpenApiRouter<AppState> {
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct FeatureSalesQuery {
-    /// `mine` (default) or `company` (admins).
+    /// `mine` (default) or `company` (every rep).
     #[serde(default)]
     pub scope: Option<String>,
     /// First sold day (YYYY-MM-DD); none: no limit.
@@ -78,7 +78,7 @@ fn day(value: Option<&str>) -> ApiResult<Option<String>> {
 
 /// List feature sales
 ///
-/// The caller's (`mine`) or, for admins, everyone's (`company`) sold quotes
+/// The caller's (`mine`) or everyone's (`company`) sold quotes
 /// in the dates, each with the dollars of every extra on its accepted option,
 /// worked out from the quote as it is now.
 #[crate::openapi::path(
@@ -91,7 +91,7 @@ fn day(value: Option<&str>) -> ApiResult<Option<String>> {
         (status = 200, description = "Sold quotes' extras", body = FeatureSales),
         (status = 400, description = "Unknown scope or bad date", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not an employee, or not an admin for `company`", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("session_cookie" = []))
@@ -103,8 +103,8 @@ pub async fn list_feature_sales(
 ) -> ApiResult<Json<FeatureSales>> {
     let only = match query.scope.as_deref() {
         None | Some("mine") => Some(user.id),
-        Some("company") if user.is_admin || user.is_superuser => None,
-        Some("company") => return Err(ApiError::Forbidden),
+        // Every rep sees every rep's extras (owner, 2026-11-11).
+        Some("company") => None,
         Some(_) => return Err(ApiError::BadRequest("scope must be mine or company".into())),
     };
     let from = day(query.from.as_deref())?;
