@@ -4,6 +4,8 @@ use axum::http::StatusCode;
 use common::{WithSession, server, sessions};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
+use sqlx::mysql::MySqlPoolOptions;
+use std::time::Duration;
 
 // Seed: in company 100 Rita (100) is a sales rep and owns the open deal 8002
 // "Erin countertops" of Erin Builder (1004); Mark (101) is the Sales Manager;
@@ -876,6 +878,66 @@ async fn steps_check_themselves_off_by_their_rules(pool: MySqlPool) {
         .assert_status(StatusCode::NO_CONTENT);
     let seen = board(&pool, sessions::ADMIN).await;
     assert_eq!(seen["process_steps"][0]["auto"], Value::Null);
+}
+
+/// The Lambda's pool has one connection: the board and a project's page must
+/// not check the rules, or tell a step's people, while they hold it (each
+/// load waited out the acquire timeout and checked nothing).
+#[test_db::test(seed)]
+async fn rules_are_checked_on_a_one_connection_pool(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let project = projects_of_8002(&pool).await[0];
+    let step = add_step(&pool, sessions::ADMIN, "new", "Get the file").await;
+    let step = step.json::<Value>()["id"].as_i64().unwrap();
+    for (path, body) in [
+        ("auto", json!({ "auto": { "trigger": "file_added" } })),
+        ("notify", json!({ "user_ids": [101] })),
+    ] {
+        server(pool.clone())
+            .put(&format!("/v1/projects/process-steps/{step}/{path}"))
+            .with_session(sessions::ADMIN)
+            .json(&body)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    }
+    sqlx::query(
+        "INSERT INTO project_files (project_id, company_id, name, url, content_type, created_by, created_at)
+         SELECT p.id, p.company_id, 'layout.pdf', 'x/layout.pdf', 'application/pdf',
+                (SELECT u.id FROM users u WHERE u.company_id = p.company_id LIMIT 1),
+                UTC_TIMESTAMP() + INTERVAL 1 MINUTE
+           FROM projects p WHERE p.id = ?",
+    )
+    .bind(project)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let single = MySqlPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(3))
+        .connect_with((*pool.connect_options()).clone())
+        .await
+        .unwrap();
+    let told = async || -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE project_id = ? AND user_id = 101")
+            .bind(project)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+
+    let seen = board(&single, sessions::ADMIN).await;
+    assert_eq!(seen["done_steps"].as_array().unwrap().len(), 1);
+    assert_eq!(told().await, 1);
+
+    run(&pool, "DELETE FROM project_process_steps_done").await;
+    let page = server(single.clone())
+        .get(&format!("/v1/projects/{project}"))
+        .with_session(sessions::ADMIN)
+        .await;
+    page.assert_status_ok();
+    assert_eq!(page.json::<Value>()["done_steps"].as_array().unwrap().len(), 1);
+    assert_eq!(told().await, 2);
 }
 
 #[test_db::test(seed)]
