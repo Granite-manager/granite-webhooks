@@ -88,8 +88,6 @@ static DUMMY_HASH: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
 /// Positions that lock a user into one portal, first match wins
 /// (`PORTAL_POSITIONS` in `portalLock.server.ts`).
 const INSTALLER: i32 = 6;
-/// Old check-in accounts only (from before walk-in tablets): their walk-in
-/// page turns the browser into a paired tablet (`check_in`) and retires them.
 const CHECK_IN: i32 = 8;
 const MARKETING: i32 = 7;
 const SHOP_WORKER: i32 = 4;

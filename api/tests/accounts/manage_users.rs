@@ -80,7 +80,7 @@ async fn managers_add_users_with_positions(pool: MySqlPool) {
     .await
     .unwrap();
     assert_eq!(email, "ian@acme.test");
-    // Only superusers pick the company or grant Super Admin; nobody grants check-in.
+    // Only superusers pick the company or grant Super Admin and check-in.
     assert_eq!(company, 100);
     // They set their own name and password from the invite.
     assert_eq!(name.as_deref(), Some(""));
