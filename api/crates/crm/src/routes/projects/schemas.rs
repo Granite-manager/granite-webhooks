@@ -243,6 +243,17 @@ pub struct ProcessStepNotify {
     pub sales_rep: bool,
 }
 
+/// A position a step's Notify can pick people from.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct NotifyPosition {
+    /// `positions.id`.
+    pub id: i32,
+    /// Its name, e.g. "Shop Manager".
+    pub name: String,
+    /// The company's people in it, by name.
+    pub people: Vec<Person>,
+}
+
 /// A stage's steps, in their new order.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ProcessStepOrder {

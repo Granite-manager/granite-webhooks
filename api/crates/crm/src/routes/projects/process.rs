@@ -4,8 +4,8 @@
 
 use super::access::{Stage, Viewer};
 use super::schemas::{
-    DoneStep, Person, ProcessStep, ProcessStepAuto, ProcessStepInput, ProcessStepName, ProcessStepNotify,
-    ProcessStepOrder, StepAuto, StepDone,
+    DoneStep, NotifyPosition, Person, ProcessStep, ProcessStepAuto, ProcessStepInput,
+    ProcessStepName, ProcessStepNotify, ProcessStepOrder, StepAuto, StepDone,
 };
 use super::service::visible_project;
 use crate::auth::{AdminUser, EmployeeUser};
@@ -320,39 +320,67 @@ pub async fn set_notify(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The company's Scheduling Managers
+/// The positions Notify can pick from
 ///
-/// Who a step's Notify can pick from under the Scheduling Manager position.
+/// Every position that has a Projects board, with the company's people in it,
+/// so a step can tell specific Sales Reps, Shop Managers, Scheduling Managers
+/// and so on.
 #[crate::openapi::path(
     get,
-    path = "/v1/projects/process-steps/scheduling-managers",
-    operation_id = "list_project_step_scheduling_managers",
+    path = "/v1/projects/process-steps/positions",
+    operation_id = "list_project_step_positions",
     tag = "projects",
     responses(
-        (status = 200, description = "The Scheduling Managers by name", body = Vec<Person>),
+        (status = 200, description = "The positions and their people", body = Vec<NotifyPosition>),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("session_cookie" = []))
 )]
-pub async fn scheduling_managers(
+pub async fn notify_positions(
     State(state): State<AppState>,
     AdminUser(user): AdminUser,
-) -> ApiResult<Json<Vec<Person>>> {
-    let people: Vec<Person> = sqlx::query_as(
-        "SELECT u.id, COALESCE(NULLIF(TRIM(u.name), ''), CONCAT('User ', u.id)) AS name
-           FROM users u
-           JOIN users_positions up ON up.user_id = u.id AND up.position_id = ?
-          WHERE u.company_id = ? AND u.is_deleted = 0
-          ORDER BY name, u.id",
+) -> ApiResult<Json<Vec<NotifyPosition>>> {
+    let rows: Vec<(i32, i32, String)> = sqlx::query_as(
+        "SELECT up.position_id, u.id, COALESCE(NULLIF(TRIM(u.name), ''), CONCAT('User ', u.id))
+           FROM users_positions up
+           JOIN users u ON u.id = up.user_id AND u.is_deleted = 0 AND u.company_id = ?
+          WHERE up.company_id = ?
+          ORDER BY 3, u.id",
     )
-    .bind(crate::auth::sections::SCHEDULING_MANAGER_POSITION)
+    .bind(user.company_id)
     .bind(user.company_id)
     .fetch_all(&state.pool)
     .await?;
-    Ok(Json(people))
+    let positions = NOTIFY_POSITIONS
+        .iter()
+        .map(|(id, name)| NotifyPosition {
+            id: *id,
+            name: (*name).to_string(),
+            people: rows
+                .iter()
+                .filter(|row| row.0 == *id)
+                .map(|row| Person {
+                    id: row.1,
+                    name: row.2.clone(),
+                })
+                .collect(),
+        })
+        .collect();
+    Ok(Json(positions))
 }
+
+/// The positions with a Projects board (and Shop Worker), by `positions.id`.
+const NOTIFY_POSITIONS: [(i32, &str); 7] = [
+    (1, "Sales Rep"),
+    (2, "Sales Manager"),
+    (5, "Manager"),
+    (3, "Shop Manager"),
+    (4, "Shop Worker"),
+    (12, "Inventory Manager"),
+    (13, "Scheduling Manager"),
+];
 
 /// What can check a step off by itself.
 pub const TRIGGERS: [&str; 14] = [
