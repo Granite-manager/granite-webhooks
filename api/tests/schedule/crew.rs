@@ -520,12 +520,12 @@ async fn admins_see_where_the_crew_last_was(pool: MySqlPool) {
     assert_eq!(installer["place_event_id"], 9900);
     assert_eq!(installer["place_title"], "Install");
 
-    // Only admins see it.
+    // Any employee sees it on today's map, not only admins.
     server
         .get("/v1/schedule/crew-positions")
         .with_session(sessions::REP)
         .await
-        .assert_status(StatusCode::FORBIDDEN);
+        .assert_status_ok();
 }
 
 #[test_db::test(seed)]

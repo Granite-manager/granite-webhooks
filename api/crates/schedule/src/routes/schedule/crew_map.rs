@@ -4,7 +4,7 @@
 //!   maker's latest position, which their phone sends from 5 AM until 9 PM
 //!   (`POST /v1/me/location`)
 
-use crate::auth::AdminUser;
+use crate::auth::CurrentUser;
 use crate::error::{ApiResult, ErrorBody};
 use crate::openapi::ToSchema;
 use crate::state::AppState;
@@ -62,7 +62,8 @@ struct Row {
 ///
 /// Every installer and template maker of the company with their phone's
 /// latest position (Granite Manager sends it from 5 AM until 9 PM), and the
-/// shop or job they are at. Admins only.
+/// shop or job they are at. Any signed-in user of the company; the schedule's
+/// map of today shows it.
 #[crate::openapi::path(
     get,
     path = "/v1/schedule/crew-positions",
@@ -71,14 +72,13 @@ struct Row {
     responses(
         (status = 200, description = "The crew, by name", body = Vec<CrewPosition>),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("session_cookie" = []))
 )]
 pub async fn crew_positions(
     State(state): State<AppState>,
-    AdminUser(user): AdminUser,
+    CurrentUser(user): CurrentUser,
 ) -> ApiResult<Json<Vec<CrewPosition>>> {
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT u.id AS user_id, u.name, up.position_id, cp.latitude, cp.longitude,
