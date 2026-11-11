@@ -193,6 +193,8 @@ async fn users(
          LEFT JOIN users_positions up ON up.user_id = u.id AND up.company_id = ?
          WHERE u.is_deleted = 0 AND u.email IS NOT NULL AND TRIM(u.email) != ''
            AND (u.company_id = ? OR up.user_id IS NOT NULL)
+           AND NOT EXISTS (SELECT 1 FROM users_positions kp
+                            WHERE kp.user_id = u.id AND kp.position_id = 8)
            AND (? = '' OR u.name LIKE ? OR u.email LIKE ?)
          ORDER BY name LIMIT 50",
     )
