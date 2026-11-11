@@ -4,19 +4,19 @@
 //! order: per color of that option, the rooms using it, their square feet,
 //! the slabs the quote asks for (the slab layout's, or the estimate from the
 //! pieces, as the quote prices them) and that many free slabs of the
-//! inventory stone of that color, suggested. The company's Inventory
-//! Managers get a notification; they confirm or change the slabs on the
+//! inventory stone of that color, suggested. Everyone whose position has the
+//! Confirm sales orders skill (Inventory Manager by default) gets a
+//! notification; they confirm or change the slabs on the
 //! Sales orders page (`/v1/sales-orders`). The sales rep is not told.
 //!
 //! Undoing the sale cancels the order while it is pending ([`cancel`]).
 
 use super::Quote;
 use super::pricing::{DEFAULT_SLAB, estimated_slab_count, pieces_sq_in};
+use crate::auth::skills::{CONFIRM_SALES_ORDERS, company_skills};
 use crate::error::ApiResult;
-use sqlx::MySqlPool;
+use sqlx::{MySql, MySqlPool, QueryBuilder};
 
-/// `positions.id` of Inventory Manager.
-const INVENTORY_MANAGER_POSITION: i32 = 12;
 /// `notifications.notification_type` of a new sales order.
 pub const SALES_ORDER_NOTIFICATION: &str = "sales_order";
 
@@ -124,6 +124,14 @@ pub async fn create(
     if existing.is_some() || colors.is_empty() {
         return Ok(Vec::new());
     }
+    // Everyone whose position has the Confirm sales orders skill (Inventory
+    // Manager by default) is told.
+    let positions: Vec<i32> = company_skills(pool, quote.company_id)
+        .await
+        .into_iter()
+        .filter(|(_, skills, _)| skills.contains(&CONFIRM_SALES_ORDERS))
+        .map(|(position, ..)| position)
+        .collect();
     let mut tx = pool.begin().await?;
     let order_id = sqlx::query(
         "INSERT INTO sales_orders (company_id, quote_id, option_index, customer_id, deal_id,
@@ -224,15 +232,23 @@ pub async fn create(
         .chars()
         .take(255)
         .collect();
-    let managers: Vec<i32> = sqlx::query_scalar(
-        "SELECT DISTINCT u.id FROM users u
-           JOIN users_positions up ON up.user_id = u.id
-          WHERE up.company_id = ? AND up.position_id = ? AND u.is_deleted = 0",
-    )
-    .bind(quote.company_id)
-    .bind(INVENTORY_MANAGER_POSITION)
-    .fetch_all(&mut *tx)
-    .await?;
+    let managers: Vec<i32> = if positions.is_empty() {
+        Vec::new()
+    } else {
+        let mut query = QueryBuilder::<MySql>::new(
+            "SELECT DISTINCT u.id FROM users u
+               JOIN users_positions up ON up.user_id = u.id
+              WHERE u.is_deleted = 0 AND up.company_id = ",
+        );
+        query.push_bind(quote.company_id);
+        query.push(" AND up.position_id IN (");
+        let mut list = query.separated(", ");
+        for position in &positions {
+            list.push_bind(*position);
+        }
+        query.push(")");
+        query.build_query_scalar().fetch_all(&mut *tx).await?
+    };
     let mut notifications = Vec::with_capacity(managers.len());
     for manager in managers {
         let id = sqlx::query(
