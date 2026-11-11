@@ -88,6 +88,11 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
             tracks.push((project, 0, project.stage_code.as_str()));
         }
         for part in own {
+            // A part that is not fabricated only waits there for its
+            // installation: the fabrication steps are not its own.
+            if part.stage_code == super::access::Stage::Fabrication && !part.uses_fabrication {
+                continue;
+            }
             tracks.push((project, part.id, part.stage_code.as_str()));
         }
     }
