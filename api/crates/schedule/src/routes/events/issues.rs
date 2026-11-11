@@ -3,6 +3,7 @@
 //! sales rep.
 //!
 //! - `POST /v1/events/{id}/issues`
+//! - `PUT /v1/events/{id}/issues/{issue_id}` (mark solved, or open again)
 //! - `DELETE /v1/events/{id}/issues/{issue_id}`
 //!
 //! `GET /v1/events/{id}/details` lists them (`issues`).
@@ -54,6 +55,10 @@ pub struct EventIssue {
     pub created_by_id: Option<i32>,
     /// The reporter's name.
     pub created_by: Option<String>,
+    /// When it was marked solved (UTC); null while it is open.
+    pub solved_at: Option<DateTime<Utc>>,
+    /// Who marked it solved.
+    pub solved_by: Option<String>,
     /// Its pictures, in the order they were sent.
     pub photos: Vec<IssuePhoto>,
 }
@@ -78,6 +83,59 @@ struct IssueRow {
     created_at: Option<DateTime<Utc>>,
     created_by_id: Option<i32>,
     created_by: Option<String>,
+    solved_at: Option<DateTime<Utc>>,
+    solved_by: Option<String>,
+}
+
+/// Body of `PUT /v1/events/{id}/issues/{issue_id}`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct IssueSolved {
+    /// Solved, or open again.
+    pub solved: bool,
+}
+
+/// Mark an issue solved, or open again
+///
+/// Anyone who can see the job: the crew on the job card, the office on the
+/// schedule. Solved keeps who did it first and when.
+#[crate::openapi::path(
+    put,
+    path = "/v1/events/{id}/issues/{issue_id}",
+    operation_id = "set_event_issue_solved",
+    tag = "schedule",
+    params(
+        ("id" = i32, Path, description = "Event id"),
+        ("issue_id" = i32, Path, description = "Issue id"),
+    ),
+    request_body = IssueSolved,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee, admin or shop manager or worker", body = ErrorBody),
+        (status = 404, description = "No such issue on this event in the company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn solve(
+    State(state): State<AppState>,
+    ShopOrEmployeeUser(user): ShopOrEmployeeUser,
+    Path((id, issue_id)): Path<(i32, i32)>,
+    JsonBody(input): JsonBody<IssueSolved>,
+) -> ApiResult<StatusCode> {
+    if !crate::routes::projects::mark_issue_solved(
+        &state.pool,
+        &user,
+        issue_id,
+        input.solved,
+        "event_id = ?",
+        id,
+    )
+    .await?
+    {
+        return Err(ApiError::NotFound);
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The event's issues, oldest first, each with its pictures.
@@ -88,7 +146,7 @@ pub async fn list(
 ) -> sqlx::Result<Vec<EventIssue>> {
     let rows: Vec<IssueRow> = sqlx::query_as(
         "SELECT id, event_id, description, created_at, created_by AS created_by_id,
-                created_by_name AS created_by
+                created_by_name AS created_by, solved_at, solved_by_name AS solved_by
            FROM event_issues
           WHERE event_id = ? AND company_id = ? AND deleted_at IS NULL ORDER BY created_at, id",
     )
@@ -121,6 +179,8 @@ pub async fn list(
             description: row.description,
             created_at: row.created_at,
             created_by_id: row.created_by_id,
+            solved_at: row.solved_at,
+            solved_by: row.solved_by,
             created_by: row.created_by,
         })
         .collect())

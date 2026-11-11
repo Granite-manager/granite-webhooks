@@ -290,8 +290,8 @@ pub struct ProjectFile {
 pub struct ProjectIssue {
     /// Its id.
     pub id: i32,
-    /// The job it was reported on.
-    pub event_id: i32,
+    /// The job it was reported on; null for one reported on the project itself.
+    pub event_id: Option<i32>,
     /// `templates` or `installations`; null for another calendar.
     pub kind: Option<String>,
     /// When the job is (UTC ISO); null while it waits for a date.
@@ -302,17 +302,23 @@ pub struct ProjectIssue {
     pub author: Option<String>,
     /// When, UTC ISO.
     pub created_at: String,
+    /// When it was marked solved (UTC ISO); null while it is open.
+    pub solved_at: Option<String>,
+    /// Who marked it solved.
+    pub solved_by: Option<String>,
+    /// Who reported it (user id), so they can delete one of the project's own.
+    pub author_id: Option<i32>,
     /// Its pictures (URLs the browser can open).
     #[sqlx(skip)]
     pub photos: Vec<String>,
 }
 
-/// How many issues the crew reported on a project's jobs.
+/// How many open issues a project has (its jobs' and its own).
 #[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
 pub struct ProjectIssueCount {
     /// The project.
     pub project_id: i32,
-    /// Its issues.
+    /// Its open issues.
     pub count: i64,
 }
 

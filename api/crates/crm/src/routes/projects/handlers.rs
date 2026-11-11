@@ -194,10 +194,11 @@ pub async fn board(
         let mut sql = QueryBuilder::<MySql>::new(format!(
             "SELECT p.id AS project_id, COUNT(DISTINCT ei.id) AS count
                FROM projects p
-               JOIN events e ON {PROJECT_EVENTS}
-               JOIN event_issues ei ON ei.event_id = e.id AND ei.company_id = p.company_id
-                                   AND ei.deleted_at IS NULL
-              WHERE p.company_id = "
+               JOIN event_issues ei ON ei.company_id = p.company_id AND ei.deleted_at IS NULL
+                                   AND ei.solved_at IS NULL
+               LEFT JOIN events e ON e.id = ei.event_id
+              WHERE (ei.project_id = p.id OR (e.id IS NOT NULL AND {PROJECT_EVENTS}))
+                AND p.company_id = "
         ));
         sql.push_bind(viewer.company_id);
         crate::sql::push_in(&mut sql, "p.id", &ids);
@@ -374,15 +375,17 @@ pub async fn get(
         "SELECT ei.id, ei.event_id,
                 CASE WHEN cal.slug IN ('templates', 'installations') THEN cal.slug END AS kind,
                 IF(e.unscheduled = 1, NULL, DATE_FORMAT(e.start_date, '%Y-%m-%dT%H:%i:%sZ')) AS job_date,
-                ei.description, ei.created_by_name AS author,
-                DATE_FORMAT(ei.created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at
+                ei.description, ei.created_by_name AS author, ei.created_by AS author_id,
+                DATE_FORMAT(ei.created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at,
+                DATE_FORMAT(ei.solved_at, '%Y-%m-%dT%H:%i:%sZ') AS solved_at,
+                ei.solved_by_name AS solved_by
            FROM projects p
-           JOIN events e ON {PROJECT_EVENTS}
-           JOIN event_issues ei ON ei.event_id = e.id AND ei.company_id = p.company_id
-                               AND ei.deleted_at IS NULL
+           JOIN event_issues ei ON ei.company_id = p.company_id AND ei.deleted_at IS NULL
+           LEFT JOIN events e ON e.id = ei.event_id
            LEFT JOIN calendars cal ON cal.id = e.calendar_id
           WHERE p.id = ? AND p.company_id = ?
-          ORDER BY ei.created_at DESC, ei.id DESC LIMIT 200"
+            AND (ei.project_id = p.id OR (e.id IS NOT NULL AND {PROJECT_EVENTS}))
+          ORDER BY ei.solved_at IS NOT NULL, ei.created_at DESC, ei.id DESC LIMIT 200"
     )))
     .bind(id)
     .bind(company)
@@ -651,7 +654,7 @@ pub async fn convert_deal(
 
 /// Joins a project (`p`) to its jobs (`e`): those booked on it, and the
 /// customer's from a day before it started (as the job photos and history).
-const PROJECT_EVENTS: &str = "e.deleted_date IS NULL
+pub(super) const PROJECT_EVENTS: &str = "e.deleted_date IS NULL
     AND (e.project_id = p.id
          OR (e.project_id IS NULL AND e.customer_id = p.customer_id
              AND e.created_date >= p.created_at - INTERVAL 1 DAY))";
