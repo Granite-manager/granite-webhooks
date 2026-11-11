@@ -41016,6 +41016,95 @@
         ]
       }
     },
+    "/v1/events/{id}/shop-status": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Mark a job Cut or Complete",
+        "description": "Sets the shop's progress on a job (`cut`, then `complete`), or clears it\nwith null. Shop Managers, Shop Workers and Installers see it on the\nschedule. For Shop Managers and Shop Workers.",
+        "operationId": "set_shop_status",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShopStatusInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShopStatusSaved"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a Shop Manager or Shop Worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/events/estimates": {
       "post": {
         "tags": [
@@ -103278,6 +103367,13 @@
             ],
             "description": "When the crew tapped Completed (UTC, ISO 8601)."
           },
+          "shop_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The shop's progress: `cut` or `complete`. Only Shop Managers, Shop\nWorkers and Installers get it; null for everyone else."
+          },
           "customer_told": {
             "type": "boolean",
             "description": "The customer got the On my way message."
@@ -104466,6 +104562,48 @@
           "leaderboard": {
             "type": "boolean",
             "description": "The points leaderboard is on."
+          }
+        }
+      },
+      "ShopStatus": {
+        "type": "string",
+        "description": "The shop's progress on a job.",
+        "enum": [
+          "cut",
+          "complete"
+        ]
+      },
+      "ShopStatusInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/events/{id}/shop-status`.",
+        "properties": {
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShopStatus",
+                "description": "`cut`, `complete`, or null to clear it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ShopStatusSaved": {
+        "type": "object",
+        "description": "`POST /v1/events/{id}/shop-status`.",
+        "properties": {
+          "status": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShopStatus",
+                "description": "The job's shop status now; null when cleared."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },

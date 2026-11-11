@@ -126,6 +126,10 @@ pub struct ScheduleEvent {
     /// When the crew tapped Completed (UTC, ISO 8601).
     #[sqlx(default)]
     pub completed_at: Option<String>,
+    /// The shop's progress: `cut` or `complete`. Only Shop Managers, Shop
+    /// Workers and Installers get it; null for everyone else.
+    #[sqlx(default)]
+    pub shop_status: Option<String>,
     /// The customer got the On my way message.
     #[sqlx(default)]
     pub customer_told: bool,
@@ -180,9 +184,29 @@ pub async fn events(
     MultiQuery(query): MultiQuery<EventsQuery>,
 ) -> ApiResult<Json<ScheduleEvents>> {
     let own = super::own_events_only(&state.pool, &user).await?;
-    load_events(&state, user.company_id, &query, Scope::Board(user.id, own))
-        .await
-        .map(Json)
+    let mut loaded =
+        load_events(&state, user.company_id, &query, Scope::Board(user.id, own)).await?;
+    hide_shop_status(&state, user.id, user.company_id, &mut loaded.events).await?;
+    Ok(Json(loaded))
+}
+
+/// Takes the shop's Cut / Complete off the events unless the viewer is a
+/// Shop Manager, Shop Worker or Installer.
+async fn hide_shop_status(
+    state: &AppState,
+    viewer: i32,
+    company_id: i32,
+    events: &mut [ScheduleEvent],
+) -> ApiResult<()> {
+    if events.iter().all(|event| event.shop_status.is_none()) {
+        return Ok(());
+    }
+    if !crate::routes::events::shop::sees_shop_status(&state.pool, viewer, company_id).await? {
+        for event in events.iter_mut() {
+            event.shop_status = None;
+        }
+    }
+    Ok(())
 }
 
 /// Which events of the company a range read returns.
@@ -227,6 +251,7 @@ async fn load_events(
                 DATE_FORMAT(e.on_my_way_at, '%Y-%m-%dT%H:%i:%sZ') AS on_my_way_at,
                 DATE_FORMAT(e.arrived_at, '%Y-%m-%dT%H:%i:%sZ') AS arrived_at,
                 DATE_FORMAT(e.completed_at, '%Y-%m-%dT%H:%i:%sZ') AS completed_at,
+                e.shop_status,
                 e.on_my_way_sent_at IS NOT NULL AS customer_told,
                 e.quote_id
            FROM events e
@@ -430,9 +455,10 @@ pub async fn my_schedule(
         start: query.start,
         end: query.end,
     };
-    load_events(&state, user.company_id, &range, Scope::AssignedTo(person))
-        .await
-        .map(Json)
+    let mut loaded =
+        load_events(&state, user.company_id, &range, Scope::AssignedTo(person)).await?;
+    hide_shop_status(&state, user.id, user.company_id, &mut loaded.events).await?;
+    Ok(Json(loaded))
 }
 
 /// An installer or template maker.

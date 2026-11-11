@@ -14,6 +14,8 @@
 //! - `/v1/events/{id}/project-notes` → notes on the event's sold project
 //! - `POST /v1/events/{id}/crew-status`, `POST /v1/me/location` → the crew's
 //!   On my way, Arrived and Completed (`crew`)
+//! - `POST /v1/events/{id}/shop-status` → the shop marks a job Cut or Complete
+//!   (`shop`)
 //!
 //! Replaces the Remix `api.events`, `api.events.search`,
 //! `api.event-details`, `api.event-attachments` and `api.event-images` routes.
@@ -26,6 +28,7 @@ pub mod issues;
 pub mod notify;
 pub mod project_notes;
 pub mod reminders;
+pub mod shop;
 pub mod writes;
 
 use crate::openapi::{OpenApiRouter, routes};
@@ -40,6 +43,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(notifications::scheduling_texts))
         .routes(routes!(crew::set_status))
         .routes(routes!(crew::location))
+        .routes(routes!(shop::set_status))
         .routes(routes!(estimate::book))
         .routes(routes!(details::search))
         .routes(routes!(details::details))
