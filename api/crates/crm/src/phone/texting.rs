@@ -899,15 +899,15 @@ pub async fn receive(
     let (Some(customer10), Some(line10)) = (last10(&from), last10(&to)) else {
         return Ok(None);
     };
-    let number: Option<(i32, Option<String>)> = sqlx::query_as(
-        "SELECT id, forward_texts_to FROM telnyx_numbers
+    let number: Option<(i32, Option<String>, bool)> = sqlx::query_as(
+        "SELECT id, forward_texts_to, notifications <> 0 FROM telnyx_numbers
           WHERE company_id = ? AND last10 = ? LIMIT 1",
     )
     .bind(company_id)
     .bind(&line10)
     .fetch_optional(pool)
     .await?;
-    let Some((number_id, forward_texts_to)) = number else {
+    let Some((number_id, forward_texts_to, notifications)) = number else {
         tracing::warn!(
             company_id,
             "Telnyx text to a number that is not the company's: ignored"
@@ -915,6 +915,19 @@ pub async fn receive(
         return Ok(None);
     };
     let text = payload.text.clone().unwrap_or_default();
+    if notifications {
+        // The Notification number is one way: a reply is not stored or shown.
+        // STOP and START still count.
+        let opt = match opt_keyword(&text) {
+            Some(OptKeyword::OptOut) => opt_out(pool, company_id, &customer10, "stop").await,
+            Some(OptKeyword::OptIn) => opt_in(pool, company_id, &customer10).await,
+            None => Ok(()),
+        };
+        if let Err(err) = opt {
+            tracing::error!(company_id, error = %err, "Telnyx STOP/START not recorded");
+        }
+        return Ok(None);
+    }
     let inserted = sqlx::query(
         "INSERT IGNORE INTO telnyx_sms
            (telnyx_id, sender, recipient, text, direction, status, company_id, created_date,
