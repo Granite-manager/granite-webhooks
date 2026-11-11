@@ -55,6 +55,9 @@ pub struct EventPhoto {
     pub created_by: Option<String>,
     /// Always `photo`.
     pub source: &'static str,
+    /// On the crew's job page: `before` (Before photos) or `installed`
+    /// (Installed photos); null for any other comment file.
+    pub stage: Option<String>,
 }
 
 /// A document or image attached to the event.
@@ -129,7 +132,13 @@ pub struct EventDetails {
 }
 
 /// id, url, created at, created by.
-type ImageRow = (i32, String, Option<DateTime<Utc>>, Option<String>);
+type ImageRow = (
+    i32,
+    String,
+    Option<DateTime<Utc>>,
+    Option<String>,
+    Option<String>,
+);
 
 #[derive(sqlx::FromRow)]
 struct EventPeople {
@@ -203,7 +212,7 @@ pub async fn details(
     .fetch_all(pool)
     .await?;
     let images: Vec<ImageRow> = sqlx::query_as(
-        "SELECT id, url, created_at, created_by FROM event_images
+        "SELECT id, url, created_at, created_by, stage FROM event_images
           WHERE event_id = ? AND company_id = ? AND deleted_at IS NULL ORDER BY created_at, id",
     )
     .bind(id)
@@ -230,7 +239,7 @@ pub async fn details(
     let issues = super::issues::list(pool, user.company_id, id).await?;
     let photos = images
         .into_iter()
-        .map(|(photo_id, url, created_at, created_by)| EventPhoto {
+        .map(|(photo_id, url, created_at, created_by, stage)| EventPhoto {
             id: photo_id,
             event_id: id,
             name: match last_segment(&url) {
@@ -241,6 +250,7 @@ pub async fn details(
             created_at,
             created_by,
             source: "photo",
+            stage,
         })
         .collect();
     let assignee = match (event.assigned_user_id, event.assignee_name) {
@@ -437,6 +447,28 @@ pub struct PhotosInput {
     /// Photos button). Default: only inside the event.
     #[serde(default)]
     pub for_customer: bool,
+    /// On the crew's job page: `before` or `installed` photos. Default: none.
+    #[serde(default)]
+    pub stage: Option<PhotoStage>,
+}
+
+/// Which photos of the job a file is, on the crew's job page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PhotoStage {
+    /// Before the work starts.
+    Before,
+    /// The finished job.
+    Installed,
+}
+
+impl PhotoStage {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Before => "before",
+            Self::Installed => "installed",
+        }
+    }
 }
 
 /// Post files in an event's comments
@@ -475,14 +507,15 @@ pub async fn add_photos(
     }
     for url in &input.urls {
         sqlx::query(
-            "INSERT INTO event_images (event_id, company_id, url, created_by, for_customer)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO event_images (event_id, company_id, url, created_by, for_customer, stage)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(user.company_id)
         .bind(url)
         .bind(&user.name)
         .bind(input.for_customer)
+        .bind(input.stage.map(PhotoStage::as_str))
         .execute(&state.pool)
         .await?;
     }

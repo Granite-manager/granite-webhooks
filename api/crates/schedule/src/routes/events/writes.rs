@@ -437,8 +437,8 @@ async fn copy_records(
         .await;
     }
     sqlx::query(
-        "INSERT INTO event_images (event_id, company_id, url, created_by, for_customer)
-         SELECT ?, company_id, url, created_by, for_customer FROM event_images
+        "INSERT INTO event_images (event_id, company_id, url, created_by, for_customer, stage)
+         SELECT ?, company_id, url, created_by, for_customer, stage FROM event_images
           WHERE event_id = ? AND company_id = ? AND deleted_at IS NULL ORDER BY created_at, id",
     )
     .bind(event_id)
