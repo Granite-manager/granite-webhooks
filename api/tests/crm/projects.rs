@@ -792,3 +792,88 @@ async fn checking_a_step_off_tells_its_people(pool: MySqlPool) {
     let seen = board(&pool, sessions::ADMIN).await;
     assert_eq!(seen["process_steps"][0]["notify"], json!([]));
 }
+
+#[test_db::test(seed)]
+async fn steps_check_themselves_off_by_their_rules(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let project = projects_of_8002(&pool).await[0];
+    let id = async |name: &str| {
+        add_step(&pool, sessions::ADMIN, "new", name).await.json::<Value>()["id"]
+            .as_i64()
+            .unwrap()
+    };
+    let file = id("Get the file").await;
+    let wait = id("Wait two days").await;
+    let auto = async |step: i64, session, rule: Value| {
+        server(pool.clone())
+            .put(&format!("/v1/projects/process-steps/{step}/auto"))
+            .with_session(session)
+            .json(&json!({ "auto": rule }))
+            .await
+    };
+    auto(file, sessions::REP, json!({ "trigger": "file_added" }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    auto(file, sessions::ADMIN, json!({ "trigger": "nothing" }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    auto(file, sessions::ADMIN, json!({ "trigger": "task_done" }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    auto(file, sessions::ADMIN, json!({ "trigger": "email_template", "ref_id": 999_999 }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    auto(file, sessions::ADMIN, json!({ "trigger": "file_added" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    auto(wait, sessions::ADMIN, json!({ "trigger": "days_after", "days": 2 }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    let seen = board(&pool, sessions::ADMIN).await;
+    assert_eq!(seen["process_steps"][0]["auto"]["trigger"], "file_added");
+    assert_eq!(seen["process_steps"][1]["auto"]["days"], 2);
+    assert_eq!(seen["done_steps"], json!([]));
+
+    // A file comes in: the first step checks off; the second waits two days.
+    sqlx::query(
+        "INSERT INTO project_files (project_id, company_id, name, url, content_type, created_by, created_at)
+         SELECT p.id, p.company_id, 'layout.pdf', 'x/layout.pdf', 'application/pdf',
+                (SELECT u.id FROM users u WHERE u.company_id = p.company_id LIMIT 1),
+                UTC_TIMESTAMP() + INTERVAL 1 MINUTE
+           FROM projects p WHERE p.id = ?",
+    )
+    .bind(project)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let seen = board(&pool, sessions::ADMIN).await;
+    let done = seen["done_steps"].as_array().unwrap();
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0]["step_id"].as_i64(), Some(file));
+    assert_eq!(done[0]["done_by"], "Auto");
+
+    sqlx::query("UPDATE project_process_steps_done SET done_at = UTC_TIMESTAMP(3) - INTERVAL 3 DAY")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let seen = board(&pool, sessions::ADMIN).await;
+    assert_eq!(seen["done_steps"].as_array().unwrap().len(), 2);
+
+    // Unchecked by hand, it stays unchecked.
+    server(pool.clone())
+        .put(&format!("/v1/projects/{project}/steps/{wait}"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "done": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let seen = board(&pool, sessions::ADMIN).await;
+    assert_eq!(seen["done_steps"].as_array().unwrap().len(), 1);
+
+    auto(file, sessions::ADMIN, Value::Null)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let seen = board(&pool, sessions::ADMIN).await;
+    assert_eq!(seen["process_steps"][0]["auto"], Value::Null);
+}

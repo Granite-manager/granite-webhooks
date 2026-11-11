@@ -169,6 +169,35 @@ pub struct ProcessStep {
     /// Who is told when a project checks it off (user ids).
     #[sqlx(skip)]
     pub notify: Vec<i32>,
+    /// What checks it off by itself, if anything.
+    #[sqlx(skip)]
+    pub auto: Option<StepAuto>,
+}
+
+/// What checks a process step off by itself.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct StepAuto {
+    /// What happens: `email_template`, `text_template`, `customer_replied`,
+    /// `file_added`, `sent_to_sign`, `signed`, `questionnaire_filled`,
+    /// `template_booked`, `install_booked`, `invoice_sent`, `payment_any`,
+    /// `payment_full`, `task_done` or `days_after`.
+    pub trigger: String,
+    /// The email or text template (`email_template`, `text_template`).
+    #[serde(default)]
+    pub ref_id: Option<i32>,
+    /// Part of the document's or task's name (`sent_to_sign`, `signed`, `task_done`).
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Days after the step before (`days_after`).
+    #[serde(default)]
+    pub days: Option<i32>,
+}
+
+/// A step's new rule; `null` turns it off.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ProcessStepAuto {
+    /// The rule, or none.
+    pub auto: Option<StepAuto>,
 }
 
 /// A process step a project has done.
@@ -178,7 +207,7 @@ pub struct DoneStep {
     pub project_id: i32,
     /// The step.
     pub step_id: i32,
-    /// Who checked it off.
+    /// Who checked it off ("Auto" when its rule did).
     pub done_by: Option<String>,
     /// When (UTC ISO).
     pub done_at: String,

@@ -781,6 +781,19 @@ pub async fn deliver(
         }
     }
     record_template_usage(pool, user, email.template_id).await;
+    for message in &sent {
+        crate::routes::projects::log_sent_template(
+            pool,
+            user.company_id,
+            "email",
+            email.template_id,
+            email.deal_id,
+            deal_customer,
+            None,
+            message.recipients.to.first().map(String::as_str),
+        )
+        .await;
+    }
     if sent.len() < email.batches().len() {
         return Err(ApiError::Upstream(format!(
             "Email failed to send to some recipients ({} of {} sent)",
