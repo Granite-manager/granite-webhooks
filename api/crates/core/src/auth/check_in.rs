@@ -1,9 +1,9 @@
 //! The walk-in check-in tablet's sign-in: no user and no password.
 //!
-//! An admin makes a 6-digit pairing code on Company
-//! (`POST /v1/check-in/tablets`). Typed on the tablet (`POST
-//! /v1/check-in/pair`) it becomes the tablet's key, kept in the
-//! [`CHECK_IN_COOKIE`] cookie. The key opens only that company's walk-in
+//! An admin signs in on the tablet and makes it a walk-in tablet
+//! (`POST /v1/check-in/tablets/this-device`): the browser gets a key, kept
+//! in the [`CHECK_IN_COOKIE`] cookie, and the admin is signed out. The key
+//! opens only that company's walk-in
 //! form (`/v1/check-in/kiosk...`) and the address lookup the form uses, until
 //! an admin removes the tablet. It never ends by time.
 //!

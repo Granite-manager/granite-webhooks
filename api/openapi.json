@@ -47375,7 +47375,7 @@
           "check-in"
         ],
         "summary": "List walk-in tablets",
-        "description": "The company's paired walk-in tablets (newest first) and the pairing codes\nstill waiting to be typed on one.",
+        "description": "The company's paired walk-in tablets, newest first.",
         "operationId": "list_check_in_tablets",
         "responses": {
           "200": {
@@ -47427,14 +47427,16 @@
             "session_cookie": []
           }
         ]
-      },
+      }
+    },
+    "/v1/check-in/tablets/this-device": {
       "post": {
         "tags": [
           "check-in"
         ],
-        "summary": "Add a walk-in tablet",
-        "description": "Makes a 6-digit pairing code that works for 15 minutes. Typed on the\ntablet's walk-in page (`/check-in`), it turns that browser into the\ncompany's walk-in tablet.",
-        "operationId": "add_check_in_tablet",
+        "summary": "Make this device a walk-in tablet",
+        "description": "Run on the tablet by an admin signed in there: this browser becomes a\npaired walk-in tablet of the company (its key goes in the\n`granite_check_in` cookie) and the admin is signed out of it at once, so\nthe CRM is never left open on the tablet. A browser that already was a\ntablet drops its old pairing.",
+        "operationId": "make_check_in_tablet",
         "requestBody": {
           "content": {
             "application/json": {
@@ -47446,12 +47448,12 @@
           "required": true
         },
         "responses": {
-          "201": {
-            "description": "The waiting tablet, with its code",
+          "200": {
+            "description": "Paired; the tablet cookie is set and the session ended",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Tablet"
+                  "$ref": "#/components/schemas/Kiosk"
                 }
               }
             }
@@ -47500,7 +47502,7 @@
           "check-in"
         ],
         "summary": "Remove a walk-in tablet",
-        "description": "The tablet no longer opens the walk-in form (it shows the pairing screen\nagain), or a waiting code stops working.",
+        "description": "The tablet no longer opens the walk-in form: it shows the set-up screen\nagain.",
         "operationId": "remove_check_in_tablet",
         "parameters": [
           {
@@ -47564,68 +47566,6 @@
             "session_cookie": []
           }
         ]
-      }
-    },
-    "/v1/check-in/pair": {
-      "post": {
-        "tags": [
-          "check-in"
-        ],
-        "summary": "Pair a walk-in tablet",
-        "description": "With a code from `POST /v1/check-in/tablets` that is still waiting, this\nbrowser becomes that tablet: its key is stored in the `granite_check_in`\ncookie and the walk-in form opens. A tablet paired again drops its old\npairing. Too many wrong codes from one address are refused for a while.",
-        "operationId": "pair_check_in_tablet",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PairInput"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Paired; the cookie is set",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Kiosk"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Not a working code",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Too many wrong codes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Database error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/v1/check-in/kiosk": {
@@ -88357,7 +88297,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/Kiosk",
-                "description": "The paired tablet's form; null when this browser is not a paired\ntablet (the pairing screen shows)."
+                "description": "The paired tablet's form; null when this browser is not a paired\ntablet (the set-up screen shows)."
               },
               {
                 "type": "null"
@@ -91157,7 +91097,7 @@
       },
       "NewTablet": {
         "type": "object",
-        "description": "Body of `POST /v1/check-in/tablets`.",
+        "description": "Body of `POST /v1/check-in/tablets/this-device`.",
         "properties": {
           "name": {
             "type": [
@@ -93555,20 +93495,6 @@
           "text": {
             "type": "string",
             "description": "The text the page shows."
-          }
-        },
-        "additionalProperties": false
-      },
-      "PairInput": {
-        "type": "object",
-        "description": "Body of `POST /v1/check-in/pair`.",
-        "required": [
-          "code"
-        ],
-        "properties": {
-          "code": {
-            "type": "string",
-            "description": "The 6-digit code from Company (spaces and dashes are ignored)."
           }
         },
         "additionalProperties": false
@@ -108200,7 +108126,7 @@
       },
       "Tablet": {
         "type": "object",
-        "description": "A walk-in tablet, or a code waiting to be typed on one.",
+        "description": "A paired walk-in tablet.",
         "required": [
           "id",
           "name"
@@ -108215,26 +108141,12 @@
             "type": "string",
             "description": "Its name."
           },
-          "code": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The 6-digit code to type on the tablet, while it waits to be paired."
-          },
-          "code_expires_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "When the code stops working (UTC)."
-          },
           "paired_at": {
             "type": [
               "string",
               "null"
             ],
-            "description": "When it was paired (UTC); null while it waits."
+            "description": "When it was paired (UTC)."
           },
           "last_seen_at": {
             "type": [
@@ -108248,7 +108160,7 @@
               "string",
               "null"
             ],
-            "description": "Who made its code (null for a tablet that was a check-in account)."
+            "description": "The admin who set it up (null for a tablet that was a check-in account)."
           }
         }
       },
