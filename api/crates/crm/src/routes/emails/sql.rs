@@ -401,11 +401,13 @@ pub fn client_read_at() -> String {
     )
 }
 
-/// The customer name of an address column of `e`.
-pub fn customer_name_by_email(column: &str) -> String {
+/// The name of the company's own live customer with the address in `column`.
+/// Another company's customer with the same address never names the row.
+pub fn customer_name_by_email(column: &str, company_id: i32) -> String {
     format!(
         "(SELECT c.name FROM customers c JOIN customers_emails ce ON ce.customer_id = c.id \
-         WHERE ce.email = {column} ORDER BY ce.id LIMIT 1)"
+         WHERE ce.email = {column} AND c.company_id = {company_id} AND c.deleted_at IS NULL \
+         ORDER BY ce.id LIMIT 1)"
     )
 }
 
