@@ -96315,7 +96315,8 @@
           "companyId",
           "companyName",
           "isAdmin",
-          "hasProjectsBoard"
+          "hasProjectsBoard",
+          "isShopManager"
         ],
         "properties": {
           "id": {
@@ -96364,6 +96365,20 @@
           "hasProjectsBoard": {
             "type": "boolean",
             "description": "The user has a Projects board, as `GET /v1/app/shell`\n`has_projects_board` has it: the app shows its Projects tab (`GET\n/v1/projects` with the device token) only then."
+          },
+          "sections": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "The tabs the user's positions open when the company limits them\n(Position access), as `GET /v1/app/shell` `sections` has them (e.g.\n`transactions`, `samples`, `schedule`, `stones`): the app hides the\nothers. Null: nothing is limited."
+          },
+          "isShopManager": {
+            "type": "boolean",
+            "description": "The user is a Shop Manager (`GET /v1/app/shell` `is_shop_manager`):\nthe app shows Maintenance, as a shop worker's does."
           },
           "photoUrl": {
             "type": [

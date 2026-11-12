@@ -42,7 +42,9 @@ fn apns(data: &BTreeMap<String, String>) -> Value {
         Some("ai_message") => ("Missed call. AI took a message.", None),
         Some("e911_alert") => (
             "911 was dialed",
-            Some("Someone in your company dialed 911. Open Granite Manager for details.".to_string()),
+            Some(
+                "Someone in your company dialed 911. Open Granite Manager for details.".to_string(),
+            ),
         ),
         Some("text" | "crm_text") => ("New text", None),
         Some("email") => ("New email", None),
@@ -651,7 +653,10 @@ zVwmY+zvp0zIX68RsO90kuxb
             data
         };
         assert_eq!(alert(&with("text", &[])), json!({ "title": "New text" }));
-        assert_eq!(alert(&with("crm_text", &[])), json!({ "title": "New text" }));
+        assert_eq!(
+            alert(&with("crm_text", &[])),
+            json!({ "title": "New text" })
+        );
         assert_eq!(
             alert(&with("notification", &[("heading", "Activity Reminder")])),
             json!({ "title": "Activity Reminder" })

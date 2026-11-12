@@ -950,7 +950,7 @@ pub async fn update(
     }
     crate::phone::lines::sync_position_lines(&mut tx, existing_company).await?;
     tx.commit().await?;
-    let line10 =|phone: Option<String>| phone.map(|p| phone10(&p)).filter(|p| p.len() == 10);
+    let line10 = |phone: Option<String>| phone.map(|p| phone10(&p)).filter(|p| p.len() == 10);
     let (agent_before, phone_before, extension_before, ringcentral_before) = before;
     texting_history::follow(
         &state,

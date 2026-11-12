@@ -572,6 +572,17 @@ fn device_route(method: &Method, path: &str) -> bool {
         || sale_and_invoice_write(method, path)
         || own_invoice(method, path)
         || project_route(method, path)
+        || stone_samples(method, path)
+}
+
+/// The Samples tab's change: `PATCH /v1/stones/{id}/samples` (samples on
+/// hand and how many to keep). Other stone writes stay with the CRM session.
+fn stone_samples(method: &Method, path: &str) -> bool {
+    method == Method::PATCH
+        && path
+            .strip_prefix("/v1/stones/")
+            .and_then(|rest| rest.strip_suffix("/samples"))
+            .is_some_and(is_id)
 }
 
 async fn identify(
@@ -781,6 +792,14 @@ pub fn sha256_hex(value: &str) -> String {
 mod tests {
     use super::device_route;
     use axum::http::Method;
+
+    #[test]
+    fn the_samples_tab_may_set_a_stones_samples() {
+        assert!(device_route(&Method::PATCH, "/v1/stones/12/samples"));
+        assert!(!device_route(&Method::PUT, "/v1/stones/12/samples"));
+        assert!(!device_route(&Method::PATCH, "/v1/stones/12"));
+        assert!(!device_route(&Method::PATCH, "/v1/stones/x/samples"));
+    }
 
     #[test]
     fn device_routes_are_whole_prefixes() {

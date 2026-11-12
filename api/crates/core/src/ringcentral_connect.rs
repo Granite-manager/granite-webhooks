@@ -175,7 +175,10 @@ impl RingCentralApp {
                     .await
                     .map_err(|err| ConnectError::Request(err.without_url().to_string()))?;
                 if !response.status().is_success() {
-                    return Err(ConnectError::Request(format!("{path}: {}", response.status())));
+                    return Err(ConnectError::Request(format!(
+                        "{path}: {}",
+                        response.status()
+                    )));
                 }
                 response
                     .json::<Value>()
@@ -445,17 +448,16 @@ async fn texts_arrive(
     if !active {
         return Ok(false);
     }
-    let stored: Option<String> = sqlx::query_scalar(
-        "SELECT ringcentral_subscription_token_hash FROM company WHERE id = ?",
-    )
-    .bind(company_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|error| ringcentral::ApiError {
-        status: 500,
-        message: Some(error.to_string()),
-    })?
-    .flatten();
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT ringcentral_subscription_token_hash FROM company WHERE id = ?")
+            .bind(company_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|error| ringcentral::ApiError {
+                status: 500,
+                message: Some(error.to_string()),
+            })?
+            .flatten();
     Ok(stored.as_deref() == Some(target.token_hash().as_str()))
 }
 

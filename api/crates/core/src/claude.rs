@@ -165,10 +165,7 @@ impl Claude {
                     body: text.chars().take(300).collect(),
                 });
             }
-            let reply: Reply = response
-                .json()
-                .await
-                .map_err(|err| request_failed(&err))?;
+            let reply: Reply = response.json().await.map_err(|err| request_failed(&err))?;
             let usage = reply.usage.unwrap_or_default();
             let model = reply.model.unwrap_or_else(|| request.model.to_string());
             let text: String = reply
