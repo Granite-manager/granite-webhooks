@@ -61,13 +61,22 @@ pub async fn notification_line(
 
 /// Gives each number linked to a position (`telnyx_numbers.position_id`) to
 /// exactly the company's users with that position: it rings them and they
-/// call and text from it. A user assigned by hand keeps that assignment, but
-/// someone in the position can always call and text from it. Runs after a
-/// number's link or a user's positions change.
+/// call and text from it. Such a number (the Scheduling Manager or the
+/// Notification number) is no one person's own: assignments made by hand are
+/// removed from it. Runs after a number's link or a user's positions change.
 pub async fn sync_position_lines(
     conn: &mut sqlx::MySqlConnection,
     company_id: i32,
 ) -> sqlx::Result<()> {
+    sqlx::query(
+        "DELETE nu FROM telnyx_number_users nu
+           JOIN telnyx_numbers n ON n.id = nu.number_id
+          WHERE n.company_id = ? AND nu.via_position = 0
+            AND (n.position_id IS NOT NULL OR n.notifications <> 0)",
+    )
+    .bind(company_id)
+    .execute(&mut *conn)
+    .await?;
     sqlx::query(
         "DELETE nu FROM telnyx_number_users nu
            JOIN telnyx_numbers n ON n.id = nu.number_id
