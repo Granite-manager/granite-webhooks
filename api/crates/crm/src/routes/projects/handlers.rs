@@ -550,7 +550,7 @@ pub async fn act(
     let project = service::apply(&state.pool, &viewer, id, action).await?;
     super::process::tell_moved_on(
         &state,
-        user.id,
+        Some(user.id),
         user.name.as_deref(),
         viewer.company_id,
         id,
