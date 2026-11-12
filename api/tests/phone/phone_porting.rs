@@ -1137,7 +1137,10 @@ async fn telnyx_notifications_move_ports_and_ported_numbers_are_added(pool: MySq
     );
     let emails = fake.emails();
     assert_eq!(emails.len(), bells.len());
-    assert_eq!(emails[0]["subject"], "[Granite Manager] Port date confirmed");
+    assert_eq!(
+        emails[0]["subject"],
+        "[Granite Manager] Port date confirmed"
+    );
     assert!(
         emails[0]["body"]
             .as_str()

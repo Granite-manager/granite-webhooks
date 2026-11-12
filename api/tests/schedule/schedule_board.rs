@@ -63,12 +63,10 @@ async fn the_schedule_lists_a_ranges_events(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn events_name_the_sold_quote_that_added_them(pool: MySqlPool) {
     seed(&pool).await;
-    sqlx::raw_sql(
-        "UPDATE events SET quote_id = 9720 WHERE id = 9710;",
-    )
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::raw_sql("UPDATE events SET quote_id = 9720 WHERE id = 9710;")
+        .execute(&pool)
+        .await
+        .unwrap();
     let body = server(pool)
         .get("/v1/schedule/events?start=2026-04-01T00:00:00Z&end=2026-04-30T23:59:59Z")
         .with_session(sessions::REP)

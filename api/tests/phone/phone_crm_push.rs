@@ -259,7 +259,11 @@ async fn a_lead_assigned_from_the_phone_reaches_the_rep_in_the_app_and_in_telegr
     add_phone(&pool, 1, 100, 100).await;
     add_phone(&pool, 2, 101, 100).await;
     // Bob is a web lead here (the seed has him as a walk-in, whose rep the managers aren't told).
-    sql(&pool, "UPDATE customers SET source = 'leads' WHERE id = 1001").await;
+    sql(
+        &pool,
+        "UPDATE customers SET source = 'leads' WHERE id = 1001",
+    )
+    .await;
     // Rita has the app and Telegram's lead alerts.
     sql(&pool, "UPDATE users SET telegram_id = 5551 WHERE id = 100").await;
     // Mark, the sales manager, got the lead in Telegram: once with its text

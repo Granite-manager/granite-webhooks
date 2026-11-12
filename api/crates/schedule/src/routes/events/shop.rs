@@ -82,7 +82,13 @@ pub async fn sees_shop_status(
     user_id: i32,
     company_id: i32,
 ) -> Result<bool, sqlx::Error> {
-    has_position(pool, user_id, company_id, &[SHOP_MANAGER, SHOP_WORKER, INSTALLER]).await
+    has_position(
+        pool,
+        user_id,
+        company_id,
+        &[SHOP_MANAGER, SHOP_WORKER, INSTALLER],
+    )
+    .await
 }
 
 /// Mark a job Cut or Complete

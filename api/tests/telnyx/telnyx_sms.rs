@@ -919,7 +919,10 @@ async fn the_inbox_switches_between_a_users_lines(pool: MySqlPool) {
 
     // The conversation shows only that line's texts.
     let thread = setup
-        .get("/v1/sms/mine/threads/3175550100?line_id=9702", sessions::REP)
+        .get(
+            "/v1/sms/mine/threads/3175550100?line_id=9702",
+            sessions::REP,
+        )
         .await;
     let texts: Vec<&str> = thread["messages"]
         .as_array()

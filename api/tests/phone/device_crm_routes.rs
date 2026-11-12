@@ -1557,11 +1557,13 @@ async fn the_projects_tab_works_with_the_device_token(pool: MySqlPool) {
         .await;
     board.assert_status_ok();
     let board = board.json::<Value>();
-    assert!(board["projects"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|project| project["id"] == json!(id)));
+    assert!(
+        board["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|project| project["id"] == json!(id))
+    );
     assert_eq!(board["permissions"]["convert"], json!(true));
     let page = server
         .get(&format!("/v1/projects/{id}"))
