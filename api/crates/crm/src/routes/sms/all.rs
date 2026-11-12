@@ -112,7 +112,16 @@ pub async fn list_threads(
         .agent_id
         .as_deref()
         .is_some_and(|rep| !rep.trim().is_empty());
-    merged_threads(&state, &user, &query, &sources, SmsScope::All, one_rep, None).await
+    merged_threads(
+        &state,
+        &user,
+        &query,
+        &sources,
+        SmsScope::All,
+        one_rep,
+        None,
+    )
+    .await
 }
 
 /// The last ten digits of `line_id` when it is a line of the caller's; a

@@ -2,10 +2,10 @@ pub use webhooks_core::tests::ringcentral::*;
 
 mod flow_enrollment_tests {
     use super::INBOUND_SMS;
-    use crate::tests::utils::internal_token;
     use crate::crud::ringcentral::{
         cancel_flow_enrollments_for_customer, cancel_flow_enrollments_on_reply,
     };
+    use crate::tests::utils::internal_token;
     use crate::tests::utils::new_test_app;
     use axum::http::StatusCode;
     use sqlx::MySqlPool;

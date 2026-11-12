@@ -32,9 +32,9 @@ pub use issues::mark_issue_solved;
 pub mod parts;
 mod payments;
 mod process;
-mod step_events;
 pub mod schemas;
 pub mod service;
+mod step_events;
 mod tasks;
 
 pub use tasks::{TASK_ASSIGNED, TASK_DUE};
