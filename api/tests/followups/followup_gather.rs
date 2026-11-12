@@ -279,3 +279,36 @@ async fn another_companys_customer_id_gathers_nothing_of_theirs(pool: MySqlPool)
     assert_eq!(own.customer_id, Some(2000));
     assert!(own.profile.contains("Other Co Customer"), "{}", own.profile);
 }
+
+#[test_db::test(seed)]
+async fn an_installation_done_yesterday_is_in_the_profile(pool: MySqlPool) {
+    setup(&pool).await;
+    sqlx::raw_sql(
+        "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (8790, 100, 'Installations', 'blue', 'installations');
+         INSERT INTO events (title, start_date, end_date, created_user_id, calendar_id, customer_id,
+                             crew_status, completed_at)
+         VALUES ('Alice install', '2026-10-12 13:00:00', '2026-10-12 17:00:00', 100, 8790, 1000,
+                 'completed', '2026-10-12 16:30:00'),
+                ('Alice island', '2026-10-20 13:00:00', '2026-10-20 15:00:00', 100, 8790, 1000,
+                 NULL, NULL);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let g = gather_followup_context(&pool, &request(100, 100, Some(1000)), clock())
+        .await
+        .unwrap();
+    assert!(
+        g.profile.contains("Installation: scheduled for 2026-10-20 13:00 UTC\n"),
+        "{}",
+        g.profile
+    );
+    assert!(
+        g.profile.contains(
+            "Installation: completed 2026-10-12 16:30 UTC (yesterday). It was just installed:"
+        ),
+        "{}",
+        g.profile
+    );
+}

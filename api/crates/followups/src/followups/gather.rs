@@ -380,6 +380,14 @@ async fn load_customer_profile(
         }
     }
 
+    // Best effort: without them the AI just doesn't know about the install.
+    match installation_lines(pool, customer_id, company_id, clock).await {
+        Ok(found) => lines.extend(found),
+        Err(err) => {
+            lambda_http::tracing::warn!(?err, customer_id, "follow-up installations unavailable");
+        }
+    }
+
     // Test databases and partial schemas skip the deal history.
     let (crm_hold, crm_note_hold) =
         match deal_history_lines(pool, customer_id, company_id, &mut lines, clock).await {
@@ -401,6 +409,98 @@ async fn load_customer_profile(
         target_deal,
         other_deals,
     })
+}
+
+/// One of the customer's installation jobs (the Installations calendar).
+#[derive(Debug, sqlx::FromRow)]
+struct InstallationRow {
+    start_date: NaiveDateTime,
+    crew_status: Option<String>,
+    completed_at: Option<NaiveDateTime>,
+}
+
+/// How long ago, for a person: "today", "yesterday", "3 days ago".
+fn days_ago(at: NaiveDateTime, now: Instant) -> String {
+    let hours = (now - at.and_utc()).num_hours();
+    let today = now.date_naive();
+    match (today - at.date()).num_days() {
+        _ if hours < 1 => "less than an hour ago".into(),
+        0 => format!("today, about {hours} hours ago"),
+        1 => "yesterday".into(),
+        days => format!("{days} days ago"),
+    }
+}
+
+/// The profile line of one installation job (times UTC): done (the crew
+/// tapped Completed), booked ahead, or past without a Completed. A job done
+/// in the last two days carries the hint the drafts act on: the first
+/// message since may ask how it went.
+pub(crate) fn installation_line(
+    start: NaiveDateTime,
+    crew_status: Option<&str>,
+    completed_at: Option<NaiveDateTime>,
+    now: Instant,
+) -> String {
+    if crew_status == Some("completed") {
+        let done = completed_at.unwrap_or(start);
+        let mut line = format!(
+            "Installation: completed {} UTC ({})",
+            format_db_time(done),
+            days_ago(done, now)
+        );
+        if (now - done.and_utc()).num_hours() < 48 {
+            line.push_str(
+                ". It was just installed: unless the conversation already covered it, the message may say you hope the installation went well and ask how they like it (or to tell you if anything needs attention).",
+            );
+        }
+        return line;
+    }
+    if start.and_utc() > now {
+        return format!("Installation: scheduled for {} UTC", format_db_time(start));
+    }
+    format!(
+        "Installation: was scheduled for {} UTC ({}); not marked completed",
+        format_db_time(start),
+        days_ago(start, now)
+    )
+}
+
+/// The customer's installation jobs of the last 60 days and the next 60
+/// (newest first, at most three), as profile lines.
+async fn installation_lines(
+    pool: &MySqlPool,
+    customer_id: i32,
+    company_id: i32,
+    now: Instant,
+) -> Result<Vec<String>, sqlx::Error> {
+    let rows: Vec<InstallationRow> = sqlx::query_as(
+        "SELECT e.start_date, e.crew_status, e.completed_at
+           FROM events e
+           JOIN calendars cal ON cal.id = e.calendar_id AND cal.company_id = ?
+            AND cal.slug = 'installations' AND cal.deleted_at IS NULL
+           LEFT JOIN sales s ON s.id = e.sale_id AND s.company_id = cal.company_id
+          WHERE COALESCE(e.customer_id, s.customer_id) = ?
+            AND e.deleted_date IS NULL AND COALESCE(e.unscheduled, 0) = 0
+            AND e.start_date BETWEEN ? - INTERVAL 60 DAY AND ? + INTERVAL 60 DAY
+          ORDER BY e.start_date DESC LIMIT 3",
+    )
+    .bind(company_id)
+    .bind(customer_id)
+    .bind(now.naive_utc())
+    .bind(now.naive_utc())
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            installation_line(
+                row.start_date,
+                row.crew_status.as_deref(),
+                row.completed_at,
+                now,
+            )
+        })
+        .collect())
 }
 
 /// Deal notes and activities into the profile, and the holds they set.
@@ -1134,4 +1234,51 @@ pub async fn gather_timed(
         sms_loaded,
         emails_loaded,
     })
+}
+
+#[cfg(test)]
+mod installation_tests {
+    use super::installation_line;
+    use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+
+    fn at(day: u32, hour: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 11, day)
+            .unwrap()
+            .and_hms_opt(hour, 0, 0)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_job_done_yesterday_asks_how_it_went() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 12, 15, 0, 0).unwrap();
+        let line = installation_line(at(11, 9), Some("completed"), Some(at(11, 14)), now);
+        assert!(
+            line.starts_with(
+                "Installation: completed 2026-11-11 14:00 UTC (yesterday). It was just installed"
+            ),
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn an_older_job_is_only_a_fact() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 12, 15, 0, 0).unwrap();
+        assert_eq!(
+            installation_line(at(2, 9), Some("completed"), Some(at(2, 14)), now),
+            "Installation: completed 2026-11-02 14:00 UTC (10 days ago)"
+        );
+    }
+
+    #[test]
+    fn booked_and_unfinished_jobs() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 12, 15, 0, 0).unwrap();
+        assert_eq!(
+            installation_line(at(20, 13), None, None, now),
+            "Installation: scheduled for 2026-11-20 13:00 UTC"
+        );
+        assert_eq!(
+            installation_line(at(10, 13), Some("arrived"), None, now),
+            "Installation: was scheduled for 2026-11-10 13:00 UTC (2 days ago); not marked completed"
+        );
+    }
 }
