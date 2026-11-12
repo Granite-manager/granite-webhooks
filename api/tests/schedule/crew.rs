@@ -365,7 +365,7 @@ async fn completing_an_installation_tells_its_sales_rep_unless_turned_off(pool: 
     assert_eq!(notices.len(), 1);
     let (user, customer, message) = &notices[0];
     assert_eq!((*user, *customer), (100, Some(1000)));
-    assert_eq!(message, "Alice Lead is installed");
+    assert_eq!(message, "Install");
     let bell: Value = server
         .get("/v1/notifications")
         .with_session(sessions::REP)
@@ -378,7 +378,7 @@ async fn completing_an_installation_tells_its_sales_rep_unless_turned_off(pool: 
         .find(|item| item["notification_type"] == "installation_completed")
         .expect("the bell lists it");
     assert_eq!(item["type_title"], "Installation Completed");
-    assert_eq!(item["message"], "Alice Lead is installed");
+    assert_eq!(item["message"], "Install");
 
     // A job without a customer has no rep to tell.
     complete(9901).await.assert_status_ok();
