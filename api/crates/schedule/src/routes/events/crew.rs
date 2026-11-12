@@ -205,6 +205,7 @@ struct InstalledJob {
     rep_id: Option<i32>,
     customer_id: Option<i32>,
     customer_name: Option<String>,
+    title: Option<String>,
     deal_id: Option<u64>,
 }
 
@@ -212,6 +213,7 @@ struct InstalledJob {
 /// sales rep (the sale's seller, else the deal's owner, else the customer's
 /// sales rep) gets a bell notification and a phone push, unless the company
 /// turned it off (Admin > Schedule) or the rep tapped Completed themselves.
+/// Its message is the event's title (the customer's name when it has none).
 async fn tell_rep_installed(
     state: &AppState,
     event_id: i32,
@@ -222,6 +224,7 @@ async fn tell_rep_installed(
         "SELECT CAST(COALESCE(sr.id, dr.id, cr.id) AS SIGNED) AS rep_id,
                 CAST(c.id AS SIGNED) AS customer_id,
                 NULLIF(TRIM(c.name), '') AS customer_name,
+                NULLIF(TRIM(e.title), '') AS title,
                 CAST(d.id AS UNSIGNED) AS deal_id
            FROM events e
            JOIN company co ON co.id = ? AND co.notify_rep_on_install_complete <> 0
@@ -252,8 +255,13 @@ async fn tell_rep_installed(
     else {
         return Ok(());
     };
-    let customer = job.customer_name.as_deref().unwrap_or("Your customer");
-    let message: String = format!("{customer} is installed")
+    // The heading already names the customer and the push puts the installer
+    // before the message ("Hugo: I-Lindy Wert"), so the message is the job's
+    // own title, not the customer again (owner, 2026-11-12).
+    let message: String = job
+        .title
+        .or(job.customer_name)
+        .unwrap_or_else(|| "Your customer's job".into())
         .chars()
         .take(255)
         .collect();
