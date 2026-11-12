@@ -1619,3 +1619,40 @@ async fn the_projects_tab_works_with_the_device_token(pool: MySqlPool) {
         .await
         .assert_status_success();
 }
+
+#[test_db::test(seed)]
+async fn the_samples_tab_sets_samples_and_a_shop_manager_is_told_so(pool: MySqlPool) {
+    // Mark (101) is also a Shop Manager.
+    sql(
+        &pool,
+        "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (101, 3, 100)",
+    )
+    .await;
+    let (server, _) = phone_server(pool.clone()).await;
+    add_session(&pool, 310, 101, 100).await;
+    let boot: Value = server
+        .get("/v1/phone/bootstrap")
+        .add_header(HEADER, token(310))
+        .await
+        .json();
+    assert_eq!(boot["user"]["isShopManager"], json!(true));
+    server
+        .patch("/v1/stones/3000/samples")
+        .add_header(HEADER, token(310))
+        .json(&json!({ "amount": 7, "importance": 3 }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let saved: (i32, i32) =
+        sqlx::query_as("SELECT samples_amount, samples_importance FROM stones WHERE id = 3000")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(saved, (7, 3));
+    // Another stone write still needs the CRM session: refused, not signed out.
+    server
+        .put("/v1/stones/3000")
+        .add_header(HEADER, token(310))
+        .json(&json!({ "name": "x" }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+}

@@ -165,6 +165,14 @@ pub struct PhoneUser {
     /// `has_projects_board` has it: the app shows its Projects tab (`GET
     /// /v1/projects` with the device token) only then.
     pub has_projects_board: bool,
+    /// The tabs the user's positions open when the company limits them
+    /// (Position access), as `GET /v1/app/shell` `sections` has them (e.g.
+    /// `transactions`, `samples`, `schedule`, `stones`): the app hides the
+    /// others. Null: nothing is limited.
+    pub sections: Option<Vec<String>>,
+    /// The user is a Shop Manager (`GET /v1/app/shell` `is_shop_manager`):
+    /// the app shows Maintenance, as a shop worker's does.
+    pub is_shop_manager: bool,
     /// The user's own picture (`PUT /v1/me/photo`); null when they have
     /// none (the app shows their initials).
     pub photo_url: Option<String>,
@@ -195,6 +203,13 @@ pub async fn phone_user(pool: &MySqlPool, user: &SessionUser) -> sqlx::Result<Ph
             .await
             .map(|keys| keys.into_iter().map(ToString::to_string).collect()),
         has_projects_board: crate::routes::app_shell::has_projects_board(user, &positions),
+        // Best effort: unread, nothing is hidden (each page still checks).
+        sections: crate::auth::sections::user_tabs(pool, user, &positions)
+            .await
+            .ok()
+            .flatten()
+            .map(|keys| keys.into_iter().map(ToString::to_string).collect()),
+        is_shop_manager: crate::routes::app_shell::is_shop_manager(user, &positions),
     })
 }
 

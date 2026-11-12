@@ -173,6 +173,13 @@ pub fn user_portal(user: &SessionUser, rows: &[UserPositionRow]) -> Option<Strin
     portal(user, all.contains(&SUPER_ADMIN_POSITION), &all).map(|(name, _)| name)
 }
 
+/// `user` is a Shop Manager of the company they act in
+/// ([`AppShell::is_shop_manager`]; the app's Maintenance tab follows it).
+pub fn is_shop_manager(user: &SessionUser, rows: &[UserPositionRow]) -> bool {
+    rows.iter()
+        .any(|row| row.position_id == SHOP_MANAGER && row.company_id == user.company_id)
+}
+
 /// Projects is on and `user`'s position has a Projects board
 /// ([`AppShell::has_projects_board`]; the Granite Manager app's Projects tab
 /// follows it too): an admin, or a Sales Rep, Sales Manager, Shop Manager,
