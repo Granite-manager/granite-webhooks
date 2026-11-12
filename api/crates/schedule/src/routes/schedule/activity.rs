@@ -187,7 +187,8 @@ pub async fn activity(
         ids.push_bind(*id);
     }
     sql.push(")");
-    let rows: Vec<ActivityRow> = sql.build_query_as().fetch_all(pool).await?;
+    let mut rows: Vec<ActivityRow> = sql.build_query_as().fetch_all(pool).await?;
+    crate::routes::events::people::attach(pool, rows.iter_mut().map(|row| &mut row.event)).await?;
     let mut rows: HashMap<i32, ActivityRow> =
         rows.into_iter().map(|row| (row.event.id, row)).collect();
 

@@ -762,3 +762,95 @@ async fn a_repeating_event_deletes_one_repeat_the_following_or_all(pool: MySqlPo
         .assert_status(StatusCode::NO_CONTENT);
     assert!(repeat_state(&pool, 8971).await.2);
 }
+
+#[test_db::test(seed)]
+async fn people_are_added_to_events_and_see_them_on_their_schedule(pool: MySqlPool) {
+    sqlx::raw_sql(SETUP).execute(&pool).await.unwrap();
+    let server = server(pool.clone());
+    let team = server
+        .get("/v1/schedule/team")
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    let ids: Vec<i64> = team
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|person| person["id"].as_i64().unwrap())
+        .collect();
+    // Live people of the company only: not the deleted one, not another company's.
+    assert!(ids.contains(&100) && ids.contains(&101) && ids.contains(&102));
+    assert!(!ids.contains(&105) && !ids.contains(&106));
+
+    let mut event = body(8801, "2026-11-02 15:00:00", "2026-11-02 16:00:00");
+    event["people_ids"] = json!([106]);
+    let res = server
+        .post("/v1/events")
+        .with_session(sessions::REP)
+        .json(&event)
+        .await;
+    res.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(res.json::<Value>()["error"], "Person not found");
+
+    event["people_ids"] = json!([101, 102, 101]);
+    let id = server
+        .post("/v1/events")
+        .with_session(sessions::REP)
+        .json(&event)
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    let range = "start=2026-11-01T00:00:00Z&end=2026-11-30T00:00:00Z";
+    let listed = server
+        .get(&format!("/v1/schedule/events?{range}"))
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    let names: Vec<&str> = listed["events"][0]["people"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|person| person["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["Ada Admin", "Mark Manager"]);
+    // On the schedule of each person added.
+    let mine = server
+        .get(&format!("/v1/me/schedule?{range}"))
+        .with_session(sessions::MANAGER)
+        .await
+        .json::<Value>();
+    assert_eq!(mine["events"][0]["id"], id);
+
+    // Left out, they stay; the list given replaces them.
+    server
+        .put(&format!("/v1/events/{id}"))
+        .with_session(sessions::REP)
+        .json(&body(8801, "2026-11-02 15:00:00", "2026-11-02 16:00:00"))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    event["people_ids"] = json!([100, 102]);
+    server
+        .put(&format!("/v1/events/{id}"))
+        .with_session(sessions::REP)
+        .json(&event)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let saved: Vec<i32> =
+        sqlx::query_scalar("SELECT user_id FROM event_people WHERE event_id = ? ORDER BY user_id")
+            .bind(id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(saved, [100, 102]);
+    assert_eq!(
+        history(&pool, id).await.last().map(String::as_str),
+        Some("Added Rita Rep; removed Mark Manager")
+    );
+    let mine = server
+        .get(&format!("/v1/me/schedule?{range}"))
+        .with_session(sessions::MANAGER)
+        .await
+        .json::<Value>();
+    assert_eq!(mine["events"].as_array().unwrap().len(), 0);
+}

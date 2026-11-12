@@ -1,7 +1,7 @@
 //! Create, edit and delete schedule events. Remix: `api.events.ts`.
 
 use super::history::{History, record};
-use super::reminders;
+use super::{people, reminders};
 use crate::auth::ShopOrEmployeeUser;
 use crate::auth::session::SessionUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -74,6 +74,12 @@ pub struct EventInput {
     /// The user it is assigned to.
     #[serde(default)]
     pub assigned_user_id: Option<i32>,
+    /// People of the company added to it (user ids from
+    /// `GET /v1/schedule/team`, at most 50): it shows on each one's own
+    /// schedule. Exactly these are saved; `[]` removes everyone, leave out
+    /// to keep the saved ones.
+    #[serde(default)]
+    pub people_ids: Option<Vec<i32>>,
     /// The sale it is for.
     #[serde(default)]
     pub sale_id: Option<i32>,
@@ -548,6 +554,10 @@ pub async fn create(
         }
         _ => None,
     };
+    let people_ids = match &input.people_ids {
+        Some(ids) => Some(people::check(pool, user.company_id, ids).await?),
+        None => None,
+    };
     let assignee = match input.assigned_user_id.filter(|id| *id > 0) {
         Some(id) => Some(id),
         None => board::sole_template_maker(pool, event.calendar_id).await?,
@@ -593,6 +603,9 @@ pub async fn create(
         &History::new(event_id, user.company_id, "created", by),
     )
     .await;
+    if let Some(ids) = &people_ids {
+        people::save(pool, user.company_id, event_id, ids).await?;
+    }
     if let Some(source) = input.copy_from_event_id.filter(|id| *id > 0) {
         copy_records(pool, &user, event_id, source, &input.copy_attachment_ids).await?;
     }
@@ -700,6 +713,10 @@ pub async fn update(
     let event = check(&input)?;
     check_calendar(pool, user.company_id, event.calendar_id).await?;
     let customer = check_customer(pool, user.company_id, &input).await?;
+    let people_ids = match &input.people_ids {
+        Some(ids) => Some(people::check(pool, user.company_id, ids).await?),
+        None => None,
+    };
     sqlx::query(
         "UPDATE events SET title = ?, description = ?, location = ?, start_date = ?, end_date = ?,
             all_day = ?, unscheduled = ?, color = ?, status = ?, notes = ?, assigned_user_id = ?,
@@ -768,7 +785,14 @@ pub async fn update(
     for action in actions {
         record(pool, &History::new(id, user.company_id, action, by)).await;
     }
-    for message in change_messages(&event, input.unscheduled, input.urgent, customer, &existing) {
+    let mut messages =
+        change_messages(&event, input.unscheduled, input.urgent, customer, &existing);
+    if let Some(ids) = &people_ids
+        && let Some(message) = people::save(pool, user.company_id, id, ids).await?
+    {
+        messages.push(message);
+    }
+    for message in messages {
         record(
             pool,
             &History::new(id, user.company_id, "updated", by).message(&message),

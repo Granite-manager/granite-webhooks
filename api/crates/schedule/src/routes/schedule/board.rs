@@ -2,6 +2,8 @@
 //!
 //! - `GET /v1/schedule/events` → the events of a date range
 //! - `GET /v1/schedule/unscheduled` → the events waiting for their day
+//! - `GET /v1/schedule/team` → everyone who can be added to an event
+//!   (`events::people`)
 //! - `GET /v1/schedule/people` → installers and template makers with their colors
 //! - `PUT /v1/schedule/people/{user_id}/color` → an admin picks a person's color
 //! - `GET /v1/me/schedule` → an installer's or template maker's own events
@@ -145,6 +147,10 @@ pub struct ScheduleEvent {
     /// Its QuickBooks invoice (only when QuickBooks is connected).
     #[sqlx(skip)]
     pub qbo_invoice: Option<EventInvoice>,
+    /// People of the company added to it, by name (empty when none).
+    /// Change them with `people_ids` on `PUT /v1/events/{id}`.
+    #[sqlx(skip)]
+    pub people: Vec<crate::routes::events::people::EventPerson>,
 }
 
 /// `GET /v1/schedule/events`.
@@ -214,7 +220,8 @@ enum Scope {
     /// The whole board, less the calendars hidden from this viewer; with an
     /// id, only the events that person made or is assigned to.
     Board(i32, Option<i32>),
-    /// Only the events assigned to this person, whatever calendar they are on.
+    /// Only the events assigned to this person or they were added to,
+    /// whatever calendar they are on.
     AssignedTo(i32),
 }
 
@@ -263,8 +270,10 @@ async fn load_events(
                   SELECT 1 FROM calendar_hidden_users h
                    WHERE h.calendar_id = e.calendar_id AND h.company_id = u.company_id
                      AND h.user_id = ?))
-            AND (? IS NULL OR e.assigned_user_id = ?)
-            AND (? IS NULL OR e.created_user_id = ? OR e.assigned_user_id = ?)
+            AND (? IS NULL OR e.assigned_user_id = ? OR EXISTS (
+                  SELECT 1 FROM event_people ep WHERE ep.event_id = e.id AND ep.user_id = ?))
+            AND (? IS NULL OR e.created_user_id = ? OR e.assigned_user_id = ? OR EXISTS (
+                  SELECT 1 FROM event_people ep WHERE ep.event_id = e.id AND ep.user_id = ?))
             AND (
               (NULLIF(TRIM(e.rrule), '') IS NULL
                 AND e.start_date <= ? AND e.end_date >= ?)
@@ -279,6 +288,8 @@ async fn load_events(
     .bind(viewer)
     .bind(assigned)
     .bind(assigned)
+    .bind(assigned)
+    .bind(own)
     .bind(own)
     .bind(own)
     .bind(own)
@@ -289,6 +300,7 @@ async fn load_events(
     .fetch_all(&state.pool)
     .await?;
     let quickbooks_connected = attach_invoices(state, company_id, &mut events).await?;
+    crate::routes::events::people::attach(&state.pool, &mut events).await?;
     Ok(ScheduleEvents {
         events,
         quickbooks_connected,
@@ -375,7 +387,8 @@ pub async fn unscheduled(
                   SELECT 1 FROM calendar_hidden_users h
                    WHERE h.calendar_id = e.calendar_id AND h.company_id = u.company_id
                      AND h.user_id = ?))
-            AND (? IS NULL OR e.created_user_id = ? OR e.assigned_user_id = ?)
+            AND (? IS NULL OR e.created_user_id = ? OR e.assigned_user_id = ? OR EXISTS (
+                  SELECT 1 FROM event_people ep WHERE ep.event_id = e.id AND ep.user_id = ?))
           ORDER BY e.created_date, e.id",
     )
     .bind(user.company_id)
@@ -383,9 +396,11 @@ pub async fn unscheduled(
     .bind(own)
     .bind(own)
     .bind(own)
+    .bind(own)
     .fetch_all(&state.pool)
     .await?;
     attach_invoices(&state, user.company_id, &mut events).await?;
+    crate::routes::events::people::attach(&state.pool, &mut events).await?;
     Ok(Json(events))
 }
 
@@ -404,8 +419,8 @@ pub struct MyScheduleQuery {
 
 /// A personal schedule
 ///
-/// The events assigned to the caller (an installer's or template maker's own
-/// day), on any calendar, with their customers' names. An
+/// The events assigned to the caller or that they were added to (an
+/// installer's or template maker's own day), on any calendar, with their customers' names. An
 /// admin or superuser may read an installer's or template maker's schedule
 /// with `user_id`.
 #[crate::openapi::path(
