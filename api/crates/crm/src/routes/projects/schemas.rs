@@ -352,6 +352,8 @@ pub struct ProcessStage {
     pub notify: Vec<i32>,
     /// Also tells the sales rep assigned to the project.
     pub notify_sales_rep: bool,
+    /// What moving on from the stage does to the project's schedule events.
+    pub event_rules: Vec<super::step_events::StepEventRule>,
 }
 
 /// A position a step's Notify can pick people from.

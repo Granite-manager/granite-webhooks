@@ -8,6 +8,7 @@ use super::schemas::{
     ProcessStepName, ProcessStepNotify, ProcessStepOrder, StepAuto, StepDone,
 };
 use super::service::visible_project;
+use super::step_events::StepEventRule;
 use crate::auth::{AdminUser, EmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -371,6 +372,13 @@ pub async fn company_stages(
             .bind(company_id)
             .fetch_all(&mut *conn)
             .await?;
+    let rules: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT stage_code, target, readiness, shop_status FROM project_stage_events
+          WHERE company_id = ? ORDER BY id",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
     Ok(BUILT_IN_STEPS
         .iter()
         .map(|(stage, _)| ProcessStage {
@@ -381,6 +389,15 @@ pub async fn company_stages(
                 .map(|(_, user_id)| *user_id)
                 .collect(),
             notify_sales_rep: reps.iter().any(|code| code == stage.as_str()),
+            event_rules: rules
+                .iter()
+                .filter(|(code, ..)| code == stage.as_str())
+                .map(|(_, target, readiness, shop_status)| StepEventRule {
+                    target: target.clone(),
+                    readiness: readiness.clone(),
+                    shop_status: shop_status.clone(),
+                })
+                .collect(),
         })
         .collect())
 }
@@ -491,9 +508,11 @@ pub async fn set_stage_notify(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Tells the people of every stage a project just moved on from (the moves
-/// added to its stage history after `seen`), not the one who moved it.
-/// Logged, never returned: the move is saved.
+/// What a project's move left behind, for every stage it moved on from (the
+/// moves added to its stage history after `seen`; a part marked fabricated
+/// also finishes the Fabrication stage): sets the stage's schedule events and
+/// tells its people, not the one who moved it. Logged, never returned: the
+/// move is saved.
 pub(super) async fn tell_moved_on(
     state: &AppState,
     actor_id: i32,
@@ -503,29 +522,66 @@ pub(super) async fn tell_moved_on(
     seen: i64,
 ) {
     let result: sqlx::Result<()> = async {
-        let moves: Vec<(String, Option<i32>)> = sqlx::query_as(
-            "SELECT from_stage, part_id FROM project_stage_history
+        let moves: Vec<(String, String, String, Option<i32>)> = sqlx::query_as(
+            "SELECT from_stage, to_stage, source_action, part_id FROM project_stage_history
               WHERE project_id = ? AND id > ? AND from_stage IS NOT NULL
-                AND FIELD(to_stage, 'new', 'templated', 'fabrication', 'installed', 'completed')
-                  > FIELD(from_stage, 'new', 'templated', 'fabrication', 'installed', 'completed')
               ORDER BY id",
         )
         .bind(project_id)
         .bind(seen)
         .fetch_all(&state.pool)
         .await?;
-        for (from, part_id) in moves {
-            let Some((stage, name)) = BUILT_IN_STEPS
+        let mut left: Vec<(Stage, i32)> = Vec::new();
+        for (from, to, source, part_id) in moves {
+            let part_id = part_id.unwrap_or(0);
+            let (Ok(from), Ok(to)) = (Stage::try_from(from), Stage::try_from(to)) else {
+                continue;
+            };
+            let mut stages = Vec::new();
+            if from < to {
+                stages.push(from);
+            }
+            if source == "fabricated" {
+                stages.push(Stage::Fabrication);
+            }
+            for stage in stages {
+                if !left.contains(&(stage, part_id)) {
+                    left.push((stage, part_id));
+                }
+            }
+        }
+        for (stage, part_id) in left {
+            let Some((_, name)) = BUILT_IN_STEPS
                 .iter()
-                .find(|(stage, _)| stage.as_str() == from)
+                .find(|(built_in, _)| *built_in == stage)
             else {
                 continue;
             };
+            let rules: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT target, readiness, shop_status FROM project_stage_events
+                  WHERE company_id = ? AND stage_code = ? ORDER BY id",
+            )
+            .bind(company_id)
+            .bind(stage.as_str())
+            .fetch_all(&state.pool)
+            .await?;
+            if !rules.is_empty() {
+                let mut conn = state.pool.acquire().await?;
+                super::step_events::apply_list(
+                    &mut conn,
+                    company_id,
+                    Some(actor_id),
+                    project_id,
+                    rules,
+                    part_id,
+                )
+                .await?;
+            }
             tell_stage_people(
                 state,
                 (actor_id, actor_name),
-                (company_id, project_id, part_id.unwrap_or(0)),
-                *stage,
+                (company_id, project_id, part_id),
+                stage,
                 name,
             )
             .await?;
@@ -534,7 +590,7 @@ pub(super) async fn tell_moved_on(
     }
     .await;
     if let Err(error) = result {
-        tracing::error!(?error, project_id, "project stage notification failed");
+        tracing::error!(?error, project_id, "project stage move follow-up failed");
     }
 }
 

@@ -1,6 +1,7 @@
 //! What checking a step off does to the project's schedule events
 //! (Admin > Projects > Schedule): set their readiness and shop status.
 
+use super::access::Stage;
 use super::handlers::PROJECT_EVENTS;
 use super::schemas::ProcessStep;
 use crate::auth::AdminUser;
@@ -60,6 +61,63 @@ pub async fn load(conn: &mut MySqlConnection, steps: &mut [ProcessStep]) -> sqlx
     Ok(())
 }
 
+/// The rules to store: one per target, each valid for the company.
+pub(super) async fn clean_rules(
+    conn: &mut MySqlConnection,
+    company_id: i32,
+    rules: Vec<StepEventRule>,
+) -> ApiResult<Vec<StepEventRule>> {
+    let mut clean: Vec<StepEventRule> = Vec::new();
+    for rule in rules {
+        if clean.iter().any(|seen| seen.target == rule.target) {
+            continue;
+        }
+        let readiness = rule.readiness.filter(|value| !value.is_empty());
+        let shop_status = rule.shop_status.filter(|value| !value.is_empty());
+        if readiness
+            .as_deref()
+            .is_some_and(|value| !["not_ready", "ready", "confirmed"].contains(&value))
+        {
+            return Err(ApiError::BadRequest(
+                "Pick Not ready, Ready or Confirmed".into(),
+            ));
+        }
+        if shop_status
+            .as_deref()
+            .is_some_and(|value| !["cut", "complete"].contains(&value))
+        {
+            return Err(ApiError::BadRequest("Pick Cut or Complete".into()));
+        }
+        if readiness.is_none() && shop_status.is_none() {
+            return Err(ApiError::BadRequest("Pick a status to set".into()));
+        }
+        match rule.target.strip_prefix("event:") {
+            Some(id) => {
+                let found: Option<i32> = sqlx::query_scalar(
+                    "SELECT id FROM quote_sale_event_templates WHERE id = ? AND company_id = ?",
+                )
+                .bind(id.parse::<i32>().unwrap_or(0))
+                .bind(company_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+                if found.is_none() {
+                    return Err(ApiError::BadRequest(
+                        "Pick one of the event templates".into(),
+                    ));
+                }
+            }
+            None if ["templates", "installations"].contains(&rule.target.as_str()) => {}
+            None => return Err(ApiError::BadRequest("Pick which event to change".into())),
+        }
+        clean.push(StepEventRule {
+            target: rule.target,
+            readiness,
+            shop_status,
+        });
+    }
+    Ok(clean)
+}
+
 /// Set what checking a step off does to the project's events
 ///
 /// Replaces the step's rules. Each names one kind of the project's events
@@ -90,54 +148,7 @@ pub async fn set_events(
 ) -> ApiResult<StatusCode> {
     let mut conn = state.pool.acquire().await?;
     super::process::require_step(&mut conn, user.company_id, step_id).await?;
-    let mut clean: Vec<StepEventRule> = Vec::new();
-    for rule in input.rules {
-        if clean.iter().any(|seen| seen.target == rule.target) {
-            continue;
-        }
-        let readiness = rule.readiness.filter(|value| !value.is_empty());
-        let shop_status = rule.shop_status.filter(|value| !value.is_empty());
-        if readiness
-            .as_deref()
-            .is_some_and(|value| !["not_ready", "ready", "confirmed"].contains(&value))
-        {
-            return Err(ApiError::BadRequest(
-                "Pick Not ready, Ready or Confirmed".into(),
-            ));
-        }
-        if shop_status
-            .as_deref()
-            .is_some_and(|value| !["cut", "complete"].contains(&value))
-        {
-            return Err(ApiError::BadRequest("Pick Cut or Complete".into()));
-        }
-        if readiness.is_none() && shop_status.is_none() {
-            return Err(ApiError::BadRequest("Pick a status to set".into()));
-        }
-        match rule.target.strip_prefix("event:") {
-            Some(id) => {
-                let found: Option<i32> = sqlx::query_scalar(
-                    "SELECT id FROM quote_sale_event_templates WHERE id = ? AND company_id = ?",
-                )
-                .bind(id.parse::<i32>().unwrap_or(0))
-                .bind(user.company_id)
-                .fetch_optional(&mut *conn)
-                .await?;
-                if found.is_none() {
-                    return Err(ApiError::BadRequest(
-                        "Pick one of the event templates".into(),
-                    ));
-                }
-            }
-            None if ["templates", "installations"].contains(&rule.target.as_str()) => {}
-            None => return Err(ApiError::BadRequest("Pick which event to change".into())),
-        }
-        clean.push(StepEventRule {
-            target: rule.target,
-            readiness,
-            shop_status,
-        });
-    }
+    let clean = clean_rules(&mut conn, user.company_id, input.rules).await?;
     // The pool holds one connection: free ours before the transaction takes it.
     drop(conn);
     let mut tx = state.pool.begin().await?;
@@ -151,6 +162,64 @@ pub async fn set_events(
              VALUES (?, ?, ?, ?)",
         )
         .bind(step_id)
+        .bind(&rule.target)
+        .bind(&rule.readiness)
+        .bind(&rule.shop_status)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Set what moving a project on from a stage does to its events
+///
+/// The built-in line at the end of a stage takes Schedule rules like a step.
+/// They run when a project moves on from the stage (and, for Fabrication,
+/// when a part is marked fabricated).
+#[crate::openapi::path(
+    put,
+    path = "/v1/projects/process-stages/{stage}/events",
+    operation_id = "set_project_process_stage_events",
+    tag = "projects",
+    params(("stage" = String, Path, description = "The stage: new, templated, fabrication or installed")),
+    request_body = ProcessStepEvents,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "Unknown event, readiness or shop status", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such stage", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_stage_events(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(stage): Path<String>,
+    JsonBody(input): JsonBody<ProcessStepEvents>,
+) -> ApiResult<StatusCode> {
+    let stage = Stage::try_from(stage).map_err(|_| ApiError::NotFound)?;
+    if stage >= Stage::Completed {
+        return Err(ApiError::NotFound);
+    }
+    let mut conn = state.pool.acquire().await?;
+    let clean = clean_rules(&mut conn, user.company_id, input.rules).await?;
+    drop(conn);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("DELETE FROM project_stage_events WHERE company_id = ? AND stage_code = ?")
+        .bind(user.company_id)
+        .bind(stage.as_str())
+        .execute(&mut *tx)
+        .await?;
+    for rule in &clean {
+        sqlx::query(
+            "INSERT INTO project_stage_events (company_id, stage_code, target, readiness, shop_status)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(user.company_id)
+        .bind(stage.as_str())
         .bind(&rule.target)
         .bind(&rule.readiness)
         .bind(&rule.shop_status)
@@ -199,6 +268,18 @@ async fn apply_rules(
     let Some(company_id) = company_id else {
         return Ok(());
     };
+    apply_list(conn, company_id, actor_id, project_id, rules, part_id).await
+}
+
+/// Sets the events of one project as the rules say.
+pub(super) async fn apply_list(
+    conn: &mut MySqlConnection,
+    company_id: i32,
+    actor_id: Option<i32>,
+    project_id: i32,
+    rules: Vec<(String, Option<String>, Option<String>)>,
+    part_id: i32,
+) -> sqlx::Result<()> {
     for (target, readiness, shop_status) in rules {
         // The calendar the events are on, and the text their title ends with.
         let (slug, calendar_id, ending): (Option<String>, Option<i32>, String) =
