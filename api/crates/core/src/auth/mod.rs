@@ -574,6 +574,28 @@ fn device_route(method: &Method, path: &str) -> bool {
         || project_route(method, path)
         || stone_samples(method, path)
         || maintenance_write(method, path)
+        || transaction_write(method, path)
+}
+
+/// A transaction's slab changes, as the website's Transactions dialog makes
+/// them: Cut, Uncut, Partially cut, Remove and Replace (`POST
+/// /v1/transactions/{id}/slabs/{slab}/...`), a room's square feet (`PUT
+/// .../slabs/{slab}/square-feet`) and Add slab (`POST
+/// /v1/transactions/{id}/slabs`). The Edit transactions skill
+/// ([`skills`]) still applies.
+fn transaction_write(method: &Method, path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/v1/transactions/") else {
+        return false;
+    };
+    let (post, put) = (method == Method::POST, method == Method::PUT);
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [id, "slabs"] => is_id(id) && post,
+        [id, "slabs", slab, "cut" | "uncut" | "partial-cut" | "remove" | "replace"] => {
+            is_id(id) && is_id(slab) && post
+        }
+        [id, "slabs", slab, "square-feet"] => is_id(id) && is_id(slab) && put,
+        _ => false,
+    }
 }
 
 /// The Maintenance tab's changes, as the website's Maintenance page makes
@@ -817,6 +839,29 @@ pub fn sha256_hex(value: &str) -> String {
 mod tests {
     use super::device_route;
     use axum::http::Method;
+
+    #[test]
+    fn the_transaction_screen_may_change_its_slabs() {
+        for (method, path) in [
+            (Method::POST, "/v1/transactions/4/slabs/9/cut"),
+            (Method::POST, "/v1/transactions/4/slabs/9/uncut"),
+            (Method::POST, "/v1/transactions/4/slabs/9/partial-cut"),
+            (Method::POST, "/v1/transactions/4/slabs/9/remove"),
+            (Method::POST, "/v1/transactions/4/slabs/9/replace"),
+            (Method::PUT, "/v1/transactions/4/slabs/9/square-feet"),
+            (Method::POST, "/v1/transactions/4/slabs"),
+        ] {
+            assert!(device_route(&method, path), "{method} {path}");
+        }
+        for (method, path) in [
+            (Method::DELETE, "/v1/transactions/4"),
+            (Method::POST, "/v1/transactions/4/slabs/9/sell"),
+            (Method::PUT, "/v1/transactions/4/slabs/9/cut"),
+            (Method::POST, "/v1/transactions/x/slabs"),
+        ] {
+            assert!(!device_route(&method, path), "{method} {path}");
+        }
+    }
 
     #[test]
     fn the_maintenance_tab_may_change_the_maintenance() {

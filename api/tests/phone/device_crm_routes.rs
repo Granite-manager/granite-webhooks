@@ -1725,3 +1725,28 @@ async fn the_maintenance_tab_changes_maintenance_with_the_device_token(pool: MyS
         .json();
     assert_eq!(page["completions"][0]["notes"], json!("New blade"));
 }
+
+#[test_db::test(seed)]
+async fn the_transaction_screen_cuts_slabs_with_the_device_token(pool: MySqlPool) {
+    // Rita (100) may edit transactions; seed sale 7010 has slab 6071.
+    let (server, _) = phone_server(pool.clone()).await;
+    add_session(&pool, 312, 100, 100).await;
+    server
+        .post("/v1/transactions/7010/slabs/6071/cut")
+        .add_header(HEADER, token(312))
+        .json(&json!({ "with_remnants": false }))
+        .await
+        .assert_status_success();
+    let cut: bool =
+        sqlx::query_scalar("SELECT cut_date IS NOT NULL FROM slab_inventory WHERE id = 6071")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(cut);
+    server
+        .post("/v1/transactions/7010/slabs/6071/uncut")
+        .add_header(HEADER, token(312))
+        .json(&json!({ "with_remnants": false }))
+        .await
+        .assert_status_success();
+}
