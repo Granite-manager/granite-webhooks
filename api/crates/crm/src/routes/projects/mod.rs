@@ -62,6 +62,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(process::reorder))
         .routes(routes!(process::set_notify))
         .routes(routes!(process::notify_positions))
+        .routes(routes!(process::list_stages))
+        .routes(routes!(process::set_stage_notify))
         .routes(routes!(process::set_auto))
         .routes(routes!(step_events::set_events))
         .routes(routes!(process::set_done))

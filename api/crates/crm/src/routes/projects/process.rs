@@ -4,7 +4,7 @@
 
 use super::access::{Stage, Viewer};
 use super::schemas::{
-    DoneStep, NotifyPosition, Person, ProcessStep, ProcessStepAuto, ProcessStepInput,
+    DoneStep, NotifyPosition, Person, ProcessStage, ProcessStep, ProcessStepAuto, ProcessStepInput,
     ProcessStepName, ProcessStepNotify, ProcessStepOrder, StepAuto, StepDone,
 };
 use super::service::visible_project;
@@ -342,6 +342,253 @@ pub async fn set_notify(
     }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The stages that end with a built-in step ("Then: ..."), and its name.
+const BUILT_IN_STEPS: [(Stage, &str); 4] = [
+    (Stage::New, "Schedule the template"),
+    (Stage::Templated, "Start fabrication"),
+    (Stage::Fabrication, "Schedule the installation"),
+    (Stage::Installed, "Confirm full payment"),
+];
+
+/// Who is told when a project moves on from each stage.
+pub async fn company_stages(
+    conn: &mut MySqlConnection,
+    company_id: i32,
+) -> sqlx::Result<Vec<ProcessStage>> {
+    let told: Vec<(String, i32)> = sqlx::query_as(
+        "SELECT n.stage_code, n.user_id FROM project_stage_notify n
+           JOIN users u ON u.id = n.user_id AND u.is_deleted = 0 AND u.company_id = n.company_id
+          WHERE n.company_id = ?
+          ORDER BY u.name, u.id",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let reps: Vec<String> =
+        sqlx::query_scalar("SELECT stage_code FROM project_stage_notify_rep WHERE company_id = ?")
+            .bind(company_id)
+            .fetch_all(&mut *conn)
+            .await?;
+    Ok(BUILT_IN_STEPS
+        .iter()
+        .map(|(stage, _)| ProcessStage {
+            stage_code: *stage,
+            notify: told
+                .iter()
+                .filter(|(code, _)| code == stage.as_str())
+                .map(|(_, user_id)| *user_id)
+                .collect(),
+            notify_sales_rep: reps.iter().any(|code| code == stage.as_str()),
+        })
+        .collect())
+}
+
+/// Who is told when a project moves on from each stage
+///
+/// The built-in line at the end of each stage ("Then: Start fabrication")
+/// takes Notify like a step does.
+#[crate::openapi::path(
+    get,
+    path = "/v1/projects/process-stages",
+    operation_id = "list_project_process_stages",
+    tag = "projects",
+    responses(
+        (status = 200, description = "Who is told, per stage", body = Vec<ProcessStage>),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn list_stages(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+) -> ApiResult<Json<Vec<ProcessStage>>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(company_stages(&mut conn, user.company_id).await?))
+}
+
+/// Set who is told when a project moves on from a stage
+///
+/// Replaces the list. Each person gets a bell notification and a phone push
+/// when someone moves a project on from the stage (not when they do it
+/// themselves), by hand, by checking its last step or from a booking.
+#[crate::openapi::path(
+    put,
+    path = "/v1/projects/process-stages/{stage}/notify",
+    operation_id = "set_project_process_stage_notify",
+    tag = "projects",
+    params(("stage" = String, Path, description = "The stage: new, templated, fabrication or installed")),
+    request_body = ProcessStepNotify,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "Someone outside the company", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such stage", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_stage_notify(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(stage): Path<String>,
+    JsonBody(input): JsonBody<ProcessStepNotify>,
+) -> ApiResult<StatusCode> {
+    let stage = Stage::try_from(stage).map_err(|_| ApiError::NotFound)?;
+    if !BUILT_IN_STEPS
+        .iter()
+        .any(|(built_in, _)| *built_in == stage)
+    {
+        return Err(ApiError::NotFound);
+    }
+    let mut ids = input.user_ids;
+    ids.sort_unstable();
+    ids.dedup();
+    if !ids.is_empty() {
+        let mut sql = QueryBuilder::<MySql>::new(
+            "SELECT COUNT(*) FROM users WHERE is_deleted = 0 AND company_id = ",
+        );
+        sql.push_bind(user.company_id);
+        crate::sql::push_in(&mut sql, "id", &ids);
+        let found: i64 = sql.build_query_scalar().fetch_one(&state.pool).await?;
+        if usize::try_from(found).unwrap_or_default() != ids.len() {
+            return Err(ApiError::BadRequest("Pick people from your company".into()));
+        }
+    }
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("DELETE FROM project_stage_notify WHERE company_id = ? AND stage_code = ?")
+        .bind(user.company_id)
+        .bind(stage.as_str())
+        .execute(&mut *tx)
+        .await?;
+    for id in &ids {
+        sqlx::query(
+            "INSERT INTO project_stage_notify (company_id, stage_code, user_id) VALUES (?, ?, ?)",
+        )
+        .bind(user.company_id)
+        .bind(stage.as_str())
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    }
+    sqlx::query("DELETE FROM project_stage_notify_rep WHERE company_id = ? AND stage_code = ?")
+        .bind(user.company_id)
+        .bind(stage.as_str())
+        .execute(&mut *tx)
+        .await?;
+    if input.sales_rep {
+        sqlx::query("INSERT INTO project_stage_notify_rep (company_id, stage_code) VALUES (?, ?)")
+            .bind(user.company_id)
+            .bind(stage.as_str())
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Tells the people of every stage a project just moved on from (the moves
+/// added to its stage history after `seen`), not the one who moved it.
+/// Logged, never returned: the move is saved.
+pub(super) async fn tell_moved_on(
+    state: &AppState,
+    actor_id: i32,
+    actor_name: Option<&str>,
+    company_id: i32,
+    project_id: i32,
+    seen: i64,
+) {
+    let result: sqlx::Result<()> = async {
+        let moves: Vec<(String, Option<i32>)> = sqlx::query_as(
+            "SELECT from_stage, part_id FROM project_stage_history
+              WHERE project_id = ? AND id > ? AND from_stage IS NOT NULL
+                AND FIELD(to_stage, 'new', 'templated', 'fabrication', 'installed', 'completed')
+                  > FIELD(from_stage, 'new', 'templated', 'fabrication', 'installed', 'completed')
+              ORDER BY id",
+        )
+        .bind(project_id)
+        .bind(seen)
+        .fetch_all(&state.pool)
+        .await?;
+        for (from, part_id) in moves {
+            let Some((stage, name)) = BUILT_IN_STEPS
+                .iter()
+                .find(|(stage, _)| stage.as_str() == from)
+            else {
+                continue;
+            };
+            tell_stage_people(
+                state,
+                (actor_id, actor_name),
+                (company_id, project_id, part_id.unwrap_or(0)),
+                *stage,
+                name,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        tracing::error!(?error, project_id, "project stage notification failed");
+    }
+}
+
+async fn tell_stage_people(
+    state: &AppState,
+    (actor_id, actor_name): (i32, Option<&str>),
+    (company_id, project_id, part_id): (i32, i32, i32),
+    stage: Stage,
+    name: &str,
+) -> sqlx::Result<()> {
+    let people: Vec<i32> = sqlx::query_scalar(
+        "SELECT n.user_id FROM project_stage_notify n
+           JOIN users u ON u.id = n.user_id AND u.is_deleted = 0
+          WHERE n.company_id = ? AND n.stage_code = ? AND n.user_id <> ?
+         UNION
+         SELECT p.sales_rep_id FROM projects p
+           JOIN project_stage_notify_rep r ON r.company_id = p.company_id AND r.stage_code = ?
+           JOIN users u ON u.id = p.sales_rep_id AND u.is_deleted = 0
+          WHERE p.id = ? AND p.sales_rep_id <> ?",
+    )
+    .bind(company_id)
+    .bind(stage.as_str())
+    .bind(actor_id)
+    .bind(stage.as_str())
+    .bind(project_id)
+    .bind(actor_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let actor = actor_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(|name| name.chars().take(255).collect::<String>());
+    for person in people {
+        let id = sqlx::query(
+            "INSERT INTO notifications
+                (user_id, project_id, message, notification_type, actor_name, due_at)
+             VALUES (?, ?,
+                     LEFT(CONCAT(?, COALESCE((SELECT CONCAT(' (', pp.name, ')')
+                                                FROM project_parts pp WHERE pp.id = ?), '')),
+                          255),
+                     ?, ?, NOW())",
+        )
+        .bind(person)
+        .bind(project_id)
+        .bind(name)
+        .bind(part_id)
+        .bind(STEP_DONE)
+        .bind(&actor)
+        .execute(&state.pool)
+        .await?
+        .last_insert_id();
+        push_notification_logged(state, i64::try_from(id).unwrap_or_default()).await;
+    }
+    Ok(())
 }
 
 /// The positions Notify can pick from
