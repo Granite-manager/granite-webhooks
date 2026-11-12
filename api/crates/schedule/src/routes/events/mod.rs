@@ -14,6 +14,8 @@
 //! - `/v1/events/{id}/project-notes` → notes on the event's sold project
 //! - `POST /v1/events/{id}/crew-status`, `POST /v1/me/location` → the crew's
 //!   On my way, Arrived and Completed (`crew`)
+//! - `people_ids` → people added to the event (`people`, with
+//!   `GET /v1/schedule/team`)
 //! - `POST /v1/events/{id}/shop-status` → the shop marks a job Cut or Complete
 //!   (`shop`)
 //!
@@ -26,6 +28,7 @@ pub mod estimate;
 pub mod history;
 pub mod issues;
 pub mod notify;
+pub mod people;
 pub mod project_notes;
 pub mod reminders;
 pub mod shop;

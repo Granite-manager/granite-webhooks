@@ -60,6 +60,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(board::unscheduled))
         .routes(routes!(board::my_schedule))
         .routes(routes!(board::people))
+        .routes(routes!(crate::routes::events::people::team))
         .routes(routes!(activity::activity))
         .routes(routes!(crew_map::crew_positions))
         .routes(routes!(board::set_color))

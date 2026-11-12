@@ -45173,7 +45173,7 @@
           "schedule"
         ],
         "summary": "A personal schedule",
-        "description": "The events assigned to the caller (an installer's or template maker's own\nday), on any calendar, with their customers' names. An\nadmin or superuser may read an installer's or template maker's schedule\nwith `user_id`.",
+        "description": "The events assigned to the caller or that they were added to (an\ninstaller's or template maker's own day), on any calendar, with their customers' names. An\nadmin or superuser may read an installer's or template maker's schedule\nwith `user_id`.",
         "operationId": "get_my_schedule",
         "parameters": [
           {
@@ -45283,6 +45283,66 @@
                   "type": "array",
                   "items": {
                     "$ref": "#/components/schemas/SchedulePerson"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/schedule/team": {
+      "get": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "People who can be added to an event",
+        "description": "The company's live employees and admins by name, with their pictures\n(check-in kiosks left out). Send their ids as `people_ids` with\n`POST /v1/events` or `PUT /v1/events/{id}`.",
+        "operationId": "list_schedule_team",
+        "responses": {
+          "200": {
+            "description": "People",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventPerson"
                   }
                 }
               }
@@ -85876,6 +85936,17 @@
             "format": "int32",
             "description": "The user it is assigned to."
           },
+          "people_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "People of the company added to it (user ids from\n`GET /v1/schedule/team`, at most 50): it shows on each one's own\nschedule. Exactly these are saved; `[]` removes everyone, leave out\nto keep the saved ones."
+          },
           "sale_id": {
             "type": [
               "integer",
@@ -105686,7 +105757,8 @@
           "urgent",
           "created_user_id",
           "customer_told",
-          "automated"
+          "automated",
+          "people"
         ],
         "properties": {
           "id": {
@@ -105910,6 +105982,13 @@
                 "type": "null"
               }
             ]
+          },
+          "people": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EventPerson"
+            },
+            "description": "People of the company added to it, by name (empty when none).\nChange them with `people_ids` on `PUT /v1/events/{id}`."
           }
         }
       },
