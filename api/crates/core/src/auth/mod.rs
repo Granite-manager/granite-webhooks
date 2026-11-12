@@ -477,6 +477,17 @@ fn sale_and_invoice_write(method: &Method, path: &str) -> bool {
 /// lists them), creating it (`POST /v1/invoices`) and marking it sent once
 /// it is emailed (`PUT /v1/invoices/{id}/status`). Opening or editing an
 /// invoice stays with the CRM session.
+/// A schedule event's QuickBooks invoice as a PDF (`GET
+/// /v1/qbo/invoices/{invoice_id}/pdf`): the app's event details open it.
+/// The handler still limits an installer to the invoices of their own jobs.
+fn qbo_invoice_pdf(method: &Method, path: &str) -> bool {
+    method == Method::GET
+        && path
+            .strip_prefix("/v1/qbo/invoices/")
+            .and_then(|rest| rest.strip_suffix("/pdf"))
+            .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
 fn own_invoice(method: &Method, path: &str) -> bool {
     if path == "/v1/invoices" {
         return method == Method::GET || method == Method::POST;
@@ -553,7 +564,8 @@ fn project_route(method: &Method, path: &str) -> bool {
 /// [`quote_print_and_templates`]), and the sale form's and invoice editor's
 /// (`GET` on [`DEVICE_SALE_READS`], [`place_read`],
 /// [`sale_and_invoice_write`]) and its own invoice ([`own_invoice`]), and
-/// the Projects tab's ([`project_route`]).
+/// an event's QuickBooks invoice PDF ([`qbo_invoice_pdf`]) and the Projects
+/// tab's ([`project_route`]).
 fn device_route(method: &Method, path: &str) -> bool {
     DEVICE_ROUTES.iter().any(|prefix| under(path, prefix))
         || (method == Method::GET && DEVICE_READ_ROUTES.iter().any(|prefix| under(path, prefix)))
@@ -571,6 +583,7 @@ fn device_route(method: &Method, path: &str) -> bool {
         || sale_read(method, path)
         || sale_and_invoice_write(method, path)
         || own_invoice(method, path)
+        || qbo_invoice_pdf(method, path)
         || project_route(method, path)
         || stone_samples(method, path)
         || maintenance_write(method, path)
@@ -894,6 +907,15 @@ mod tests {
         assert!(!device_route(&Method::PUT, "/v1/stones/12/samples"));
         assert!(!device_route(&Method::PATCH, "/v1/stones/12"));
         assert!(!device_route(&Method::PATCH, "/v1/stones/x/samples"));
+    }
+
+    #[test]
+    fn the_app_reads_an_event_invoice_pdf_only() {
+        assert!(device_route(&Method::GET, "/v1/qbo/invoices/2924/pdf"));
+        assert!(!device_route(&Method::POST, "/v1/qbo/invoices/2924/pdf"));
+        assert!(!device_route(&Method::GET, "/v1/qbo/invoices/2924"));
+        assert!(!device_route(&Method::GET, "/v1/qbo/invoices//pdf"));
+        assert!(!device_route(&Method::GET, "/v1/qbo/invoices/1/2/pdf"));
     }
 
     #[test]
@@ -1310,7 +1332,6 @@ mod tests {
             (Method::POST, "/v1/qbo/items"),
             (Method::GET, "/v1/qbo/invoice-instructions"),
             (Method::PUT, "/v1/qbo/invoice-instructions"),
-            (Method::GET, "/v1/qbo/invoices/9/pdf"),
             (Method::POST, "/v1/ai/invoice-edit"),
             (Method::PUT, "/v1/quotes/7/invoice-draft"),
             (Method::POST, "/v1/quotes/7/invoice-sync"),
