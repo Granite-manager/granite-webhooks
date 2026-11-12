@@ -114,6 +114,13 @@ async fn store_inbound_sms(
                 }
 
                 maybe_move_deal_on_inbound_sms(pool, company_id, form.sender()).await;
+                // After its pictures: the notification can say it has some.
+                crate::sms_push::push_inbound_text(
+                    company_id,
+                    "ringcentral",
+                    result.last_insert_id(),
+                )
+                .await;
             } else {
                 // 0 rows: INSERT IGNORE deduped a redelivered webhook — don't cancel
                 // or move deals again. Never log message text or phone numbers here.
@@ -406,8 +413,8 @@ pub async fn unsync_ringcentral(
 #[cfg(test)]
 mod tests {
     use super::parse_ringcentral_sms;
-    use crate::tests::utils::internal_token;
     use crate::tests::ringcentral::{INBOUND_NULL_TEXT, INBOUND_SMS};
+    use crate::tests::utils::internal_token;
     use crate::tests::utils::{insert_group_list, new_test_app};
     use axum::body::Bytes;
     use axum::http::StatusCode;

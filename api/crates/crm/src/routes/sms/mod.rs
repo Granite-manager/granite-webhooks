@@ -30,6 +30,7 @@ pub mod flow_stops;
 pub mod flows;
 mod history;
 mod inbound_media;
+mod inbound_push;
 pub mod moves;
 pub mod provider;
 mod retry;
@@ -67,6 +68,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(discard::delete_failed))
         .routes(routes!(attachments::prepare_attachments))
         .routes(routes!(inbound_media::store_inbound_media))
+        .routes(routes!(inbound_push::inbound_push))
+        .routes(routes!(inbound_push::text_notice))
         .routes(routes!(history::history))
         .routes(routes!(flows::list, flows::create))
         .routes(routes!(flows::get, flows::update, flows::delete))

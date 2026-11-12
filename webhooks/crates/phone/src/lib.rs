@@ -23,6 +23,7 @@ pub mod cloudtalk;
 pub mod google;
 pub mod outbound;
 pub mod ringcentral;
+pub mod sms_push;
 pub mod telnyx;
 #[cfg(test)]
 pub mod tests;
