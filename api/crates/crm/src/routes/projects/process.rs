@@ -379,6 +379,20 @@ pub async fn company_stages(
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
+    let autos: Vec<(
+        String,
+        String,
+        Option<i32>,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+    )> = sqlx::query_as(
+        "SELECT stage_code, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days
+           FROM project_stage_auto WHERE company_id = ?",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
     Ok(BUILT_IN_STEPS
         .iter()
         .map(|(stage, _)| ProcessStage {
@@ -389,6 +403,25 @@ pub async fn company_stages(
                 .map(|(_, user_id)| *user_id)
                 .collect(),
             notify_sales_rep: reps.iter().any(|code| code == stage.as_str()),
+            auto: autos.iter().find(|(code, ..)| code == stage.as_str()).map(
+                |(_, trigger, ref_id, ref_ids, text, days)| {
+                    let mut ids: Vec<i32> = ref_ids
+                        .iter()
+                        .flat_map(|list| list.split(','))
+                        .filter_map(|id| id.trim().parse().ok())
+                        .collect();
+                    if ids.is_empty() {
+                        ids.extend(*ref_id);
+                    }
+                    StepAuto {
+                        trigger: trigger.clone(),
+                        ref_id: *ref_id,
+                        ref_ids: ids,
+                        text: text.clone(),
+                        days: *days,
+                    }
+                },
+            ),
             event_rules: rules
                 .iter()
                 .filter(|(code, ..)| code == stage.as_str())
@@ -515,7 +548,7 @@ pub async fn set_stage_notify(
 /// move is saved.
 pub(super) async fn tell_moved_on(
     state: &AppState,
-    actor_id: i32,
+    actor_id: Option<i32>,
     actor_name: Option<&str>,
     company_id: i32,
     project_id: i32,
@@ -568,12 +601,7 @@ pub(super) async fn tell_moved_on(
             if !rules.is_empty() {
                 let mut conn = state.pool.acquire().await?;
                 super::step_events::apply_list(
-                    &mut conn,
-                    company_id,
-                    Some(actor_id),
-                    project_id,
-                    rules,
-                    part_id,
+                    &mut conn, company_id, actor_id, project_id, rules, part_id,
                 )
                 .await?;
             }
@@ -596,7 +624,7 @@ pub(super) async fn tell_moved_on(
 
 async fn tell_stage_people(
     state: &AppState,
-    (actor_id, actor_name): (i32, Option<&str>),
+    (actor_id, actor_name): (Option<i32>, Option<&str>),
     (company_id, project_id, part_id): (i32, i32, i32),
     stage: Stage,
     name: &str,
@@ -613,10 +641,10 @@ async fn tell_stage_people(
     )
     .bind(company_id)
     .bind(stage.as_str())
-    .bind(actor_id)
+    .bind(actor_id.unwrap_or(0))
     .bind(stage.as_str())
     .bind(project_id)
-    .bind(actor_id)
+    .bind(actor_id.unwrap_or(0))
     .fetch_all(&state.pool)
     .await?;
     let actor = actor_name
@@ -645,6 +673,79 @@ async fn tell_stage_people(
         push_notification_logged(state, i64::try_from(id).unwrap_or_default()).await;
     }
     Ok(())
+}
+
+/// Set what moves a project on from a stage by itself
+///
+/// The built-in line at the end of a stage takes Auto like a step: when the
+/// action happens (after the stage's own steps are done), the project moves
+/// on to the next stage. Only Awaiting Template and Templated can do this:
+/// installation and payment are confirmed with their own buttons.
+#[crate::openapi::path(
+    put,
+    path = "/v1/projects/process-stages/{stage}/auto",
+    operation_id = "set_project_process_stage_auto",
+    tag = "projects",
+    params(("stage" = String, Path, description = "The stage: new or templated")),
+    request_body = ProcessStepAuto,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "Unknown trigger or template", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such stage, or one that can't move on by itself", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_stage_auto(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(stage): Path<String>,
+    JsonBody(input): JsonBody<ProcessStepAuto>,
+) -> ApiResult<StatusCode> {
+    let stage = Stage::try_from(stage).map_err(|_| ApiError::NotFound)?;
+    if !matches!(stage, Stage::New | Stage::Templated) {
+        return Err(ApiError::NotFound);
+    }
+    let mut conn = state.pool.acquire().await?;
+    let rule = match input.auto {
+        Some(auto) => Some(clean_auto(&mut conn, user.company_id, auto).await?),
+        None => None,
+    };
+    drop(conn);
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("DELETE FROM project_stage_auto WHERE company_id = ? AND stage_code = ?")
+        .bind(user.company_id)
+        .bind(stage.as_str())
+        .execute(&mut *tx)
+        .await?;
+    if let Some(rule) = rule {
+        sqlx::query(
+            "INSERT INTO project_stage_auto
+                (company_id, stage_code, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days, auto_since)
+             VALUES (?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(3))",
+        )
+        .bind(user.company_id)
+        .bind(stage.as_str())
+        .bind(&rule.trigger)
+        .bind(rule.ref_id)
+        .bind(
+            (!rule.ref_ids.is_empty()).then(|| {
+                rule.ref_ids
+                    .iter()
+                    .map(i32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            }),
+        )
+        .bind(&rule.text)
+        .bind(rule.days)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The positions Notify can pick from

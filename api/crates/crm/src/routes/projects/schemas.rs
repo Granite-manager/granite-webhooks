@@ -354,6 +354,8 @@ pub struct ProcessStage {
     pub notify_sales_rep: bool,
     /// What moving on from the stage does to the project's schedule events.
     pub event_rules: Vec<super::step_events::StepEventRule>,
+    /// What moves the project on by itself, if anything.
+    pub auto: Option<StepAuto>,
 }
 
 /// A position a step's Notify can pick people from.

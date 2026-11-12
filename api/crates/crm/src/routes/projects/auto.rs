@@ -7,6 +7,7 @@
 //! first step without a rule, or whose action hasn't happened, stops the walk.
 //! A step a person unchecked stays unchecked (`project_process_step_auto_off`).
 
+use super::access::Stage;
 use super::schemas::Project;
 use crate::routes::sms::provider::{SmsProvider, phone10};
 use crate::state::AppState;
@@ -57,7 +58,14 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
-    if !rules.iter().any(|rule| rule.auto_trigger.is_some()) {
+    let stage_rules: Vec<Rule> = sqlx::query_as(
+        "SELECT id, stage_code, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days, auto_since
+           FROM project_stage_auto WHERE company_id = ?",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    if stage_rules.is_empty() && !rules.iter().any(|rule| rule.auto_trigger.is_some()) {
         return Ok(());
     }
     let ids: Vec<i32> = live.iter().map(|p| p.id).collect();
@@ -76,6 +84,7 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     let now = Utc::now().naive_utc();
     // Told once the connection is back in the pool: telling needs it.
     let mut checked: Vec<(i32, i32, i32)> = Vec::new();
+    let mut moved: Vec<(i32, i64)> = Vec::new();
 
     // A project with parts walks each part's stage (part 0: a project without).
     let mut tracks: Vec<(&Project, i32, &str)> = Vec::new();
@@ -98,6 +107,7 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     }
     for (project, part, stage) in tracks {
         let mut before: Option<NaiveDateTime> = None;
+        let mut complete = true;
         for rule in rules.iter().filter(|rule| rule.stage_code == stage) {
             if let Some((_, _, _, at)) = done
                 .iter()
@@ -108,9 +118,11 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
             }
             let (Some(trigger), Some(since)) = (rule.auto_trigger.as_deref(), rule.auto_since)
             else {
+                complete = false;
                 break;
             };
             if off.contains(&(project.id, part, rule.id)) {
+                complete = false;
                 break;
             }
             let after = before.map_or(since, |at| at.max(since));
@@ -122,6 +134,7 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
                 happened(&mut conn, company_id, project, rule, trigger, after).await?
             };
             let Some(at) = happened.map(|at| at.min(now)) else {
+                complete = false;
                 break;
             };
             let added = sqlx::query(
@@ -142,13 +155,125 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
             }
             before = Some(at);
         }
+        // Every step of the stage is done: the built-in line's rule moves it on.
+        if !complete {
+            continue;
+        }
+        let Some(stage_rule) = stage_rules.iter().find(|rule| rule.stage_code == stage) else {
+            continue;
+        };
+        let (Some(trigger), Some(since)) =
+            (stage_rule.auto_trigger.as_deref(), stage_rule.auto_since)
+        else {
+            continue;
+        };
+        let after = before.map_or(since, |at| at.max(since));
+        let fired = if trigger == "days_after" {
+            let start = before.or_else(|| started(project)).unwrap_or(now);
+            let at = start + Duration::days(i64::from(stage_rule.auto_days.unwrap_or(1)));
+            (at <= now).then_some(at)
+        } else {
+            happened(&mut conn, company_id, project, stage_rule, trigger, after).await?
+        };
+        if fired.is_none() {
+            continue;
+        }
+        let Ok(from) = Stage::try_from(stage.to_string()) else {
+            continue;
+        };
+        if let Some(seen) = advance(&mut conn, company_id, project, part, from).await? {
+            moved.push((project.id, seen));
+        }
     }
     drop(conn);
+    for (project_id, seen) in moved {
+        super::process::tell_moved_on(state, None, Some("Auto"), company_id, project_id, seen)
+            .await;
+    }
     for (project_id, step_id, part_id) in checked {
         super::process::tell_step_people(state, None, Some("Auto"), project_id, step_id, part_id)
             .await;
     }
     Ok(())
+}
+
+/// Moves a project (or one of its parts) on from `from`: Awaiting Template to
+/// Templated, Templated to In Fabrication. Not for a project on hold, one moved
+/// back by hand, or fabrication before its transaction is linked. The stage
+/// history id from before the move, or none when nothing moved.
+async fn advance(
+    conn: &mut MySqlConnection,
+    company_id: i32,
+    project: &Project,
+    part: i32,
+    from: Stage,
+) -> sqlx::Result<Option<i64>> {
+    let to = match from {
+        Stage::New => Stage::Templated,
+        Stage::Templated => Stage::Fabrication,
+        _ => return Ok(None),
+    };
+    if project.is_on_hold || (to == Stage::Fabrication && project.sale_id.is_none()) {
+        return Ok(None);
+    }
+    let seen: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(MAX(id), 0) AS SIGNED) FROM project_stage_history WHERE project_id = ?",
+    )
+    .bind(project.id)
+    .fetch_one(&mut *conn)
+    .await?;
+    let changed = if part > 0 {
+        sqlx::query(
+            "UPDATE project_parts pp
+               JOIN project_part_types pt ON pt.id = pp.type_id
+                SET pp.stage_code = ?
+              WHERE pp.id = ? AND pp.project_id = ? AND pp.stage_code = ?
+                AND pp.stage_cap IS NULL AND (? <> 'fabrication' OR pt.uses_fabrication = 1)",
+        )
+        .bind(to.as_str())
+        .bind(part)
+        .bind(project.id)
+        .bind(from.as_str())
+        .bind(to.as_str())
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+    } else {
+        sqlx::query(
+            "UPDATE projects SET stage_code = ? WHERE id = ? AND company_id = ? AND stage_cap IS NULL",
+        )
+        .bind(to.as_str())
+        .bind(project.id)
+        .bind(company_id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+    };
+    if changed == 0 {
+        return Ok(None);
+    }
+    sqlx::query(
+        "UPDATE projects SET version = version + 1,
+                templated_at = IF(? = 'templated', COALESCE(templated_at, UTC_TIMESTAMP()), templated_at)
+          WHERE id = ? AND company_id = ?",
+    )
+    .bind(to.as_str())
+    .bind(project.id)
+    .bind(company_id)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "INSERT INTO project_stage_history
+            (project_id, company_id, from_stage, to_stage, actor_id, source_action, part_id)
+         SELECT id, company_id, ?, ?, created_by, 'auto', NULLIF(?, 0) FROM projects WHERE id = ?",
+    )
+    .bind(from.as_str())
+    .bind(to.as_str())
+    .bind(part)
+    .bind(project.id)
+    .execute(&mut *conn)
+    .await?;
+    Ok(Some(seen))
 }
 
 /// When the project started (`created_at`, UTC ISO).
