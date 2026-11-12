@@ -175,8 +175,8 @@ pub async fn list_page(
          COALESCE(s.name, {sender_name}) AS sender_name,
          COALESCE(r.name, {receiver_name}) AS receiver_name",
         read = client_read_at(),
-        sender_name = customer_name_by_email("e.sender_email"),
-        receiver_name = customer_name_by_email("e.receiver_email"),
+        sender_name = customer_name_by_email("e.sender_email", mailbox.company_id),
+        receiver_name = customer_name_by_email("e.receiver_email", mailbox.company_id),
     );
     let list = if is_inbox {
         let mut args = thread_match_args.clone();
@@ -396,7 +396,7 @@ pub async fn suggestions(
                 "e.deleted_at {deleted} AND e.is_draft = 0 AND (s.company_id = ? OR r.company_id = ?){rep}{folder_sql}"
             ),
             args,
-            " AND c.company_id = ?",
+            " AND c.company_id = ?".to_string(),
         )
     } else {
         let scope = company_scope("e", mailbox.company_id);
@@ -429,7 +429,12 @@ pub async fn suggestions(
                 args,
             )
         };
-        (where_sql, args, "")
+        // Only this company's live customers name an address.
+        let name_company = format!(
+            " AND c.company_id = {} AND c.deleted_at IS NULL",
+            mailbox.company_id
+        );
+        (where_sql, args, name_company)
     };
     // Admin: the two company placeholders of the name lookups come first.
     let name = |column: &str| {
