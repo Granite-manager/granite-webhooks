@@ -98,6 +98,21 @@ pub struct EventHistoryItem {
     pub created_at: Option<DateTime<Utc>>,
     /// Who.
     pub created_by: Option<String>,
+    /// Who, by user id (their picture); None on older lines and lines no
+    /// person made.
+    pub created_by_id: Option<i32>,
+    /// The value before the change, on lines of an edit (newer than this
+    /// field): a readiness key (`not_ready`, `called`, `ready`,
+    /// `confirmed`, `scheduled`), a label color key, a title, a calendar
+    /// name, an address, or for `date_updated` the dates as
+    /// `start/end` (UTC `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` all day) or
+    /// `unscheduled`. None when it was empty or the line is not a change.
+    pub from_value: Option<String>,
+    /// The value after the change, in the same form as `from_value`.
+    pub to_value: Option<String>,
+    /// What changed: `status`, `date`, `label`, `title`, `calendar` or
+    /// `location`. None on other lines.
+    pub field: Option<String>,
 }
 
 /// A user on the event.
@@ -233,7 +248,17 @@ pub async fn details(
     .fetch_all(pool)
     .await?;
     let history = sqlx::query_as(
-        "SELECT id, event_id, action, message, body, created_at, created_by FROM event_history
+        "SELECT id, event_id, action, message, body, created_at, created_by, created_by_id,
+                from_value, to_value,
+                CASE WHEN from_value IS NULL AND to_value IS NULL THEN NULL
+                     WHEN action = 'date_updated' THEN 'date'
+                     WHEN action = 'label_updated' THEN 'label'
+                     WHEN action = 'location_updated' THEN 'location'
+                     WHEN message LIKE 'Status changed%' THEN 'status'
+                     WHEN message LIKE 'Title changed%' THEN 'title'
+                     WHEN message LIKE 'Calendar changed%' THEN 'calendar'
+                END AS field
+           FROM event_history
           WHERE event_id = ? AND company_id = ? ORDER BY created_at, id",
     )
     .bind(id)
