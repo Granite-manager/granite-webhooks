@@ -110,7 +110,9 @@ pub async fn list_feature_sales(
     let from = day(query.from.as_deref())?;
     let to = day(query.to.as_deref())?;
     // Sold: signed by the customer, or marked sold; the day as the
-    // Commissions sync dates it.
+    // Commissions sync dates it. A customer whose slab was sold (Sell, not
+    // cancelled) with no quote marked sold counts their latest quote, on the
+    // first sale's day, so its supports and other extras are not left out.
     let quotes: Vec<SoldQuote> = sqlx::query_as(
         "SELECT s.id, s.user_id, u.name AS rep, s.signed_at
            FROM (SELECT q.id, COALESCE(q.salesperson_id, q.created_by) AS user_id,
@@ -120,13 +122,32 @@ pub async fn list_feature_sales(
                                     '%Y-%m-%d') AS signed_at
                    FROM quotes q
                   WHERE q.company_id = ? AND q.deleted_at IS NULL
-                    AND (q.signed_at IS NOT NULL OR q.status IN ('converted', 'accepted'))) s
+                    AND (q.signed_at IS NOT NULL OR q.status IN ('converted', 'accepted'))
+                 UNION ALL
+                 SELECT q.id, COALESCE(q.salesperson_id, q.created_by) AS user_id,
+                        DATE_FORMAT(x.sold_at, '%Y-%m-%d') AS signed_at
+                   FROM (SELECT sa.customer_id, MIN(sa.sale_date) AS sold_at
+                           FROM sales sa
+                          WHERE sa.company_id = ? AND sa.customer_id IS NOT NULL
+                            AND sa.status <> 'cancelled'
+                          GROUP BY sa.customer_id) x
+                   JOIN quotes q ON q.id = (SELECT q2.id FROM quotes q2
+                                             WHERE q2.company_id = ? AND q2.customer_id = x.customer_id
+                                               AND q2.deleted_at IS NULL
+                                             ORDER BY q2.updated_at DESC, q2.id DESC LIMIT 1)
+                  WHERE NOT EXISTS (SELECT 1 FROM quotes q3
+                                     WHERE q3.company_id = ? AND q3.customer_id = x.customer_id
+                                       AND q3.deleted_at IS NULL
+                                       AND (q3.signed_at IS NOT NULL OR q3.status IN ('converted', 'accepted')))) s
            LEFT JOIN users u ON u.id = s.user_id
           WHERE (? IS NULL OR s.user_id = ?)
             AND (? IS NULL OR s.signed_at >= ?)
             AND (? IS NULL OR s.signed_at <= ?)
           ORDER BY s.signed_at DESC, s.id DESC",
     )
+    .bind(user.company_id)
+    .bind(user.company_id)
+    .bind(user.company_id)
     .bind(user.company_id)
     .bind(only)
     .bind(only)
