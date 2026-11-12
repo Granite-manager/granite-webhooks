@@ -27879,6 +27879,161 @@
         ]
       }
     },
+    "/v1/sms/inbound-push": {
+      "post": {
+        "tags": [
+          "sms"
+        ],
+        "summary": "Push a new `RingCentral` or `CloudTalk` text to phones",
+        "description": "Called by the `webhooks` Lambda (job key) once it stored an inbound\ntext (and its pictures). Pushed as data `{granite: \"1\", type:\n\"crm_text\", provider, smsId}` (ids only: never the number, the name or\nthe text) to the signed-in phones of the company's users whose own\ninbox shows the conversation, as `GET /v1/sms/mine/threads` lists it.\nThe app then reads `GET /v1/sms/mine/messages/{provider}/{id}`. Nothing\nis pushed (`pushed: 0`) for an unknown or outbound text or when nobody\nhas it. Calling it again pushes again.",
+        "operationId": "push_inbound_sms",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InboundTextPush"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Phones told",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboundTextPushed"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body or provider",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "job_key": []
+          }
+        ]
+      }
+    },
+    "/v1/sms/mine/messages/{provider}/{id}": {
+      "get": {
+        "tags": [
+          "sms"
+        ],
+        "summary": "Read a new text for its notification",
+        "description": "Who wrote the inbound `RingCentral` or `CloudTalk` text `id` and what,\nfor the phone's notification after a `crm_text` push: the conversation's\nphone (open it with `GET /v1/sms/mine/threads/{phone}`), the customer's\nname and the text. 404 unless the text is in the caller's own inbox.",
+        "operationId": "get_my_sms_notice",
+        "parameters": [
+          {
+            "name": "provider",
+            "in": "path",
+            "description": "`ringcentral` or `cloudtalk`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The text's id from the push",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextNotice"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a text of the caller's inbox",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/sms/{provider}/history": {
       "get": {
         "tags": [
@@ -88537,6 +88692,45 @@
           }
         }
       },
+      "InboundTextPush": {
+        "type": "object",
+        "description": "Body of `POST /v1/sms/inbound-push`.",
+        "required": [
+          "company_id",
+          "provider",
+          "sms_id"
+        ],
+        "properties": {
+          "company_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The company the text came to."
+          },
+          "provider": {
+            "type": "string",
+            "description": "`ringcentral` or `cloudtalk` (Telnyx texts push on their own)."
+          },
+          "sms_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The stored row of the provider's SMS table."
+          }
+        }
+      },
+      "InboundTextPushed": {
+        "type": "object",
+        "description": "How many phones were told.",
+        "required": [
+          "pushed"
+        ],
+        "properties": {
+          "pushed": {
+            "type": "integer",
+            "description": "Phones FCM accepted the push for; 0 when nobody's inbox shows it.",
+            "minimum": 0
+          }
+        }
+      },
       "InboxLead": {
         "type": "object",
         "description": "A lead of the inbox.",
@@ -113050,6 +113244,38 @@
           "thread": {
             "$ref": "#/components/schemas/TextThread",
             "description": "The thread."
+          }
+        }
+      },
+      "TextNotice": {
+        "type": "object",
+        "description": "A new text as its notification shows it.",
+        "required": [
+          "phone",
+          "has_media"
+        ],
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "The other party's phone (last ten digits): the conversation is\n`GET /v1/sms/mine/threads/{phone}`."
+          },
+          "customer_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The customer the phone belongs to; null when none."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What they wrote; null for a picture or file only."
+          },
+          "has_media": {
+            "type": "boolean",
+            "description": "It came with pictures or files."
           }
         }
       },

@@ -164,6 +164,12 @@ async fn process_inbound_sms(
                 }
 
                 maybe_move_deal_on_inbound_sms(&pool, company_id, form.sender()).await;
+                crate::sms_push::push_inbound_text(
+                    company_id,
+                    "cloudtalk",
+                    result.last_insert_id(),
+                )
+                .await;
             } else {
                 // 0 rows: INSERT IGNORE deduped a redelivered webhook — don't cancel
                 // or move deals again. Never log message text or phone numbers here.
@@ -317,8 +323,8 @@ pub async fn unsync_cloudtalk(
 #[cfg(test)]
 mod tests {
     use super::parse_cloudtalk_sms;
-    use crate::tests::utils::internal_token;
     use crate::tests::cloudtalk::{INBOUND_NULL_TEXT, INBOUND_SMS};
+    use crate::tests::utils::internal_token;
     use crate::tests::utils::{insert_group_list, insert_user, new_test_app};
     use axum::body::Bytes;
     use axum::http::StatusCode;

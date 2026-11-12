@@ -20,6 +20,7 @@ mod phone_contacts;
 mod phone_crm_push;
 mod phone_devices;
 mod phone_directions;
+mod phone_crm_text_push;
 mod phone_email_push;
 mod phone_jobs;
 mod phone_porting;
