@@ -343,6 +343,17 @@ pub struct ProcessStepNotify {
     pub sales_rep: bool,
 }
 
+/// Who is told when a project moves on from a stage (the stage's built-in step).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ProcessStage {
+    /// The stage a project moves on from.
+    pub stage_code: Stage,
+    /// Who is told (user ids).
+    pub notify: Vec<i32>,
+    /// Also tells the sales rep assigned to the project.
+    pub notify_sales_rep: bool,
+}
+
 /// A position a step's Notify can pick people from.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct NotifyPosition {

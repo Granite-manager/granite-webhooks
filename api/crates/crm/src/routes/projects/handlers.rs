@@ -540,9 +540,24 @@ pub async fn act(
     JsonBody(action): JsonBody<ProjectAction>,
 ) -> ApiResult<Json<Project>> {
     let viewer = Viewer::load(&state.pool, &user).await?;
-    service::apply(&state.pool, &viewer, id, action)
-        .await
-        .map(Json)
+    // Whatever the action adds to the stage history after this point is a move.
+    let seen: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(MAX(id), 0) AS SIGNED) FROM project_stage_history WHERE project_id = ?",
+    )
+    .bind(id)
+    .fetch_one(&state.pool)
+    .await?;
+    let project = service::apply(&state.pool, &viewer, id, action).await?;
+    super::process::tell_moved_on(
+        &state,
+        user.id,
+        user.name.as_deref(),
+        viewer.company_id,
+        id,
+        seen,
+    )
+    .await;
+    Ok(Json(project))
 }
 
 /// Save a column's manual order
