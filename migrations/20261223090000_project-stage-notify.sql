@@ -6,8 +6,7 @@ CREATE TABLE project_stage_notify (
     stage_code VARCHAR(20) NOT NULL,
     user_id INT NOT NULL,
     PRIMARY KEY (company_id, stage_code, user_id),
-    KEY idx_project_stage_notify_user (user_id),
-    CONSTRAINT fk_project_stage_notify_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    KEY idx_project_stage_notify_user (user_id)
 );
 
 -- Also tells the sales rep assigned to the project.
