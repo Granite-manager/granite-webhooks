@@ -34,7 +34,7 @@ use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::{IntoParams, ToSchema};
 use crate::routes::company::queries::company_features;
-use crate::routes::events::history::{History, record, record_customer_message};
+use crate::routes::events::history::{AUTOMATED, History, record, record_customer_message};
 use crate::routes::events::notify::{
     OfficeManager, customer_email, customer_phone, escape_html, office_manager, sender_for,
 };
@@ -1590,10 +1590,9 @@ pub async fn send_on_my_way(
         idempotency_key: Some(format!("on-my-way-{event_id}-{}", event.start_date)),
         by_hand: false,
     };
-    Ok(match deliver(state, &message, &event, customer_id).await? {
-        None => Ok(channel),
-        Some(code) => Err(code),
-    })
+    Ok(deliver(state, &message, &event, customer_id)
+        .await?
+        .map(|_| channel))
 }
 
 /// Add a customer notification template
@@ -2608,26 +2607,35 @@ pub struct SentText {
     pub body: String,
 }
 
+/// A message that went out.
+pub struct Delivered {
+    /// The text answers are awaited from (`None` for an email).
+    pub text: Option<SentText>,
+    /// What the customer got, as the event's history keeps it.
+    pub content: String,
+}
+
 /// Sends one message for one appointment (to the event's own phone or
-/// email, else the customer's): the error code when it did not go out.
+/// email, else the customer's): what went out, or the error code when it
+/// did not.
 async fn deliver(
     state: &AppState,
     message: &Outgoing<'_>,
     event: &Appointment,
     customer_id: i32,
-) -> Result<Option<&'static str>, sqlx::Error> {
+) -> Result<Result<String, &'static str>, sqlx::Error> {
     Ok(deliver_sent(state, message, event, customer_id)
         .await?
-        .err())
+        .map(|sent| sent.content))
 }
 
-/// `deliver`, with the text that went out (`None` for an email).
+/// `deliver`, with the text that went out.
 async fn deliver_sent(
     state: &AppState,
     message: &Outgoing<'_>,
     event: &Appointment,
     customer_id: i32,
-) -> Result<Result<Option<SentText>, &'static str>, sqlx::Error> {
+) -> Result<Result<Delivered, &'static str>, sqlx::Error> {
     let pool = &state.pool;
     let company_id = message.company_id;
     let user_id = message_user(pool, company_id, event, customer_id).await?;
@@ -2681,20 +2689,27 @@ async fn deliver_sent(
                 }
             }
         }
-        return Ok(delivered.map(Some).ok_or("send_error"));
+        return Ok(delivered
+            .map(|text| Delivered {
+                content: text.body.clone(),
+                text: Some(text),
+            })
+            .ok_or("send_error"));
     }
     let to = email_addresses(pool, event, customer_id).await?;
     if to.is_empty() {
         return Ok(Err("no_email"));
     }
     let (from_name, from_address) = sender_for(pool, company_id, customer_id, user_id).await?;
+    let subject = subject.unwrap_or_default();
+    let content = crate::routes::events::notify::email_record(&subject, &body);
     let email = OutgoingEmail {
         from_name,
         from_address,
         to,
         cc: Vec::new(),
         bcc: Vec::new(),
-        subject: subject.unwrap_or_default(),
+        subject,
         body: email_html(&body),
         signature: None,
         reply_to: Vec::new(),
@@ -2704,7 +2719,10 @@ async fn deliver_sent(
         transactional: true,
     };
     Ok(match state.webhooks.send_email(&email).await {
-        Ok(_) => Ok(None),
+        Ok(_) => Ok(Delivered {
+            text: None,
+            content,
+        }),
         Err(err) => {
             tracing::warn!(error = ?err, event_id = event.id, "schedule notification email failed");
             Err("send_error")
@@ -2844,11 +2862,11 @@ pub async fn send_due(state: &AppState) -> Result<RuleRun, sqlx::Error> {
                 Err(err) => {
                     // One failure must not hold up the messages behind it.
                     tracing::error!(error = %err, rule_id = rule.id, event_id = event.id, "schedule notification failed");
-                    Some("send_error")
+                    Err("send_error")
                 }
             };
             match outcome {
-                None => {
+                Ok(content) => {
                     finish(pool, rule.id, &event, "sent", None).await?;
                     record_customer_message(
                         pool,
@@ -2856,11 +2874,12 @@ pub async fn send_due(state: &AppState) -> Result<RuleRun, sqlx::Error> {
                         rule.company_id,
                         message.channel == Channel::Sms,
                         &rule.history_label(),
+                        &content,
                     )
                     .await;
                     run.sent += 1;
                 }
-                Some(code) => {
+                Err(code) => {
                     finish(pool, rule.id, &event, "failed", Some(code)).await?;
                     run.failed += 1;
                 }
@@ -2922,11 +2941,11 @@ pub async fn send_on_complete(state: &AppState, event_id: i32) -> Result<usize, 
             Ok(outcome) => outcome,
             Err(err) => {
                 tracing::error!(error = %err, rule_id = rule.id, event_id = event.id, "completed-step notification failed");
-                Some("send_error")
+                Err("send_error")
             }
         };
         match outcome {
-            None => {
+            Ok(content) => {
                 finish(pool, rule.id, &event, "sent", None).await?;
                 record_customer_message(
                     pool,
@@ -2934,11 +2953,12 @@ pub async fn send_on_complete(state: &AppState, event_id: i32) -> Result<usize, 
                     rule.company_id,
                     message.channel == Channel::Sms,
                     &rule.history_label(),
+                    &content,
                 )
                 .await;
                 sent += 1;
             }
-            Some(code) => finish(pool, rule.id, &event, "failed", Some(code)).await?,
+            Err(code) => finish(pool, rule.id, &event, "failed", Some(code)).await?,
         }
     }
     Ok(sent)
@@ -3055,7 +3075,9 @@ pub async fn send_confirmation(
     let line = format!("Confirmation sent: {}", template.name);
     record(
         pool,
-        &History::new(id, user.company_id, "updated", user.name.as_deref()).message(&line),
+        &History::new(id, user.company_id, "updated", user.name.as_deref())
+            .message(&line)
+            .body(&sent.content),
     )
     .await;
     if message.channel == Channel::Sms {
@@ -3064,7 +3086,7 @@ pub async fn send_confirmation(
         let asks = TemplateKind::parse(&template.kind) == TemplateKind::Question;
         mark_called(pool, user.company_id, id, user.name.as_deref(), asks).await?;
     }
-    if let Some(sent) = sent
+    if let Some(sent) = sent.text
         && TemplateKind::parse(&template.kind) == TemplateKind::Question
     {
         start_waiting(pool, user.company_id, &event, &template, &sent, user.id).await?;
@@ -3747,11 +3769,12 @@ async fn send_followup(
             failure_text(code).unwrap_or("the text failed to send")
         ),
     };
-    record(
-        pool,
-        &History::new(wait.event_id, wait.company_id, "updated", None).message(&line),
-    )
-    .await;
+    let mut history =
+        History::new(wait.event_id, wait.company_id, "updated", Some(AUTOMATED)).message(&line);
+    if let Ok(sent) = &outcome {
+        history = history.body(&sent.content);
+    }
+    record(pool, &history).await;
     if outcome.is_err() {
         sqlx::query("UPDATE schedule_text_answers SET followup_due_at = NULL WHERE id = ?")
             .bind(wait.id)
@@ -3824,11 +3847,12 @@ async fn send_clarification(state: &AppState, wait: &Waiting) -> Result<(), sqlx
             failure_text(code).unwrap_or("the text failed to send")
         ),
     };
-    record(
-        pool,
-        &History::new(wait.event_id, wait.company_id, "updated", None).message(&line),
-    )
-    .await;
+    let mut history =
+        History::new(wait.event_id, wait.company_id, "updated", Some(AUTOMATED)).message(&line);
+    if let Ok(sent) = &outcome {
+        history = history.body(&sent.content);
+    }
+    record(pool, &history).await;
     Ok(())
 }
 

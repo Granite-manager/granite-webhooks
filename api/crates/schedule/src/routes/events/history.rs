@@ -11,6 +11,7 @@ pub struct History<'a> {
     action: &'static str,
     created_by: Option<&'a str>,
     message: Option<&'a str>,
+    body: Option<&'a str>,
 }
 
 impl<'a> History<'a> {
@@ -26,6 +27,7 @@ impl<'a> History<'a> {
             action,
             created_by,
             message: None,
+            body: None,
         }
     }
 
@@ -33,6 +35,14 @@ impl<'a> History<'a> {
     #[must_use]
     pub const fn message(mut self, message: &'a str) -> Self {
         self.message = Some(message);
+        self
+    }
+
+    /// The full text the customer got (a text's words, an email's subject
+    /// and body): the app shows it when the line is tapped.
+    #[must_use]
+    pub const fn body(mut self, body: &'a str) -> Self {
+        self.body = Some(body);
         self
     }
 }
@@ -70,11 +80,14 @@ pub async fn record_customer_message(
     company_id: i32,
     by_text: bool,
     what: &str,
+    body: &str,
 ) {
     let line = customer_message_line(by_text, what);
     record(
         pool,
-        &History::new(event_id, company_id, CUSTOMER_MESSAGE, Some(AUTOMATED)).message(&line),
+        &History::new(event_id, company_id, CUSTOMER_MESSAGE, Some(AUTOMATED))
+            .message(&line)
+            .body(body),
     )
     .await;
 }
@@ -82,12 +95,13 @@ pub async fn record_customer_message(
 /// Adds a line; a failure is only logged (history never blocks a save).
 pub async fn record(pool: &MySqlPool, line: &History<'_>) {
     let result = sqlx::query(
-        "INSERT INTO event_history (event_id, company_id, action, message, created_by) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO event_history (event_id, company_id, action, message, body, created_by) VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(line.event_id)
     .bind(line.company_id)
     .bind(line.action)
     .bind(line.message.unwrap_or_else(|| default_message(line.action)))
+    .bind(line.body.map(str::trim).filter(|body| !body.is_empty()))
     .bind(line.created_by)
     .execute(pool)
     .await;

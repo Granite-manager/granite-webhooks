@@ -90,6 +90,10 @@ pub struct EventHistoryItem {
     pub action: String,
     /// Shown text.
     pub message: String,
+    /// The full text the customer got, for a line about a text or email
+    /// sent to them (its subject, a blank line, then its body for an
+    /// email). None on other lines and on lines older than this field.
+    pub body: Option<String>,
     /// When.
     pub created_at: Option<DateTime<Utc>>,
     /// Who.
@@ -229,7 +233,7 @@ pub async fn details(
     .fetch_all(pool)
     .await?;
     let history = sqlx::query_as(
-        "SELECT id, event_id, action, message, created_at, created_by FROM event_history
+        "SELECT id, event_id, action, message, body, created_at, created_by FROM event_history
           WHERE event_id = ? AND company_id = ? ORDER BY created_at, id",
     )
     .bind(id)
@@ -239,19 +243,21 @@ pub async fn details(
     let issues = super::issues::list(pool, user.company_id, id).await?;
     let photos = images
         .into_iter()
-        .map(|(photo_id, url, created_at, created_by, stage)| EventPhoto {
-            id: photo_id,
-            event_id: id,
-            name: match last_segment(&url) {
-                "" => "photo".to_string(),
-                name => name.to_string(),
+        .map(
+            |(photo_id, url, created_at, created_by, stage)| EventPhoto {
+                id: photo_id,
+                event_id: id,
+                name: match last_segment(&url) {
+                    "" => "photo".to_string(),
+                    name => name.to_string(),
+                },
+                url,
+                created_at,
+                created_by,
+                source: "photo",
+                stage,
             },
-            url,
-            created_at,
-            created_by,
-            source: "photo",
-            stage,
-        })
+        )
         .collect();
     let assignee = match (event.assigned_user_id, event.assignee_name) {
         (Some(assignee_id), Some(name)) => Some(EventPerson {

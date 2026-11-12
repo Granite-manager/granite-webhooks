@@ -924,6 +924,16 @@ async fn a_confirmation_goes_out_right_away(pool: MySqlPool) {
             .await
             .unwrap();
     assert_eq!(history, ["Confirmation sent: Confirmation"]);
+    // The line keeps the email that went out: its subject, then its text.
+    let body: Option<String> = sqlx::query_scalar(
+        "SELECT body FROM event_history WHERE event_id = ? AND message = 'Confirmation sent: Confirmation'",
+    )
+    .bind(booked)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let body = body.unwrap();
+    assert!(body.starts_with("Booked, Alice\n\nSee you "), "{body}");
 
     confirm(crew, template).await.assert_status_bad_request();
     confirm(booked, template + 1)
@@ -1124,6 +1134,17 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
             .await
             .contains(&"Follow-up text sent (no reply): Install date".to_string())
     );
+    // Its line keeps the text the customer got, by nobody in the company.
+    let (body, by): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT body, created_by FROM event_history
+          WHERE event_id = ? AND message = 'Follow-up text sent (no reply): Install date'",
+    )
+    .bind(install)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(body.as_deref(), Some(texts[1].text.as_str()));
+    assert_eq!(by.as_deref(), Some("Automated"));
 
     // Alice answers; the AI is sure she agreed.
     sqlx::query(

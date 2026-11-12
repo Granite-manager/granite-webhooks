@@ -188,7 +188,7 @@ pub async fn book(
     .await;
 
     let customer_name = customer_name.trim();
-    let channel = notify_booking(
+    let sent = notify_booking(
         &state,
         &Booking {
             kind: NotifyKind::Scheduled,
@@ -211,13 +211,14 @@ pub async fn book(
         },
     )
     .await?;
-    if let Some(channel) = channel {
+    if let Some((channel, body)) = &sent {
         record_customer_message(
             pool,
             event_id,
             user.company_id,
-            channel == Channel::Sms,
+            *channel == Channel::Sms,
             "Booking confirmation",
+            body,
         )
         .await;
     }
@@ -230,5 +231,5 @@ pub async fn book(
         start: event.start.and_utc(),
     };
     schedule_reminders(pool, &appointment, user.id, input.deal_id).await?;
-    Ok(created(id, channel.map(Channel::as_str)))
+    Ok(created(id, sent.map(|(channel, _)| channel.as_str())))
 }

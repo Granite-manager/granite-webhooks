@@ -377,7 +377,7 @@ pub fn escape_html(text: &str) -> String {
 pub async fn notify_booking(
     state: &AppState,
     booking: &Booking<'_>,
-) -> Result<Option<Channel>, sqlx::Error> {
+) -> Result<Option<(Channel, String)>, sqlx::Error> {
     let pool = &state.pool;
     let company_name: Option<String> = sqlx::query_scalar("SELECT name FROM company WHERE id = ?")
         .bind(booking.company_id)
@@ -445,7 +445,7 @@ pub async fn notify_booking(
             }
         }
         if texted {
-            return Ok(Some(Channel::Sms));
+            return Ok(Some((Channel::Sms, text)));
         }
     }
 
@@ -470,13 +470,14 @@ pub async fn notify_booking(
         return Ok(None);
     }
     let (from_name, from_address) = email_sender(pool, booking).await?;
+    let subject = booking.kind.subject(&company_name);
     let message = OutgoingEmail {
         from_name,
         from_address,
         to,
         cc: Vec::new(),
         bcc: Vec::new(),
-        subject: booking.kind.subject(&company_name),
+        subject: subject.clone(),
         body: format!("<p>{}</p>", escape_html(&text)),
         signature: None,
         reply_to: Vec::new(),
@@ -486,11 +487,22 @@ pub async fn notify_booking(
         transactional: true,
     };
     match state.webhooks.send_email(&message).await {
-        Ok(_) => Ok(Some(Channel::Email)),
+        Ok(_) => Ok(Some((Channel::Email, email_record(&subject, &text)))),
         Err(err) => {
             tracing::warn!(error = ?err, "estimate booking email failed");
             Ok(None)
         }
+    }
+}
+
+/// An email as the event's history keeps it: the subject, a blank line,
+/// the body.
+pub fn email_record(subject: &str, body: &str) -> String {
+    let subject = subject.trim();
+    if subject.is_empty() {
+        body.to_string()
+    } else {
+        format!("{subject}\n\n{body}")
     }
 }
 
