@@ -439,7 +439,10 @@ pub async fn set_stage_notify(
     JsonBody(input): JsonBody<ProcessStepNotify>,
 ) -> ApiResult<StatusCode> {
     let stage = Stage::try_from(stage).map_err(|_| ApiError::NotFound)?;
-    if !BUILT_IN_STEPS.iter().any(|(built_in, _)| *built_in == stage) {
+    if !BUILT_IN_STEPS
+        .iter()
+        .any(|(built_in, _)| *built_in == stage)
+    {
         return Err(ApiError::NotFound);
     }
     let mut ids = input.user_ids;
