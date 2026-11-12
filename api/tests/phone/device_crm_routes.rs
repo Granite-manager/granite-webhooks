@@ -1656,3 +1656,72 @@ async fn the_samples_tab_sets_samples_and_a_shop_manager_is_told_so(pool: MySqlP
         .await
         .assert_status(StatusCode::FORBIDDEN);
 }
+
+#[test_db::test(seed)]
+async fn the_maintenance_tab_changes_maintenance_with_the_device_token(pool: MySqlPool) {
+    // Mark (101) is the Shop Manager: he sets the equipment up and marks a check done.
+    sql(
+        &pool,
+        "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (101, 3, 100)",
+    )
+    .await;
+    let (server, _) = phone_server(pool.clone()).await;
+    add_session(&pool, 311, 101, 100).await;
+    let send = |method: &str, path: &str, body: Value| {
+        let request = match method {
+            "POST" => server.post(path),
+            "PUT" => server.put(path),
+            _ => server.delete(path),
+        };
+        request.add_header(HEADER, token(311)).json(&body)
+    };
+    send(
+        "POST",
+        "/v1/shop/maintenance/items",
+        json!({ "name": "Saw", "hours_per_day": 8, "days_per_month": 20 }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+    let page: Value = server
+        .get("/v1/shop/maintenance")
+        .add_header(HEADER, token(311))
+        .await
+        .json();
+    assert_eq!(page["can_edit"], json!(true));
+    let item = page["items"][0]["id"].as_i64().unwrap();
+    send(
+        "POST",
+        "/v1/shop/maintenance/checks",
+        json!({ "maintenance_item_id": item, "name": "Blade",
+                "conditions": [{ "type": "hours", "interval_value": 100 }] }),
+    )
+    .await
+    .assert_status(StatusCode::CREATED);
+    let page: Value = server
+        .get("/v1/shop/maintenance")
+        .add_header(HEADER, token(311))
+        .await
+        .json();
+    let check = page["checks"][0]["id"].as_i64().unwrap();
+    let condition = page["conditions"][0]["id"].as_i64().unwrap();
+    send(
+        "PUT",
+        &format!("/v1/shop/maintenance/conditions/{condition}/hours"),
+        json!({ "hours_done": 40 }),
+    )
+    .await
+    .assert_status_success();
+    send(
+        "POST",
+        &format!("/v1/shop/maintenance/checks/{check}/complete"),
+        json!({ "notes": "New blade" }),
+    )
+    .await
+    .assert_status_success();
+    let page: Value = server
+        .get("/v1/shop/maintenance")
+        .add_header(HEADER, token(311))
+        .await
+        .json();
+    assert_eq!(page["completions"][0]["notes"], json!("New blade"));
+}
