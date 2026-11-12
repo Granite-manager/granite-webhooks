@@ -944,9 +944,15 @@ async fn add_waiting_jobs(
         Vec::new()
     };
     let customer: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT NULLIF(TRIM(name), ''), NULLIF(TRIM(address), '') FROM customers
+        // The job's address is the quote's; the customer's profile address is
+        // only the fallback when the quote has none.
+        "SELECT NULLIF(TRIM(name), ''),
+                COALESCE((SELECT NULLIF(TRIM(address), '') FROM quotes WHERE id = ?),
+                         NULLIF(TRIM(address), ''))
+           FROM customers
           WHERE id = ? AND company_id = ?",
     )
+    .bind(quote.id)
     .bind(quote.customer_id)
     .bind(quote.company_id)
     .fetch_optional(pool)
