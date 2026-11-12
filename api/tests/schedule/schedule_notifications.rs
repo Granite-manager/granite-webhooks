@@ -478,6 +478,16 @@ async fn event(pool: &MySqlPool, calendar: i32, title: &str, hours: i32, made_no
     .unwrap();
 }
 
+/// Customer texts go only to Confirmed jobs: confirms the newest event.
+async fn confirm_last(pool: &MySqlPool) {
+    let id = last_event(pool).await;
+    sqlx::query("UPDATE events SET status = 'confirmed' WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
 #[test_db::test(seed)]
 async fn due_rules_email_the_customer_once(pool: MySqlPool) {
     sqlx::raw_sql(CALENDARS).execute(&pool).await.unwrap();
@@ -619,6 +629,7 @@ async fn text_rules_go_from_the_office_manager(pool: MySqlPool) {
     )
     .await;
     event(&pool, 8830, "1000", 23, false).await;
+    confirm_last(&pool).await;
     let (server, sent) = server(&pool).await;
     let run = || {
         server
@@ -631,6 +642,7 @@ async fn text_rules_go_from_the_office_manager(pool: MySqlPool) {
     assert!(sent.emails.lock().unwrap().is_empty());
     sqlx::raw_sql(TEXTING).execute(&pool).await.unwrap();
     event(&pool, 8830, "1000", 23, false).await;
+    confirm_last(&pool).await;
     let body: Value = run().await.json();
     assert_eq!(body["rule_sent"], 1);
     let texts = sent.texts.lock().unwrap().clone();
@@ -659,11 +671,21 @@ async fn text_rules_go_from_the_office_manager(pool: MySqlPool) {
     .await
     .unwrap();
     event(&pool, 8830, "1000", 23, false).await;
+    confirm_last(&pool).await;
     let body: Value = run().await.json();
     assert_eq!(body["rule_sent"], 1);
     let texts = sent.texts.lock().unwrap().clone();
     assert_eq!(texts.len(), 2);
     assert_eq!(texts[1].provider, "cloudtalk");
+
+    // A job not yet Confirmed gets no text.
+    event(&pool, 8830, "1000", 23, false).await;
+    let body: Value = run().await.json();
+    assert_eq!(
+        (&body["rule_sent"], &body["rule_failed"]),
+        (&json!(0), &json!(0))
+    );
+    assert_eq!(sent.texts.lock().unwrap().len(), 2);
 }
 
 #[test_db::test(seed)]
