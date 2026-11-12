@@ -774,6 +774,10 @@ pub struct EventSearchQuery {
     /// calendar. Left out: every calendar.
     #[serde(default)]
     pub calendar_ids: Option<String>,
+    /// Just this event (a job a notification is about), whatever `q` says:
+    /// it alone, or none when it is deleted or not the caller's to see.
+    #[serde(default)]
+    pub id: Option<i32>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -938,7 +942,7 @@ pub struct FoundEvent {
 ///
 /// The company's events where every word of `q` is in the title, customer's
 /// name, location, description or notes; with `calendar_ids`, only those
-/// calendars' events.
+/// calendars' events. With `id`, just that event.
 ///
 /// A word of 4+ letters also finds a title or customer name that has it with
 /// one typo ("deborh" finds "Deborah").
@@ -968,6 +972,32 @@ pub async fn search(
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
     Query(query): Query<EventSearchQuery>,
 ) -> ApiResult<Json<Vec<FoundEvent>>> {
+    if let Some(event_id) = query.id {
+        let own = crate::routes::schedule::own_events_only(&state.pool, &user).await?;
+        let rows: Vec<FoundRow> = sqlx::query_as(
+            "SELECT e.id, e.title, e.description, e.location, e.notes, e.start_date, e.end_date,
+                    COALESCE(e.all_day, 0) <> 0 AS all_day, e.unscheduled <> 0 AS unscheduled,
+                    e.color, e.status, e.calendar_id, e.rrule,
+                    e.recurrence_until, e.created_user_id, e.assigned_user_id, e.sale_id,
+                    e.customer_id, c.name AS customer_name, e.contact_phone, e.contact_email,
+                    e.contact_phone_2, e.contact_email_2, e.urgent <> 0 AS urgent,
+                    CAST(0 AS SIGNED) AS owner_rank, e.completed_at IS NOT NULL AS done
+               FROM events e
+               JOIN users u ON e.created_user_id = u.id
+               LEFT JOIN customers c ON c.id = e.customer_id
+                    AND c.company_id = u.company_id AND c.deleted_at IS NULL
+              WHERE e.id = ? AND u.company_id = ? AND e.deleted_date IS NULL
+                AND (? IS NULL OR e.created_user_id = ? OR e.assigned_user_id = ?)",
+        )
+        .bind(event_id)
+        .bind(user.company_id)
+        .bind(own)
+        .bind(own)
+        .bind(own)
+        .fetch_all(&state.pool)
+        .await?;
+        return Ok(Json(rows.into_iter().map(found_event).collect()));
+    }
     let q = query.q.trim();
     if q.is_empty() {
         return Ok(Json(Vec::new()));
@@ -1101,32 +1131,36 @@ pub async fn search(
     Ok(Json(
         ranked
             .into_iter()
-            .map(|(row, _)| FoundEvent {
-                id: row.id,
-                title: row.title,
-                description: row.description,
-                location: row.location,
-                notes: row.notes,
-                start_date: row.start_date.and_utc(),
-                end_date: row.end_date.and_utc(),
-                all_day: row.all_day,
-                unscheduled: row.unscheduled,
-                color: row.color,
-                status: row.status,
-                calendar_id: row.calendar_id,
-                rrule: row.rrule,
-                recurrence_until: row.recurrence_until.map(|at| at.and_utc()),
-                created_user_id: row.created_user_id,
-                assigned_user_id: row.assigned_user_id,
-                sale_id: row.sale_id,
-                customer_id: row.customer_id,
-                customer_name: row.customer_name,
-                contact_phone: row.contact_phone,
-                contact_email: row.contact_email,
-                urgent: row.urgent,
-                contact_phone_2: row.contact_phone_2,
-                contact_email_2: row.contact_email_2,
-            })
+            .map(|(row, _)| found_event(row))
             .collect(),
     ))
+}
+
+fn found_event(row: FoundRow) -> FoundEvent {
+    FoundEvent {
+        id: row.id,
+        title: row.title,
+        description: row.description,
+        location: row.location,
+        notes: row.notes,
+        start_date: row.start_date.and_utc(),
+        end_date: row.end_date.and_utc(),
+        all_day: row.all_day,
+        unscheduled: row.unscheduled,
+        color: row.color,
+        status: row.status,
+        calendar_id: row.calendar_id,
+        rrule: row.rrule,
+        recurrence_until: row.recurrence_until.map(|at| at.and_utc()),
+        created_user_id: row.created_user_id,
+        assigned_user_id: row.assigned_user_id,
+        sale_id: row.sale_id,
+        customer_id: row.customer_id,
+        customer_name: row.customer_name,
+        contact_phone: row.contact_phone,
+        contact_email: row.contact_email,
+        urgent: row.urgent,
+        contact_phone_2: row.contact_phone_2,
+        contact_email_2: row.contact_email_2,
+    }
 }
