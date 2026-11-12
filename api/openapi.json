@@ -43237,7 +43237,7 @@
           "schedule"
         ],
         "summary": "Search events",
-        "description": "The company's events where every word of `q` is in the title, customer's\nname, location, description or notes; with `calendar_ids`, only those\ncalendars' events.\n\nA word of 4+ letters also finds a title or customer name that has it with\none typo (\"deborh\" finds \"Deborah\").\n\nSmart order: the caller's own first (for their customer or assigned to\nthem), then ones they only made (a scheduler makes everyone's), then the\nrest. In each: a title or customer-name word starting with the search,\nthen containing it, then hits only in the place or notes, then typo\nhits; open jobs before ones the crew finished; then the nearest to now,\nupcoming before past (past distance counts double); unscheduled last.",
+        "description": "The company's events where every word of `q` is in the title, customer's\nname, location, description or notes; with `calendar_ids`, only those\ncalendars' events. With `id`, just that event.\n\nA word of 4+ letters also finds a title or customer name that has it with\none typo (\"deborh\" finds \"Deborah\").\n\nSmart order: the caller's own first (for their customer or assigned to\nthem), then ones they only made (a scheduler makes everyone's), then the\nrest. In each: a title or customer-name word starting with the search,\nthen containing it, then hits only in the place or notes, then typo\nhits; open jobs before ones the crew finished; then the nearest to now,\nupcoming before past (past distance counts double); unscheduled last.",
         "operationId": "search_events",
         "parameters": [
           {
@@ -43266,6 +43266,16 @@
             "required": false,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "query",
+            "description": "Just this event (a job a notification is about), whatever `q` says:\nit alone, or none when it is deleted or not the caller's to see.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
             }
           }
         ],
@@ -57851,6 +57861,88 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/AutoProjectInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not manage the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/company/auto-sales-order": {
+      "put": {
+        "tags": [
+          "company"
+        ],
+        "summary": "Switch making a sales order on a sale",
+        "description": "Admin › Quotes › Automation \"Sales order on a sale\". When on, marking a\nquote sold makes its sales order for the Inventory Manager\n(`auto_sales_order` in `GET /v1/company/features`). Off, none is made.",
+        "operationId": "save_company_auto_sales_order",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "query",
+            "description": "Superusers only: the company to act on (default: the caller's).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutoSalesOrderInput"
               }
             }
           },
@@ -75588,6 +75680,20 @@
         },
         "additionalProperties": false
       },
+      "AutoSalesOrderInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/company/auto-sales-order`.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "On: marking a quote sold makes its sales order."
+          }
+        },
+        "additionalProperties": false
+      },
       "AutoUnscheduledJobsInput": {
         "type": "object",
         "description": "Body of `PUT /v1/company/auto-unscheduled-jobs`.",
@@ -78991,6 +79097,7 @@
           "auto_invoice",
           "quote_invoice_sync",
           "auto_project",
+          "auto_sales_order",
           "sale_event_templates"
         ],
         "properties": {
@@ -79061,6 +79168,10 @@
           "auto_project": {
             "type": "boolean",
             "description": "Marking a deal won or a quote sold starts its project in Projects\n(Admin › Quotes › Automation \"Project on a sale\",\n`PUT /v1/company/auto-project`)."
+          },
+          "auto_sales_order": {
+            "type": "boolean",
+            "description": "Marking a quote sold makes its sales order for the Inventory Manager\n(Admin › Quotes › Automation \"Sales order on a sale\",\n`PUT /v1/company/auto-sales-order`)."
           },
           "sale_event_templates": {
             "type": "boolean",
@@ -85832,6 +85943,35 @@
               "null"
             ],
             "description": "Who."
+          },
+          "created_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Who, by user id (their picture); None on older lines and lines no\nperson made."
+          },
+          "from_value": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The value before the change, on lines of an edit (newer than this\nfield): a readiness key (`not_ready`, `called`, `ready`,\n`confirmed`, `scheduled`), a label color key, a title, a calendar\nname, an address, or for `date_updated` the dates as\n`start/end` (UTC `YYYY-MM-DDTHH:MM:SSZ`, or `YYYY-MM-DD` all day) or\n`unscheduled`. None when it was empty or the line is not a change."
+          },
+          "to_value": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The value after the change, in the same form as `from_value`."
+          },
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What changed: `status`, `date`, `label`, `title`, `calendar` or\n`location`. None on other lines."
           }
         }
       },

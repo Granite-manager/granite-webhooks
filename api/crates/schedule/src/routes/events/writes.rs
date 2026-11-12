@@ -621,6 +621,50 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(CreatedEvent { id })))
 }
 
+/// A history line of an edit: its text and, for a change of one value,
+/// that value before and after.
+struct Change {
+    message: String,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+impl From<String> for Change {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            from: None,
+            to: None,
+        }
+    }
+}
+
+impl From<&str> for Change {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+/// An event's dates for its history: `start/end`, UTC times
+/// (`2026-11-12T16:30:00Z`) or all-day days (`2026-11-12`); `unscheduled`
+/// while it waits for its day.
+fn dates_value(
+    start: NaiveDateTime,
+    end: NaiveDateTime,
+    all_day: bool,
+    unscheduled: bool,
+) -> String {
+    if unscheduled {
+        return "unscheduled".into();
+    }
+    let format = if all_day {
+        "%Y-%m-%d"
+    } else {
+        "%Y-%m-%dT%H:%M:%SZ"
+    };
+    format!("{}/{}", start.format(format), end.format(format))
+}
+
 /// History lines of an edit, besides date, label and location.
 fn change_messages(
     event: &Checked<'_>,
@@ -628,8 +672,8 @@ fn change_messages(
     urgent: Option<bool>,
     customer: Option<Option<i32>>,
     existing: &StoredEvent,
-) -> Vec<String> {
-    let mut messages = Vec::new();
+) -> Vec<Change> {
+    let mut messages: Vec<Change> = Vec::new();
     if unscheduled != existing.unscheduled {
         let message = if unscheduled {
             "Moved to unscheduled"
@@ -639,7 +683,11 @@ fn change_messages(
         messages.push(message.into());
     }
     if event.title != existing.title {
-        messages.push(format!("Title changed to \"{}\"", event.title));
+        messages.push(Change {
+            message: format!("Title changed to \"{}\"", event.title),
+            from: Some(existing.title.clone()),
+            to: Some(event.title.to_string()),
+        });
     }
     if let Some(customer) = customer.filter(|customer| *customer != existing.customer_id) {
         let message = if customer.is_some() {
@@ -656,7 +704,11 @@ fn change_messages(
         messages.push("Notes updated".into());
     }
     if Some(event.status) != existing.status.as_deref() {
-        messages.push(format!("Status changed to {}", event.status));
+        messages.push(Change {
+            message: format!("Status changed to {}", event.status),
+            from: existing.status.clone().filter(|status| !status.is_empty()),
+            to: Some(event.status.to_string()),
+        });
     }
     if let Some(urgent) = urgent.filter(|urgent| *urgent != existing.urgent) {
         messages.push(
@@ -677,6 +729,26 @@ fn change_messages(
         messages.push("Repeat updated".into());
     }
     messages
+}
+
+/// The history action of an edit's date, label or location line.
+fn action_name(action: &str) -> &'static str {
+    match action {
+        "date_updated" => "date_updated",
+        "label_updated" => "label_updated",
+        _ => "location_updated",
+    }
+}
+
+/// A calendar's name, for its history line.
+async fn calendar_name(pool: &MySqlPool, calendar_id: Option<i32>) -> sqlx::Result<Option<String>> {
+    let Some(id) = calendar_id else {
+        return Ok(None);
+    };
+    sqlx::query_scalar("SELECT name FROM calendars WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
 }
 
 /// Edit an event
@@ -772,30 +844,69 @@ pub async fn update(
         || event.end != existing.end_date
         || input.all_day != existing.all_day
         || input.unscheduled != existing.unscheduled;
-    let mut actions = Vec::new();
+    let mut actions: Vec<(&str, Option<String>, Option<String>)> = Vec::new();
     if moved {
-        actions.push("date_updated");
+        actions.push((
+            "date_updated",
+            Some(dates_value(
+                existing.start_date,
+                existing.end_date,
+                existing.all_day,
+                existing.unscheduled,
+            )),
+            Some(dates_value(
+                event.start,
+                event.end,
+                input.all_day,
+                input.unscheduled,
+            )),
+        ));
     }
     if Some(event.color) != existing.color.as_deref() {
-        actions.push("label_updated");
+        actions.push((
+            "label_updated",
+            existing.color.clone(),
+            Some(event.color.to_string()),
+        ));
     }
     if event.location != existing.location.as_deref().filter(|l| !l.is_empty()) {
-        actions.push("location_updated");
+        actions.push((
+            "location_updated",
+            existing.location.clone().filter(|l| !l.is_empty()),
+            event.location.map(str::to_string),
+        ));
     }
-    for action in actions {
-        record(pool, &History::new(id, user.company_id, action, by)).await;
+    for (action, from, to) in &actions {
+        record(
+            pool,
+            &History::new(id, user.company_id, action_name(action), by)
+                .change(from.as_deref(), to.as_deref())
+                .by_user(user.id),
+        )
+        .await;
     }
     let mut messages =
         change_messages(&event, input.unscheduled, input.urgent, customer, &existing);
+    if Some(event.calendar_id) != existing.calendar_id
+        && let Some(change) = messages
+            .iter_mut()
+            .find(|change| change.message == "Calendar changed")
+    {
+        change.from = calendar_name(pool, existing.calendar_id).await?;
+        change.to = calendar_name(pool, Some(event.calendar_id)).await?;
+    }
     if let Some(ids) = &people_ids
         && let Some(message) = people::save(pool, user.company_id, id, ids).await?
     {
-        messages.push(message);
+        messages.push(message.into());
     }
-    for message in messages {
+    for change in messages {
         record(
             pool,
-            &History::new(id, user.company_id, "updated", by).message(&message),
+            &History::new(id, user.company_id, "updated", by)
+                .message(&change.message)
+                .change(change.from.as_deref(), change.to.as_deref())
+                .by_user(user.id),
         )
         .await;
     }

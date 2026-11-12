@@ -854,3 +854,73 @@ async fn people_are_added_to_events_and_see_them_on_their_schedule(pool: MySqlPo
         .json::<Value>();
     assert_eq!(mine["events"].as_array().unwrap().len(), 0);
 }
+
+#[test_db::test(seed)]
+async fn an_edit_keeps_what_it_changed_from_and_to(pool: MySqlPool) {
+    sqlx::raw_sql(SETUP).execute(&pool).await.unwrap();
+    let server = server(pool.clone());
+    let mut event = body(8801, "2026-11-02 15:00:00", "2026-11-02 16:00:00");
+    event["status"] = json!("ready");
+    let id = server
+        .post("/v1/events")
+        .with_session(sessions::REP)
+        .json(&event)
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    event["status"] = json!("confirmed");
+    event["color"] = json!("red");
+    event["calendar_id"] = json!(8800);
+    event["start_date"] = json!("2026-11-03 15:30:00");
+    event["end_date"] = json!("2026-11-03 16:30:00");
+    server
+        .put(&format!("/v1/events/{id}"))
+        .with_session(sessions::REP)
+        .json(&event)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let details = server
+        .get(&format!("/v1/events/{id}/details"))
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    let change = |field: &str| {
+        details["history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|line| line["field"] == field)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {field} line"))
+    };
+    let status = change("status");
+    assert_eq!(
+        (status["from_value"].as_str(), status["to_value"].as_str()),
+        (Some("ready"), Some("confirmed"))
+    );
+    assert_eq!(status["created_by_id"], 100);
+    let label = change("label");
+    assert_eq!(
+        (label["from_value"].as_str(), label["to_value"].as_str()),
+        (Some("blue"), Some("red"))
+    );
+    let calendar = change("calendar");
+    assert_eq!(
+        (
+            calendar["from_value"].as_str(),
+            calendar["to_value"].as_str()
+        ),
+        (Some("Crew"), Some("Estimates"))
+    );
+    let date = change("date");
+    assert_eq!(
+        (date["from_value"].as_str(), date["to_value"].as_str()),
+        (
+            Some("2026-11-02T15:00:00Z/2026-11-02T16:00:00Z"),
+            Some("2026-11-03T15:30:00Z/2026-11-03T16:30:00Z")
+        )
+    );
+    // The creation line is no change.
+    assert_eq!(details["history"][0]["field"], Value::Null);
+}

@@ -12,6 +12,9 @@ pub struct History<'a> {
     created_by: Option<&'a str>,
     message: Option<&'a str>,
     body: Option<&'a str>,
+    from_value: Option<&'a str>,
+    to_value: Option<&'a str>,
+    created_by_id: Option<i32>,
 }
 
 impl<'a> History<'a> {
@@ -28,7 +31,26 @@ impl<'a> History<'a> {
             created_by,
             message: None,
             body: None,
+            from_value: None,
+            to_value: None,
+            created_by_id: None,
         }
+    }
+
+    /// What the line changed: the value before and after (either may be
+    /// empty: a field set for the first time, or cleared).
+    #[must_use]
+    pub const fn change(mut self, from: Option<&'a str>, to: Option<&'a str>) -> Self {
+        self.from_value = from;
+        self.to_value = to;
+        self
+    }
+
+    /// The user who made it, for their picture.
+    #[must_use]
+    pub const fn by_user(mut self, user_id: i32) -> Self {
+        self.created_by_id = Some(user_id);
+        self
     }
 
     /// Instead of the action's default text.
@@ -95,14 +117,24 @@ pub async fn record_customer_message(
 /// Adds a line; a failure is only logged (history never blocks a save).
 pub async fn record(pool: &MySqlPool, line: &History<'_>) {
     let result = sqlx::query(
-        "INSERT INTO event_history (event_id, company_id, action, message, body, created_by) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO event_history (event_id, company_id, action, message, body, from_value,
+            to_value, created_by, created_by_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(line.event_id)
     .bind(line.company_id)
     .bind(line.action)
     .bind(line.message.unwrap_or_else(|| default_message(line.action)))
     .bind(line.body.map(str::trim).filter(|body| !body.is_empty()))
+    .bind(
+        line.from_value
+            .map(|value| value.chars().take(500).collect::<String>()),
+    )
+    .bind(
+        line.to_value
+            .map(|value| value.chars().take(500).collect::<String>()),
+    )
     .bind(line.created_by)
+    .bind(line.created_by_id)
     .execute(pool)
     .await;
     if let Err(err) = result {
