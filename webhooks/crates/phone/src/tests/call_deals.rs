@@ -1,7 +1,7 @@
 //! The call webhooks move a lead's deal off "Not Contacted Yet" (`crud::deals`).
 
-use crate::tests::utils::internal_token;
 use crate::tests::deals::{deal_list_id, setup_board};
+use crate::tests::utils::internal_token;
 use crate::tests::utils::new_test_app;
 use axum::http::StatusCode;
 use sqlx::MySqlPool;

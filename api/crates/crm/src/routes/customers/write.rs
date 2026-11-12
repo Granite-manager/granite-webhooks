@@ -367,8 +367,7 @@ pub async fn update(
         if let Some(rep) = input.sales_rep {
             let deal = ensure_open_deal(pool, id, user.company_id, rep).await?;
             let reassigned = previous_rep.map(|_| input.name.trim());
-            notify_assigned_rep(&state, user.company_id, id, rep, user.id, deal, reassigned)
-                .await;
+            notify_assigned_rep(&state, user.company_id, id, rep, user.id, deal, reassigned).await;
         } else {
             // Back to "Waiting for a sales rep" on every phone.
             push_leads_changed_logged(&state, user.company_id, &[]).await;
@@ -448,8 +447,7 @@ pub async fn set_sales_rep(
                     .filter(|name| !name.is_empty())
                     .unwrap_or("Unknown")
             });
-            notify_assigned_rep(&state, user.company_id, id, rep, user.id, deal, reassigned)
-                .await;
+            notify_assigned_rep(&state, user.company_id, id, rep, user.id, deal, reassigned).await;
         }
         state.webhooks.sync_contacts(user.company_id, id).await;
     } else if previous.is_some() {
