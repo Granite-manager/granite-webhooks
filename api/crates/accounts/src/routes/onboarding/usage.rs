@@ -591,7 +591,11 @@ mod tests {
             assert!(!check(id).unwrap().reads_data(), "{id}");
         }
         // Read from the tables, and the app may report it too.
-        for id in ["schedule_texts_saved", "quote_automation_changed", "schedule_prefs_set"] {
+        for id in [
+            "schedule_texts_saved",
+            "quote_automation_changed",
+            "schedule_prefs_set",
+        ] {
             let both = check(id).unwrap();
             assert_eq!(both.kind, Kind::Both, "{id}");
             assert!(is_event_check(both.id) && both.reads_data(), "{id}");
