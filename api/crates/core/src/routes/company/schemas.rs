@@ -64,6 +64,10 @@ pub struct CompanyFeatures {
     /// (Admin › Quotes › Automation "Project on a sale",
     /// `PUT /v1/company/auto-project`).
     pub auto_project: bool,
+    /// Marking a quote sold makes its sales order for the Inventory Manager
+    /// (Admin › Quotes › Automation "Sales order on a sale",
+    /// `PUT /v1/company/auto-sales-order`).
+    pub auto_sales_order: bool,
     /// The company has event templates: Mark as Sold offers them as Extra
     /// events, and each one ticked adds an event to the schedule's Unscheduled
     /// list, whatever `auto_unscheduled_jobs` says (`GET /v1/quote-sale-events`).

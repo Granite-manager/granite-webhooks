@@ -48,6 +48,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(save_auto_invoice))
         .routes(routes!(save_quote_invoice_sync))
         .routes(routes!(save_auto_project))
+        .routes(routes!(save_auto_sales_order))
         .routes(routes!(email_api_token))
         .routes(routes!(
             quickbooks_status,
@@ -648,6 +649,57 @@ pub async fn save_auto_project(
         return Err(ApiError::NotFound);
     }
     sqlx::query("UPDATE company SET auto_project = ? WHERE id = ?")
+        .bind(input.enabled)
+        .bind(company_id)
+        .execute(&state.pool)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Body of `PUT /v1/company/auto-sales-order`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AutoSalesOrderInput {
+    /// On: marking a quote sold makes its sales order.
+    pub enabled: bool,
+}
+
+/// Switch making a sales order on a sale
+///
+/// Admin › Quotes › Automation "Sales order on a sale". When on, marking a
+/// quote sold makes its sales order for the Inventory Manager
+/// (`auto_sales_order` in `GET /v1/company/features`). Off, none is made.
+#[crate::openapi::path(
+    put,
+    path = "/v1/company/auto-sales-order",
+    operation_id = "save_company_auto_sales_order",
+    tag = "company",
+    params(TargetCompany),
+    request_body = AutoSalesOrderInput,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller does not manage the company", body = ErrorBody),
+        (status = 404, description = "No such company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn save_auto_sales_order(
+    State(state): State<AppState>,
+    UserManager(user): UserManager,
+    Query(query): Query<TargetCompany>,
+    JsonBody(input): JsonBody<AutoSalesOrderInput>,
+) -> ApiResult<StatusCode> {
+    let company_id = target(&user, &query);
+    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM company WHERE id = ?")
+        .bind(company_id)
+        .fetch_one(&state.pool)
+        .await?;
+    if !exists {
+        return Err(ApiError::NotFound);
+    }
+    sqlx::query("UPDATE company SET auto_sales_order = ? WHERE id = ?")
         .bind(input.enabled)
         .bind(company_id)
         .execute(&state.pool)

@@ -112,6 +112,17 @@ pub async fn create(
     let Ok(option) = usize::try_from(index) else {
         return Ok(Vec::new());
     };
+    // Admin › Quotes › Automation "Sales order on a sale": off, none is made.
+    let enabled: bool = sqlx::query_scalar(
+        "SELECT COALESCE(auto_sales_order, 0) <> 0 FROM company WHERE id = ?",
+    )
+    .bind(quote.company_id)
+    .fetch_optional(pool)
+    .await?
+    .unwrap_or(false);
+    if !enabled {
+        return Ok(Vec::new());
+    }
     let existing: Option<i32> = sqlx::query_scalar(
         "SELECT id FROM sales_orders
           WHERE quote_id = ? AND company_id = ? AND status IN ('pending', 'confirmed') LIMIT 1",
