@@ -759,7 +759,14 @@ async fn create_project(
                                  LIMIT 1),
                               NULLIF(TRIM(d.title), ''),
                               CONCAT(COALESCE(NULLIF(TRIM(c.name), ''), 'Customer'), ' project')), 255),
-                d.amount, NULLIF(TRIM(c.address), ''), COALESCE(?, d.user_id)
+                d.amount,
+                COALESCE((SELECT NULLIF(TRIM(q.address), '') FROM quotes q
+                           WHERE q.deal_id = d.id AND q.deleted_at IS NULL
+                             AND NULLIF(TRIM(q.address), '') IS NOT NULL
+                           ORDER BY q.status IN ('converted', 'accepted') DESC, q.id DESC
+                           LIMIT 1),
+                         NULLIF(TRIM(c.address), '')),
+                COALESCE(?, d.user_id)
            FROM deals d JOIN customers c ON c.id = d.customer_id
           WHERE d.id = ? AND c.company_id = ? AND COALESCE(?, d.user_id) IS NOT NULL",
     )
