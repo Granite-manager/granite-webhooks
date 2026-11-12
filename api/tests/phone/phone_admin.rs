@@ -85,28 +85,38 @@ async fn the_scheduling_manager_number_goes_to_everyone_in_the_position(pool: My
                 "active": true, "assignments": assignments, "schedulingManagers": linked })
     };
 
-    // Rita is assigned by hand; Mark has it through the position.
+    // It is nobody's own number: a user can't be assigned to it by hand.
     let hand = json!([{ "userId": 100, "rings": true, "canCallFrom": true }]);
-    let saved = server
+    server
         .put("/v1/phone/admin/numbers/9903")
         .with_session(sessions::ADMIN)
         .json(&body(true, hand.clone()))
+        .await
+        .assert_status_bad_request();
+    assert_eq!(holders(&pool, 9903).await, [(100, false)]);
+
+    // Linked with nobody assigned: Rita's own assignment goes, Mark has it
+    // through the position.
+    let saved = server
+        .put("/v1/phone/admin/numbers/9903")
+        .with_session(sessions::ADMIN)
+        .json(&body(true, json!([])))
         .await;
     saved.assert_status_ok();
     let saved: Value = saved.json();
     assert_eq!(saved["schedulingManagers"], true);
     assert_eq!(saved["kind"], "shared");
-    assert_eq!(saved["assignments"], hand);
-    assert_eq!(holders(&pool, 9903).await, [(100, false), (101, true)]);
+    assert_eq!(saved["assignments"], json!([]));
+    assert_eq!(holders(&pool, 9903).await, [(101, true)]);
 
-    // One number per company: linking another moves it, Rita stays.
+    // One number per company: linking another moves it.
     server
         .put("/v1/phone/admin/numbers/9901")
         .with_session(sessions::ADMIN)
         .json(&body(true, json!([])))
         .await
         .assert_status_ok();
-    assert_eq!(holders(&pool, 9903).await, [(100, false)]);
+    assert_eq!(holders(&pool, 9903).await, []);
     assert_eq!(holders(&pool, 9901).await, [(101, true)]);
 
     // Saving it again without the field keeps the link.
@@ -128,14 +138,11 @@ async fn the_scheduling_manager_number_goes_to_everyone_in_the_position(pool: My
         .assert_status_ok();
     assert_eq!(holders(&pool, 9901).await, []);
 
-    // Everyone in the position calls and texts from it, whatever their row said.
+    // Everyone in the position calls and texts from it.
     server
         .put("/v1/phone/admin/numbers/9901")
         .with_session(sessions::ADMIN)
-        .json(&body(
-            true,
-            json!([{ "userId": 101, "rings": false, "canCallFrom": false }]),
-        ))
+        .json(&body(true, json!([])))
         .await
         .assert_status_ok();
     let can_call: bool = sqlx::query_scalar(

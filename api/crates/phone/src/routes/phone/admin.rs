@@ -557,6 +557,15 @@ pub async fn update_admin_number(
             "A number is either the Scheduling Manager number or the Notification number.".into(),
         ));
     }
+    // The Scheduling Manager and Notification numbers belong to no one person:
+    // nobody may also have them as their own line.
+    let is_role_number = input.scheduling_managers.unwrap_or(before.scheduling_managers)
+        || input.notifications.unwrap_or(before.notifications);
+    if is_role_number && !checked.assignments.is_empty() {
+        return Err(ApiError::BadRequest(
+            "The Scheduling Manager number and the Notification number can't also be a person's own number. Remove the user first.".into(),
+        ));
+    }
     // Several people answer the Scheduling Manager number: it is nobody's own;
     // the Notification number is no one person's either.
     let kind = if (input.scheduling_managers == Some(true) || input.notifications == Some(true))
