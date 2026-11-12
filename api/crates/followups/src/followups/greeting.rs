@@ -1,12 +1,12 @@
 //! Whether the next message greets the customer by name.
 //!
 //! One rule for every AI-written SMS and email (the AI Reply button, inline
-//! autocomplete, follow-ups): every message opens with a short greeting and
-//! the customer's first name ("Hi Ann,"), also when the conversation is
-//! still going today (owner, 2026-11-10: a draft without "Hi" and the name is
-//! a very big problem). The name appears at most once. How recent the
-//! conversation is only changes how the line describes it (and the
-//! follow-ups' time-of-day opener, for a conversation reopened).
+//! autocomplete, follow-ups): greet by name only when we have never written
+//! with this customer, or the newest message with them — SMS or email,
+//! theirs or ours — is from an earlier store-local (Indianapolis) day.
+//! Otherwise the conversation is still going today: no greeting and no
+//! name, the message starts with its content. Either way the name appears
+//! at most once.
 
 use super::crm_hold::parse_followup_timeline_at;
 use super::dates::Instant;
@@ -19,7 +19,7 @@ use chrono::Duration;
 pub enum ConversationRecency {
     /// No dated SMS or email with them yet: greet by name.
     NoHistory,
-    /// Still going today: greet by name, no time-of-day opener.
+    /// Still going today: no greeting, no name.
     Continuing {
         /// Since the newest message, either way, on any channel.
         minutes_since_last: i64,
@@ -32,7 +32,7 @@ pub enum ConversationRecency {
 }
 
 impl ConversationRecency {
-    /// Still going today (no "Good morning"-style opener; still "Hi Ann,").
+    /// No greeting and no name.
     pub const fn is_continuing(self) -> bool {
         matches!(self, Self::Continuing { .. })
     }
@@ -81,7 +81,7 @@ pub fn describe_ago(minutes: i64) -> String {
 pub fn greeting_instruction(recency: ConversationRecency) -> String {
     match recency {
         ConversationRecency::Continuing { minutes_since_last } => format!(
-            "GREETING: BY NAME. This conversation is ongoing today (the last message with this customer, SMS or email, either side, was {}), but still open with a short greeting and their first name (\"Hi Ann,\"), then go straight to the content. Use their name only that once. Never \"Hello <Full Name>\" or \"Dear\". Without a known first name, open with \"Hi,\".",
+            "GREETING: NONE. This conversation is ongoing today: the last message with this customer (SMS or email, either side) was {}. Do NOT open with a greeting (\"Hi\", \"Hey\", \"Hello\", \"Good morning\", \"Dear\") and do NOT use the customer's name anywhere in the message. Start straight with the content, like the next text in a running thread. This applies to email too, even when the earlier messages were texts.",
             describe_ago(minutes_since_last)
         ),
         ConversationRecency::Reopening { minutes_since_last } => format!(
@@ -150,10 +150,10 @@ mod tests {
             }
         );
         let line = greeting_instruction(recency);
-        // Still "Hi Ann," (owner, 2026-11-10).
-        assert!(line.starts_with("GREETING: BY NAME"));
+        assert!(line.starts_with("GREETING: NONE"));
         assert!(line.contains("20 minutes ago"));
-        assert!(line.contains("\"Hi Ann,\""));
+        assert!(line.contains("do NOT use the customer's name"));
+        assert!(line.contains("applies to email too"));
     }
 
     #[test]

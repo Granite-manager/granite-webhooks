@@ -72,7 +72,7 @@ Rules:
 - When the rep is about to share the inventory / stones page, use the exact customer page URL from CUSTOMER / PROJECT INFO.
 - When the rep asks the customer for their measurements or sends them a link to send us their sizes, use the exact Customer quote URL from CUSTOMER / PROJECT INFO.
 - When the message needs the rep's name, the rep's phone number or the company address, use them from SALES REP and COMPANY.
-- If the DRAFT is empty, suggest how the rep's next message should start: one short sentence (max ~20 words) that fits where the conversation is now. Follow the GREETING line: start with a short greeting and the customer's first name ("Hi Ann,"), also when the conversation is still going today.
+- If the DRAFT is empty, suggest how the rep's next message should start: one short sentence (max ~20 words) that fits where the conversation is now. Follow the GREETING line: with GREETING: NONE (an SMS or email with them earlier today) never start with "Hi", "Hey" or "Hello" and never use the customer's name; start with the content.
 - Never repeat or rephrase something the rep already said in the CONVERSATION. If the rep's last message is still unanswered, don't ask its question again: add something new (a different angle, an offer, a next step) or return an empty string.
 - Reply only to what the customer said since the rep's last message. A promise, plan or fact the rep already gave (a replacement, a date, a price) is never said again, not even reworded: open with a short reaction to the customer's newest words and stop.
 - Use the customer's name at most once in a message. Write plainly like the rep: no "I hope this finds you well", "Just following up", "I wanted to reach out", no em dashes.
@@ -1234,7 +1234,7 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_draft_in_an_ongoing_thread_greets_by_name() {
+    fn an_empty_draft_in_an_ongoing_thread_has_no_greeting() {
         use crate::followups::timeline::Direction;
         let message = |at: &str, channel, direction| FollowupTimelineMessage {
             at: at.into(),
@@ -1267,10 +1267,9 @@ mod tests {
             "",
             "2026-10-13 15:00",
         );
-        // Earlier today: still "Hi Ann," (owner, 2026-11-10).
-        assert!(prompt.contains("GREETING: BY NAME") && !prompt.contains("GREETING: NONE"));
+        assert!(prompt.contains("GREETING: NONE"));
         assert!(prompt.ends_with("DRAFT: (empty — suggest how the next message starts)"));
-        // The next day too. A typed draft gets no rule.
+        // The next day, greet by name. A typed draft gets no rule.
         let later = build_user_prompt(
             FollowupChannel::Sms,
             "Dema",
