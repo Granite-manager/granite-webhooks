@@ -573,6 +573,31 @@ fn device_route(method: &Method, path: &str) -> bool {
         || own_invoice(method, path)
         || project_route(method, path)
         || stone_samples(method, path)
+        || maintenance_write(method, path)
+}
+
+/// The Maintenance tab's changes, as the website's Maintenance page makes
+/// them: equipment (`POST /v1/shop/maintenance/items`, `PUT`/`DELETE
+/// .../items/{id}`), checks (`POST .../checks`, `PUT`/`DELETE
+/// .../checks/{id}`), a check done (`POST .../checks/{id}/complete`) and a
+/// condition's hours (`PUT .../conditions/{id}/hours`). The handlers keep
+/// their own checks (who may edit the equipment).
+fn maintenance_write(method: &Method, path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/v1/shop/maintenance/") else {
+        return false;
+    };
+    let (post, put, delete) = (
+        method == Method::POST,
+        method == Method::PUT,
+        method == Method::DELETE,
+    );
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        ["items" | "checks"] => post,
+        ["items" | "checks", id] => is_id(id) && (put || delete),
+        ["checks", id, "complete"] => is_id(id) && post,
+        ["conditions", id, "hours"] => is_id(id) && put,
+        _ => false,
+    }
 }
 
 /// The Samples tab's change: `PATCH /v1/stones/{id}/samples` (samples on
@@ -794,6 +819,31 @@ mod tests {
     use axum::http::Method;
 
     #[test]
+    fn the_maintenance_tab_may_change_the_maintenance() {
+        for (method, path) in [
+            (Method::POST, "/v1/shop/maintenance/items"),
+            (Method::PUT, "/v1/shop/maintenance/items/3"),
+            (Method::DELETE, "/v1/shop/maintenance/items/3"),
+            (Method::POST, "/v1/shop/maintenance/checks"),
+            (Method::PUT, "/v1/shop/maintenance/checks/4"),
+            (Method::DELETE, "/v1/shop/maintenance/checks/4"),
+            (Method::POST, "/v1/shop/maintenance/checks/4/complete"),
+            (Method::PUT, "/v1/shop/maintenance/conditions/5/hours"),
+        ] {
+            assert!(device_route(&method, path), "{method} {path}");
+        }
+        for (method, path) in [
+            (Method::DELETE, "/v1/shop/maintenance/items"),
+            (Method::POST, "/v1/shop/maintenance/items/3"),
+            (Method::POST, "/v1/shop/maintenance/checks/x/complete"),
+            (Method::PUT, "/v1/shop/maintenance/conditions/5"),
+            (Method::POST, "/v1/shop/maintenance"),
+        ] {
+            assert!(!device_route(&method, path), "{method} {path}");
+        }
+    }
+
+    #[test]
     fn the_samples_tab_may_set_a_stones_samples() {
         assert!(device_route(&Method::PATCH, "/v1/stones/12/samples"));
         assert!(!device_route(&Method::PUT, "/v1/stones/12/samples"));
@@ -865,7 +915,6 @@ mod tests {
             "/v1/quotes/7/revisions/3",
             "/v1/notifications/7",
             "/v1/shop/maintenance",
-            "/v1/shop/maintenance/checks",
             "/v1/ai/compose/inventory-url",
         ] {
             assert!(device_route(&Method::GET, path), "{path}");
