@@ -820,7 +820,10 @@ async fn a_new_contact_takes_the_customer_forms_more_details(pool: MySqlPool) {
     let body: Value = response.json();
     let id = body["id"].as_i64().unwrap();
     assert_eq!(body["phones"], json!(["3175550190", "3175550191"]));
-    assert_eq!((body["repId"].clone(), body["mine"].clone()), (json!(101), json!(false)));
+    assert_eq!(
+        (body["repId"].clone(), body["mine"].clone()),
+        (json!(101), json!(false))
+    );
     let row: (Option<String>, String, i32, Option<String>) = sqlx::query_as(
         "SELECT phone_2, source, sales_rep, your_message FROM customers WHERE id = ?",
     )
@@ -860,7 +863,10 @@ async fn a_new_contact_takes_the_customer_forms_more_details(pool: MySqlPool) {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(history, (Some("Rita Rep".into()), Some("Mark Manager".into())));
+    assert_eq!(
+        history,
+        (Some("Rita Rep".into()), Some("Mark Manager".into()))
+    );
     // Calls from phone 2 find them at once.
     let found: Value = server
         .post("/v1/phone/contacts/lookup")

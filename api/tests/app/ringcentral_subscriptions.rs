@@ -37,45 +37,49 @@ async fn ringcentral(addresses: &[String]) -> (String, Seen) {
             .unwrap()
             .push((format!("{method} {path}"), body));
     };
-    let router =
-        Router::new()
-            .route(
-                "/restapi/oauth/token",
-                post(|| async { Json(json!({ "access_token": "rc-access", "expires_in": 3600 })) }),
-            )
-            .route(
-                "/restapi/v1.0/subscription",
-                get(move |State(seen): State<Seen>| {
-                    let records = records.clone();
-                    async move {
-                        note(&seen, Method::GET, "subscription", Value::Null);
-                        Json(json!({ "records": records }))
-                    }
-                })
-                .post(
-                    move |State(seen): State<Seen>, Json(body): Json<Value>| async move {
-                        note(&seen, Method::POST, "subscription", body);
-                        Json(json!({ "id": "sub-new" }))
-                    },
-                ),
-            )
-            .route(
-                "/restapi/v1.0/subscription/{id}",
-                delete(
-                    move |State(seen): State<Seen>, Path(id): Path<String>| async move {
-                        note(&seen, Method::DELETE, &format!("subscription/{id}"), Value::Null);
-                        StatusCode::NO_CONTENT
-                    },
-                ),
-            )
-            .route(
-                "/restapi/v1.0/account/~/extension",
-                get(move |State(seen): State<Seen>| async move {
-                    note(&seen, Method::GET, "extension", Value::Null);
-                    Json(json!({ "records": [{ "id": 501 }] }))
-                }),
-            )
-            .with_state(Arc::clone(&seen));
+    let router = Router::new()
+        .route(
+            "/restapi/oauth/token",
+            post(|| async { Json(json!({ "access_token": "rc-access", "expires_in": 3600 })) }),
+        )
+        .route(
+            "/restapi/v1.0/subscription",
+            get(move |State(seen): State<Seen>| {
+                let records = records.clone();
+                async move {
+                    note(&seen, Method::GET, "subscription", Value::Null);
+                    Json(json!({ "records": records }))
+                }
+            })
+            .post(
+                move |State(seen): State<Seen>, Json(body): Json<Value>| async move {
+                    note(&seen, Method::POST, "subscription", body);
+                    Json(json!({ "id": "sub-new" }))
+                },
+            ),
+        )
+        .route(
+            "/restapi/v1.0/subscription/{id}",
+            delete(
+                move |State(seen): State<Seen>, Path(id): Path<String>| async move {
+                    note(
+                        &seen,
+                        Method::DELETE,
+                        &format!("subscription/{id}"),
+                        Value::Null,
+                    );
+                    StatusCode::NO_CONTENT
+                },
+            ),
+        )
+        .route(
+            "/restapi/v1.0/account/~/extension",
+            get(move |State(seen): State<Seen>| async move {
+                note(&seen, Method::GET, "extension", Value::Null);
+                Json(json!({ "records": [{ "id": 501 }] }))
+            }),
+        )
+        .with_state(Arc::clone(&seen));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });

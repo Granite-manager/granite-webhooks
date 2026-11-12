@@ -1035,7 +1035,10 @@ async fn app_calls_must_be_signed_by_the_phone_that_places_them(pool: MySqlPool)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(alert, "A Granite Manager user dialed 911 on Granite Manager");
+    assert_eq!(
+        alert,
+        "A Granite Manager user dialed 911 on Granite Manager"
+    );
 }
 
 #[test_db::test(seed)]

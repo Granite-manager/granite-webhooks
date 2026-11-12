@@ -123,8 +123,10 @@ async fn the_scheduling_manager_number_goes_to_everyone_in_the_position(pool: My
     server
         .put("/v1/phone/admin/numbers/9901")
         .with_session(sessions::ADMIN)
-        .json(&json!({ "label": "Main", "kind": "main", "noAnswerAction": "voicemail",
-                       "active": true, "assignments": [] }))
+        .json(
+            &json!({ "label": "Main", "kind": "main", "noAnswerAction": "voicemail",
+                       "active": true, "assignments": [] }),
+        )
         .await
         .assert_status_ok();
     assert_eq!(holders(&pool, 9901).await, [(101, true)]);

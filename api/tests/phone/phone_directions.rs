@@ -47,11 +47,17 @@ async fn the_phone_gets_where_an_address_is(pool: MySqlPool) {
 
     let found = server
         .get("/v1/phone/directions")
-        .add_query_param("address", " 6309 Looking Glass Lane, Indianapolis, IN, 46235 ")
+        .add_query_param(
+            "address",
+            " 6309 Looking Glass Lane, Indianapolis, IN, 46235 ",
+        )
         .add_header(HEADER, token(341))
         .await;
     found.assert_status_ok();
-    assert_eq!(found.json::<Value>(), json!({ "lat": 39.86, "lng": -85.97 }));
+    assert_eq!(
+        found.json::<Value>(),
+        json!({ "lat": 39.86, "lng": -85.97 })
+    );
 
     // Google can't find it: 404, and the app passes the words instead.
     server
@@ -76,13 +82,19 @@ async fn only_a_signed_in_phone_asks(pool: MySqlPool) {
     let server = server(&pool).await;
     server
         .get("/v1/phone/directions")
-        .add_query_param("address", "6309 Looking Glass Lane, Indianapolis, IN, 46235")
+        .add_query_param(
+            "address",
+            "6309 Looking Glass Lane, Indianapolis, IN, 46235",
+        )
         .add_header(HEADER, token(342))
         .await
         .assert_status_unauthorized();
     server
         .get("/v1/phone/directions")
-        .add_query_param("address", "6309 Looking Glass Lane, Indianapolis, IN, 46235")
+        .add_query_param(
+            "address",
+            "6309 Looking Glass Lane, Indianapolis, IN, 46235",
+        )
         .await
         .assert_status_unauthorized();
 }
