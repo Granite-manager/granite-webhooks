@@ -183,13 +183,14 @@ async fn customer_reminders(state: &AppState, run: &mut ReminderRun) -> Result<(
             location: reminder.location.as_deref(),
         };
         let outcome = match notify_booking(state, &booking).await {
-            Ok(Some(channel)) => {
+            Ok(Some((channel, body))) => {
                 record_customer_message(
                     &state.pool,
                     reminder.event_id,
                     reminder.company_id,
                     channel == Channel::Sms,
                     reminder_label(&reminder.reminder_kind),
+                    &body,
                 )
                 .await;
                 None

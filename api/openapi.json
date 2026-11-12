@@ -5728,7 +5728,7 @@
           "users"
         ],
         "summary": "List the company's employees",
-        "description": "The non-deleted employees of the caller's company by name (\"User {id}\"\nwhen blank), e.g. to hide a calendar from one of them.",
+        "description": "The non-deleted employees of the caller's company by name (\"User {id}\"\nwhen blank), e.g. to hide a calendar from one of them. Check-in kiosk\naccounts are left out.",
         "operationId": "list_employees",
         "responses": {
           "200": {
@@ -10390,6 +10390,352 @@
           },
           "403": {
             "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/sales-orders": {
+      "get": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "List sales orders",
+        "description": "The company's orders, newest first: the pending ones by default.",
+        "operationId": "list_sales_orders",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "`pending` (the default: still to confirm), `confirmed` or `all`\n(cancelled ones are never listed).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The orders",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SalesOrderRow"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin, or has no Sales orders tab",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/sales-orders/{id}": {
+      "get": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Get a sales order",
+        "description": "The order with each color's rooms, square feet, the slabs the quote asks\nfor, the slabs set and, while pending, the free slabs of its stone.",
+        "operationId": "get_sales_order",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sales order id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesOrder"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin, or has no Sales orders tab",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such order in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Save a sales order's slabs",
+        "description": "Sets the slabs of the colors given (others keep theirs): each a free\nslab of the color's stone no other pending order holds, `is_full: false`\nfor part of one. Only a pending order changes. Returns the order.",
+        "operationId": "save_sales_order",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sales order id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SalesOrderInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesOrder"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Already confirmed, an unknown color, or a slab sold, held or set twice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin, or has no Sales orders tab",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such order in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/sales-orders/{id}/confirm": {
+      "post": {
+        "tags": [
+          "sales"
+        ],
+        "summary": "Confirm a sales order",
+        "description": "Saves the slabs given (as `PUT /v1/sales-orders/{id}`), then sells them\nto the order's customer as Sell slab does: one room per color, credited\nto the quote's sales rep, priced at the option's total; a slab used in\npart leaves a remnant. Colors without slabs are left out; with none at\nall, nothing is sold. All or nothing. Returns the order.",
+        "operationId": "confirm_sales_order",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Sales order id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SalesOrderInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Confirmed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SalesOrder"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Already confirmed, an unknown color, a slab sold, held or set twice, or the customer was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin, or has no Sales orders tab",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such order in the caller's company",
             "content": {
               "application/json": {
                 "schema": {
@@ -18864,6 +19210,583 @@
         ]
       }
     },
+    "/v1/projects/process-steps/positions": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "The positions Notify can pick from",
+        "description": "Every position that has a Projects board, with the company's people in it,\nso a step can tell specific Sales Reps, Shop Managers, Scheduling Managers\nand so on.",
+        "operationId": "list_project_step_positions",
+        "responses": {
+          "200": {
+            "description": "The positions and their people",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/NotifyPosition"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-stages": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Who is told when a project moves on from each stage",
+        "description": "The built-in line at the end of each stage (\"Then: Start fabrication\")\ntakes Notify like a step does.",
+        "operationId": "list_project_process_stages",
+        "responses": {
+          "200": {
+            "description": "Who is told, per stage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProcessStage"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-stages/{stage}/notify": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Set who is told when a project moves on from a stage",
+        "description": "Replaces the list. Each person gets a bell notification and a phone push\nwhen someone moves a project on from the stage (not when they do it\nthemselves), by hand, by checking its last step or from a booking.",
+        "operationId": "set_project_process_stage_notify",
+        "parameters": [
+          {
+            "name": "stage",
+            "in": "path",
+            "description": "The stage: new, templated, fabrication or installed",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepNotify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Someone outside the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such stage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-stages/{stage}/auto": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Set what moves a project on from a stage by itself",
+        "description": "The built-in line at the end of a stage takes Auto like a step: when the\naction happens (after the stage's own steps are done), the project moves\non to the next stage. Only Awaiting Template and Templated can do this:\ninstallation and payment are confirmed with their own buttons.",
+        "operationId": "set_project_process_stage_auto",
+        "parameters": [
+          {
+            "name": "stage",
+            "in": "path",
+            "description": "The stage: new or templated",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepAuto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Unknown trigger or template",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such stage, or one that can't move on by itself",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-stages/{stage}/events": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Set what moving a project on from a stage does to its events",
+        "description": "The built-in line at the end of a stage takes Schedule rules like a step.\nThey run when a project moves on from the stage (and, for Fabrication,\nwhen a part is marked fabricated).",
+        "operationId": "set_project_process_stage_events",
+        "parameters": [
+          {
+            "name": "stage",
+            "in": "path",
+            "description": "The stage: new, templated, fabrication or installed",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepEvents"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Unknown event, readiness or shop status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such stage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-steps/{step_id}/auto": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Set what checks a step off by itself",
+        "description": "Replaces the step's rule; `null` turns it off. Only what happens after it is\nset counts, and only once the step before it is done.",
+        "operationId": "set_project_process_step_auto",
+        "parameters": [
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepAuto"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Unknown action, or a missing template, task name or days",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such step in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-steps/{step_id}/events": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Set what checking a step off does to the project's events",
+        "description": "Replaces the step's rules. Each names one kind of the project's events\n(Template, Installation or one of the event templates) and the readiness\n(Not ready, Ready, Confirmed) and/or shop status (Cut, Complete) to set.",
+        "operationId": "set_project_process_step_events",
+        "parameters": [
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepEvents"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Unknown event, readiness or shop status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such step in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/projects/{id}/steps/{step_id}": {
       "put": {
         "tags": [
@@ -19647,6 +20570,250 @@
           },
           "409": {
             "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/issues": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Report an issue on a project",
+        "description": "For a problem with no job on the schedule: a description and, optionally,\npictures uploaded to the `events` folder first. Anyone who can see the\nproject, while it is not archived or cancelled.",
+        "operationId": "report_project_issue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectIssueInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Reported"
+          },
+          "400": {
+            "description": "No description, one over 2000 characters, over 20 pictures, or a URL that was not uploaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database or storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/issues/{issue_id}": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Mark a project's issue solved, or open again",
+        "description": "Any issue on the project, the crew's included. Anyone who can see it.",
+        "operationId": "set_project_issue_solved",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueSolvedInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see, or issue on it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Delete an issue reported on the project",
+        "description": "Only the project's own issues (a job's are deleted on the job), by their\nreporter, an admin or a superuser; its pictures go from storage.",
+        "operationId": "delete_project_issue",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not an issue on this project the caller may delete",
             "content": {
               "application/json": {
                 "schema": {
@@ -25926,7 +27093,7 @@
           "sms"
         ],
         "summary": "List reps who text",
-        "description": "The company's users with an agent (`CloudTalk`) or extension\n(`RingCentral`) id, or with a Telnyx line (`agent_id` = their user id),\nfor the admin inbox's rep filter.",
+        "description": "The company's users with an agent (`CloudTalk`) or extension\n(`RingCentral`) id, or with a Telnyx line (`agent_id` = their user id),\nfor the admin inbox's rep filter. On Telnyx the list starts with\n`schedule` (named \"Schedule\") when the company has a Scheduling Manager:\ntheir shared inbox, the Notification number's texts included.",
         "operationId": "list_sms_sales_reps",
         "parameters": [
           {
@@ -33952,7 +35119,7 @@
           "quotes"
         ],
         "summary": "Undo a sale",
-        "description": "The quote is active again (no option, no signature), its deal reopens and\nthe template and installation jobs and extra events the sale added are\ndeleted.",
+        "description": "The quote is active again (no option, no signature), its deal reopens,\nthe template and installation jobs and extra events the sale added are\ndeleted and its sales order, while not confirmed yet, is cancelled.",
         "operationId": "undo_quote_sale",
         "parameters": [
           {
@@ -36539,13 +37706,13 @@
           "quotes"
         ],
         "summary": "List feature sales",
-        "description": "The caller's (`mine`) or, for admins, everyone's (`company`) sold quotes\nin the dates, each with the dollars of every extra on its accepted option,\nworked out from the quote as it is now.",
+        "description": "The caller's (`mine`) or everyone's (`company`) sold quotes\nin the dates, each with the dollars of every extra on its accepted option,\nworked out from the quote as it is now.",
         "operationId": "list_feature_sales",
         "parameters": [
           {
             "name": "scope",
             "in": "query",
-            "description": "`mine` (default) or `company` (admins).",
+            "description": "`mine` (default) or `company` (every rep).",
             "required": false,
             "schema": {
               "type": "string"
@@ -36602,7 +37769,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an employee, or not an admin for `company`",
+            "description": "Caller is not an employee",
             "content": {
               "application/json": {
                 "schema": {
@@ -42793,6 +43960,96 @@
       }
     },
     "/v1/events/{id}/issues/{issue_id}": {
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Mark an issue solved, or open again",
+        "description": "Anyone who can see the job: the crew on the job card, the office on the\nschedule. Solved keeps who did it first and when.",
+        "operationId": "set_event_issue_solved",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "issue_id",
+            "in": "path",
+            "description": "Issue id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueSolved"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such issue on this event in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
       "delete": {
         "tags": [
           "schedule"
@@ -84339,6 +85596,13 @@
             "type": "string",
             "description": "Shown text."
           },
+          "body": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The full text the customer got, for a line about a text or email\nsent to them (its subject, a blank line, then its body for an\nemail). None on other lines and on lines older than this field."
+          },
           "created_at": {
             "type": [
               "string",
@@ -84634,6 +85898,21 @@
               "null"
             ],
             "description": "The reporter's name."
+          },
+          "solved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was marked solved (UTC); null while it is open."
+          },
+          "solved_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who marked it solved."
           },
           "photos": {
             "type": "array",
@@ -88407,6 +89686,32 @@
           }
         }
       },
+      "IssueSolved": {
+        "type": "object",
+        "description": "Body of `PUT /v1/events/{id}/issues/{issue_id}`.",
+        "required": [
+          "solved"
+        ],
+        "properties": {
+          "solved": {
+            "type": "boolean",
+            "description": "Solved, or open again."
+          }
+        }
+      },
+      "IssueSolvedInput": {
+        "type": "object",
+        "description": "Body of `PUT .../issues/{issue_id}`.",
+        "required": [
+          "solved"
+        ],
+        "properties": {
+          "solved": {
+            "type": "boolean",
+            "description": "Solved, or open again."
+          }
+        }
+      },
       "Item": {
         "type": "object",
         "description": "One item.",
@@ -88451,6 +89756,28 @@
             "description": "A hint (the domain, the expected DNS name), or null."
           }
         }
+      },
+      "ItemSlabsInput": {
+        "type": "object",
+        "description": "The slabs of one color.",
+        "required": [
+          "id",
+          "slabs"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "`SalesOrderItem.id`."
+          },
+          "slabs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SlabInput"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "ItemSuggestion": {
         "type": "object",
@@ -92202,6 +93529,33 @@
           }
         }
       },
+      "NotifyPosition": {
+        "type": "object",
+        "description": "A position a step's Notify can pick people from.",
+        "required": [
+          "id",
+          "name",
+          "people"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "`positions.id`."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name, e.g. \"Shop Manager\"."
+          },
+          "people": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Person"
+            },
+            "description": "The company's people in it, by name."
+          }
+        }
+      },
       "NumberAssignment": {
         "type": "object",
         "description": "Who a number rings and who may call from it.",
@@ -93270,6 +94624,27 @@
             "minimum": 0
           }
         }
+      },
+      "OrderSlab": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SlabChoice",
+            "description": "The slab."
+          },
+          {
+            "type": "object",
+            "required": [
+              "is_full"
+            ],
+            "properties": {
+              "is_full": {
+                "type": "boolean",
+                "description": "`false`: only part of it is used."
+              }
+            }
+          }
+        ],
+        "description": "A slab set on an order."
       },
       "OrderingMode": {
         "type": "string",
@@ -97424,6 +98799,52 @@
           "high"
         ]
       },
+      "ProcessStage": {
+        "type": "object",
+        "description": "Who is told when a project moves on from a stage (the stage's built-in step).",
+        "required": [
+          "stage_code",
+          "notify",
+          "notify_sales_rep",
+          "event_rules"
+        ],
+        "properties": {
+          "stage_code": {
+            "$ref": "#/components/schemas/Stage",
+            "description": "The stage a project moves on from."
+          },
+          "notify": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Who is told (user ids)."
+          },
+          "notify_sales_rep": {
+            "type": "boolean",
+            "description": "Also tells the sales rep assigned to the project."
+          },
+          "event_rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepEventRule"
+            },
+            "description": "What moving on from the stage does to the project's schedule events."
+          },
+          "auto": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StepAuto",
+                "description": "What moves the project on by itself, if anything."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "ProcessStep": {
         "type": "object",
         "description": "A step a company added to a stage of its process.",
@@ -97432,7 +98853,9 @@
           "stage_code",
           "name",
           "position",
-          "notify"
+          "notify",
+          "notify_sales_rep",
+          "event_rules"
         ],
         "properties": {
           "id": {
@@ -97460,6 +98883,61 @@
               "format": "int32"
             },
             "description": "Who is told when a project checks it off (user ids)."
+          },
+          "notify_sales_rep": {
+            "type": "boolean",
+            "description": "Also tells the sales rep assigned to the project."
+          },
+          "auto": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StepAuto",
+                "description": "What checks it off by itself, if anything."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "event_rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepEventRule"
+            },
+            "description": "What checking it off does to the project's schedule events."
+          }
+        }
+      },
+      "ProcessStepAuto": {
+        "type": "object",
+        "description": "A step's new rule; `null` turns it off.",
+        "properties": {
+          "auto": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/StepAuto",
+                "description": "The rule, or none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "ProcessStepEvents": {
+        "type": "object",
+        "description": "A step's new event rules; empty turns them off.",
+        "required": [
+          "rules"
+        ],
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepEventRule"
+            },
+            "description": "The rules, one per target."
           }
         }
       },
@@ -97508,6 +98986,10 @@
               "format": "int32"
             },
             "description": "Users of the company; empty tells nobody."
+          },
+          "sales_rep": {
+            "type": "boolean",
+            "description": "Also tell the sales rep assigned to the project."
           }
         }
       },
@@ -98115,6 +99597,129 @@
           "created_at": {
             "type": "string",
             "description": "When it was made, UTC ISO."
+          }
+        }
+      },
+      "ProjectIssue": {
+        "type": "object",
+        "description": "A problem the crew reported on one of the project's jobs (the job card's\nIssues).",
+        "required": [
+          "id",
+          "description",
+          "created_at",
+          "photos"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its id."
+          },
+          "event_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The job it was reported on; null for one reported on the project itself."
+          },
+          "kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`templates` or `installations`; null for another calendar."
+          },
+          "job_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the job is (UTC ISO); null while it waits for a date."
+          },
+          "description": {
+            "type": "string",
+            "description": "What is wrong."
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who reported it."
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When, UTC ISO."
+          },
+          "solved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it was marked solved (UTC ISO); null while it is open."
+          },
+          "solved_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who marked it solved."
+          },
+          "author_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Who reported it (user id), so they can delete one of the project's own."
+          },
+          "photos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Its pictures (URLs the browser can open)."
+          }
+        }
+      },
+      "ProjectIssueCount": {
+        "type": "object",
+        "description": "How many open issues a project has (its jobs' and its own).",
+        "required": [
+          "project_id",
+          "count"
+        ],
+        "properties": {
+          "project_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The project."
+          },
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its open issues."
+          }
+        }
+      },
+      "ProjectIssueInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/projects/{id}/issues`.",
+        "required": [
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What is wrong: 1 to 2000 characters (trimmed)."
+          },
+          "urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Pictures: `url`s that `POST /v1/uploads` (folder `events`) returned.\nAt most 20; may be empty."
           }
         }
       },
@@ -103258,6 +104863,220 @@
           }
         }
       },
+      "SalesOrder": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SalesOrderRow"
+          },
+          {
+            "type": "object",
+            "required": [
+              "option_index",
+              "price",
+              "items"
+            ],
+            "properties": {
+              "option_index": {
+                "type": "integer",
+                "format": "int32",
+                "description": "The sold option, 0-based."
+              },
+              "price": {
+                "type": "number",
+                "format": "double",
+                "description": "The option's total, in dollars."
+              },
+              "sale_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "The sale confirming made."
+              },
+              "confirmed_by_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "confirmed_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/SalesOrderItem"
+                }
+              }
+            }
+          }
+        ],
+        "description": "One order."
+      },
+      "SalesOrderInput": {
+        "type": "object",
+        "description": "The slabs of an order, every color given.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ItemSlabsInput"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "SalesOrderItem": {
+        "type": "object",
+        "description": "One color of an order.",
+        "required": [
+          "id",
+          "color",
+          "product",
+          "rooms",
+          "square_feet",
+          "slabs_asked",
+          "slabs",
+          "available"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "color": {
+            "type": "string"
+          },
+          "product": {
+            "type": "string"
+          },
+          "rooms": {
+            "type": "string",
+            "description": "The rooms using it, comma-separated."
+          },
+          "square_feet": {
+            "type": "number",
+            "format": "double"
+          },
+          "slabs_asked": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Slabs the quote asks for."
+          },
+          "stone_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The inventory stone of the color; null when it is not in the inventory."
+          },
+          "stone_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stone_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slabs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OrderSlab"
+            },
+            "description": "The slabs set."
+          },
+          "available": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SlabChoice"
+            },
+            "description": "Free slabs of the stone another pending order does not hold (those\nset here too), for a pending order."
+          }
+        }
+      },
+      "SalesOrderRow": {
+        "type": "object",
+        "description": "One order in the list.",
+        "required": [
+          "id",
+          "status",
+          "created_at",
+          "customer_id",
+          "quote_id",
+          "slabs_asked",
+          "slabs_set"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "status": {
+            "type": "string",
+            "description": "`pending` or `confirmed`."
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When the quote was sold (UTC, ISO 8601)."
+          },
+          "customer_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "customer_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "seller_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who the sale is credited to."
+          },
+          "quote_id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "quote_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "colors": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its colors, comma-separated."
+          },
+          "slabs_asked": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Slabs the quote asks for."
+          },
+          "slabs_set": {
+            "type": "number",
+            "format": "double",
+            "description": "Slabs set on it (a part counts a half)."
+          }
+        }
+      },
       "SalesPage": {
         "type": "object",
         "description": "`GET /v1/superuser/sales-emails`.",
@@ -105820,6 +107639,52 @@
           }
         }
       },
+      "SlabChoice": {
+        "type": "object",
+        "description": "A slab of the inventory.",
+        "required": [
+          "id",
+          "remnant"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`slab_inventory.id`."
+          },
+          "bundle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "length": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "width": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its picture."
+          },
+          "remnant": {
+            "type": "boolean",
+            "description": "A remnant (a piece left from another slab)."
+          }
+        }
+      },
       "SlabCounts": {
         "type": "object",
         "description": "Slab counts of a stone. Counts the stone's own slabs plus those of the\nstones it draws from (linked stones). Cut and deleted slabs are never\ncounted.",
@@ -105851,6 +107716,25 @@
             "description": "Whole slabs (not remnants) not tied to a sale."
           }
         }
+      },
+      "SlabInput": {
+        "type": "object",
+        "description": "A slab to set.",
+        "required": [
+          "slab_id",
+          "is_full"
+        ],
+        "properties": {
+          "slab_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "is_full": {
+            "type": "boolean",
+            "description": "`false`: only part of it."
+          }
+        },
+        "additionalProperties": false
       },
       "SlabParentSale": {
         "type": "object",
@@ -106848,6 +108732,50 @@
         },
         "additionalProperties": false
       },
+      "StepAuto": {
+        "type": "object",
+        "description": "What checks a process step off by itself.",
+        "required": [
+          "trigger"
+        ],
+        "properties": {
+          "trigger": {
+            "type": "string",
+            "description": "What happens: `email_template`, `text_template`, `customer_replied`,\n`file_added`, `sent_to_sign`, `signed`, `questionnaire_filled`,\n`template_booked`, `install_booked`, `invoice_sent`, `payment_any`,\n`payment_full`, `task_done` or `days_after`."
+          },
+          "ref_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The email or text template (`email_template`, `text_template`)."
+          },
+          "ref_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Several templates; any one of them counts (`email_template`, `text_template`)."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Part of the document's or task's name (`sent_to_sign`, `signed`, `task_done`)."
+          },
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days after the step before (`days_after`)."
+          }
+        }
+      },
       "StepChannel": {
         "type": "string",
         "description": "How a step is delivered.",
@@ -106874,6 +108802,33 @@
             ],
             "format": "int32",
             "description": "The part, on a project with parts; left out: its least finished part."
+          }
+        }
+      },
+      "StepEventRule": {
+        "type": "object",
+        "description": "One event a step changes when it is checked off.",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Which of the project's events: `templates`, `installations` or\n`event:<id>` (an event template of Admin > Quotes > Automation)."
+          },
+          "readiness": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New readiness: `not_ready`, `ready` or `confirmed`; null leaves it."
+          },
+          "shop_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New shop status: `cut` or `complete`; null leaves it."
           }
         }
       },
