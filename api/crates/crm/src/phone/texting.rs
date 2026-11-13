@@ -132,6 +132,15 @@ pub async fn notification_line(
     lines::notification_line(pool, company_id).await
 }
 
+/// The Scheduling Manager's line texts that wait for an answer go out from,
+/// when the company texts through Telnyx and has one.
+pub async fn scheduling_line(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Option<CallerId>> {
+    if texting_setup(pool, company_id).await?.is_none() {
+        return Ok(None);
+    }
+    lines::scheduling_line(pool, company_id).await
+}
+
 /// Every line `user_id` may text from, when the company texts through Telnyx.
 pub async fn own_lines(
     pool: &MySqlPool,

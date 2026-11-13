@@ -255,6 +255,34 @@ pub async fn manager_seat(
     }))
 }
 
+/// How a Scheduling Manager texts what waits for the customer's answer
+/// (confirmations and their follow-ups): on Telnyx from the Scheduling
+/// Manager's line, never the Notification number (it keeps no replies), else
+/// the manager's own line; other providers as `manager_seat`.
+pub async fn manager_reply_seat(
+    pool: &MySqlPool,
+    company_id: i32,
+    provider: SmsProvider,
+    manager: &OfficeManager,
+) -> Result<Option<Seat>, sqlx::Error> {
+    if provider != SmsProvider::Telnyx {
+        return manager_seat(pool, company_id, provider, manager).await;
+    }
+    let notification = crate::phone::texting::notification_line(pool, company_id)
+        .await?
+        .map(|line| line.number_id);
+    let line = match crate::phone::texting::scheduling_line(pool, company_id).await? {
+        Some(line) => Some(line),
+        None => crate::phone::texting::user_line(pool, company_id, manager.id)
+            .await?
+            .filter(|line| Some(line.number_id) != notification),
+    };
+    Ok(line.map(|line| Seat {
+        agent_id: manager.agent_id.clone(),
+        line: Some(line),
+    }))
+}
+
 /// Who texts the company's notices (bookings, surveys): a Scheduling Manager
 /// with a Telnyx line while the company texts through Telnyx, else one with
 /// a line on the company's provider; with their provider and seat.

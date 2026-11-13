@@ -1589,6 +1589,7 @@ pub async fn send_on_my_way(
         body: &body,
         idempotency_key: Some(format!("on-my-way-{event_id}-{}", event.start_date)),
         by_hand: false,
+        awaits_reply: false,
     };
     Ok(deliver(state, &message, &event, customer_id)
         .await?
@@ -2432,6 +2433,10 @@ struct Outgoing<'a> {
     idempotency_key: Option<String>,
     /// Sent by hand from the event: an all-day event's time stays blank.
     by_hand: bool,
+    /// Waits for the customer's answer (a confirmation, its follow-up, the
+    /// clarification): goes from the Scheduling Manager's line, never the
+    /// Notification number, which keeps no replies.
+    awaits_reply: bool,
 }
 
 /// The message's subject and body for this appointment, or why it cannot go.
@@ -2536,6 +2541,31 @@ pub async fn sms_sender(
         }
     }
     Ok(Err("no_sms_sender"))
+}
+
+/// `sms_sender` for a text that waits for the customer's answer: on Telnyx
+/// from the Scheduling Manager's line, never the Notification number.
+pub async fn reply_sender(
+    pool: &MySqlPool,
+    company_id: i32,
+) -> Result<Result<(SmsProvider, OfficeManager, Seat), &'static str>, sqlx::Error> {
+    let (provider, manager, seat) = match sms_sender(pool, company_id).await? {
+        Ok(found) => found,
+        Err(code) => return Ok(Err(code)),
+    };
+    if provider != SmsProvider::Telnyx {
+        return Ok(Ok((provider, manager, seat)));
+    }
+    Ok(
+        match crate::routes::events::notify::manager_reply_seat(
+            pool, company_id, provider, &manager,
+        )
+        .await?
+        {
+            Some(seat) => Ok((provider, manager, seat)),
+            None => Err("no_sms_sender"),
+        },
+    )
 }
 
 /// The 10 digits a text for the appointment goes to: the event's own phone,
@@ -2644,7 +2674,12 @@ async fn deliver_sent(
         Err(code) => return Ok(Err(code)),
     };
     if message.channel == Channel::Sms {
-        let (provider, manager, seat) = match sms_sender(pool, company_id).await? {
+        let sender = if message.awaits_reply {
+            reply_sender(pool, company_id).await?
+        } else {
+            sms_sender(pool, company_id).await?
+        };
+        let (provider, manager, seat) = match sender {
             Ok(sender) => sender,
             Err(code) => return Ok(Err(code)),
         };
@@ -2856,6 +2891,7 @@ pub async fn send_due(state: &AppState) -> Result<RuleRun, sqlx::Error> {
                     event.start_date.and_utc().timestamp()
                 )),
                 by_hand: false,
+                awaits_reply: false,
             };
             let outcome = match deliver(state, &message, &event, customer_id).await {
                 Ok(outcome) => outcome,
@@ -2936,6 +2972,7 @@ pub async fn send_on_complete(state: &AppState, event_id: i32) -> Result<usize, 
                 event.start_date.and_utc().timestamp()
             )),
             by_hand: false,
+            awaits_reply: false,
         };
         let outcome = match deliver(state, &message, &event, customer_id).await {
             Ok(outcome) => outcome,
@@ -3067,6 +3104,7 @@ pub async fn send_confirmation(
         body: edited.as_deref().unwrap_or(&template.body),
         idempotency_key: None,
         by_hand: true,
+        awaits_reply: true,
     };
     let sent = match deliver_sent(&state, &message, &event, customer_id).await? {
         Ok(sent) => sent,
@@ -3358,6 +3396,7 @@ pub async fn scheduling_texts(
                     body: &template.body,
                     idempotency_key: None,
                     by_hand: true,
+                    awaits_reply: true,
                 };
                 let user_id = message_user(pool, company_id, &event, customer_id).await?;
                 match render(pool, &message, &event, customer_id, user_id).await? {
@@ -3754,6 +3793,7 @@ async fn send_followup(
         body: &next.body,
         idempotency_key: Some(format!("schedule-followup-{}-{count}", wait.id)),
         by_hand: false,
+        awaits_reply: true,
     };
     let outcome = match deliver_sent(state, &message, &event, customer_id).await {
         Ok(outcome) => outcome,
@@ -3832,6 +3872,7 @@ async fn send_clarification(state: &AppState, wait: &Waiting) -> Result<(), sqlx
         body: CLARIFY_TEXT,
         idempotency_key: Some(format!("schedule-clarify-{}", wait.id)),
         by_hand: false,
+        awaits_reply: true,
     };
     let outcome = match deliver_sent(state, &message, &event, customer_id).await {
         Ok(outcome) => outcome,
