@@ -59,6 +59,24 @@ pub async fn notification_line(
     .await
 }
 
+/// The Scheduling Manager's own line (linked to the position, not the
+/// Notification number): texts that wait for the customer's answer go out
+/// from it, since the Notification number keeps no replies. `None` when the
+/// company has none.
+pub async fn scheduling_line(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Option<CallerId>> {
+    sqlx::query_as(
+        "SELECT n.id AS number_id, n.e164, n.label, CAST(n.kind AS CHAR) AS kind
+           FROM telnyx_numbers n
+          WHERE n.company_id = ? AND n.position_id = ? AND n.notifications = 0
+            AND n.active <> 0 AND n.released_at IS NULL
+          ORDER BY n.id LIMIT 1",
+    )
+    .bind(company_id)
+    .bind(NOTIFICATION_POSITION)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Gives each number linked to a position (`telnyx_numbers.position_id`) to
 /// exactly the company's users with that position: it rings them and they
 /// call and text from it. Such a number (the Scheduling Manager or the
