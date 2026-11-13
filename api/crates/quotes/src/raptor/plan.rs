@@ -73,7 +73,7 @@ pub struct Plan {
 static FULL_HEIGHT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)full\s*-?\s*height|\bfhbs\b|\bfh\b").expect("regex"));
 static PICK_UP: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\bpick\s*-?\s*up\b").expect("regex"));
+    LazyLock::new(|| Regex::new(r"(?i)\bpick\s*-?\s*up\b|\bno\s+install").expect("regex"));
 static LAYOUT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\blayout\s*[:\-–]?\s*(yes|no)\b").expect("regex"));
 static ZIP: LazyLock<Regex> =
@@ -91,6 +91,26 @@ static BOARD: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)cutting\s*board").expect("regex"));
 static TEAR_OUT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bt/o\b|tear\s*-?\s*out").expect("regex"));
+static BY_CUSTOMER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bby\s+(the\s+)?customer|\bcustomer\s+(does|will|provides?|supplie[sd])")
+        .expect("regex")
+});
+// A business kept as its name ("GTP Holdings"), not turned "Last First";
+// never a word that is also a surname ("Erin Builder").
+static BUSINESS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(llc|inc|corp|company|holdings|properties|construction|builders|handyman|remodeling|investments|realty|management|enterprises|services)\b")
+        .expect("regex")
+});
+/// "No existing countertops to tear out", "Wall Tile Tear Out": not a countertop tear out.
+static NOT_TEAR_OUT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*no\b|\bno\s+existing|\bwall\s*tile|\bbacksplash").expect("regex")
+});
+static CABINET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)cabinet").expect("regex"));
+/// Area names that say nothing about the room ("Area #1", "Countertops").
+static GENERIC_AREA: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*(area\s*#?\s*\d*|countertops?|kitchen\s+countertops?|main)\s*$")
+        .expect("regex")
+});
 static SEALER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)sealer").expect("regex"));
 static SEAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)seam").expect("regex"));
 static PHANTOM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)phantom").expect("regex"));
@@ -219,6 +239,11 @@ fn list(values: &[String]) -> String {
     }
 }
 
+/// The item's name or option says what `re` matches.
+fn mentions(item: &QuoteItem, re: &Regex) -> bool {
+    re.is_match(&item.name) || item.option.as_deref().is_some_and(|o| re.is_match(o))
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn plan(src: &Source) -> Plan {
     let doc = src.doc;
@@ -241,6 +266,7 @@ pub fn plan(src: &Source) -> Plan {
     let said = |re: &Regex| -> Vec<String> {
         named(re)
             .into_iter()
+            .filter(|i| !mentions(i, &BY_CUSTOMER))
             .map(|i| {
                 i.option
                     .as_deref()
@@ -259,10 +285,9 @@ pub fn plan(src: &Source) -> Plan {
         .flat_map(|c| &c.runs)
         .flat_map(|r| &r.cutouts);
     let pick_up = doc.texts().any(|t| PICK_UP.is_match(t))
-        || doc
-            .items
-            .iter()
-            .any(|i| i.kind == ItemKind::Text && PICK_UP.is_match(&i.name))
+        || doc.items.iter().any(|i| {
+            PICK_UP.is_match(&i.name) || i.option.as_deref().is_some_and(|o| PICK_UP.is_match(o))
+        })
         || src.project_notes.iter().any(|n| PICK_UP.is_match(n));
 
     let (full_height, main): (Vec<&Area>, Vec<&Area>) = doc
@@ -324,7 +349,10 @@ pub fn plan(src: &Source) -> Plan {
         .collect();
     let soap = said(&SOAP);
     let board = said(&BOARD);
-    let tear_out = !named(&TEAR_OUT).is_empty();
+    // "Tear Out to be completed by customer" is not ours to do.
+    let tear_out = named(&TEAR_OUT)
+        .iter()
+        .any(|i| !mentions(i, &BY_CUSTOMER) && !mentions(i, &NOT_TEAR_OUT));
     let sealer = !named(&SEALER).is_empty();
     let phantom = items.iter().any(|i| {
         SEAM.is_match(&i.name) && i.option.as_deref().is_some_and(|o| PHANTOM.is_match(o))
@@ -335,7 +363,24 @@ pub fn plan(src: &Source) -> Plan {
         .unwrap_or_default();
     let layout = layout_from_notes(src.project_notes);
 
-    let notes_for = |job_sq_ft: f64| -> String {
+    // One area: its sq ft; several: each, as "63.5(Area #1) 9.5(Area #2)".
+    let sq_ft_text = |areas: &[&Area]| -> String {
+        let parts: Vec<(f64, &str)> = areas
+            .iter()
+            .map(|a| (sq_ft(&[*a]), a.name.trim()))
+            .filter(|(v, _)| *v > 0.0)
+            .collect();
+        if parts.len() > 1 {
+            parts
+                .iter()
+                .map(|(v, name)| format!("{}({name})", num(*v)))
+                .collect::<Vec<_>>()
+                .join(" ")
+        } else {
+            num(sq_ft(areas))
+        }
+    };
+    let notes_for = |job_sq_ft: &str| -> String {
         let mut lines: Vec<String> = if pick_up {
             vec![
                 format!("10-year sealer:{}", yes_no(sealer)),
@@ -343,7 +388,7 @@ pub fn plan(src: &Source) -> Plan {
                 "Additional notes:".into(),
                 RULE.into(),
                 format!("Salesperson:{salesperson}"),
-                format!("Estimated sqft:{}", num(job_sq_ft)),
+                format!("Estimated sqft:{job_sq_ft}"),
             ]
         } else {
             vec![
@@ -366,7 +411,7 @@ pub fn plan(src: &Source) -> Plan {
                 format!("10 year sealer:{}", yes_no(sealer)),
                 RULE.into(),
                 format!("Salesperson:{salesperson}"),
-                format!("Estimated sqft:{}", num(job_sq_ft)),
+                format!("Estimated sqft:{job_sq_ft}"),
                 format!("Layout:{}", layout.unwrap_or_default()),
                 RULE.into(),
                 "Notes from the technician:".into(),
@@ -390,7 +435,7 @@ pub fn plan(src: &Source) -> Plan {
             let Some(pick) = option.and_then(|o| o.by_area.get(&a.id)) else {
                 continue;
             };
-            if pick.color.trim().is_empty() {
+            if pick.color.trim().is_empty() || CABINET.is_match(&pick.product) {
                 continue;
             }
             let m = Material {
@@ -438,6 +483,7 @@ pub fn plan(src: &Source) -> Plan {
     let base = match business {
         Some(company) if !address.street.is_empty() => format!("{company} ({})", address.street),
         Some(company) => company.to_string(),
+        None if BUSINESS.is_match(src.customer_name) => src.customer_name.trim().to_string(),
         None => last_name_first(src.customer_name),
     };
     let job = |room: &str, areas: &[&Area]| {
@@ -452,12 +498,25 @@ pub fn plan(src: &Source) -> Plan {
             sq_ft: job_sq_ft,
             materials: materials_for(areas),
             cutouts: cutouts_for(areas),
-            notes: notes_for(job_sq_ft),
+            notes: notes_for(&sq_ft_text(areas)),
         }
     };
     let mut jobs = Vec::new();
     if !main.is_empty() || full_height.is_empty() {
-        jobs.push(job(if pick_up { "Pick up" } else { "Kitchen" }, &main));
+        // The rooms the areas name ("Vanity", "Kitchen/Master bath"); else Kitchen.
+        let rooms: Vec<&str> = main
+            .iter()
+            .map(|a| a.name.trim())
+            .filter(|n| !n.is_empty() && !GENERIC_AREA.is_match(n))
+            .collect();
+        let room = if pick_up {
+            "Pick up".to_string()
+        } else if rooms.is_empty() {
+            "Kitchen".to_string()
+        } else {
+            rooms.join("/")
+        };
+        jobs.push(job(&room, &main));
     }
     if !full_height.is_empty() {
         jobs.push(job("FHBS", &full_height));
@@ -726,6 +785,67 @@ mod tests {
         assert_eq!(
             named(Some(""), "1 Main St, Carmel, IN"),
             "Smith Darreld Kitchen"
+        );
+    }
+
+    #[test]
+    fn rules_learned_from_the_office_jobs() {
+        // A business with no company name keeps its name.
+        let d = doc(&json!({"counters": [counter("c1", "a1", 96.0, 0.0, &json!([]))]}));
+        let p = plan(&Source {
+            customer_name: "GTP Holdings",
+            company_name: None,
+            phone: None,
+            address: None,
+            salesperson: Some("Kyle"),
+            doc: &d,
+            option_index: 0,
+            project_notes: &[],
+            sq_ft_up: false,
+        });
+        assert_eq!(p.jobs[0].name, "GTP Holdings Kitchen");
+        // No installation is a pick-up; a tear out the customer does is not ours.
+        let d = doc(&json!({
+            "counters": [counter("c1", "a1", 60.0, 0.0, &json!([]))],
+            "items": [
+                {"id": "i1", "kind": "misc", "name": "NO INSTALLATION"},
+                {"id": "i2", "kind": "priceList", "name": "Tear Out to be completed by customer"},
+            ],
+        }));
+        let job = run(&d, &[], "Polly").jobs.remove(0);
+        assert_eq!(job.name, "Doe Jane Pick up");
+        let d = doc(&json!({
+            "counters": [counter("c1", "a1", 60.0, 0.0, &json!([]))],
+            "items": [{"id": "i2", "kind": "priceList", "name": "Tear Out to be completed by customer"}],
+        }));
+        let job = run(&d, &[], "Polly").jobs.remove(0);
+        assert_eq!(line(&job.notes, "Tear out"), Some("Tear out:no"));
+    }
+
+    #[test]
+    fn rooms_sq_ft_and_what_the_customer_does() {
+        let d = doc(&json!({
+            "areas": [{"id": "a1", "name": "Vanity", "quantity": 1}, {"id": "a2", "name": "Master bath", "quantity": 1}],
+            "colorOptions": [{"id": "o1", "byArea": {
+                "a1": {"product": "Quartz", "color": "Taj", "edges": ["Flat"]},
+                "a2": {"product": "Cabinets", "color": "Shaker Champagne", "edges": []},
+            }}],
+            "counters": [counter("c1", "a1", 60.0, 0.0, &json!([])), counter("c2", "a2", 48.0, 0.0, &json!([]))],
+            "items": [
+                {"id": "i1", "kind": "misc", "name": "No existing countertops to tear out"},
+                {"id": "i2", "kind": "priceList", "name": "Wall Tile Tear Out"},
+                {"id": "i3", "kind": "priceList", "name": "Faucet", "option": "Customer provides a faucet"},
+            ],
+        }));
+        let job = run(&d, &[], "Liza").jobs.remove(0);
+        assert_eq!(job.name, "Doe Jane Vanity/Master bath");
+        assert_eq!(job.materials.len(), 1);
+        assert_eq!(line(&job.notes, "Tear out"), Some("Tear out:no"));
+        assert_eq!(line(&job.notes, "Faucet"), Some("Faucet:no"));
+        let sq_ft = line(&job.notes, "Estimated sqft").unwrap();
+        assert!(
+            sq_ft.contains("(Vanity) ") && sq_ft.ends_with("(Master bath)"),
+            "{sq_ft}"
         );
     }
 }
