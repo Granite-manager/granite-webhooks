@@ -72919,16 +72919,6 @@
               }
             }
           },
-          "403": {
-            "description": "An inbound text through a messaging profile that is not the company's",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
           "404": {
             "description": "No company has this webhook token",
             "content": {

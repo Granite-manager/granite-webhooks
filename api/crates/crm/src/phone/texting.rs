@@ -884,7 +884,8 @@ pub struct Received {
 /// numbers, then, the first time: STOP / START, the customer's SMS flows
 /// stop (they replied), and their deal leaves the first stage of its
 /// pipeline (the other providers' inbound rule); and its files are copied.
-/// `None` when it is not to one of the company's numbers or has no sender.
+/// Every text is kept, also one to a number the company no longer lists (on
+/// no line); `None` only when Telnyx names no id, sender or recipient.
 pub async fn receive(
     state: &AppState,
     company_id: i32,
@@ -905,9 +906,10 @@ pub async fn receive(
     let (Some(telnyx_id), Some(from), Some(to)) = (payload.id.as_deref(), from, to) else {
         return Ok(None);
     };
-    let (Some(customer10), Some(line10)) = (last10(&from), last10(&to)) else {
-        return Ok(None);
-    };
+    // Every text is kept: a number outside the US and Canada keeps its digits.
+    let digits = |e164: &str| -> String { e164.chars().filter(char::is_ascii_digit).collect() };
+    let customer10 = last10(&from).unwrap_or_else(|| digits(&from));
+    let line10 = last10(&to).unwrap_or_else(|| digits(&to));
     let number: Option<(i32, Option<String>, bool)> = sqlx::query_as(
         "SELECT id, forward_texts_to, notifications <> 0 FROM telnyx_numbers
           WHERE company_id = ? AND last10 = ? LIMIT 1",
@@ -916,12 +918,16 @@ pub async fn receive(
     .bind(&line10)
     .fetch_optional(pool)
     .await?;
-    let Some((number_id, forward_texts_to, notifications)) = number else {
-        tracing::warn!(
-            company_id,
-            "Telnyx text to a number that is not the company's: ignored"
-        );
-        return Ok(None);
+    // A text to a number the company no longer lists is still kept, on no line.
+    let (number_id, forward_texts_to, notifications) = match number {
+        Some((id, forward, notifications)) => (Some(id), forward, notifications),
+        None => {
+            tracing::warn!(
+                company_id,
+                "Telnyx text to a number that is not the company's: kept with no line"
+            );
+            (None, None, false)
+        }
     };
     let text = payload.text.clone().unwrap_or_default();
     // The Notification number is one way: nothing shows on it. A reply to it
@@ -940,7 +946,7 @@ pub async fn receive(
                 .await?
                 .flatten();
                 let line10 = last10(&line.e164).unwrap_or(line10);
-                (line.number_id, forward, line10, line.e164)
+                (Some(line.number_id), forward, line10, line.e164)
             }
             None => (number_id, forward_texts_to, line10, to),
         }
@@ -983,13 +989,17 @@ pub async fn receive(
     // Copied on the first delivery; a redelivery fills in what failed.
     copy_inbound_media(state, company_id, sms_id, payload).await?;
     // Sent on once (its key), also when a redelivery finds it not sent yet.
-    if let Some(target) = forward_texts_to.as_deref().and_then(to_e164)
+    if let Some(number_id) = number_id
+        && let Some(target) = forward_texts_to.as_deref().and_then(to_e164)
         && target != from
     {
         forward_text(state, company_id, number_id, sms_id, &from, &target, &text).await;
     }
     // The phones of the line's users hear about it (with its files stored).
-    if new && texting_setup(pool, company_id).await?.is_some() {
+    if new
+        && let Some(number_id) = number_id
+        && texting_setup(pool, company_id).await?.is_some()
+    {
         let key = super::texts::ThreadKey {
             number_id,
             other10: customer10.clone(),
