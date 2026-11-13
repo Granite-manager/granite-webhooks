@@ -924,19 +924,29 @@ pub async fn receive(
         return Ok(None);
     };
     let text = payload.text.clone().unwrap_or_default();
-    if notifications {
-        // The Notification number is one way: a reply is not stored or shown.
-        // STOP and START still count.
-        let opt = match opt_keyword(&text) {
-            Some(OptKeyword::OptOut) => opt_out(pool, company_id, &customer10, "stop").await,
-            Some(OptKeyword::OptIn) => opt_in(pool, company_id, &customer10).await,
-            None => Ok(()),
-        };
-        if let Err(err) = opt {
-            tracing::error!(company_id, error = %err, "Telnyx STOP/START not recorded");
+    // The Notification number is one way: nothing shows on it. A reply to it
+    // is never dropped, though: it lands on the Scheduling Manager's line, in
+    // their thread with the customer (else it stays on the Notification
+    // number, where the Scheduling Manager reads it).
+    let (number_id, forward_texts_to, line10, to) = if notifications {
+        match lines::scheduling_line(pool, company_id).await? {
+            Some(line) => {
+                let forward: Option<String> = sqlx::query_scalar(
+                    "SELECT forward_texts_to FROM telnyx_numbers WHERE id = ? AND company_id = ?",
+                )
+                .bind(line.number_id)
+                .bind(company_id)
+                .fetch_optional(pool)
+                .await?
+                .flatten();
+                let line10 = last10(&line.e164).unwrap_or(line10);
+                (line.number_id, forward, line10, line.e164)
+            }
+            None => (number_id, forward_texts_to, line10, to),
         }
-        return Ok(None);
-    }
+    } else {
+        (number_id, forward_texts_to, line10, to)
+    };
     let inserted = sqlx::query(
         "INSERT IGNORE INTO telnyx_sms
            (telnyx_id, sender, recipient, text, direction, status, company_id, created_date,

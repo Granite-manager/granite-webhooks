@@ -74384,7 +74384,7 @@
           },
           "notifications": {
             "type": "boolean",
-            "description": "The company's Notification number: every automated text goes out\nfrom it. It is one way: replies are not kept."
+            "description": "The company's Notification number: every automated text goes out\nfrom it. It is one way: a reply lands on the Scheduling Manager's line."
           }
         }
       },
