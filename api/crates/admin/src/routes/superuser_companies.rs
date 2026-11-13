@@ -263,6 +263,11 @@ pub struct CompanyDetails {
     pub qbo_realm_id: Option<String>,
     /// `SignWell` API key, or null.
     pub signwell_api_key: Option<String>,
+    /// Raptor (templator.com) login email, or null: new projects become
+    /// Raptor jobs.
+    pub raptor_email: Option<String>,
+    /// A Raptor password is saved (it is never sent back).
+    pub raptor_password_set: bool,
     /// QuickBooks switch.
     pub quickbooks_enabled: bool,
     /// The old company eSignatures switch; no longer used (eSignatures are
@@ -307,7 +312,8 @@ pub async fn get_company(
                 CAST(ROUND(c.state_taxes * 100, 2) AS DOUBLE) AS sales_tax_percent, c.max_users,
                 c.cloudtalk_access_key, c.cloudtalk_access_secret, c.ringcentral_client_id,
                 c.ringcentral_client_secret, c.ringcentral_jwt, c.ringcentral_server_url,
-                c.qbo_realm_id, c.signwell_api_key,
+                c.qbo_realm_id, c.signwell_api_key, c.raptor_email,
+                COALESCE(c.raptor_password, '') <> '' AS raptor_password_set,
                 COALESCE(c.quickbooks_enabled, 1) <> 0 AS quickbooks_enabled,
                 {LEGACY_SIGNATURE_SWITCH} AS signature_enabled, COALESCE(c.billing_required, 0) <> 0 AS billing_required,
                 {} AS onboarding, {} AS leaderboard
@@ -383,6 +389,12 @@ pub struct CompanyInput {
     #[serde(default)]
     /// `SignWell` API key; edit only.
     pub signwell_api_key: Option<String>,
+    /// Raptor (templator.com) login email; edit only. Empty turns Raptor off.
+    #[serde(default)]
+    pub raptor_email: Option<String>,
+    /// A new Raptor password; edit only. Omit or leave empty to keep it.
+    #[serde(default)]
+    pub raptor_password: Option<String>,
     /// QuickBooks switch; edit only (default on).
     #[serde(default)]
     pub quickbooks_enabled: Option<bool>,
@@ -662,6 +674,26 @@ pub async fn update_company(
         query
             .push(format!(", {column} = "))
             .push_bind(text(value.as_ref()));
+    }
+    // Raptor: only when the form sends it. An empty email turns it off; a new
+    // password is stored encrypted. Projects created from the first save with
+    // both on (`raptor_since`) go to Raptor, older ones never.
+    if let Some(email) = &input.raptor_email {
+        let email = text(Some(email));
+        query.push(", raptor_email = ").push_bind(email.clone());
+        if email.is_none() {
+            query.push(", raptor_password = NULL");
+        } else if let Some(password) = text(input.raptor_password.as_ref()) {
+            let key = common::telephony::ringcentral_auth::env_key()
+                .ok_or_else(|| ApiError::Internal("AES_KEY is not set".into()))?;
+            query.push(", raptor_password = ").push_bind(
+                common::telephony::ringcentral_auth::encrypt(&key, &password),
+            );
+        }
+        query.push(
+            ", raptor_since = IF(COALESCE(raptor_email, '') <> '' AND COALESCE(raptor_password, '') <> '',
+                                 COALESCE(raptor_since, NOW()), NULL)",
+        );
     }
     query
         .push(", quickbooks_enabled = ")

@@ -338,6 +338,12 @@ async fn start_tendlc_checks_job() {
 
 /// Starts the AI promises job without waiting for it: it transcribes calls
 /// and writes messages, which takes longer than a tick waits.
+/// Starts the Raptor job of each new project without waiting for it: Raptor
+/// takes a few seconds per project.
+async fn start_raptor_jobs() {
+    start_api_job("raptor-jobs", "Raptor jobs").await;
+}
+
 async fn start_promises_job() {
     start_api_job("promises", "AI promises").await;
 }
@@ -546,6 +552,7 @@ pub(crate) async fn function_handler(
     start_supplier_files_job().await;
     start_tendlc_checks_job().await;
     start_promises_job().await;
+    start_raptor_jobs().await;
     let call_points_count = match report_job("call-points", process_call_points().await).await {
         Ok(count) => count,
         Err(error) => {
