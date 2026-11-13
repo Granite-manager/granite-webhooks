@@ -111,6 +111,11 @@ static GENERIC_AREA: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*(area\s*#?\s*\d*|countertops?|kitchen\s+countertops?|main)\s*$")
         .expect("regex")
 });
+/// Dishwasher brackets hold no countertop.
+static NOT_SUPPORT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bdw\b|dish\s*washer").expect("regex"));
+static NO_BACKSPLASH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bno\s+(back\s*)?splash").expect("regex"));
 static SEALER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)sealer").expect("regex"));
 static SEAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)seam").expect("regex"));
 static PHANTOM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)phantom").expect("regex"));
@@ -322,9 +327,10 @@ pub fn plan(src: &Source) -> Plan {
         .collect();
     heights.sort_by(f64::total_cmp);
     heights.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-    let backsplash = if !full_height.is_empty() {
+    let texts: Vec<&str> = doc.texts().collect();
+    let backsplash = if !full_height.is_empty() || texts.iter().any(|t| FULL_HEIGHT.is_match(t)) {
         "FH".to_string()
-    } else if heights.is_empty() {
+    } else if heights.is_empty() || texts.iter().any(|t| NO_BACKSPLASH.is_match(t)) {
         "no".to_string()
     } else {
         heights
@@ -340,9 +346,12 @@ pub fn plan(src: &Source) -> Plan {
         "F/S"
     };
     #[allow(clippy::cast_possible_truncation)]
-    let supports = named(&SUPPORTS).iter().fold(0.0, |sum, i| {
-        sum + if i.quantity > 0.0 { i.quantity } else { 1.0 }
-    }) as i64;
+    let supports = named(&SUPPORTS)
+        .iter()
+        .filter(|i| !mentions(i, &NOT_SUPPORT))
+        .fold(0.0, |sum, i| {
+            sum + if i.quantity > 0.0 { i.quantity } else { 1.0 }
+        }) as i64;
     let faucet: Vec<String> = said(&FAUCET)
         .into_iter()
         .filter(|f| !HOLE.is_match(f))
@@ -354,9 +363,9 @@ pub fn plan(src: &Source) -> Plan {
         .iter()
         .any(|i| !mentions(i, &BY_CUSTOMER) && !mentions(i, &NOT_TEAR_OUT));
     let sealer = !named(&SEALER).is_empty();
-    let phantom = items.iter().any(|i| {
-        SEAM.is_match(&i.name) && i.option.as_deref().is_some_and(|o| PHANTOM.is_match(o))
-    });
+    let phantom = items
+        .iter()
+        .any(|i| mentions(i, &SEAM) && mentions(i, &PHANTOM));
     let salesperson = src
         .salesperson
         .and_then(|s| s.split_whitespace().next())
@@ -460,12 +469,13 @@ pub fn plan(src: &Source) -> Plan {
             .iter()
             .filter(|c| areas.iter().any(|a| a.id == c.area_id))
         {
-            for cut in counter
-                .runs
-                .iter()
-                .flat_map(|r| &r.cutouts)
-                .filter(|c| c.kind == CutoutKind::Sink)
-            {
+            for cut in counter.runs.iter().flat_map(|r| &r.cutouts).filter(|c| {
+                c.kind == CutoutKind::Sink
+                    || (c.kind == CutoutKind::Other
+                        && c.sink_model
+                            .as_deref()
+                            .is_some_and(|m| !m.trim().is_empty()))
+            }) {
                 let model = sink_model(cut.sink_model.as_deref(), cut.sink_type, cut.width);
                 match out.iter_mut().find(|c| c.model == model) {
                     Some(found) => found.quantity += 1,
@@ -847,5 +857,39 @@ mod tests {
             sq_ft.contains("(Vanity) ") && sq_ft.ends_with("(Master bath)"),
             "{sq_ft}"
         );
+    }
+
+    #[test]
+    fn rules_from_the_wide_check() {
+        let d = doc(&json!({
+            "counters": [counter("c1", "a1", 96.0, 4.0, &json!([
+                {"id": "o1", "kind": "other", "width": 17, "depth": 13, "sinkModel": "Kohler Caxton vanity sink"},
+            ]))],
+            "texts": [{"id": "t1", "x": 0, "y": 0, "text": "FHBS"}],
+            "items": [
+                {"id": "i1", "kind": "priceList", "name": "Seam Phantom"},
+                {"id": "i2", "kind": "misc", "name": "DW brackets- FREE"},
+            ],
+        }));
+        let job = run(&d, &[], "Liza").jobs.remove(0);
+        assert_eq!(line(&job.notes, "Seam"), Some("Seam:Phantom"));
+        assert_eq!(
+            line(&job.notes, "Supports/corbels"),
+            Some("Supports/corbels:0")
+        );
+        assert_eq!(line(&job.notes, "Backsplash"), Some("Backsplash:FH"));
+        assert_eq!(
+            job.cutouts,
+            vec![Cutout {
+                model: "Kohler Caxton vanity sink".into(),
+                quantity: 1
+            }]
+        );
+        let d = doc(&json!({
+            "counters": [counter("c1", "a1", 96.0, 4.0, &json!([]))],
+            "texts": [{"id": "t1", "x": 0, "y": 0, "text": "no backsplash"}],
+        }));
+        let job = run(&d, &[], "Liza").jobs.remove(0);
+        assert_eq!(line(&job.notes, "Backsplash"), Some("Backsplash:no"));
     }
 }
