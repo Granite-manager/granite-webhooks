@@ -2,7 +2,7 @@
 //! Telnyx messaging profile (inbound texts) and of the texts we send
 //! (delivery status). See `crate::phone::texting`.
 
-use super::{company_for, refused, taken, verify};
+use super::{company_for, taken, verify};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::phone::events;
 use crate::phone::texting;
@@ -48,7 +48,6 @@ const UNKNOWN_STATUS_RETRY_SECS: i64 = 120;
         (status = 200, description = "Taken"),
         (status = 400, description = "Not a messaging event", body = ErrorBody),
         (status = 401, description = "No valid Telnyx signature", body = ErrorBody),
-        (status = 403, description = "An inbound text through a messaging profile that is not the company's", body = ErrorBody),
         (status = 404, description = "No company has this webhook token", body = ErrorBody),
         (status = 409, description = "A status about a text whose send is still being recorded (Telnyx sends it again)", body = ErrorBody),
         (status = 503, description = "Telnyx signatures are not set up on the server (`TELNYX_PUBLIC_KEY`)", body = ErrorBody),
@@ -66,10 +65,12 @@ pub async fn messaging(
     let hook: MessagingWebhook = serde_json::from_slice(&body)
         .map_err(|_| ApiError::BadRequest("Not a Telnyx messaging event".into()))?;
     let event = hook.data;
-    // An inbound text must come through the company's own profile. A status
-    // report is only taken for a text the company sent (its Telnyx id), so
-    // it is kept whatever profile Telnyx names: a refused one left a failed
-    // text looking sent.
+    // An inbound text belongs to the company whose messaging profile it came
+    // through. One through another profile is never refused (that lost it):
+    // it goes to the company with that profile, else stays with this one.
+    // A status report is only taken for a text the company sent (its Telnyx
+    // id), whatever profile Telnyx names.
+    let mut company_id = config.company_id;
     if event.event_type == "message.received"
         && let (Some(ours), Some(theirs)) = (
             config.messaging_profile_id.as_deref(),
@@ -77,15 +78,27 @@ pub async fn messaging(
         )
         && ours != theirs
     {
-        return Err(refused(&config, "messaging", "messaging profile"));
+        let owner: Option<i32> = sqlx::query_scalar(
+            "SELECT company_id FROM telnyx_company_config WHERE messaging_profile_id = ? LIMIT 1",
+        )
+        .bind(theirs)
+        .fetch_optional(&state.pool)
+        .await?;
+        tracing::warn!(
+            company_id = config.company_id,
+            owner,
+            "Telnyx text through another messaging profile: kept"
+        );
+        if let Some(owner) = owner {
+            company_id = owner;
+        }
     }
     let occurred_at = events::parse_time(event.occurred_at.as_deref());
     match event.event_type.as_str() {
         "message.received" => {
-            let received =
-                texting::receive(&state, config.company_id, &event.payload, occurred_at).await;
+            let received = texting::receive(&state, company_id, &event.payload, occurred_at).await;
             if let Err(err) = &received {
-                super::failed("messaging", config.company_id, err);
+                super::failed("messaging", company_id, err);
             }
             received?;
         }

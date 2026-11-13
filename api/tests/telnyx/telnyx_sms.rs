@@ -259,7 +259,8 @@ async fn the_messaging_webhook_needs_telnyx_signature(pool: MySqlPool) {
     mangled.assert_status(StatusCode::UNAUTHORIZED);
     assert!(rows(&pool).await.is_empty());
 
-    // An unknown token, and another company's messaging profile.
+    // An unknown token is refused; a text through a messaging profile no
+    // company has is still kept (by this company).
     let unknown = setup
         .server
         .post("/v1/webhooks/telnyx/nobody/messaging")
@@ -268,13 +269,78 @@ async fn the_messaging_webhook_needs_telnyx_signature(pool: MySqlPool) {
     unknown.assert_status(StatusCode::NOT_FOUND);
     let mut other = event.clone();
     other["data"]["payload"]["messaging_profile_id"] = json!("profile-999");
-    setup
-        .hook(&other)
-        .await
-        .assert_status(StatusCode::FORBIDDEN);
+    setup.hook(&other).await.assert_status_ok();
+    assert_eq!(rows(&pool).await.len(), 1);
 
     setup.hook(&event).await.assert_status_ok();
     assert_eq!(rows(&pool).await.len(), 1);
+}
+
+#[test_db::test(seed)]
+async fn every_inbound_text_is_kept(pool: MySqlPool) {
+    let setup = setup(&pool).await;
+    // To a number the company no longer lists: kept, on no line.
+    setup
+        .hook(&inbound(
+            "m-gone",
+            "+13175550100",
+            "+13175550199",
+            "Still there?",
+            json!([]),
+        ))
+        .await
+        .assert_status_ok();
+    // From a phone outside the US and Canada: kept.
+    setup
+        .hook(&inbound(
+            "m-abroad",
+            "+447700900123",
+            "+13175550151",
+            "Hello from London",
+            json!([]),
+        ))
+        .await
+        .assert_status_ok();
+    let kept: Vec<(String, Option<String>, Option<String>, Option<i32>)> = rows(&pool)
+        .await
+        .into_iter()
+        .map(|row| (row.text, row.sender10, row.recipient10, row.number_id))
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            (
+                "Still there?".into(),
+                Some("3175550100".into()),
+                Some("3175550199".into()),
+                None
+            ),
+            (
+                "Hello from London".into(),
+                Some("7700900123".into()),
+                Some("3175550151".into()),
+                Some(9701)
+            ),
+        ]
+    );
+
+    // Through another company's messaging profile: kept by that company.
+    enable_calling(&pool, 101, "messaging_profile_id = 'profile-101'").await;
+    let mut theirs = inbound(
+        "m-theirs",
+        "+13175550100",
+        "+13175550151",
+        "For 101",
+        json!([]),
+    );
+    theirs["data"]["payload"]["messaging_profile_id"] = json!("profile-101");
+    setup.hook(&theirs).await.assert_status_ok();
+    let company: Option<i32> =
+        sqlx::query_scalar("SELECT company_id FROM telnyx_sms WHERE telnyx_id = 'm-theirs'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(company, Some(101));
 }
 
 #[test_db::test(seed)]
@@ -332,7 +398,7 @@ async fn an_inbound_text_is_stored_once_and_stops_flows_and_moves_the_deal(pool:
         .unwrap();
     assert_eq!(list, 101, "Bob's deal left the first stage");
 
-    // A text to a number that is not the company's is ignored.
+    // A text to a number that is not the company's is still kept, on no line.
     setup
         .hook(&inbound(
             "in-x",
@@ -343,7 +409,9 @@ async fn an_inbound_text_is_stored_once_and_stops_flows_and_moves_the_deal(pool:
         ))
         .await
         .assert_status_ok();
-    assert_eq!(rows(&pool).await.len(), 1);
+    let rows = rows(&pool).await;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[1].number_id, None);
 }
 
 #[test_db::test(seed)]
