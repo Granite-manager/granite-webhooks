@@ -84,7 +84,7 @@ async fn fake_raptor() -> (String, Fake) {
             "/company/co-1/jobs",
             get(|| async {
                 Json(json!({ "jobs": [
-                    { "id": "old", "name": "Someone Else Kitchen", "reference": "#341", "status": "Active" },
+                    { "id": "old", "name": "Doe Jane Kitchen", "reference": "#341", "status": "Active" },
                     { "id": "gone", "name": "Builder Erin Kitchen", "reference": "#342", "status": "Deleted" },
                 ] }))
             }),
@@ -152,7 +152,7 @@ async fn sold_project(pool: &MySqlPool) -> i32 {
     sql(
         pool,
         r#"UPDATE company SET auto_project = 1 WHERE id = 100;
-           UPDATE customers SET phone = '317-555-0100' WHERE id = 1004;
+           UPDATE customers SET phone = '317-555-0100', company_name = NULL WHERE id = 1004;
            INSERT INTO quotes (id, customer_id, deal_id, quote_name, quote_type, created_date, sales_rep,
                                company_id, salesperson_id, created_by, status, address, current_revision)
            VALUES (9901, 1004, 8002, 'Erin countertops', 'quote', NOW(), 'Rita Rep', 100, 100, 100,
@@ -365,7 +365,7 @@ async fn older_projects_and_jobs_made_by_hand_are_left_alone(pool: MySqlPool) {
     connect_raptor(&pool, "secret").await;
     sql(
         &pool,
-        "UPDATE customers SET name = 'Someone Else' WHERE id = 1004",
+        "UPDATE customers SET name = 'Jane Doe' WHERE id = 1004",
     )
     .await;
     let summary = run(&pool, Duration::from_secs(60), &config(&url))
