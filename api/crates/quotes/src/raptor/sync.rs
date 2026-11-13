@@ -5,9 +5,16 @@
 //! are made and filled, and the row says `done` with the jobs, or `failed`
 //! with the reason; a failed project is tried again 10 minutes later, three
 //! times in all, and carries on from the jobs it already made.
+//!
+//! After that the jobs follow the CRM for 60 days: every 15 minutes a
+//! project's plan is made again and compared with what was sent. A changed
+//! name renames the job, changed customer / address / materials / sinks are
+//! written again, and changed note lines replace those lines in the "Notes"
+//! note; everything the office typed itself stays. A new full-height area
+//! gets its own job. Jobs the office made or deleted are left alone.
 
-use super::client::{API, ListJob, Raptor, next_number};
-use super::plan::{self, Plan, Source};
+use super::client::{API, ListJob, Parts, Raptor, next_number};
+use super::plan::{self, Address, Cutout, Job, Material, Plan, Source};
 use crate::quote_pricing::doc::QuoteDoc;
 use common::telephony::ringcentral_auth::{decrypt, env_key};
 use serde::{Deserialize, Serialize};
@@ -15,6 +22,10 @@ use sqlx::{MySqlPool, Row};
 use std::time::{Duration, Instant};
 
 const MAX_ATTEMPTS: i32 = 3;
+/// How long after the project its jobs follow the CRM.
+const FOLLOW_DAYS: i32 = 60;
+/// How often a project's jobs are compared with the CRM.
+const FOLLOW_EVERY_MINUTES: i32 = 15;
 
 /// Where Raptor is and the key that opens the saved passwords.
 pub struct Config {
@@ -39,6 +50,8 @@ pub struct RunSummary {
     pub done: u32,
     /// Projects that failed this time.
     pub failed: u32,
+    /// Projects whose jobs were brought up to the CRM.
+    pub updated: u32,
 }
 
 /// One Raptor job made (or found) for a project.
@@ -54,6 +67,45 @@ pub struct JobRecord {
     pub filled: bool,
     #[serde(default)]
     pub noted: bool,
+    /// The "Notes" note made.
+    #[serde(default)]
+    pub note_id: Option<String>,
+    /// What Raptor was last given for this job.
+    #[serde(default)]
+    pub sent: Option<Sent>,
+}
+
+/// What a job was given, to see later what the CRM changed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Sent {
+    pub name: String,
+    pub customer_name: String,
+    pub phone: String,
+    pub address: Address,
+    pub materials: Vec<Material>,
+    pub cutouts: Vec<Cutout>,
+    pub notes: String,
+}
+
+impl Sent {
+    pub fn of(plan: &Plan, job: &Job) -> Self {
+        Self {
+            name: job.name.clone(),
+            customer_name: plan.customer_name.clone(),
+            phone: plan.phone.clone(),
+            address: plan.address.clone(),
+            materials: job.materials.clone(),
+            cutouts: job.cutouts.clone(),
+            notes: job.notes.clone(),
+        }
+    }
+}
+
+/// A project has one main job and maybe a full-height ("FHBS") one; a job
+/// keeps its kind when it is renamed.
+fn same_kind(a: &str, b: &str) -> bool {
+    let fhbs = |name: &str| name.trim_end().ends_with("FHBS");
+    fhbs(a) == fhbs(b)
 }
 
 struct Login {
@@ -285,7 +337,7 @@ async fn send(
     done: &mut Vec<JobRecord>,
 ) -> Result<(), String> {
     for job in &plan.jobs {
-        let index = if let Some(index) = done.iter().position(|r| r.name == job.name) {
+        let index = if let Some(index) = done.iter().position(|r| same_kind(&r.name, &job.name)) {
             index
         } else {
             if let Some(found) = known
@@ -326,62 +378,270 @@ async fn send(
             record.filled = true;
         }
         if !record.noted {
-            raptor.add_note(&record.id, &job.notes).await?;
+            record.note_id = Some(raptor.add_note(&record.id, &job.notes).await?);
             record.noted = true;
+        }
+        if record.sent.is_none() {
+            record.sent = Some(Sent::of(plan, job));
         }
     }
     Ok(())
 }
 
-/// Sends the due projects of every company with a Raptor login, until
-/// `budget` is spent.
+/// Whether `done` needs Raptor to match `plan`. A job sent before jobs were
+/// followed takes the plan as what it was given.
+fn behind(plan: &Plan, done: &mut [JobRecord]) -> bool {
+    let mut behind = false;
+    for job in &plan.jobs {
+        match done.iter_mut().find(|r| same_kind(&r.name, &job.name)) {
+            None => behind = true,
+            Some(r) if r.existing => {}
+            Some(r) if !r.filled || !r.noted => behind = true,
+            Some(r) => {
+                let now = Sent::of(plan, job);
+                match &r.sent {
+                    None => r.sent = Some(now),
+                    Some(sent) => behind |= *sent != now,
+                }
+            }
+        }
+    }
+    behind
+}
+
+/// Brings one job from what it was given to what the CRM says now.
+async fn update(
+    raptor: &Raptor,
+    plan: &Plan,
+    job: &Job,
+    record: &mut JobRecord,
+) -> Result<(), String> {
+    let now = Sent::of(plan, job);
+    let Some(old) = record.sent.clone() else {
+        record.sent = Some(now);
+        return Ok(());
+    };
+    if old == now {
+        return Ok(());
+    }
+    let parts = Parts {
+        customer: old.customer_name != now.customer_name || old.phone != now.phone,
+        address: old.address != now.address,
+        materials: old.materials != now.materials,
+        cutouts: old.cutouts != now.cutouts,
+    };
+    let rename = (old.name != now.name).then_some(now.name.as_str());
+    if rename.is_some() || parts.any() {
+        raptor
+            .update_job(&record.id, rename, plan, job, parts)
+            .await?;
+    }
+    if old.notes != now.notes {
+        raptor
+            .update_note(
+                &record.id,
+                record.note_id.as_deref(),
+                &old.notes,
+                &now.notes,
+            )
+            .await?;
+    }
+    record.name.clone_from(&now.name);
+    record.sent = Some(now);
+    Ok(())
+}
+
+/// Makes what is missing, then updates each job of ours Raptor still has.
+async fn follow(
+    raptor: &Raptor,
+    plan: &Plan,
+    known: &mut Vec<ListJob>,
+    done: &mut Vec<JobRecord>,
+) -> Result<(), String> {
+    send(raptor, plan, known, done).await?;
+    for job in &plan.jobs {
+        let Some(record) = done.iter_mut().find(|r| same_kind(&r.name, &job.name)) else {
+            continue;
+        };
+        let deleted = known.iter().any(|k| k.id == record.id && !k.active());
+        if !record.existing && !deleted {
+            update(raptor, plan, job, record).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Sent projects of `company_id` whose jobs are due a look.
+async fn followed_projects(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<i32>> {
+    sqlx::query_scalar(
+        "SELECT r.project_id FROM project_raptor_jobs r JOIN projects p ON p.id = r.project_id
+          WHERE r.company_id = ? AND r.status = 'done'
+            AND p.cancelled_at IS NULL AND p.archived_at IS NULL
+            AND p.created_at > NOW() - INTERVAL ? DAY
+            AND r.updated_at < NOW() - INTERVAL ? MINUTE
+          ORDER BY r.updated_at
+          LIMIT 25",
+    )
+    .bind(company_id)
+    .bind(FOLLOW_DAYS)
+    .bind(FOLLOW_EVERY_MINUTES)
+    .fetch_all(pool)
+    .await
+}
+
+/// Takes a sent project for this look; its jobs, or `None` when another run
+/// has it.
+async fn claim_followed(pool: &MySqlPool, project_id: i32) -> sqlx::Result<Option<Vec<JobRecord>>> {
+    let taken = sqlx::query(
+        "UPDATE project_raptor_jobs SET updated_at = NOW()
+          WHERE project_id = ? AND status = 'done' AND updated_at < NOW() - INTERVAL ? MINUTE",
+    )
+    .bind(project_id)
+    .bind(FOLLOW_EVERY_MINUTES)
+    .execute(pool)
+    .await?;
+    if taken.rows_affected() != 1 {
+        return Ok(None);
+    }
+    let jobs: Option<String> = sqlx::query_scalar(
+        "SELECT CAST(jobs AS CHAR) FROM project_raptor_jobs WHERE project_id = ?",
+    )
+    .bind(project_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(Some(
+        jobs.and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default(),
+    ))
+}
+
+/// Saves a followed project's jobs; it stays `done`, with the error if any.
+async fn save_followed(
+    pool: &MySqlPool,
+    project_id: i32,
+    jobs: &[JobRecord],
+    error: Option<&str>,
+) -> sqlx::Result<()> {
+    let error: Option<String> = error.map(|e| e.chars().take(1000).collect());
+    sqlx::query("UPDATE project_raptor_jobs SET jobs = ?, error = ? WHERE project_id = ?")
+        .bind(serde_json::to_string(jobs).unwrap_or_default())
+        .bind(error)
+        .bind(project_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// A signed-in Raptor and its job list.
+struct Session {
+    raptor: Raptor,
+    known: Vec<ListJob>,
+}
+
+async fn open(config: &Config, login: &Login) -> Result<Session, String> {
+    let http = common::http::client();
+    let raptor = Raptor::login(http, &config.api_url, &login.email, &login.password).await?;
+    let known = raptor.jobs().await?;
+    Ok(Session { raptor, known })
+}
+
+/// Sends the due projects of every company with a Raptor login and keeps
+/// the sent ones up to the CRM, until `budget` is spent.
 pub async fn run(pool: &MySqlPool, budget: Duration, config: &Config) -> sqlx::Result<RunSummary> {
     let started = Instant::now();
     let mut summary = RunSummary::default();
     for login in logins(pool, config.key.as_ref()).await? {
+        let mut session: Option<Session> = None;
         let due = due_projects(pool, login.company_id).await?;
-        if due.is_empty() {
-            continue;
+        if !due.is_empty() {
+            match open(config, &login).await {
+                Ok(open) => session = Some(open),
+                Err(error) => {
+                    lambda_http::tracing::warn!(company_id = login.company_id, %error, "Raptor login failed");
+                    continue;
+                }
+            }
         }
-        let http = common::http::client();
-        let raptor = match Raptor::login(http, &config.api_url, &login.email, &login.password).await
-        {
-            Ok(raptor) => raptor,
-            Err(error) => {
-                lambda_http::tracing::warn!(company_id = login.company_id, %error, "Raptor login failed");
-                continue;
+        if let Some(Session { raptor, known }) = session.as_mut() {
+            for project_id in due {
+                if started.elapsed() > budget {
+                    return Ok(summary);
+                }
+                new_project(pool, &login, project_id, raptor, known, &mut summary).await?;
             }
-        };
-        let mut known = match raptor.jobs().await {
-            Ok(jobs) => jobs,
-            Err(error) => {
-                lambda_http::tracing::warn!(company_id = login.company_id, %error, "Raptor job list failed");
-                continue;
-            }
-        };
-        for project_id in due {
+        }
+        for project_id in followed_projects(pool, login.company_id).await? {
             if started.elapsed() > budget {
                 return Ok(summary);
             }
-            let Some(mut done) = claim(pool, project_id, login.company_id).await? else {
+            let Some(mut done) = claim_followed(pool, project_id).await? else {
                 continue;
             };
-            let result = match load_plan(pool, project_id, login.company_id).await? {
-                Ok(plan) => send(&raptor, &plan, &mut known, &mut done).await,
-                Err(why) => Err(why),
+            let Ok(plan) = load_plan(pool, project_id, login.company_id).await? else {
+                continue;
             };
-            match result {
-                Ok(()) => {
-                    finish(pool, project_id, &done, None).await?;
-                    summary.done += 1;
+            if !behind(&plan, &mut done) {
+                save_followed(pool, project_id, &done, None).await?;
+                continue;
+            }
+            if session.is_none() {
+                match open(config, &login).await {
+                    Ok(open) => session = Some(open),
+                    Err(error) => {
+                        lambda_http::tracing::warn!(company_id = login.company_id, %error, "Raptor login failed");
+                        save_followed(pool, project_id, &done, Some(&error)).await?;
+                        break;
+                    }
                 }
+            }
+            let Some(Session { raptor, known }) = session.as_mut() else {
+                break;
+            };
+            let result = follow(raptor, &plan, known, &mut done).await;
+            save_followed(
+                pool,
+                project_id,
+                &done,
+                result.as_ref().err().map(String::as_str),
+            )
+            .await?;
+            match result {
+                Ok(()) => summary.updated += 1,
                 Err(error) => {
-                    lambda_http::tracing::warn!(project_id, %error, "Raptor job failed");
-                    finish(pool, project_id, &done, Some(&error)).await?;
-                    summary.failed += 1;
+                    lambda_http::tracing::warn!(project_id, %error, "Raptor job update failed");
                 }
             }
         }
     }
     Ok(summary)
+}
+
+/// Makes a new project's Raptor jobs.
+async fn new_project(
+    pool: &MySqlPool,
+    login: &Login,
+    project_id: i32,
+    raptor: &Raptor,
+    known: &mut Vec<ListJob>,
+    summary: &mut RunSummary,
+) -> sqlx::Result<()> {
+    let Some(mut done) = claim(pool, project_id, login.company_id).await? else {
+        return Ok(());
+    };
+    let result = match load_plan(pool, project_id, login.company_id).await? {
+        Ok(plan) => send(raptor, &plan, known, &mut done).await,
+        Err(why) => Err(why),
+    };
+    match result {
+        Ok(()) => {
+            finish(pool, project_id, &done, None).await?;
+            summary.done += 1;
+        }
+        Err(error) => {
+            lambda_http::tracing::warn!(project_id, %error, "Raptor job failed");
+            finish(pool, project_id, &done, Some(&error)).await?;
+            summary.failed += 1;
+        }
+    }
+    Ok(())
 }

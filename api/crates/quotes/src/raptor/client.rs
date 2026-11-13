@@ -10,11 +10,14 @@
 //! - `POST /job/{work}/new` → a new job; `GET /job/{id}` → its entities, of
 //!   which type 404 holds customer, address, materials and cutouts and is
 //!   saved whole with `PUT /entity/{id}`
-//! - `POST /job/{id}/note` → a note
+//! - `POST /job/{id}/note` → a note; `GET /job/{id}/note` → its notes
+//! - `PUT /entity/{id}` also saves a note (type 410) or renames the job
+//!   itself (type 400), as tried on a TEST job on 2026-11-13
 
 use super::plan::{Job, Plan};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// Raptor's API; `RAPTOR_API_URL` may point elsewhere.
@@ -23,6 +26,29 @@ pub const API: &str = "https://api.templator.com/api/web";
 const PENDING_MEASURE: i64 = 101;
 
 pub type Result<T> = std::result::Result<T, String>;
+
+/// Which parts of Job Info to write.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct Parts {
+    pub customer: bool,
+    pub address: bool,
+    pub materials: bool,
+    pub cutouts: bool,
+}
+
+impl Parts {
+    pub const ALL: Self = Self {
+        customer: true,
+        address: true,
+        materials: true,
+        cutouts: true,
+    };
+
+    pub const fn any(self) -> bool {
+        self.customer || self.address || self.materials || self.cutouts
+    }
+}
 
 /// A job in Raptor's list.
 #[derive(Debug, Clone, Deserialize)]
@@ -200,30 +226,85 @@ impl Raptor {
 
     /// Job Info, Material and Cutout, saved like the job's Details page.
     pub async fn fill(&self, job_id: &str, plan: &Plan, job: &Job) -> Result<()> {
+        self.update_job(job_id, None, plan, job, Parts::ALL).await
+    }
+
+    /// Renames the job (`name`) and writes `parts` of its Job Info; the rest
+    /// stays as the office left it.
+    pub async fn update_job(
+        &self,
+        job_id: &str,
+        name: Option<&str>,
+        plan: &Plan,
+        job: &Job,
+        parts: Parts,
+    ) -> Result<()> {
         let entities = self.get(&format!("/job/{job_id}?activeOnly=True")).await?;
-        let mut info = entities
-            .as_array()
-            .and_then(|list| list.iter().find(|e| e["entityTypeId"] == 404))
-            .cloned()
-            .ok_or("Raptor job has no Job Info")?;
-        let id = info["id"].as_str().unwrap_or_default().to_string();
-        info_attributes(&mut info["attributes"], plan, job, &self.edge_set);
-        self.send(
-            self.http
-                .put(format!("{}/entity/{id}", self.base))
-                .json(&info),
-            "save job info",
-        )
-        .await?;
+        let find = |kind: i64| {
+            entities
+                .as_array()
+                .and_then(|list| list.iter().find(|e| e["entityTypeId"] == kind))
+                .cloned()
+        };
+        if let Some(name) = name {
+            let mut entity = find(400).ok_or("Raptor job is gone")?;
+            entity["name"] = json!(name);
+            self.put_entity(&entity, "rename job").await?;
+        }
+        if parts.any() {
+            let mut info = find(404).ok_or("Raptor job has no Job Info")?;
+            info_attributes(&mut info["attributes"], plan, job, &self.edge_set, parts);
+            self.put_entity(&info, "save job info").await?;
+        }
         Ok(())
     }
 
-    /// The "Notes" note, at Pending Measure like the office's.
-    pub async fn add_note(&self, job_id: &str, body: &str) -> Result<()> {
+    async fn put_entity(&self, entity: &Value, what: &str) -> Result<Value> {
+        let id = entity["id"].as_str().unwrap_or_default();
+        self.send(
+            self.http
+                .put(format!("{}/entity/{id}", self.base))
+                .json(entity),
+            what,
+        )
+        .await
+    }
+
+    /// Puts the lines that changed from `old` to `new` into the job's "Notes"
+    /// note (`note_id`, else the first one titled "Notes"); the office's own
+    /// lines stay. Nothing when the office deleted the note.
+    pub async fn update_note(
+        &self,
+        job_id: &str,
+        note_id: Option<&str>,
+        old: &str,
+        new: &str,
+    ) -> Result<()> {
+        let notes = self.get(&format!("/job/{job_id}/note")).await?;
+        let list = notes.as_array().cloned().unwrap_or_default();
+        let found = note_id
+            .and_then(|id| list.iter().find(|n| n["id"] == id))
+            .or_else(|| list.iter().find(|n| n["attributes"]["title"] == "Notes"));
+        let Some(mut note) = found.cloned() else {
+            return Ok(());
+        };
+        let body = note["attributes"]["body"].as_str().unwrap_or_default();
+        let merged = merge_note(body, old, new);
+        if merged == body {
+            return Ok(());
+        }
+        note["attributes"]["body"] = json!(merged);
+        self.put_entity(&note, "save note").await?;
+        Ok(())
+    }
+
+    /// The "Notes" note, at Pending Measure like the office's; its id.
+    pub async fn add_note(&self, job_id: &str, body: &str) -> Result<String> {
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let zero = "00000000-0000-0000-0000-000000000000";
+        let id = uuid::Uuid::new_v4().to_string();
         let note = json!({
-            "id": uuid::Uuid::new_v4().to_string(),
+            "id": id,
             "entityTypeId": 410,
             "companyId": null,
             "parentId": zero,
@@ -246,8 +327,54 @@ impl Raptor {
             "add note",
         )
         .await?;
-        Ok(())
+        Ok(id)
     }
+}
+
+/// A note line's label, "10-year sealer" and "10 year sealer" alike.
+fn label(line: &str) -> Option<String> {
+    let (label, _) = line.split_once(':')?;
+    let label = label.trim().to_lowercase().replace("10-year", "10 year");
+    (!label.is_empty()).then_some(label)
+}
+
+fn value(line: &str) -> &str {
+    line.split_once(':').map_or("", |(_, v)| v.trim())
+}
+
+/// `current` with each line whose value went from `old` to `new` replaced
+/// (or added after the last line); every other line as it is.
+pub fn merge_note(current: &str, old: &str, new: &str) -> String {
+    let before: HashMap<String, &str> = old
+        .lines()
+        .filter_map(|l| Some((label(l)?, value(l))))
+        .collect();
+    let mut lines: Vec<String> = current
+        .replace("\r\n", "\n")
+        .split('\n')
+        .map(String::from)
+        .collect();
+    for line in new.lines() {
+        let Some(key) = label(line) else {
+            continue;
+        };
+        if before.get(&key).copied().unwrap_or_default() == value(line) {
+            continue;
+        }
+        if let Some(at) = lines
+            .iter()
+            .position(|l| label(l).as_deref() == Some(key.as_str()))
+        {
+            lines[at] = line.to_string();
+        } else {
+            let end = lines
+                .iter()
+                .rposition(|l| !l.trim().is_empty())
+                .map_or(0, |i| i + 1);
+            lines.insert(end, line.to_string());
+        }
+    }
+    lines.join("\n")
 }
 
 /// The next "#N" after every numbered job, deleted ones too.
@@ -277,12 +404,30 @@ fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// Writes the plan into a job's Job Info attributes: customer, address,
-/// materials and cutouts. Anything else Raptor keeps there stays.
-pub fn info_attributes(attributes: &mut Value, plan: &Plan, job: &Job, edge_set: &Value) {
+/// Writes the plan's `parts` into a job's Job Info attributes: customer,
+/// address, materials and cutouts. Anything else Raptor keeps there stays.
+pub fn info_attributes(
+    attributes: &mut Value,
+    plan: &Plan,
+    job: &Job,
+    edge_set: &Value,
+    parts: Parts,
+) {
     if !attributes.is_object() {
         *attributes = json!({});
     }
+    if parts.customer {
+        customer_attributes(attributes, plan);
+    }
+    if parts.address {
+        address_attributes(attributes, plan);
+    }
+    if parts.materials || parts.cutouts {
+        category_attributes(attributes, job, edge_set, parts);
+    }
+}
+
+fn customer_attributes(attributes: &mut Value, plan: &Plan) {
     let customer = &mut attributes["customer"];
     if !customer.is_object() {
         *customer = json!({ "name": "Customer", "id": new_id(), "properties": {} });
@@ -292,6 +437,9 @@ pub fn info_attributes(attributes: &mut Value, plan: &Plan, job: &Job, edge_set:
     if !customer["properties"]["email"].is_object() {
         customer["properties"]["email"] = typed("Email", json!(""));
     }
+}
+
+fn address_attributes(attributes: &mut Value, plan: &Plan) {
     let job_info = &mut attributes["jobInfo"];
     if !job_info.is_object() {
         *job_info = json!({ "name": "JobInfo", "id": new_id(), "properties": {} });
@@ -304,6 +452,10 @@ pub fn info_attributes(attributes: &mut Value, plan: &Plan, job: &Job, edge_set:
             "region": a.state, "postalCode": a.zip, "country": "USA", "isValidAddress": true,
         }),
     );
+}
+
+#[allow(clippy::too_many_lines)]
+fn category_attributes(attributes: &mut Value, job: &Job, edge_set: &Value, parts: Parts) {
     let materials: Vec<Value> = job
         .materials
         .iter()
@@ -364,10 +516,11 @@ pub fn info_attributes(attributes: &mut Value, plan: &Plan, job: &Job, edge_set:
         attributes["categories"] = json!({});
     }
     let categories = &mut attributes["categories"];
-    if !materials.is_empty() {
+    // An empty list only replaces a list that is there.
+    if parts.materials && (!materials.is_empty() || categories.get("material").is_some()) {
         categories["material"] = Value::Array(materials);
     }
-    if !cutouts.is_empty() {
+    if parts.cutouts && (!cutouts.is_empty() || categories.get("cutout").is_some()) {
         categories["cutout"] = Value::Array(cutouts);
     }
 }
@@ -435,7 +588,7 @@ mod tests {
             "jobInfo": {"name": "JobInfo", "id": "j", "properties": {"jobByDate": {"type": "Properties", "value": {}}}},
             "categories": {},
         });
-        info_attributes(&mut attributes, &plan, &job, &json!("set-1"));
+        info_attributes(&mut attributes, &plan, &job, &json!("set-1"), Parts::ALL);
         assert_eq!(attributes["account"]["id"], "a");
         assert_eq!(attributes["customer"]["id"], "c");
         assert_eq!(
@@ -460,5 +613,41 @@ mod tests {
         let cutout = &attributes["categories"]["cutout"][0]["properties"]["cutoutType"]["value"];
         assert_eq!(cutout["model"]["value"], "30\" Farmer Sink Cutout");
         assert_eq!(cutout["quantity"]["value"], 1);
+        // Only the parts asked for.
+        let mut attributes = json!({"categories": {"material": [{"id": "m"}]}});
+        let parts = Parts {
+            cutouts: true,
+            ..Parts::default()
+        };
+        info_attributes(&mut attributes, &plan, &job, &json!("set-1"), parts);
+        assert_eq!(attributes["categories"]["material"][0]["id"], "m");
+        assert!(attributes.get("customer").is_none());
+        assert_eq!(
+            attributes["categories"]["cutout"].as_array().map(Vec::len),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_note_keeps_the_office_lines() {
+        let old =
+            "Floor:\nBacksplash:4\"\nSeam:STD\nAdditional notes:\nSalesperson:Liza\nLayout:\n";
+        let new =
+            "Floor:\nBacksplash:FH\nSeam:STD\nAdditional notes:\nSalesperson:Liza\nLayout:yes\n";
+        let current = "Floor:2nd\nBacksplash:4\"\nSeam:Phantom\nAdditional notes:\ncall first\nSalesperson:Liza\n\n";
+        assert_eq!(
+            merge_note(current, old, new),
+            "Floor:2nd\nBacksplash:FH\nSeam:Phantom\nAdditional notes:\ncall first\nSalesperson:Liza\nLayout:yes\n\n"
+        );
+        assert_eq!(merge_note(current, old, old), current);
+        // The short pick-up note spells it "10-year sealer".
+        assert_eq!(
+            merge_note(
+                "10-year sealer:Yes\n",
+                "10 year sealer:Yes\n",
+                "10-year sealer:Yes\n"
+            ),
+            "10-year sealer:Yes\n"
+        );
     }
 }

@@ -23,6 +23,8 @@ struct Fake {
     calls: Arc<Mutex<Vec<(String, String, Value)>>>,
     next_job: Arc<AtomicU32>,
     note_fails: Arc<AtomicBool>,
+    /// The notes Raptor holds, by job.
+    notes: Arc<Mutex<Vec<(String, Value)>>>,
 }
 
 impl Fake {
@@ -116,6 +118,11 @@ async fn fake_raptor() -> (String, Fake) {
             "/entity/{id}",
             put(
                 |State(fake): State<Fake>, Path(id): Path<String>, Json(body): Json<Value>| async move {
+                    for (_, note) in fake.notes.lock().unwrap().iter_mut() {
+                        if note["id"] == id.as_str() {
+                            *note = body.clone();
+                        }
+                    }
                     fake.log("PUT", format!("/entity/{id}"), body);
                     Json(json!({ "status": "Success" }))
                 },
@@ -128,10 +135,22 @@ async fn fake_raptor() -> (String, Fake) {
                     if fake.note_fails.load(Ordering::SeqCst) {
                         return Err(StatusCode::INTERNAL_SERVER_ERROR);
                     }
+                    fake.notes.lock().unwrap().push((id.clone(), body.clone()));
                     fake.log("POST", format!("/job/{id}/note"), body);
                     Ok(Json(json!({ "status": "Success" })))
                 },
-            ),
+            )
+            .get(|State(fake): State<Fake>, Path(id): Path<String>| async move {
+                let notes: Vec<Value> = fake
+                    .notes
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|(job, _)| *job == id)
+                    .map(|(_, note)| note.clone())
+                    .collect();
+                Json(Value::Array(notes))
+            }),
         )
         .with_state(fake.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -396,4 +415,90 @@ async fn a_wrong_password_uses_no_attempt(pool: MySqlPool) {
             .await
             .unwrap();
     assert_eq!(rows, 0);
+}
+
+/// The next look at the project's jobs is due (15 minutes later).
+async fn later(pool: &MySqlPool, project: i32) {
+    sqlx::query(
+        "UPDATE project_raptor_jobs SET updated_at = NOW() - INTERVAL 20 MINUTE WHERE project_id = ?",
+    )
+    .bind(project)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test_db::test(seed)]
+async fn a_changed_quote_updates_the_job_and_keeps_the_office_lines(pool: MySqlPool) {
+    let project = sold_project(&pool).await;
+    connect_raptor(&pool, "secret").await;
+    let (url, fake) = fake_raptor().await;
+    run(&pool, Duration::from_secs(60), &config(&url))
+        .await
+        .unwrap();
+    assert_eq!(fake.calls("PUT", "/entity/").len(), 1);
+
+    // Nothing changed: nothing is written.
+    later(&pool, project).await;
+    let summary = run(&pool, Duration::from_secs(60), &config(&url))
+        .await
+        .unwrap();
+    assert_eq!(summary.updated, 0);
+    assert_eq!(fake.calls("PUT", "/entity/").len(), 1);
+
+    // The office types a floor; the color changes and the layout is known.
+    {
+        let mut notes = fake.notes.lock().unwrap();
+        let body = notes[0].1["attributes"]["body"]
+            .as_str()
+            .unwrap()
+            .replace("Floor:\n", "Floor:2nd\n");
+        notes[0].1["attributes"]["body"] = json!(body);
+    }
+    sql(
+        &pool,
+        &format!(
+            r#"UPDATE quote_revisions SET drawing_json = JSON_SET(drawing_json, '$.colorOptions[0].byArea.a1.color', 'Statuario')
+                WHERE quote_id = 9901;
+               INSERT INTO project_notes (project_id, company_id, content, created_by)
+               VALUES ({project}, 100, 'Layout yes', 100);"#
+        ),
+    )
+    .await;
+    later(&pool, project).await;
+    let summary = run(&pool, Duration::from_secs(60), &config(&url))
+        .await
+        .unwrap();
+    assert_eq!(summary.updated, 1);
+    assert!(
+        fake.calls("POST", "/job/work/new").len() == 1,
+        "no second job"
+    );
+
+    // Only the materials of Job Info are written again.
+    let saved = fake.calls("PUT", "/entity/info-job-1");
+    assert_eq!(saved.len(), 2);
+    let info = &saved[1].1["attributes"];
+    assert_eq!(
+        info["categories"]["material"][0]["properties"]["color"]["value"],
+        "Statuario"
+    );
+    assert!(info["categories"].get("cutout").is_none());
+    assert_eq!(info["customer"]["properties"], json!({}));
+    assert!(fake.calls("PUT", "/entity/job-1").is_empty(), "same name");
+
+    // The note keeps the office's floor and gets the layout.
+    let notes = fake.notes.lock().unwrap().clone();
+    assert_eq!(notes.len(), 1);
+    let text = notes[0].1["attributes"]["body"].as_str().unwrap();
+    assert!(text.starts_with("Floor:2nd\n"), "{text}");
+    assert!(text.contains("\nLayout:Yes\n"), "{text}");
+
+    // Done once: the next look writes nothing.
+    later(&pool, project).await;
+    let summary = run(&pool, Duration::from_secs(60), &config(&url))
+        .await
+        .unwrap();
+    assert_eq!(summary.updated, 0);
+    assert_eq!(fake.calls("PUT", "/entity/").len(), 3);
 }

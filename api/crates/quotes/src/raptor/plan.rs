@@ -8,6 +8,7 @@
 use crate::quote_pricing::doc::{Area, CutoutKind, ItemKind, QuoteDoc, QuoteItem, SinkType};
 use crate::quote_pricing::takeoff::{RoundedTakeoff, area_takeoff, round_takeoff, round1};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -31,20 +32,20 @@ pub struct Source<'a> {
     pub sq_ft_up: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Material {
     pub brand: String,
     pub color: String,
     pub edge: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cutout {
     pub model: String,
     pub quantity: i64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Address {
     pub street: String,
     pub city: String,
@@ -106,6 +107,9 @@ static NOT_TEAR_OUT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*no\b|\bno\s+existing|\bwall\s*tile|\bbacksplash").expect("regex")
 });
 static CABINET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)cabinet").expect("regex"));
+/// "Customer Provides a sink": the office writes "CP".
+static CUSTOMER_SINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^\s*customer\s+provides?\b").expect("regex"));
 /// Area names that say nothing about the room ("Area #1", "Countertops").
 static GENERIC_AREA: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*(area\s*#?\s*\d*|countertops?|kitchen\s+countertops?|main)\s*$")
@@ -224,6 +228,9 @@ fn inches(v: f64) -> String {
 
 fn sink_model(model: Option<&str>, kind: SinkType, width: f64) -> String {
     if let Some(model) = model.map(str::trim).filter(|m| !m.is_empty()) {
+        if CUSTOMER_SINK.is_match(model) {
+            return "CP".into();
+        }
         return model.to_string();
     }
     let kind = match kind {
@@ -466,13 +473,20 @@ pub fn plan(src: &Source) -> Plan {
         }
         out
     };
+    // Each sink once with its count ("CP x2"); the room after it when the
+    // sinks are in several named rooms ("CP (Kitchen)"), as the office writes.
     let cutouts_for = |areas: &[&Area]| -> Vec<Cutout> {
-        let mut out: Vec<Cutout> = Vec::new();
-        for counter in doc
-            .counters
-            .iter()
-            .filter(|c| areas.iter().any(|a| a.id == c.area_id))
-        {
+        let mut found: Vec<(String, &str, i64)> = Vec::new();
+        for counter in &doc.counters {
+            let Some(area) = areas.iter().find(|a| a.id == counter.area_id) else {
+                continue;
+            };
+            let room = area.name.trim();
+            let room = if GENERIC_AREA.is_match(room) {
+                ""
+            } else {
+                room
+            };
             for cut in counter.runs.iter().flat_map(|r| &r.cutouts).filter(|c| {
                 c.kind == CutoutKind::Sink
                     || (c.kind == CutoutKind::Other
@@ -481,13 +495,34 @@ pub fn plan(src: &Source) -> Plan {
                             .is_some_and(|m| !m.trim().is_empty()))
             }) {
                 let model = sink_model(cut.sink_model.as_deref(), cut.sink_type, cut.width);
-                match out.iter_mut().find(|c| c.model == model) {
-                    Some(found) => found.quantity += 1,
-                    None => out.push(Cutout { model, quantity: 1 }),
+                let count = area.quantity.max(1);
+                match found.iter_mut().find(|(m, r, _)| *m == model && *r == room) {
+                    Some(f) => f.2 += count,
+                    None => found.push((model, room, count)),
                 }
             }
         }
-        out
+        let mut rooms: Vec<&str> = found
+            .iter()
+            .map(|f| f.1)
+            .filter(|r| !r.is_empty())
+            .collect();
+        rooms.sort_unstable();
+        rooms.dedup();
+        let by_room = rooms.len() > 1;
+        found
+            .into_iter()
+            .map(|(model, room, quantity)| {
+                let mut model = model;
+                if quantity > 1 {
+                    model = format!("{model} x{quantity}");
+                }
+                if by_room && !room.is_empty() {
+                    model = format!("{model} ({room})");
+                }
+                Cutout { model, quantity }
+            })
+            .collect()
     };
 
     // A builder's job is "Company (street)", as the office names them; a
@@ -904,5 +939,51 @@ mod tests {
             "items": [{"id": "i1", "kind": "misc", "name": "Black Friday Discount (10% pick up)"}],
         }));
         assert_eq!(run(&d, &[], "Liza").jobs[0].name, "Doe Jane Kitchen");
+    }
+
+    #[test]
+    fn sinks_as_the_office_writes_them() {
+        let d = doc(&json!({
+            "areas": [
+                {"id": "a1", "name": "Kitchen", "quantity": 1},
+                {"id": "a2", "name": "Master bath", "quantity": 2},
+            ],
+            "colorOptions": [{"id": "option-1", "byArea": {
+                "a1": {"product": "Quartz", "color": "Bianco", "edges": ["Flat"]},
+                "a2": {"product": "Quartz", "color": "Bianco", "edges": ["Flat"]},
+            }}],
+            "counters": [
+                counter("c1", "a1", 96.0, 4.0, &json!([sink("s1", Some("Customer Provides a sink - Custom Cut Out"), 30.0, "undermount")])),
+                counter("c2", "a2", 48.0, 4.0, &json!([sink("s2", Some("Rectangular vanity sink"), 18.0, "undermount")])),
+            ],
+        }));
+        let job = run(&d, &[], "Liza").jobs.remove(0);
+        assert_eq!(
+            job.cutouts,
+            vec![
+                Cutout {
+                    model: "CP (Kitchen)".into(),
+                    quantity: 1
+                },
+                Cutout {
+                    model: "Rectangular vanity sink x2 (Master bath)".into(),
+                    quantity: 2
+                },
+            ]
+        );
+        let d = doc(&json!({
+            "counters": [counter("c1", "a1", 96.0, 4.0, &json!([
+                sink("s1", Some("Customer provides"), 30.0, "undermount"),
+                sink("s2", Some("Customer provides"), 30.0, "undermount"),
+            ]))],
+        }));
+        let job = run(&d, &[], "Liza").jobs.remove(0);
+        assert_eq!(
+            job.cutouts,
+            vec![Cutout {
+                model: "CP x2".into(),
+                quantity: 2
+            }]
+        );
     }
 }
