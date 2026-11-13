@@ -116,6 +116,8 @@ static NOT_SUPPORT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bdw\b|dish\s*washer").expect("regex"));
 static NO_BACKSPLASH: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bno\s+(back\s*)?splash").expect("regex"));
+static DISCOUNT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)discount|%|\boff\b").expect("regex"));
 static SEALER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)sealer").expect("regex"));
 static SEAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)seam").expect("regex"));
 static PHANTOM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)phantom").expect("regex"));
@@ -290,9 +292,11 @@ pub fn plan(src: &Source) -> Plan {
         .flat_map(|c| &c.runs)
         .flat_map(|r| &r.cutouts);
     let pick_up = doc.texts().any(|t| PICK_UP.is_match(t))
-        || doc.items.iter().any(|i| {
-            PICK_UP.is_match(&i.name) || i.option.as_deref().is_some_and(|o| PICK_UP.is_match(o))
-        })
+        // "Black Friday Discount (10% pick up)" is a price, not a pick-up.
+        || doc
+            .items
+            .iter()
+            .any(|i| mentions(i, &PICK_UP) && !mentions(i, &DISCOUNT))
         || src.project_notes.iter().any(|n| PICK_UP.is_match(n));
 
     let (full_height, main): (Vec<&Area>, Vec<&Area>) = doc
@@ -891,5 +895,14 @@ mod tests {
         }));
         let job = run(&d, &[], "Liza").jobs.remove(0);
         assert_eq!(line(&job.notes, "Backsplash"), Some("Backsplash:no"));
+    }
+
+    #[test]
+    fn a_pick_up_discount_is_no_pick_up() {
+        let d = doc(&json!({
+            "counters": [counter("c1", "a1", 96.0, 0.0, &json!([]))],
+            "items": [{"id": "i1", "kind": "misc", "name": "Black Friday Discount (10% pick up)"}],
+        }));
+        assert_eq!(run(&d, &[], "Liza").jobs[0].name, "Doe Jane Kitchen");
     }
 }
