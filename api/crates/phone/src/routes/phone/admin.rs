@@ -90,7 +90,7 @@ pub struct AdminNumber {
     /// has it.
     pub scheduling_managers: bool,
     /// The company's Notification number: every automated text goes out
-    /// from it. It is one way: replies are not kept.
+    /// from it. It is one way: a reply lands on the Scheduling Manager's line.
     pub notifications: bool,
 }
 

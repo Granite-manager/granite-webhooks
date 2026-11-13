@@ -15,4 +15,5 @@ mod phone_telnyx_recording;
 mod phone_telnyx_via_cell;
 mod telnyx_10dlc;
 mod telnyx_calls;
+mod telnyx_notification_number;
 mod telnyx_sms;

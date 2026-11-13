@@ -257,8 +257,9 @@ pub async fn manager_seat(
 
 /// How a Scheduling Manager texts what waits for the customer's answer
 /// (confirmations and their follow-ups): on Telnyx from the Scheduling
-/// Manager's line, never the Notification number (it keeps no replies), else
-/// the manager's own line; other providers as `manager_seat`.
+/// Manager's line, else the manager's own line other than the Notification
+/// number, and only with neither from the Notification number (a reply to it
+/// is still kept); other providers as `manager_seat`.
 pub async fn manager_reply_seat(
     pool: &MySqlPool,
     company_id: i32,
@@ -268,14 +269,20 @@ pub async fn manager_reply_seat(
     if provider != SmsProvider::Telnyx {
         return manager_seat(pool, company_id, provider, manager).await;
     }
-    let notification = crate::phone::texting::notification_line(pool, company_id)
-        .await?
-        .map(|line| line.number_id);
+    let notification = crate::phone::texting::notification_line(pool, company_id).await?;
+    let notification_id = notification.as_ref().map(|line| line.number_id);
     let line = match crate::phone::texting::scheduling_line(pool, company_id).await? {
         Some(line) => Some(line),
-        None => crate::phone::texting::user_line(pool, company_id, manager.id)
-            .await?
-            .filter(|line| Some(line.number_id) != notification),
+        None => {
+            // The manager's default line first, then any other of theirs.
+            let default = crate::phone::texting::user_line(pool, company_id, manager.id).await?;
+            let own = crate::phone::texting::own_lines(pool, company_id, manager.id).await?;
+            default
+                .into_iter()
+                .chain(own)
+                .find(|line| Some(line.number_id) != notification_id)
+                .or(notification)
+        }
     };
     Ok(line.map(|line| Seat {
         agent_id: manager.agent_id.clone(),
