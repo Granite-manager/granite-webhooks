@@ -8,6 +8,88 @@ pub const SYSTEM_CALENDARS: [(&str, &str, &str); 3] = [
     ("estimates", "Estimates", "blue"),
 ];
 
+/// The colors a calendar can have, in the order a calendar that needs one
+/// gets the first free one: every color the schedule draws but black.
+/// Templates is always green and Installations always red.
+pub const CALENDAR_COLORS: [&str; 14] = [
+    "green", "red", "blue", "purple", "orange", "teal", "yellow", "pink", "cyan", "indigo", "lime",
+    "slate", "brown", "coral",
+];
+
+/// The color a built-in calendar always has (Templates green, Installations
+/// red); `None` for the others.
+pub fn fixed_color(slug: Option<&str>) -> Option<&'static str> {
+    match slug {
+        Some("templates") => Some("green"),
+        Some("installations") => Some("red"),
+        _ => None,
+    }
+}
+
+/// Each calendar's color so that no two share one (owner, 2026-11-13):
+/// Templates green and Installations red, then in schedule order each other
+/// calendar keeps its color while it is a known one nobody before took, else
+/// takes the first free one. With more calendars than colors the last ones
+/// repeat colors in turn. `calendars` is (id, slug, color).
+pub fn distinct_colors(calendars: &[(i32, Option<String>, String)]) -> Vec<(i32, String)> {
+    let mut taken: Vec<String> = calendars
+        .iter()
+        .filter_map(|(_, slug, _)| fixed_color(slug.as_deref()).map(str::to_string))
+        .collect();
+    let mut out = Vec::with_capacity(calendars.len());
+    let mut spare = 0;
+    for (id, slug, color) in calendars {
+        if let Some(fixed) = fixed_color(slug.as_deref()) {
+            out.push((*id, fixed.to_string()));
+            continue;
+        }
+        let known = CALENDAR_COLORS.contains(&color.as_str());
+        let chosen = if known && !taken.contains(color) {
+            color.clone()
+        } else if let Some(free) = CALENDAR_COLORS
+            .iter()
+            .find(|c| !taken.iter().any(|t| t == *c))
+        {
+            (*free).to_string()
+        } else {
+            let again = CALENDAR_COLORS[2 + spare % (CALENDAR_COLORS.len() - 2)];
+            spare += 1;
+            again.to_string()
+        };
+        taken.push(chosen.clone());
+        out.push((*id, chosen));
+    }
+    out
+}
+
+/// Saves distinct colors on the company's live calendars (see
+/// [`distinct_colors`]); only the calendars whose color changes are written.
+pub async fn ensure_distinct_colors(pool: &MySqlPool, company_id: i32) -> Result<(), sqlx::Error> {
+    let calendars: Vec<(i32, Option<String>, String)> = sqlx::query_as(
+        "SELECT c.id, c.slug, COALESCE(c.color, '') FROM calendars c
+          WHERE c.company_id = ? AND c.deleted_at IS NULL
+          ORDER BY CASE c.slug WHEN 'templates' THEN 1 WHEN 'installations' THEN 2
+                               WHEN 'estimates' THEN 3 ELSE 4 END, c.created_at, c.id",
+    )
+    .bind(company_id)
+    .fetch_all(pool)
+    .await?;
+    for (id, color) in distinct_colors(&calendars) {
+        let before = calendars
+            .iter()
+            .find(|(c, _, _)| *c == id)
+            .map(|(_, _, c)| c);
+        if before != Some(&color) {
+            sqlx::query("UPDATE calendars SET color = ? WHERE id = ?")
+                .bind(&color)
+                .bind(id)
+                .execute(pool)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
 /// Creates missing built-in calendars and restores their names (colors are
 /// the company's choice). Port of `ensureSystemCalendars`.
 pub async fn ensure_system_calendars(
@@ -99,4 +181,37 @@ pub async fn all_calendars(
     .bind(company_id)
     .fetch_all(pool)
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::distinct_colors;
+
+    fn cal(id: i32, slug: Option<&str>, color: &str) -> (i32, Option<String>, String) {
+        (id, slug.map(str::to_string), color.to_string())
+    }
+
+    #[test]
+    fn templates_green_installations_red_and_no_two_alike() {
+        let colors = distinct_colors(&[
+            cal(1, Some("templates"), "blue"),
+            cal(2, Some("installations"), "blue"),
+            cal(3, Some("estimates"), "blue"),
+            cal(4, None, "teal"),
+            cal(5, None, "blue"),
+            cal(6, None, "green"),
+            cal(7, None, "#123456"),
+        ]);
+        let names: Vec<&str> = colors.iter().map(|(_, c)| c.as_str()).collect();
+        assert_eq!(
+            names,
+            ["green", "red", "blue", "teal", "purple", "orange", "yellow"]
+        );
+    }
+
+    #[test]
+    fn a_calendar_keeps_its_own_free_color() {
+        let colors = distinct_colors(&[cal(4, None, "pink"), cal(5, None, "cyan")]);
+        assert_eq!(colors, [(4, "pink".to_string()), (5, "cyan".to_string())]);
+    }
 }

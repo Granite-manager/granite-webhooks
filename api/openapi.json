@@ -20846,7 +20846,7 @@
           "schedule"
         ],
         "summary": "List the calendars on the caller's schedule",
-        "description": "The company's live calendars except those hidden for everyone or from\nthe caller in Admin > Schedule. The built-in Templates, Installations and\nEstimates calendars come first and are created on the fly when a company\nlacks them (so every company has them). With `all=true` (admins), every\nlive calendar, hidden ones too, for Admin > Schedule.",
+        "description": "The company's live calendars except those hidden for everyone or from\nthe caller in Admin > Schedule. The built-in Templates, Installations and\nEstimates calendars come first and are created on the fly when a company\nlacks them (so every company has them). No two calendars of a company\nshare a color: Templates is green, Installations red, and a calendar\nwhose color another one took gets the first free one (saved). With `all=true` (admins), every\nlive calendar, hidden ones too, for Admin > Schedule.",
         "operationId": "list_calendars",
         "parameters": [
           {
@@ -20915,7 +20915,7 @@
           "schedule"
         ],
         "summary": "Add a calendar",
-        "description": "The built-in calendars' names are reserved.",
+        "description": "The built-in calendars' names are reserved. No color picked: the first\ncolor no calendar of the company has; a color another calendar has is\nrefused (two calendars never share a color).",
         "operationId": "create_calendar",
         "requestBody": {
           "content": {
@@ -20939,7 +20939,7 @@
             }
           },
           "400": {
-            "description": "Missing or reserved name, or bad color",
+            "description": "Missing or reserved name, bad color, or a color another calendar has",
             "content": {
               "application/json": {
                 "schema": {
@@ -20992,7 +20992,7 @@
           "schedule"
         ],
         "summary": "Edit a calendar",
-        "description": "Saves the name and color; a built-in calendar only changes color.",
+        "description": "Saves the name and color; a built-in calendar only changes color.\nTemplates is always green and Installations always red, and a color\nanother calendar of the company has is refused.",
         "operationId": "update_calendar",
         "parameters": [
           {
@@ -21021,7 +21021,7 @@
             "description": "Saved"
           },
           "400": {
-            "description": "Missing name or bad color",
+            "description": "Missing name or bad color, a color another calendar has, or a new color for Templates or Installations",
             "content": {
               "application/json": {
                 "schema": {

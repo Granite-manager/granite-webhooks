@@ -165,15 +165,30 @@ async fn admins_manage_calendars(pool: MySqlPool) {
         ("Crew B".into(), "teal".into(), false, false)
     );
 
-    // A built-in calendar keeps its name and cannot be deleted.
-    server
+    // A built-in calendar keeps its name and cannot be deleted; Installations
+    // stays red.
+    let res = server
         .put("/v1/calendars/8710")
         .with_session(sessions::ADMIN)
         .json(&json!({ "name": "Installs", "color": "pink" }))
+        .await;
+    res.assert_status(status(400).unwrap());
+    assert_eq!(res.json::<Value>()["error"], "Installations is always red.");
+    server
+        .put("/v1/calendars/8710")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "Installs", "color": "red" }))
         .await
         .assert_status(status(204).unwrap());
     assert_eq!(row(8710).await.0, "Installations");
-    assert_eq!(row(8710).await.1, "pink");
+    assert_eq!(row(8710).await.1, "red");
+    // Two calendars never share a color.
+    let res = server
+        .put(&format!("/v1/calendars/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "Crew B", "color": "red" }))
+        .await;
+    res.assert_status(status(400).unwrap());
     server
         .delete("/v1/calendars/8710")
         .with_session(sessions::ADMIN)
