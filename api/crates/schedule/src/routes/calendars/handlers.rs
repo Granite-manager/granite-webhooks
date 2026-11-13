@@ -1,4 +1,6 @@
-use super::queries::{all_calendars, ensure_system_calendars, visible_calendars};
+use super::queries::{
+    all_calendars, ensure_distinct_colors, ensure_system_calendars, visible_calendars,
+};
 use super::schemas::{Calendar, HiddenUser};
 use crate::auth::{AdminUser, ShopOrEmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -23,7 +25,9 @@ pub struct ListQuery {
 /// The company's live calendars except those hidden for everyone or from
 /// the caller in Admin > Schedule. The built-in Templates, Installations and
 /// Estimates calendars come first and are created on the fly when a company
-/// lacks them (so every company has them). With `all=true` (admins), every
+/// lacks them (so every company has them). No two calendars of a company
+/// share a color: Templates is green, Installations red, and a calendar
+/// whose color another one took gets the first free one (saved). With `all=true` (admins), every
 /// live calendar, hidden ones too, for Admin > Schedule.
 #[crate::openapi::path(
     get,
@@ -45,6 +49,7 @@ pub async fn list(
     MultiQuery(query): MultiQuery<ListQuery>,
 ) -> ApiResult<Json<Vec<Calendar>>> {
     ensure_system_calendars(&state.pool, user.company_id, user.id).await?;
+    ensure_distinct_colors(&state.pool, user.company_id).await?;
     if query.all {
         if !user.is_admin && !user.is_superuser {
             return Err(ApiError::Forbidden);

@@ -1,7 +1,7 @@
 //! Admin > Schedule: add, edit, hide and delete calendars.
 //! Remix: the action of `api.calendars.ts`.
 
-use super::queries::SYSTEM_CALENDARS;
+use super::queries::{CALENDAR_COLORS, SYSTEM_CALENDARS, fixed_color};
 use crate::auth::AdminUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -74,6 +74,49 @@ fn checked(input: &CalendarInput) -> ApiResult<(&str, &str)> {
 }
 
 /// The slug of a live calendar of the company (`None` for a custom one), or 404.
+/// The name of the company's other live calendar that has `color`, if one does
+/// (two calendars never share a color).
+async fn color_owner(
+    pool: &MySqlPool,
+    company_id: i32,
+    color: &str,
+    except_id: Option<i32>,
+) -> sqlx::Result<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT name FROM calendars
+          WHERE company_id = ? AND deleted_at IS NULL AND color = ? AND (? IS NULL OR id <> ?)
+          LIMIT 1",
+    )
+    .bind(company_id)
+    .bind(color)
+    .bind(except_id)
+    .bind(except_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// The first color no live calendar of the company has.
+async fn free_color(pool: &MySqlPool, company_id: i32) -> sqlx::Result<&'static str> {
+    let used: Vec<String> = sqlx::query_scalar(
+        "SELECT COALESCE(color, '') FROM calendars WHERE company_id = ? AND deleted_at IS NULL",
+    )
+    .bind(company_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(CALENDAR_COLORS
+        .iter()
+        .skip(2)
+        .find(|color| !used.iter().any(|u| u == *color))
+        .copied()
+        .unwrap_or("blue"))
+}
+
+fn color_taken(owner: &str) -> ApiError {
+    ApiError::BadRequest(format!(
+        "{owner} already has that color. Pick another one: two calendars never share a color."
+    ))
+}
+
 async fn find(pool: &MySqlPool, company_id: i32, id: i32) -> ApiResult<Option<String>> {
     let found: Option<Option<String>> = sqlx::query_scalar(
         "SELECT slug FROM calendars WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
@@ -91,7 +134,9 @@ fn is_system(slug: Option<&str>) -> bool {
 
 /// Add a calendar
 ///
-/// The built-in calendars' names are reserved.
+/// The built-in calendars' names are reserved. No color picked: the first
+/// color no calendar of the company has; a color another calendar has is
+/// refused (two calendars never share a color).
 #[crate::openapi::path(
     post,
     path = "/v1/calendars",
@@ -100,7 +145,7 @@ fn is_system(slug: Option<&str>) -> bool {
     request_body = CalendarInput,
     responses(
         (status = 201, description = "Added", body = CreatedCalendar),
-        (status = 400, description = "Missing or reserved name, or bad color", body = ErrorBody),
+        (status = 400, description = "Missing or reserved name, bad color, or a color another calendar has", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
@@ -121,6 +166,19 @@ pub async fn create(
             "That calendar name is reserved".into(),
         ));
     }
+    // No color picked: the first free one; one another calendar has: refused.
+    let picked = input
+        .color
+        .as_deref()
+        .is_some_and(|color| !color.trim().is_empty());
+    let color = if picked {
+        if let Some(owner) = color_owner(&state.pool, user.company_id, color, None).await? {
+            return Err(color_taken(&owner));
+        }
+        color
+    } else {
+        free_color(&state.pool, user.company_id).await?
+    };
     let id = sqlx::query(
         "INSERT INTO calendars (company_id, name, color, created_by, is_hidden) VALUES (?, ?, ?, ?, ?)",
     )
@@ -138,6 +196,8 @@ pub async fn create(
 /// Edit a calendar
 ///
 /// Saves the name and color; a built-in calendar only changes color.
+/// Templates is always green and Installations always red, and a color
+/// another calendar of the company has is refused.
 #[crate::openapi::path(
     put,
     path = "/v1/calendars/{id}",
@@ -147,7 +207,7 @@ pub async fn create(
     request_body = CalendarInput,
     responses(
         (status = 204, description = "Saved"),
-        (status = 400, description = "Missing name or bad color", body = ErrorBody),
+        (status = 400, description = "Missing name or bad color, a color another calendar has, or a new color for Templates or Installations", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 404, description = "No such calendar in the caller's company", body = ErrorBody),
@@ -163,6 +223,22 @@ pub async fn update(
 ) -> ApiResult<StatusCode> {
     let slug = find(&state.pool, user.company_id, id).await?;
     let (name, color) = checked(&input)?;
+    // Templates stays green and Installations red; no two calendars share a color.
+    if let Some(fixed) = fixed_color(slug.as_deref())
+        && color != fixed
+    {
+        let built_in = if fixed == "green" {
+            "Templates"
+        } else {
+            "Installations"
+        };
+        return Err(ApiError::BadRequest(format!(
+            "{built_in} is always {fixed}."
+        )));
+    }
+    if let Some(owner) = color_owner(&state.pool, user.company_id, color, Some(id)).await? {
+        return Err(color_taken(&owner));
+    }
     let query = if is_system(slug.as_deref()) {
         sqlx::query("UPDATE calendars SET color = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .bind(color)
