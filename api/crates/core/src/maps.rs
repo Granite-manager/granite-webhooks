@@ -495,10 +495,10 @@ impl Maps {
         Some((line, legs))
     }
 
-    /// Driving minutes from `home` through `stops` in order (no drive back),
-    /// with what Google calls traffic now: the day's total drive. `None`
-    /// without a key, with no stops, or when Google finds no route.
-    pub async fn drive_minutes_through(&self, home: &str, stops: &[String]) -> Option<u32> {
+    /// Driving minutes of each leg from `home` through `stops` in order (no
+    /// drive back): `[home → stop 1, stop 1 → stop 2, …]`, one per non-empty
+    /// stop. `None` without a key, with no stops, or when Google finds no route.
+    pub async fn drive_legs_through(&self, home: &str, stops: &[String]) -> Option<Vec<u32>> {
         let key = self.key.as_ref()?;
         let stops: Vec<&str> = stops
             .iter()
@@ -512,7 +512,7 @@ impl Maps {
             .http
             .post(&*self.routes_url)
             .header("X-Goog-Api-Key", &**key)
-            .header("X-Goog-FieldMask", "routes.duration")
+            .header("X-Goog-FieldMask", "routes.legs.duration")
             .json(&json!({
                 "origin": waypoint(home.trim()),
                 "destination": waypoint(last),
@@ -529,7 +529,11 @@ impl Maps {
             .ok()?;
         // Drives take minutes to hours: the cast is safe.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        seconds(&body["routes"][0]["duration"]).map(|secs| (secs / 60.0).round() as u32)
+        body["routes"][0]["legs"]
+            .as_array()?
+            .iter()
+            .map(|leg| seconds(&leg["duration"]).map(|secs| (secs / 60.0).round() as u32))
+            .collect()
     }
 
     /// Driving seconds between the home address (point 0) and the stops

@@ -182,6 +182,9 @@ pub struct DriveTime {
     /// Minutes driving from the company address through the stops in order
     /// (no drive back); null without a company address, Google Maps or a route.
     pub minutes: Option<u32>,
+    /// Minutes of each drive: the shop to the first stop, then each stop to
+    /// the next (blank stops skipped). Empty when `minutes` is null.
+    pub legs: Vec<u32>,
 }
 
 /// A day's total drive
@@ -210,10 +213,18 @@ pub async fn drive_time(
     MultiQuery(query): MultiQuery<DayMapQuery>,
 ) -> ApiResult<Json<DriveTime>> {
     let Some(home) = company_address(&state.pool, user.company_id).await? else {
-        return Ok(Json(DriveTime { minutes: None }));
+        return Ok(Json(DriveTime {
+            minutes: None,
+            legs: Vec::new(),
+        }));
     };
-    let minutes = state.maps.drive_minutes_through(&home, &query.address).await;
-    Ok(Json(DriveTime { minutes }))
+    let legs = state
+        .maps
+        .drive_legs_through(&home, &query.address)
+        .await
+        .unwrap_or_default();
+    let minutes = (!legs.is_empty()).then(|| legs.iter().sum());
+    Ok(Json(DriveTime { minutes, legs }))
 }
 
 /// Body of `POST /v1/schedule/optimize-route` and `route-preview`.
