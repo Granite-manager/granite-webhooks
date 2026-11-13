@@ -52,6 +52,7 @@ pub const MAX_ROUTE_STOPS: usize = 20;
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(day_map))
+        .routes(routes!(drive_time))
         .routes(routes!(optimize_route))
         .routes(routes!(route_preview))
         .routes(routes!(best_days::best_days))
@@ -173,6 +174,46 @@ pub async fn day_map(
         route: day.line,
         drives: day.drives,
     }))
+}
+
+/// `GET /v1/schedule/drive-time`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DriveTime {
+    /// Minutes driving from the company address through the stops in order
+    /// (no drive back); null without a company address, Google Maps or a route.
+    pub minutes: Option<u32>,
+}
+
+/// A day's total drive
+///
+/// How long one person's day of driving takes: from the company address
+/// (the shop) to the first stop, then from stop to stop in the order asked,
+/// not counting the drive back. Ask with the stops of one installer's or
+/// template maker's day (repeat `address`; at most 20 used).
+#[crate::openapi::path(
+    get,
+    path = "/v1/schedule/drive-time",
+    operation_id = "get_schedule_drive_time",
+    tag = "schedule",
+    params(DayMapQuery),
+    responses(
+        (status = 200, description = "Drive time", body = DriveTime),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee, admin or shop manager or worker", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn drive_time(
+    State(state): State<AppState>,
+    ShopOrEmployeeUser(user): ShopOrEmployeeUser,
+    MultiQuery(query): MultiQuery<DayMapQuery>,
+) -> ApiResult<Json<DriveTime>> {
+    let Some(home) = company_address(&state.pool, user.company_id).await? else {
+        return Ok(Json(DriveTime { minutes: None }));
+    };
+    let minutes = state.maps.drive_minutes_through(&home, &query.address).await;
+    Ok(Json(DriveTime { minutes }))
 }
 
 /// Body of `POST /v1/schedule/optimize-route` and `route-preview`.
