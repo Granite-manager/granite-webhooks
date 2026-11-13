@@ -672,4 +672,9 @@ impl QuoteDoc {
     pub fn from_stored(value: &serde_json::Value) -> Self {
         Self::parse(value).unwrap_or_else(Self::empty)
     }
+
+    /// The words of the drawing's text notes ("PICK UP").
+    pub fn texts(&self) -> impl Iterator<Item = &str> {
+        self.texts.iter().map(|t| t.text.as_str())
+    }
 }

@@ -27,6 +27,7 @@ mod lead_automation;
 mod lead_inbox;
 mod media_previews;
 mod projects;
+mod raptor_jobs;
 mod send_email;
 mod sms;
 mod sms_send;

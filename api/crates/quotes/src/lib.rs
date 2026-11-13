@@ -22,4 +22,5 @@ pub use api_crm::*;
 
 pub mod commissions;
 pub mod quote_pricing;
+pub mod raptor;
 pub mod routes;
