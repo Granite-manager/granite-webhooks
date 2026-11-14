@@ -49441,6 +49441,91 @@
         ]
       }
     },
+    "/v1/quotes/square-feet": {
+      "get": {
+        "tags": [
+          "quotes"
+        ],
+        "summary": "List quotes' countertop square feet",
+        "description": "The countertop sq ft of each of these quotes of the company, as the quote\npage shows it: every area of the drawing, rounded as the quote's prices\nround material (its price snapshot, else its price list revision), times\nthe area's quantity. For a day's total on the schedule, where opening\nevery quote (`GET /v1/quotes/{id}`) to add them up is far too much.\nDeleted quotes and other companies' are left out; a quote with no drawing\nhas 0. Ordered by id.",
+        "operationId": "list_quote_square_feet",
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "description": "Quote ids (`ids=1&ids=2`), at most 200.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Each quote's sq ft",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/QuoteSquareFeet"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "More than 200 quotes asked for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/quotes/print-previews": {
       "post": {
         "tags": [
@@ -104210,6 +104295,26 @@
           }
         },
         "additionalProperties": false
+      },
+      "QuoteSquareFeet": {
+        "type": "object",
+        "description": "A quote's countertop square feet.",
+        "required": [
+          "id",
+          "square_feet"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The quote."
+          },
+          "square_feet": {
+            "type": "number",
+            "format": "double",
+            "description": "Countertop sq ft of its drawing: each area's, rounded as its price\nlist rounds material (to 0.1 sq ft, or up to a whole foot), times how\nmany of that area the quote sells, added up. Not rounded again."
+          }
+        }
       },
       "QuoteSuggestions": {
         "type": "object",

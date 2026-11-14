@@ -1393,3 +1393,125 @@ async fn a_sale_gives_the_project_the_parts_of_its_events(pool: MySqlPool) {
         .assert_status(StatusCode::NO_CONTENT);
     assert_eq!(parts().await, ["Countertops"]);
 }
+
+/// One straight 100" × 25.5" counter (17.7 sq ft) in an area sold twice.
+fn counter_doc() -> Value {
+    let unfinished = json!({ "type": "unfinished" });
+    json!({
+        "version": 2,
+        "counters": [{
+            "id": "c1", "name": "Kitchen", "areaId": "area-1", "x": 0, "y": 0, "angle": 0,
+            "runs": [{ "length": 100, "depth": 25.5, "turn": 0, "cutouts": [] }],
+            "edges": [unfinished, unfinished, unfinished, unfinished],
+            "corners": [[null, null], [null, null]],
+        }],
+        "areas": [{ "id": "area-1", "name": "Kitchen", "quantity": 2 }],
+        "colorOptions": [{ "id": "option-1", "byArea": { "area-1": { "product": "Granite", "color": "Ubatuba", "edges": [] } } }],
+    })
+}
+
+#[test_db::test(seed)]
+async fn the_schedule_reads_quotes_square_feet_without_opening_them(pool: MySqlPool) {
+    let (server, _) = server(&pool).await;
+    price_list(&server, &pool).await;
+    let drawn = create(
+        &server,
+        json!({ "customer_id": 1000, "quote_name": "Kitchen" }),
+    )
+    .await;
+    let blank = create(
+        &server,
+        json!({ "customer_id": 1000, "quote_name": "Blank" }),
+    )
+    .await;
+    server
+        .put(&format!("/v1/quotes/{drawn}/drawing"))
+        .with_session(sessions::REP)
+        .json(&json!({ "doc": counter_doc() }))
+        .await
+        .assert_status_ok();
+    // Opening it gives it its price snapshot, as every quote on the schedule has.
+    server
+        .get(&format!("/v1/quotes/{drawn}"))
+        .with_session(sessions::REP)
+        .await
+        .assert_status_ok();
+    let feet = |session: &'static str, query: String| {
+        let request = server
+            .get(&format!("/v1/quotes/square-feet?{query}"))
+            .with_session(session);
+        async move { request.await }
+    };
+    let asked = format!("ids={blank}&ids={drawn}&ids={drawn}&ids=999999");
+
+    // 17.7 sq ft twice; a quote with no drawing has none; unknown ids are left out.
+    assert_eq!(
+        feet(sessions::REP, asked.clone()).await.json::<Value>(),
+        json!([{ "id": drawn, "square_feet": 35.4 }, { "id": blank, "square_feet": 0.0 }])
+    );
+    assert_eq!(
+        feet(sessions::REP, String::new()).await.json::<Value>(),
+        json!([])
+    );
+    // Another company's rep gets none of them.
+    assert_eq!(
+        feet(sessions::OTHER_COMPANY_REP, asked.clone())
+            .await
+            .json::<Value>(),
+        json!([])
+    );
+
+    // A price snapshot that rounds material up: 18 sq ft twice.
+    sqlx::query(
+        "UPDATE quotes SET price_snapshot_json = JSON_SET(price_snapshot_json, '$.materialRounding', 'up')
+          WHERE id = ? AND price_snapshot_json IS NOT NULL",
+    )
+    .bind(drawn)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let up = feet(sessions::REP, format!("ids={drawn}"))
+        .await
+        .json::<Value>();
+    assert_eq!(up, json!([{ "id": drawn, "square_feet": 36.0 }]));
+    // The quote page rounds the same way.
+    let page = server
+        .get(&format!("/v1/quotes/{drawn}"))
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    assert_eq!(page["price_list"]["materialRounding"], "up");
+
+    // With no snapshot, its price list revision says how to round.
+    sqlx::query("UPDATE quotes SET price_snapshot_json = NULL WHERE id = ?")
+        .bind(drawn)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let plain = feet(sessions::REP, format!("ids={drawn}"))
+        .await
+        .json::<Value>();
+    assert_eq!(plain, json!([{ "id": drawn, "square_feet": 35.4 }]));
+    sqlx::query(
+        "UPDATE price_list_revisions r JOIN quotes q ON q.price_list_revision_id = r.id
+            SET r.info_json = JSON_SET(r.info_json, '$.materialRounding', 'up') WHERE q.id = ?",
+    )
+    .bind(drawn)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let revision = feet(sessions::REP, format!("ids={drawn}"))
+        .await
+        .json::<Value>();
+    assert_eq!(revision, json!([{ "id": drawn, "square_feet": 36.0 }]));
+
+    // No more than 200 at once, and only for staff.
+    let many: Vec<String> = (1..=201).map(|id| format!("ids={id}")).collect();
+    feet(sessions::REP, many.join("&"))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    server
+        .get(&format!("/v1/quotes/square-feet?ids={drawn}"))
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+}
