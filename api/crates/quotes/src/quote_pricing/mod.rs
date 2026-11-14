@@ -867,6 +867,10 @@ pub async fn mark_quote_sold(
             jobs.project_notes.as_deref(),
         )
         .await;
+        // Granite Depot of Indianapolis: the next raptor-jobs run makes the
+        // project's Raptor jobs.
+        let config = crate::raptor::sync::Config::from_env();
+        crate::raptor::sync::sold(pool, &config, quote.company_id, deal_id).await;
     }
     Ok(Some(QuoteSale {
         deal_id,
