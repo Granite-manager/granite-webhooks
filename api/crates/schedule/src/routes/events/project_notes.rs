@@ -4,6 +4,7 @@
 //! site. The notes belong to the sale, so its template and install events
 //! show the same ones.
 
+use super::details::{EventPhoto, last_segment};
 use crate::auth::ShopOrEmployeeUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -211,6 +212,150 @@ pub async fn sale(
         sale_id: sale_ids.first().copied(),
         sale_ids,
     }))
+}
+
+/// An event of the customer or project that may be one of the project's jobs.
+#[derive(sqlx::FromRow)]
+struct CandidateEvent {
+    id: i32,
+    sale_id: Option<i32>,
+    location: Option<String>,
+    project_id: Option<i32>,
+}
+
+/// Whether `other` is a job of the same project as the event: the same
+/// Projects board project, one of the project's sales, or the same street.
+/// Another board project never counts.
+fn same_project(
+    event_id: i32,
+    project_id: Option<i32>,
+    street: Option<&str>,
+    sale_ids: &[i32],
+    other: &CandidateEvent,
+) -> bool {
+    if other.id == event_id {
+        return true;
+    }
+    if project_id.is_some() && other.project_id.is_some() {
+        return other.project_id == project_id;
+    }
+    other.sale_id.is_some_and(|sale| sale_ids.contains(&sale))
+        || street.is_some_and(|street| {
+            other.location.as_deref().and_then(street_key).as_deref() == Some(street)
+        })
+}
+
+/// The events of the event's project: itself, the events of its Projects
+/// board project, of its sales (see [`find_event_sales`]) and at its street.
+async fn project_event_ids(
+    pool: &MySqlPool,
+    company_id: i32,
+    event_id: i32,
+) -> ApiResult<Vec<i32>> {
+    let event: Option<(Option<i32>, Option<String>, Option<i32>)> = sqlx::query_as(
+        "SELECT e.customer_id, e.location, e.project_id
+           FROM events e JOIN users u ON e.created_user_id = u.id
+          WHERE e.id = ? AND u.company_id = ? AND e.deleted_date IS NULL",
+    )
+    .bind(event_id)
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await?;
+    let (customer_id, location, project_id) = event.ok_or(ApiError::NotFound)?;
+    if customer_id.is_none() && project_id.is_none() {
+        return Ok(vec![event_id]);
+    }
+    let sale_ids = find_event_sales(pool, company_id, event_id).await?;
+    let candidates: Vec<CandidateEvent> = sqlx::query_as(
+        "SELECT e.id, e.sale_id, e.location, e.project_id
+           FROM events e JOIN users u ON e.created_user_id = u.id
+          WHERE u.company_id = ? AND e.deleted_date IS NULL
+            AND (e.customer_id = ? OR e.project_id = ?)",
+    )
+    .bind(company_id)
+    .bind(customer_id)
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+    let street = location.as_deref().and_then(street_key);
+    let mut ids: Vec<i32> = candidates
+        .iter()
+        .filter(|other| same_project(event_id, project_id, street.as_deref(), &sale_ids, other))
+        .map(|other| other.id)
+        .collect();
+    if !ids.contains(&event_id) {
+        ids.push(event_id);
+    }
+    Ok(ids)
+}
+
+/// List the project's job photos
+///
+/// The crew's Before and Installed photos from the job pages of every event
+/// of the event's project (its template, its install), oldest first.
+#[crate::openapi::path(
+    get,
+    path = "/v1/events/{id}/job-photos",
+    operation_id = "list_event_job_photos",
+    tag = "schedule",
+    params(("id" = i32, Path, description = "Event id")),
+    responses(
+        (status = 200, description = "Photos", body = Vec<EventPhoto>),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee, admin or shop manager or worker", body = ErrorBody),
+        (status = 404, description = "No such event in the caller's company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn job_photos(
+    State(state): State<AppState>,
+    ShopOrEmployeeUser(user): ShopOrEmployeeUser,
+    Path(id): Path<i32>,
+) -> ApiResult<Json<Vec<EventPhoto>>> {
+    let ids = project_event_ids(&state.pool, user.company_id, id).await?;
+    let placeholders = vec!["?"; ids.len()].join(", ");
+    let sql = format!(
+        "SELECT id, event_id, url, created_at, created_by, stage FROM event_images
+          WHERE company_id = ? AND deleted_at IS NULL AND stage IS NOT NULL
+            AND event_id IN ({placeholders})
+          ORDER BY created_at, id LIMIT 500"
+    );
+    let mut query = sqlx::query_as::<
+        _,
+        (
+            i32,
+            i32,
+            String,
+            Option<DateTime<Utc>>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(sqlx::AssertSqlSafe(sql))
+    .bind(user.company_id);
+    for event_id in &ids {
+        query = query.bind(*event_id);
+    }
+    let rows = query.fetch_all(&state.pool).await?;
+    let photos = rows
+        .into_iter()
+        .map(
+            |(photo_id, event_id, url, created_at, created_by, stage)| EventPhoto {
+                id: photo_id,
+                event_id,
+                name: match last_segment(&url) {
+                    "" => "photo".to_string(),
+                    name => name.to_string(),
+                },
+                url,
+                created_at,
+                created_by,
+                source: "photo",
+                stage,
+            },
+        )
+        .collect();
+    Ok(Json(photos))
 }
 
 /// List the project's notes
@@ -442,5 +587,62 @@ mod tests {
             event_project(None, Some("2931 Applewood Ct Muncie"), &vague),
             vec![8]
         );
+    }
+
+    fn job(
+        id: i32,
+        sale_id: Option<i32>,
+        location: Option<&str>,
+        project_id: Option<i32>,
+    ) -> CandidateEvent {
+        CandidateEvent {
+            id,
+            sale_id,
+            location: location.map(str::to_string),
+            project_id,
+        }
+    }
+
+    #[test]
+    fn a_projects_jobs_share_its_photos() {
+        let street = Some("647 overpeck");
+        // The install at the same street, or of one of the project's sales.
+        assert!(same_project(
+            1,
+            None,
+            street,
+            &[],
+            &job(2, None, Some("647 Overpeck Road"), None)
+        ));
+        assert!(same_project(
+            1,
+            None,
+            None,
+            &[9],
+            &job(2, Some(9), None, None)
+        ));
+        // A builder's job at another street is not this project's.
+        assert!(!same_project(
+            1,
+            None,
+            street,
+            &[9],
+            &job(3, Some(8), Some("12 Main St"), None)
+        ));
+        // On the Projects board, the project decides, not the street.
+        assert!(same_project(
+            1,
+            Some(5),
+            street,
+            &[],
+            &job(4, None, Some("12 Main St"), Some(5))
+        ));
+        assert!(!same_project(
+            1,
+            Some(5),
+            street,
+            &[],
+            &job(4, None, Some("647 Overpeck Rd"), Some(6))
+        ));
     }
 }

@@ -192,7 +192,7 @@ pub(super) async fn event_exists(
     people(pool, company_id, event_id).await.map(|_| ())
 }
 
-fn last_segment(url: &str) -> &str {
+pub(super) fn last_segment(url: &str) -> &str {
     let clean = url.split('?').next().unwrap_or(url);
     clean.rsplit('/').next().unwrap_or(clean)
 }
