@@ -5,6 +5,7 @@
 //! show the same ones.
 
 use super::details::{EventPhoto, last_segment};
+use super::issues::EventIssue;
 use crate::auth::ShopOrEmployeeUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -356,6 +357,39 @@ pub async fn job_photos(
         )
         .collect();
     Ok(Json(photos))
+}
+
+/// List the project's issues
+///
+/// The problems the crew reported on every event of the event's project
+/// (its template, its install), oldest first.
+#[crate::openapi::path(
+    get,
+    path = "/v1/events/{id}/job-issues",
+    operation_id = "list_event_job_issues",
+    tag = "schedule",
+    params(("id" = i32, Path, description = "Event id")),
+    responses(
+        (status = 200, description = "Issues", body = Vec<EventIssue>),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee, admin or shop manager or worker", body = ErrorBody),
+        (status = 404, description = "No such event in the caller's company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn job_issues(
+    State(state): State<AppState>,
+    ShopOrEmployeeUser(user): ShopOrEmployeeUser,
+    Path(id): Path<i32>,
+) -> ApiResult<Json<Vec<EventIssue>>> {
+    let ids = project_event_ids(&state.pool, user.company_id, id).await?;
+    let mut issues = Vec::new();
+    for event_id in ids {
+        issues.extend(super::issues::list(&state.pool, user.company_id, event_id).await?);
+    }
+    issues.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+    Ok(Json(issues))
 }
 
 /// List the project's notes
