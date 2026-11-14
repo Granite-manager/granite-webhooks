@@ -12,6 +12,7 @@
 //! (`stoneQueryBuilder` in `app/utils/queries.server.ts`).
 
 mod handlers;
+mod materials;
 mod media;
 pub mod queries;
 pub mod schemas;
@@ -24,6 +25,9 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(handlers::list, writes::create))
         .routes(routes!(handlers::search))
+        .routes(routes!(materials::get_settings, materials::save_settings))
+        .routes(routes!(materials::list))
+        .routes(routes!(materials::get))
         .routes(routes!(handlers::quick_add))
         .routes(routes!(handlers::get, writes::update, writes::delete))
         .routes(routes!(handlers::slabs, media::add_slab))
