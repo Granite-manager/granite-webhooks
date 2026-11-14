@@ -12,6 +12,11 @@
 //! written again, and changed note lines replace those lines in the "Notes"
 //! note; everything the office typed itself stays. A new full-height area
 //! gets its own job. Jobs the office made or deleted are left alone.
+//!
+//! Sale companies (`Config::sale_companies`, Granite Depot of Indianapolis
+//! for now) send a project only once its quote is marked as sold, as test
+//! jobs ("… TEST", reference "TEST"), and Unsell takes them out of Raptor
+//! again (`unsold`).
 
 use super::client::{API, ListJob, Parts, Raptor, next_number};
 use super::plan::{self, Address, Cutout, Job, Material, Plan, Source};
@@ -27,19 +32,40 @@ const FOLLOW_DAYS: i32 = 60;
 /// How often a project's jobs are compared with the CRM.
 const FOLLOW_EVERY_MINUTES: i32 = 15;
 
+/// What test jobs end with.
+const TEST: &str = " TEST";
+
 /// Where Raptor is and the key that opens the saved passwords.
 pub struct Config {
     pub api_url: String,
     pub key: Option<[u8; 32]>,
+    /// Companies whose jobs follow Mark as Sold and Unsell, as test jobs.
+    pub sale_companies: Vec<i32>,
 }
 
 impl Config {
-    /// Raptor's API (or `RAPTOR_API_URL`) and `AES_KEY`.
+    /// Raptor's API (or `RAPTOR_API_URL`) and `AES_KEY`; Granite Depot of
+    /// Indianapolis (company 1) follows its sales.
     pub fn from_env() -> Self {
         Self {
             api_url: std::env::var("RAPTOR_API_URL").unwrap_or_else(|_| API.to_string()),
             key: env_key(),
+            sale_companies: vec![1],
         }
+    }
+
+    fn sales(&self, company_id: i32) -> bool {
+        self.sale_companies.contains(&company_id)
+    }
+
+    /// The plan as this company's jobs are named.
+    fn named(&self, company_id: i32, mut plan: Plan) -> Plan {
+        if self.sales(company_id) {
+            for job in &mut plan.jobs {
+                job.name.push_str(TEST);
+            }
+        }
+        plan
     }
 }
 
@@ -104,7 +130,7 @@ impl Sent {
 /// A project has one main job and maybe a full-height ("FHBS") one; a job
 /// keeps its kind when it is renamed.
 fn same_kind(a: &str, b: &str) -> bool {
-    let fhbs = |name: &str| name.trim_end().ends_with("FHBS");
+    let fhbs = |name: &str| name.trim_end().trim_end_matches(TEST).ends_with("FHBS");
     fhbs(a) == fhbs(b)
 }
 
@@ -143,12 +169,17 @@ async fn logins(pool: &MySqlPool, key: Option<&[u8; 32]>) -> sqlx::Result<Vec<Lo
         .collect())
 }
 
-/// Projects of `company_id` that still need Raptor jobs.
-async fn due_projects(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<i32>> {
+/// Projects of `company_id` that still need Raptor jobs; for a sale
+/// company only those whose deal has a sold quote.
+async fn due_projects(pool: &MySqlPool, company_id: i32, sales: bool) -> sqlx::Result<Vec<i32>> {
     sqlx::query_scalar(
         "SELECT p.id FROM projects p JOIN company c ON c.id = p.company_id
           WHERE p.company_id = ? AND p.created_at >= c.raptor_since
             AND p.cancelled_at IS NULL AND p.archived_at IS NULL
+            AND (NOT ? OR EXISTS (
+                SELECT 1 FROM quotes q
+                 WHERE q.deal_id = p.source_deal_id AND q.company_id = p.company_id
+                   AND q.deleted_at IS NULL AND q.status IN ('accepted', 'converted')))
             AND NOT EXISTS (
                 SELECT 1 FROM project_raptor_jobs r
                  WHERE r.project_id = p.id
@@ -158,6 +189,7 @@ async fn due_projects(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<i32
           LIMIT 20",
     )
     .bind(company_id)
+    .bind(sales)
     .bind(MAX_ATTEMPTS)
     .fetch_all(pool)
     .await
@@ -353,7 +385,12 @@ async fn send(
                 });
                 continue;
             }
-            let reference = format!("#{}", next_number(known));
+            // Test jobs keep the office's numbers free.
+            let reference = if job.name.ends_with(TEST) {
+                TEST.trim().to_string()
+            } else {
+                format!("#{}", next_number(known))
+            };
             let id = raptor.create_job(&reference, &job.name).await?;
             known.push(ListJob {
                 id: id.clone(),
@@ -552,7 +589,7 @@ pub async fn run(pool: &MySqlPool, budget: Duration, config: &Config) -> sqlx::R
     let mut summary = RunSummary::default();
     for login in logins(pool, config.key.as_ref()).await? {
         let mut session: Option<Session> = None;
-        let due = due_projects(pool, login.company_id).await?;
+        let due = due_projects(pool, login.company_id, config.sales(login.company_id)).await?;
         if !due.is_empty() {
             match open(config, &login).await {
                 Ok(open) => session = Some(open),
@@ -567,7 +604,16 @@ pub async fn run(pool: &MySqlPool, budget: Duration, config: &Config) -> sqlx::R
                 if started.elapsed() > budget {
                     return Ok(summary);
                 }
-                new_project(pool, &login, project_id, raptor, known, &mut summary).await?;
+                new_project(
+                    pool,
+                    config,
+                    &login,
+                    project_id,
+                    raptor,
+                    known,
+                    &mut summary,
+                )
+                .await?;
             }
         }
         for project_id in followed_projects(pool, login.company_id).await? {
@@ -580,6 +626,7 @@ pub async fn run(pool: &MySqlPool, budget: Duration, config: &Config) -> sqlx::R
             let Ok(plan) = load_plan(pool, project_id, login.company_id).await? else {
                 continue;
             };
+            let plan = config.named(login.company_id, plan);
             if !behind(&plan, &mut done) {
                 save_followed(pool, project_id, &done, None).await?;
                 continue;
@@ -619,6 +666,7 @@ pub async fn run(pool: &MySqlPool, budget: Duration, config: &Config) -> sqlx::R
 /// Makes a new project's Raptor jobs.
 async fn new_project(
     pool: &MySqlPool,
+    config: &Config,
     login: &Login,
     project_id: i32,
     raptor: &Raptor,
@@ -629,7 +677,10 @@ async fn new_project(
         return Ok(());
     };
     let result = match load_plan(pool, project_id, login.company_id).await? {
-        Ok(plan) => send(raptor, &plan, known, &mut done).await,
+        Ok(plan) => {
+            let plan = config.named(login.company_id, plan);
+            send(raptor, &plan, known, &mut done).await
+        }
         Err(why) => Err(why),
     };
     match result {
@@ -642,6 +693,69 @@ async fn new_project(
             finish(pool, project_id, &done, Some(&error)).await?;
             summary.failed += 1;
         }
+    }
+    Ok(())
+}
+
+/// Unsell: deletes the Raptor jobs made for the projects of `deal_id`.
+///
+/// They are forgotten too, so selling again makes them anew. Only for sale
+/// companies; jobs the office made are left. `Err` says why some are still there.
+pub async fn unsold(
+    pool: &MySqlPool,
+    config: &Config,
+    company_id: i32,
+    deal_id: Option<i64>,
+) -> Result<(), String> {
+    let Some(deal_id) = deal_id.filter(|_| config.sales(company_id)) else {
+        return Ok(());
+    };
+    let rows: Vec<(i32, Option<String>)> = sqlx::query_as(
+        "SELECT r.project_id, CAST(r.jobs AS CHAR)
+           FROM project_raptor_jobs r JOIN projects p ON p.id = r.project_id
+          WHERE p.company_id = ? AND p.source_deal_id = ?",
+    )
+    .bind(company_id)
+    .bind(deal_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let login = logins(pool, config.key.as_ref())
+        .await
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|l| l.company_id == company_id)
+        .ok_or("No Raptor login")?;
+    let raptor = Raptor::login(
+        common::http::client(),
+        &config.api_url,
+        &login.email,
+        &login.password,
+    )
+    .await?;
+    for (project_id, jobs) in rows {
+        let jobs: Vec<JobRecord> = jobs
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default();
+        for job in jobs.iter().filter(|j| !j.existing) {
+            if let Err(error) = raptor.delete_job(&job.id).await {
+                let _ =
+                    sqlx::query("UPDATE project_raptor_jobs SET error = ? WHERE project_id = ?")
+                        .bind(format!("Unsell: {error}"))
+                        .bind(project_id)
+                        .execute(pool)
+                        .await;
+                return Err(error);
+            }
+        }
+        sqlx::query("DELETE FROM project_raptor_jobs WHERE project_id = ?")
+            .bind(project_id)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

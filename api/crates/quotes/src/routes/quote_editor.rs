@@ -2090,6 +2090,16 @@ pub async fn undo_sale(
         .execute(&state.pool)
         .await?;
     }
+    // Granite Depot of Indianapolis: the sale's Raptor jobs go too.
+    let config = crate::raptor::sync::Config::from_env();
+    let unsold = crate::raptor::sync::unsold(&state.pool, &config, user.company_id, row.deal_id);
+    match tokio::time::timeout(std::time::Duration::from_secs(20), unsold).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            lambda_http::tracing::warn!(quote_id = id, %error, "Raptor jobs not deleted")
+        }
+        Err(_) => lambda_http::tracing::warn!(quote_id = id, "Raptor jobs not deleted: timed out"),
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

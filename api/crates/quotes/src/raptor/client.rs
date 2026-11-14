@@ -259,6 +259,19 @@ impl Raptor {
         Ok(())
     }
 
+    /// Deletes a job as the job list's Delete does (Raptor keeps it as
+    /// "Deleted").
+    pub async fn delete_job(&self, job_id: &str) -> Result<()> {
+        self.send(
+            self.http
+                .put(format!("{}/entity/{job_id}/status", self.base))
+                .json(&json!({ "status": 10, "setChildren": false })),
+            "delete job",
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn put_entity(&self, entity: &Value, what: &str) -> Result<Value> {
         let id = entity["id"].as_str().unwrap_or_default();
         self.send(
