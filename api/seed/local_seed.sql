@@ -246,6 +246,15 @@ INSERT INTO stone_types (id, name, company_id) VALUES
   (103, 'quartzite', 100),
   (104, 'granite',   101);
 
+-- ---- Stone finishes (stone forms). Ids 100+.
+INSERT INTO stone_finishes (id, name, company_id) VALUES
+  (100, 'polished',  100),
+  (101, 'leathered', 100),
+  (102, 'honed',     100),
+  (103, 'polished',  101),
+  (104, 'leathered', 101),
+  (105, 'honed',     101);
+
 -- ---- Sink types (sink forms). Ids 100+.
 INSERT INTO sink_types (id, name, company_id) VALUES
   (100, 'stainless 18 gauge', 100),

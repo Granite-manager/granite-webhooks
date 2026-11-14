@@ -1,6 +1,6 @@
 use super::queries::{
-    SINK_TYPES, STONE_TYPES, TypeTable, create_type, delete_type, find_type, find_type_by_name,
-    items_using_type, list_colors, list_suppliers, list_types, rename_type,
+    SINK_TYPES, STONE_FINISHES, STONE_TYPES, TypeTable, create_type, delete_type, find_type,
+    find_type_by_name, items_using_type, list_colors, list_suppliers, list_types, rename_type,
 };
 use super::schemas::{
     Color, SinkTypeInUse, StoneType, StoneTypeInUse, StoneTypeInput, Supplier, SupplierEntry,
@@ -116,15 +116,18 @@ fn valid_name(table: TypeTable, input: &StoneTypeInput) -> Result<String, ApiErr
     let name = input.name.trim();
     if name.is_empty() || name.chars().count() > 255 {
         return Err(ApiError::BadRequest(format!(
-            "Enter a {} type name between 1 and 255 characters.",
-            table.label
+            "Enter a {} {} name between 1 and 255 characters.",
+            table.label, table.noun
         )));
     }
     Ok(name.to_string())
 }
 
 fn duplicate(table: TypeTable) -> ApiError {
-    ApiError::Conflict(format!("This {} type already exists.", table.label))
+    ApiError::Conflict(format!(
+        "This {} {} already exists.",
+        table.label, table.noun
+    ))
 }
 
 async fn create(
@@ -179,8 +182,8 @@ async fn delete<B: serde::Serialize>(
     let items = items_using_type(&state.pool, table, company_id, &existing.name).await?;
     if !items.is_empty() {
         let error = format!(
-            "This type is used by undeleted {} and cannot be deleted.",
-            table.plural
+            "This {} is used by undeleted {} and cannot be deleted.",
+            table.noun, table.plural
         );
         return Ok((StatusCode::CONFLICT, Json(in_use(error, items))).into_response());
     }
@@ -417,5 +420,125 @@ pub async fn delete_sink_type(
     delete(&state, SINK_TYPES, user.company_id, id, |error, sinks| {
         SinkTypeInUse { error, sinks }
     })
+    .await
+}
+
+/// List the company's stone finishes
+///
+/// Returns the surface finishes stones of the company can have (`polished`,
+/// `honed`...), by name. A stone's `finishing` must be one of them.
+#[crate::openapi::path(
+    get,
+    path = "/v1/stone-finishes",
+    operation_id = "list_stone_finishes",
+    tag = "catalog",
+    responses(
+        (status = 200, description = "Stone finishes by name", body = Vec<StoneType>),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn stone_finishes(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+) -> ApiResult<Json<Vec<StoneType>>> {
+    Ok(Json(
+        list_types(&state.pool, STONE_FINISHES, user.company_id).await?,
+    ))
+}
+
+/// Add a stone finish
+///
+/// Creates a finish for the caller's company. Names are unique per company,
+/// ignoring case.
+#[crate::openapi::path(
+    post,
+    path = "/v1/stone-finishes",
+    operation_id = "create_stone_finish",
+    tag = "catalog",
+    request_body = StoneTypeInput,
+    responses(
+        (status = 201, description = "Finish created", body = StoneType),
+        (status = 400, description = "Empty or longer than 255 characters", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 409, description = "A finish with this name exists", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn create_stone_finish(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    JsonBody(input): JsonBody<StoneTypeInput>,
+) -> ApiResult<(StatusCode, Json<StoneType>)> {
+    create(&state, STONE_FINISHES, user.company_id, &input).await
+}
+
+/// Rename a stone finish
+///
+/// Renames the finish and sets the new name on every stone of the company
+/// that had the old one.
+#[crate::openapi::path(
+    patch,
+    path = "/v1/stone-finishes/{id}",
+    operation_id = "rename_stone_finish",
+    tag = "catalog",
+    params(("id" = i64, Path, description = "Stone finish id")),
+    request_body = StoneTypeInput,
+    responses(
+        (status = 200, description = "Finish renamed", body = StoneType),
+        (status = 400, description = "Empty or longer than 255 characters", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such finish in the caller's company", body = ErrorBody),
+        (status = 409, description = "Another finish has this name", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn rename_stone_finish(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(id): Path<i64>,
+    JsonBody(input): JsonBody<StoneTypeInput>,
+) -> ApiResult<Json<StoneType>> {
+    rename(&state, STONE_FINISHES, user.company_id, id, &input).await
+}
+
+/// Delete a stone finish
+///
+/// Deletes a finish no live stone uses. When stones still use it, answers
+/// 409 with those stones; delete or change them first.
+#[crate::openapi::path(
+    delete,
+    path = "/v1/stone-finishes/{id}",
+    operation_id = "delete_stone_finish",
+    tag = "catalog",
+    params(("id" = i64, Path, description = "Stone finish id")),
+    responses(
+        (status = 204, description = "Finish deleted"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such finish in the caller's company", body = ErrorBody),
+        (status = 409, description = "Live stones use the finish", body = StoneTypeInUse),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn delete_stone_finish(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(id): Path<i64>,
+) -> ApiResult<Response> {
+    delete(
+        &state,
+        STONE_FINISHES,
+        user.company_id,
+        id,
+        |error, stones| StoneTypeInUse { error, stones },
+    )
     .await
 }

@@ -64,6 +64,10 @@ pub struct TypeTable {
     pub plural: &'static str,
     /// What the messages call a type ("stone").
     pub label: &'static str,
+    /// What the messages call one entry of the list ("type", "finish").
+    pub noun: &'static str,
+    /// Column of the items that stores the entry's name.
+    pub column: &'static str,
 }
 
 pub const STONE_TYPES: TypeTable = TypeTable {
@@ -72,6 +76,8 @@ pub const STONE_TYPES: TypeTable = TypeTable {
     live: "deleted_at IS NULL",
     plural: "stones",
     label: "stone",
+    noun: "type",
+    column: "type",
 };
 
 pub const SINK_TYPES: TypeTable = TypeTable {
@@ -80,6 +86,18 @@ pub const SINK_TYPES: TypeTable = TypeTable {
     live: "is_deleted = 0",
     plural: "sinks",
     label: "sink",
+    noun: "type",
+    column: "type",
+};
+
+pub const STONE_FINISHES: TypeTable = TypeTable {
+    types: "stone_finishes",
+    items: "stones",
+    live: "deleted_at IS NULL",
+    plural: "stones",
+    label: "stone",
+    noun: "finish",
+    column: "finishing",
 };
 
 const fn sql(text: String) -> AssertSqlSafe<String> {
@@ -173,8 +191,9 @@ pub async fn rename_type(
     .execute(&mut *tx)
     .await?;
     sqlx::query(sql(format!(
-        "UPDATE {} SET type = ? WHERE company_id = ? AND LOWER(type) = LOWER(?)",
-        table.items
+        "UPDATE {} SET {col} = ? WHERE company_id = ? AND LOWER({col}) = LOWER(?)",
+        table.items,
+        col = table.column
     )))
     .bind(name)
     .bind(company_id)
@@ -191,9 +210,9 @@ pub async fn items_using_type(
     name: &str,
 ) -> Result<Vec<StoneUsingType>, sqlx::Error> {
     sqlx::query_as(sql(format!(
-        "SELECT id, name FROM {} WHERE company_id = ? AND {} AND LOWER(type) = LOWER(?)
+        "SELECT id, name FROM {} WHERE company_id = ? AND {} AND LOWER({}) = LOWER(?)
          ORDER BY name ASC, id ASC",
-        table.items, table.live
+        table.items, table.live, table.column
     )))
     .bind(company_id)
     .bind(name)
