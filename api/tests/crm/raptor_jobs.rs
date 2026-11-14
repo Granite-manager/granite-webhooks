@@ -1,6 +1,6 @@
 use crate::common;
 
-use api::raptor::sync::{Config, run};
+use api::raptor::sync::{Config, run, unsold};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
@@ -129,6 +129,15 @@ async fn fake_raptor() -> (String, Fake) {
             ),
         )
         .route(
+            "/entity/{id}/status",
+            put(
+                |State(fake): State<Fake>, Path(id): Path<String>, Json(body): Json<Value>| async move {
+                    fake.log("PUT", format!("/entity/{id}/status"), body);
+                    Json(json!({ "status": "Success" }))
+                },
+            ),
+        )
+        .route(
             "/job/{id}/note",
             post(
                 |State(fake): State<Fake>, Path(id): Path<String>, Json(body): Json<Value>| async move {
@@ -231,6 +240,7 @@ fn config(url: &str) -> Config {
     Config {
         api_url: url.to_string(),
         key: Some(KEY),
+        sale_companies: vec![],
     }
 }
 
@@ -501,4 +511,52 @@ async fn a_changed_quote_updates_the_job_and_keeps_the_office_lines(pool: MySqlP
         .unwrap();
     assert_eq!(summary.updated, 0);
     assert_eq!(fake.calls("PUT", "/entity/").len(), 3);
+}
+
+#[test_db::test(seed)]
+async fn a_sale_company_sends_test_jobs_once_sold_and_unsell_deletes_them(pool: MySqlPool) {
+    let project = sold_project(&pool).await;
+    connect_raptor(&pool, "secret").await;
+    let (url, fake) = fake_raptor().await;
+    let sales = Config {
+        sale_companies: vec![100],
+        ..config(&url)
+    };
+
+    // Not sold (yet): nothing is sent.
+    sql(&pool, "UPDATE quotes SET status = 'active' WHERE id = 9901").await;
+    let summary = run(&pool, Duration::from_secs(60), &sales).await.unwrap();
+    assert_eq!(summary.done, 0);
+
+    // Marked as sold: a TEST job that keeps the office's numbers free.
+    sql(
+        &pool,
+        "UPDATE quotes SET status = 'converted' WHERE id = 9901",
+    )
+    .await;
+    let summary = run(&pool, Duration::from_secs(60), &sales).await.unwrap();
+    assert_eq!(summary.done, 1);
+    let created = fake.calls("POST", "/job/work/new");
+    assert_eq!(created.len(), 1);
+    assert_eq!(created[0].1["name"], "Builder Erin Kitchen TEST");
+    assert_eq!(created[0].1["reference"], "TEST");
+
+    // Unsell deletes it and forgets it.
+    unsold(&pool, &sales, 100, Some(8002)).await.unwrap();
+    let deleted = fake.calls("PUT", "/entity/job-1/status");
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0].1, json!({ "status": 10, "setChildren": false }));
+    let rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM project_raptor_jobs WHERE project_id = ?")
+            .bind(project)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, 0);
+    sql(&pool, "UPDATE quotes SET status = 'active' WHERE id = 9901").await;
+    run(&pool, Duration::from_secs(60), &sales).await.unwrap();
+    assert_eq!(fake.calls("POST", "/job/work/new").len(), 1);
+
+    // Another company's Unsell touches nothing.
+    unsold(&pool, &config(&url), 100, Some(8002)).await.unwrap();
 }
