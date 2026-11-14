@@ -85,6 +85,42 @@ pub const PROJECT_JOB_SQL: &str = "e.deleted_date IS NULL
            OR (e.project_id IS NULL AND e.customer_id = p.customer_id
                AND e.created_date >= p.created_at - INTERVAL 1 DAY))";
 
+/// The jobs of `projects p` as a table to select `e` from: the events linked
+/// to it, and those of its customer made since it started and linked to none
+/// (deleted ones too). The same rows as `events e` under [`PROJECT_JOB_SQL`]'s
+/// OR, as two indexed lookups: with the OR, `MySQL` reads every event that has
+/// no project once per project, which made the board slower with each one.
+macro_rules! project_events_table {
+    () => {
+        "(SELECT * FROM events WHERE project_id = p.id
+          UNION ALL
+          SELECT * FROM events
+           WHERE project_id IS NULL AND customer_id = p.customer_id
+             AND created_date >= p.created_at - INTERVAL 1 DAY)"
+    };
+}
+
+/// [`project_events_table`] for a `FROM` or a `JOIN LATERAL`.
+pub const PROJECT_EVENTS_TABLE: &str = project_events_table!();
+
+/// The jobs of part `pp` of `projects p` as a table to select `e` from: the
+/// rows of `events e` under [`PART_EVENTS_SQL`], as indexed lookups.
+macro_rules! part_events_table {
+    () => {
+        "(SELECT * FROM events WHERE project_part_id = pp.id
+          UNION ALL
+          SELECT * FROM events
+           WHERE project_part_id IS NULL AND project_id = p.id
+             AND pp.id = (SELECT MIN(fp.id) FROM project_parts fp WHERE fp.project_id = p.id)
+          UNION ALL
+          SELECT * FROM events
+           WHERE project_part_id IS NULL AND project_id IS NULL
+             AND customer_id = p.customer_id
+             AND created_date >= p.created_at - INTERVAL 1 DAY
+             AND pp.id = (SELECT MIN(fp.id) FROM project_parts fp WHERE fp.project_id = p.id))"
+    };
+}
+
 /// The stage of `projects p` with its transaction `sales s` (LEFT JOIN).
 ///
 /// Projects move on their own: the template maker's Completed makes it
@@ -100,7 +136,8 @@ pub const PROJECT_JOB_SQL: &str = "e.deleted_date IS NULL
 /// someone moves it forward by hand.
 macro_rules! plain_stage_sql {
     () => {
-        "ELT(LEAST(FIELD((CASE WHEN s.installed_date IS NOT NULL
+        concat!(
+            "ELT(LEAST(FIELD((CASE WHEN s.installed_date IS NOT NULL
         THEN IF(s.paid_date IS NOT NULL OR p.qbo_paid_at IS NOT NULL, 'completed', 'installed')
       ELSE ELT(GREATEST(
           FIELD(CASE WHEN p.stage_code IN ('installed', 'completed', 'install_scheduled')
@@ -112,14 +149,13 @@ macro_rules! plain_stage_sql {
                     WHEN cal.slug = 'installations'
                       THEN IF(s.paid_date IS NOT NULL OR p.qbo_paid_at IS NOT NULL, 5, 4)
                     ELSE 2 END), 1)
-             FROM events e
+             FROM ",
+            project_events_table!(),
+            " e
              JOIN calendars cal ON cal.id = e.calendar_id
                                AND cal.slug IN ('templates', 'installations')
             WHERE e.crew_status = 'completed'
-              AND e.deleted_date IS NULL
-              AND (e.project_id = p.id
-                   OR (e.project_id IS NULL AND e.customer_id = p.customer_id
-                       AND e.created_date >= p.created_at - INTERVAL 1 DAY))),
+              AND e.deleted_date IS NULL),
           IF(p.fabricated_at IS NOT NULL, 3, 1)),
         'new', 'templated', 'fabrication', 'installed', 'completed') END),
         'new', 'templated', 'fabrication', 'installed', 'completed'),
@@ -128,6 +164,7 @@ macro_rules! plain_stage_sql {
                                              ELSE p.stage_cap END,
         'new', 'templated', 'fabrication', 'installed', 'completed'), 0), 5)),
       'new', 'templated', 'fabrication', 'installed', 'completed')"
+        )
     };
 }
 
@@ -162,12 +199,12 @@ macro_rules! part_index_sql {
                IF(s.installed_date IS NOT NULL AND pp.created_at <= s.installed_date, 4, 1),
                (SELECT COALESCE(MAX(CASE WHEN cal.slug = 'installations' THEN 4
                                          WHEN pt.uses_fabrication = 0 THEN 3 ELSE 2 END), 1)
-                  FROM events e
+                  FROM ",
+            part_events_table!(),
+            " e
                   JOIN calendars cal ON cal.id = e.calendar_id
                                     AND cal.slug IN ('templates', 'installations')
-                 WHERE e.crew_status = 'completed' AND e.deleted_date IS NULL AND ",
-            part_events_sql!(),
-            ")),
+                 WHERE e.crew_status = 'completed' AND e.deleted_date IS NULL)),
              COALESCE(NULLIF(FIELD(pp.stage_cap, 'new', 'templated', 'fabrication', 'installed'), 0), 4))"
         )
     };
@@ -178,6 +215,9 @@ pub const PART_INDEX_SQL: &str = part_index_sql!();
 
 /// [`part_events_sql`] for a part's jobs.
 pub const PART_EVENTS_SQL: &str = part_events_sql!();
+
+/// [`part_events_table`] for a `FROM`.
+pub const PART_EVENTS_TABLE: &str = part_events_table!();
 
 /// The stage of `projects p` with its transaction `sales s` (LEFT JOIN): with
 /// parts (`project_parts`) the stage of its least finished part, and Paid &
@@ -201,10 +241,10 @@ pub const STAGE_SQL: &str = concat!(
 pub fn job_date_sql(slug: &str) -> String {
     format!(
         "(SELECT DATE_FORMAT(MIN(e.start_date), '%Y-%m-%dT%H:%i:%sZ')
-            FROM events e
+            FROM {PROJECT_EVENTS_TABLE} e
             JOIN calendars cal ON cal.id = e.calendar_id AND cal.slug = '{slug}'
            WHERE COALESCE(e.unscheduled, 0) = 0 AND COALESCE(e.crew_status, '') <> 'completed'
-             AND {PROJECT_JOB_SQL})"
+             AND e.deleted_date IS NULL)"
     )
 }
 
@@ -212,10 +252,10 @@ pub fn job_date_sql(slug: &str) -> String {
 pub fn part_job_date_sql(slug: &str) -> String {
     format!(
         "(SELECT DATE_FORMAT(MIN(e.start_date), '%Y-%m-%dT%H:%i:%sZ')
-            FROM events e
+            FROM {PART_EVENTS_TABLE} e
             JOIN calendars cal ON cal.id = e.calendar_id AND cal.slug = '{slug}'
            WHERE COALESCE(e.unscheduled, 0) = 0 AND COALESCE(e.crew_status, '') <> 'completed'
-             AND e.deleted_date IS NULL AND {PART_EVENTS_SQL})"
+             AND e.deleted_date IS NULL)"
     )
 }
 

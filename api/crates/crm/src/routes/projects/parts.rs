@@ -8,7 +8,8 @@
 
 use super::access::part_job_date_sql;
 use super::access::{
-    PART_EVENTS_SQL, PART_INDEX_SQL, PROJECT_JOB_SQL, Stage, Viewer, check_transition,
+    PART_EVENTS_SQL, PART_INDEX_SQL, PROJECT_EVENTS_TABLE, PROJECT_JOB_SQL, Stage, Viewer,
+    check_transition,
 };
 use super::schemas::{
     AppointmentPart, PartInput, PartType, PartTypeInput, PartUpdate, Project, ProjectPart,
@@ -322,8 +323,9 @@ pub async fn adopt_jobs(
     // The sale's events planned for a part type first get their part.
     let mut planned = QueryBuilder::<MySql>::new(format!(
         "SELECT DISTINCT p.id FROM projects p
-           JOIN events e ON {PROJECT_JOB_SQL} AND e.project_part_id IS NULL
-                        AND e.planned_part_type_id IS NOT NULL
+           JOIN LATERAL {PROJECT_EVENTS_TABLE} e
+             ON e.deleted_date IS NULL AND e.project_part_id IS NULL
+            AND e.planned_part_type_id IS NOT NULL
           WHERE p.company_id = "
     ));
     planned.push_bind(company_id);
@@ -335,7 +337,8 @@ pub async fn adopt_jobs(
     let mut sql = QueryBuilder::<MySql>::new(format!(
         "SELECT e.id, p.id, cal.slug
            FROM projects p
-           JOIN events e ON {PROJECT_JOB_SQL} AND e.project_part_id IS NULL
+           JOIN LATERAL {PROJECT_EVENTS_TABLE} e
+             ON e.deleted_date IS NULL AND e.project_part_id IS NULL
            JOIN calendars cal ON cal.id = e.calendar_id
                              AND cal.slug IN ('templates', 'installations')
           WHERE EXISTS (SELECT 1 FROM project_parts pp WHERE pp.project_id = p.id)
