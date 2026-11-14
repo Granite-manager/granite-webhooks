@@ -1460,6 +1460,7 @@ fn signed_document(
     }
     let date = signed_date(audit);
     let mut stamps = Vec::new();
+    let mut kept: Vec<(&SignatureField, String)> = Vec::new();
     for field in &fields {
         if !field.trimmed_value().is_empty() {
             continue;
@@ -1481,6 +1482,15 @@ fn signed_document(
                 "Required signer answer is missing",
             ));
         }
+        // A field stacked on an earlier one of the same kind (one placed by hand,
+        // one by Auto-detect) is one box to the signer: print the value once.
+        if kept
+            .iter()
+            .any(|(other, kept_value)| is_twin(other, field) && kept_value.trim() == value.trim())
+        {
+            continue;
+        }
+        kept.push((field, value.clone()));
         stamps.push(SignatureField {
             kind: if autofill {
                 FieldKind::Date
@@ -1500,6 +1510,20 @@ fn signed_document(
         append_audit(&mut doc, audit, &answers_sha)?;
     }
     Ok((doc, fields, answers_sha))
+}
+
+/// Same page and kind, overlapping at least half of the smaller box
+/// (the website's `isTwinField`).
+fn is_twin(a: &SignatureField, b: &SignatureField) -> bool {
+    if a.page != b.page || a.kind != b.kind {
+        return false;
+    }
+    let overlap_x = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
+    let overlap_y = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
+    if overlap_x <= 0.0 || overlap_y <= 0.0 {
+        return false;
+    }
+    overlap_x * overlap_y >= (a.width * a.height).min(b.width * b.height) * 0.5
 }
 
 /// Checks the answers can be printed (pictures, text fit, required ones)
@@ -1573,6 +1597,30 @@ pub fn build_native_signed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stacked_fields_of_one_kind_are_twins() {
+        let field = |kind, y, height| SignatureField {
+            kind,
+            page: 9,
+            x: 36.0,
+            y,
+            width: 366.0,
+            height,
+            required: true,
+            value: None,
+            ..serde_json::from_str(
+                r#"{"type":"signature","page":1,"x":0,"y":0,"width":1,"height":1,"required":true}"#,
+            )
+            .expect("field parses")
+        };
+        // Contract 103: hand-placed 30 pt box and Auto-detect's 24 pt box.
+        let hand = field(FieldKind::Signature, 518.9, 30.0);
+        let detected = field(FieldKind::Signature, 526.0, 24.0);
+        assert!(is_twin(&hand, &detected));
+        assert!(!is_twin(&hand, &field(FieldKind::Date, 526.0, 24.0)));
+        assert!(!is_twin(&hand, &field(FieldKind::Signature, 600.0, 24.0)));
+    }
 
     #[test]
     fn typography_is_folded_for_helvetica() {
