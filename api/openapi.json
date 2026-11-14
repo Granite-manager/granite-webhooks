@@ -65270,6 +65270,123 @@
         ]
       }
     },
+    "/v1/phone/calls/reply": {
+      "post": {
+        "tags": [
+          "phone"
+        ],
+        "summary": "Text the caller of an incoming call",
+        "description": "The call screen's quick replies: after the user declined a ringing call\non this phone with a message, the message goes to the caller as a text\nfrom the line they called (the call's number), as `POST /v1/phone/texts`\nsends it, and shows in the Texts tab's thread. Returns 201 with the stored\ntext. 404 when the call did not ring this phone or has\nno caller number or line; 403 `texting_disabled` or `not_my_line` (the\ncalled line is not one the user texts from), 409 `opted_out`, 429\n`rate_limited`, 502 when Telnyx failed. Device token only.",
+        "operationId": "reply_to_phone_call",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallReplyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty id, `empty_message` or `text_too_long`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid device token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`texting_disabled` or `not_my_line`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a call that rang this phone, or no caller number or line",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`opted_out`: the person texted STOP",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Telnyx failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/v1/phone/directions": {
       "get": {
         "tags": [
@@ -78432,6 +78549,24 @@
           "content_type": {
             "type": "string",
             "description": "Its type, e.g. `audio/mpeg` or `audio/wav`."
+          }
+        }
+      },
+      "CallReplyInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/phone/calls/reply`.",
+        "required": [
+          "telnyxCallId",
+          "text"
+        ],
+        "properties": {
+          "telnyxCallId": {
+            "type": "string",
+            "description": "The call id of Telnyx's incoming-call push (as for\n`POST /v1/phone/calls/decline`)."
+          },
+          "text": {
+            "type": "string",
+            "description": "The text to send the caller, up to 1600 characters (\"I'll call you\nback.\")."
           }
         }
       },
