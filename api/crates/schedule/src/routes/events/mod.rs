@@ -11,6 +11,7 @@
 //! - `GET /v1/events/{id}/details` → comments, files, attachments, history
 //! - `/v1/events/{id}/comments`, `/photos`, `/attachments` → add and remove
 //! - `GET /v1/events/{id}/sale` → the sale its project view shows
+//! - `GET /v1/events/{id}/job-photos` → the crew's job photos of its project
 //! - `/v1/events/{id}/project-notes` → notes on the event's sold project
 //! - `POST /v1/events/{id}/crew-status`, `POST /v1/me/location` → the crew's
 //!   On my way, Arrived and Completed (`crew`)
@@ -60,5 +61,6 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(issues::solve, issues::delete))
         .routes(routes!(project_notes::list, project_notes::add))
         .routes(routes!(project_notes::sale))
+        .routes(routes!(project_notes::job_photos))
         .routes(routes!(project_notes::delete))
 }
