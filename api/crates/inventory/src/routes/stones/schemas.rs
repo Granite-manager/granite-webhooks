@@ -1,5 +1,5 @@
 use crate::openapi::{IntoParams, ToSchema};
-use crate::serde_helpers::js_date;
+use crate::serde_helpers::{js_date, js_date_required};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
@@ -190,6 +190,22 @@ pub struct StoneSlab {
     /// The sale of the slab this remnant was cut from; null for whole slabs
     /// and for remnants of unsold slabs.
     pub parent_sale: Option<SlabParentSale>,
+    /// The slab's hold while it is on hold (unsold, hold not ended yet);
+    /// null otherwise. Set with `PUT /v1/slabs/{id}/hold`.
+    pub hold: Option<SlabHold>,
+}
+
+/// A hold on an available slab: nobody else should sell it until it ends.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct SlabHold {
+    /// When the hold ends by itself.
+    #[serde(serialize_with = "js_date_required")]
+    pub until: DateTime<Utc>,
+    /// When it was put on hold.
+    #[serde(serialize_with = "js_date")]
+    pub held_at: Option<DateTime<Utc>>,
+    /// Name of the user who put it on hold; null when unknown.
+    pub held_by_name: Option<String>,
 }
 
 /// A stone, by id and name.

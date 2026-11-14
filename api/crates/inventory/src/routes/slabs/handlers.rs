@@ -1,5 +1,8 @@
-use super::queries::{delete_slab, slab_in_company, slabs_by_ids, update_slab};
-use super::schemas::{ListSlabsQuery, SlabSummary, UpdateSlab};
+use super::queries::{
+    available_slab_in_company, delete_slab, hold_slab, release_slab, slab_in_company, slabs_by_ids,
+    update_slab,
+};
+use super::schemas::{HoldSlab, ListSlabsQuery, SlabSummary, UpdateSlab};
 use crate::auth::{AdminUser, EmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::{JsonBody, MultiQuery};
@@ -127,4 +130,79 @@ pub async fn list(
     Ok(Json(
         slabs_by_ids(&state.pool, user.company_id, &query.ids).await?,
     ))
+}
+
+/// Hold lengths a slab can be put on hold for, in days.
+pub const HOLD_DAYS: [i32; 5] = [3, 5, 7, 12, 15];
+
+/// Put a slab on hold
+///
+/// Holds an available (unsold, uncut) slab or remnant of the caller's
+/// company for 3, 5, 7, 12 or 15 days from now; the hold ends by itself.
+/// Holding again replaces the old hold. `GET /v1/stones/{id}/slabs` shows it
+/// as `hold`.
+#[crate::openapi::path(
+    put,
+    path = "/v1/slabs/{id}/hold",
+    operation_id = "hold_slab",
+    tag = "slabs",
+    params(("id" = i64, Path, description = "Slab id")),
+    request_body = HoldSlab,
+    responses(
+        (status = 204, description = "On hold"),
+        (status = 400, description = "Days is not 3, 5, 7, 12 or 15", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 404, description = "No such available slab in the caller's company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn hold(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    Path(id): Path<i64>,
+    JsonBody(body): JsonBody<HoldSlab>,
+) -> ApiResult<StatusCode> {
+    if !HOLD_DAYS.contains(&body.days) {
+        return Err(ApiError::BadRequest(
+            "days must be 3, 5, 7, 12 or 15".into(),
+        ));
+    }
+    if !available_slab_in_company(&state.pool, user.company_id, id).await? {
+        return Err(ApiError::NotFound);
+    }
+    hold_slab(&state.pool, id, user.id, body.days).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Take a slab off hold
+///
+/// Ends the hold of a slab of the caller's company now. A slab that is not
+/// on hold stays as it is.
+#[crate::openapi::path(
+    delete,
+    path = "/v1/slabs/{id}/hold",
+    operation_id = "release_slab_hold",
+    tag = "slabs",
+    params(("id" = i64, Path, description = "Slab id")),
+    responses(
+        (status = 204, description = "Off hold"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 404, description = "No such slab in the caller's company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn release(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    Path(id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    if !slab_in_company(&state.pool, user.company_id, id).await? {
+        return Err(ApiError::NotFound);
+    }
+    release_slab(&state.pool, id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

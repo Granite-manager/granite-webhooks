@@ -126,7 +126,8 @@ async fn sold_slab_has_its_sale(pool: MySqlPool) {
                 "slab_square_feet": "30.25",
                 "sink_names": ["Composite Black", "Composite Black", "Bar Prep Sink"]
             },
-            "parent_sale": null
+            "parent_sale": null,
+            "hold": null
         })
     );
 }
@@ -346,4 +347,65 @@ async fn legacy_undefined_slab_urls_read_as_null(pool: MySqlPool) {
         .unwrap();
     let rows = get(pool.clone(), &format!("/v1/stones/{stone}/slabs")).await;
     assert_eq!(slab(&rows, 6074)["url"], Value::Null);
+}
+
+#[test_db::test(seed)]
+async fn hold_shows_on_the_slab_until_released(pool: MySqlPool) {
+    let server = server(pool.clone());
+    for days in [0, 4, 30] {
+        server
+            .put("/v1/slabs/6074/hold")
+            .json(&json!({ "days": days }))
+            .with_session(sessions::REP)
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+    }
+    // A sold slab can't be held.
+    server
+        .put("/v1/slabs/6071/hold")
+        .json(&json!({ "days": 3 }))
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    server
+        .put("/v1/slabs/6074/hold")
+        .json(&json!({ "days": 7 }))
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let rows = get(pool.clone(), "/v1/stones/3010/slabs").await;
+    let hold = &slab(&rows, 6074)["hold"];
+    assert_eq!(hold["held_by_name"], "Rita Rep");
+    let days: i64 = sqlx::query_scalar(
+        "SELECT TIMESTAMPDIFF(HOUR, UTC_TIMESTAMP(), hold_until) FROM slab_inventory WHERE id = 6074",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!((7 * 24 - 1..=7 * 24).contains(&days), "{days}");
+    assert_eq!(slab(&rows, 6070)["hold"], Value::Null);
+
+    // An ended hold is not shown.
+    sqlx::query(
+        "UPDATE slab_inventory SET hold_until = UTC_TIMESTAMP() - INTERVAL 1 HOUR WHERE id = 6074",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let rows = get(pool.clone(), "/v1/stones/3010/slabs").await;
+    assert_eq!(slab(&rows, 6074)["hold"], Value::Null);
+
+    server
+        .put("/v1/slabs/6074/hold")
+        .json(&json!({ "days": 3 }))
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    server
+        .delete("/v1/slabs/6074/hold")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let rows = get(pool, "/v1/stones/3010/slabs").await;
+    assert_eq!(slab(&rows, 6074)["hold"], Value::Null);
 }

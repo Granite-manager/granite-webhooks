@@ -1,5 +1,5 @@
 use super::schemas::{
-    ListStonesQuery, QuickStoneInput, SearchStonesQuery, SlabParentSale, SlabSale, Stone,
+    ListStonesQuery, QuickStoneInput, SearchStonesQuery, SlabHold, SlabParentSale, SlabSale, Stone,
     StoneDetail, StoneRef, StoneSlab,
 };
 use crate::sql::{escape_like, push_in};
@@ -240,6 +240,9 @@ struct SlabRow {
     parent_sale_id: Option<i32>,
     parent_customer_name: Option<String>,
     parent_seller_name: Option<String>,
+    hold_until: Option<DateTime<Utc>>,
+    hold_at: Option<DateTime<Utc>>,
+    hold_by_name: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -274,7 +277,10 @@ pub async fn list_stone_slabs(
             CAST(slab.square_feet AS CHAR) AS slab_square_feet,
             parent_sale.id AS parent_sale_id,
             parent_customer.name AS parent_customer_name,
-            parent_seller.name AS parent_seller_name
+            parent_seller.name AS parent_seller_name,
+            CASE WHEN slab.sale_id IS NULL AND slab.hold_until > UTC_TIMESTAMP()
+                 THEN slab.hold_until END AS hold_until,
+            slab.hold_at, holder.name AS hold_by_name
          FROM slab_inventory slab
          JOIN stones source ON source.id = slab.stone_id AND source.company_id = ?
          LEFT JOIN sales sale ON sale.id = slab.sale_id
@@ -284,6 +290,7 @@ pub async fn list_stone_slabs(
          LEFT JOIN sales parent_sale ON parent_sale.id = parent.sale_id
          LEFT JOIN customers parent_customer ON parent_customer.id = parent_sale.customer_id
          LEFT JOIN users parent_seller ON parent_seller.id = parent_sale.seller_id
+         LEFT JOIN users holder ON holder.id = slab.hold_by
          WHERE slab.cut_date IS NULL AND slab.deleted_at IS NULL
            AND (slab.stone_id = ? OR slab.stone_id IN (
                 SELECT source_stone_id FROM stone_slab_links WHERE stone_id = ?))
@@ -349,6 +356,11 @@ pub async fn list_stone_slabs(
                     id,
                     customer_name: row.parent_customer_name,
                     seller_name: row.parent_seller_name,
+                }),
+                hold: row.hold_until.map(|until| SlabHold {
+                    until,
+                    held_at: row.hold_at,
+                    held_by_name: row.hold_by_name,
                 }),
             }
         })
