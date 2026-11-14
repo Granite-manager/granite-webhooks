@@ -5,6 +5,7 @@
 //! `admin.stones.edit.$stone.information.tsx`, `admin.stones.delete.$stone.tsx`
 //! and `api.stones.$stoneId.samples.tsx`.
 
+use super::materials::link_materials;
 use crate::auth::{AdminUser, ShopOrEmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -71,6 +72,9 @@ pub struct StoneInput {
     /// Where the bundle is in the yard.
     #[serde(default)]
     pub bundle_location: Option<String>,
+    /// Number of the quarry block the bundle was cut from.
+    #[serde(default)]
+    pub block_number: Option<String>,
     /// Expected delivery, `YYYY-MM-DD`; null for none.
     #[serde(default)]
     pub delivery_date: Option<String>,
@@ -232,8 +236,8 @@ pub async fn create(
     let result = sqlx::query(
         "INSERT INTO stones (name, type, finishing, url, company_id, is_display, on_sale,
             regular_stock, supplier_id, width, length, cost_per_sqft, retail_price, level,
-            bundle_number, bundle_location, delivery_date)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            bundle_number, bundle_location, delivery_date, block_number)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(input.name.trim())
     .bind(input.kind.trim())
@@ -252,10 +256,12 @@ pub async fn create(
     .bind(non_empty(input.bundle_number.as_ref()))
     .bind(non_empty(input.bundle_location.as_ref()))
     .bind(non_empty(input.delivery_date.as_ref()))
+    .bind(non_empty(input.block_number.as_ref()))
     .execute(&mut *tx)
     .await?;
     let id = i32::try_from(result.last_insert_id()).unwrap_or(i32::MAX);
     set_colors(&mut tx, id, &input.color_ids).await?;
+    link_materials(&mut tx, user.company_id, Some(id)).await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(CreatedStone { id })))
 }
@@ -305,12 +311,13 @@ pub async fn update(
         uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
     }
     sqlx::query(
-        "UPDATE stones SET name = ?, type = ?, finishing = ?, url = COALESCE(?, url),
+        "UPDATE stones SET material_id = IF(TRIM(name) <=> ?, material_id, NULL), name = ?, type = ?, finishing = ?, url = COALESCE(?, url),
             is_display = ?, regular_stock = ?, supplier_id = ?, length = ?, width = ?,
             on_sale = ?, cost_per_sqft = ?, level = ?, retail_price = ?, bundle_number = ?,
-            bundle_location = ?, delivery_date = ?
+            bundle_location = ?, delivery_date = ?, block_number = ?
          WHERE id = ? AND company_id = ?",
     )
+    .bind(input.name.trim())
     .bind(input.name.trim())
     .bind(input.kind.trim())
     .bind(&input.finishing)
@@ -327,11 +334,13 @@ pub async fn update(
     .bind(non_empty(input.bundle_number.as_ref()))
     .bind(non_empty(input.bundle_location.as_ref()))
     .bind(non_empty(input.delivery_date.as_ref()))
+    .bind(non_empty(input.block_number.as_ref()))
     .bind(id)
     .bind(user.company_id)
     .execute(&mut *tx)
     .await?;
     set_colors(&mut tx, id, &input.color_ids).await?;
+    link_materials(&mut tx, user.company_id, Some(id)).await?;
     // Another stone can point at the same photo; it keeps it.
     let shared = match (&new_url, &current_url) {
         (Some(_), Some(old)) => {

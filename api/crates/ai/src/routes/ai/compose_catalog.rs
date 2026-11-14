@@ -366,6 +366,8 @@ mod tests {
             samples_importance: None,
             bundle_number: None,
             bundle_location: None,
+            block_number: None,
+            material_id: None,
             delivery_date: None,
             created_date: None,
             slabs: SlabCounts {

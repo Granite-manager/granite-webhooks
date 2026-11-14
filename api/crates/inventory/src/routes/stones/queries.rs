@@ -19,7 +19,8 @@ pub fn stones_with_slab_counts(company_id: i32) -> QueryBuilder<MySql> {
             COALESCE(stones.regular_stock, 0) AS regular_stock,
             stones.length, stones.width, stones.retail_price, stones.cost_per_sqft,
             stones.level, stones.finishing, stones.samples_amount, stones.samples_importance,
-            stones.bundle_number, stones.bundle_location,
+            stones.bundle_number, stones.bundle_location, stones.block_number,
+            stones.material_id,
             DATE_FORMAT(stones.delivery_date, '%Y-%m-%d') AS delivery_date,
             stones.created_date,
             COUNT(slab.id) AS slabs_total,
@@ -195,6 +196,7 @@ pub async fn find_stone(
             COALESCE(regular_stock, 0) AS regular_stock,
             length, width, retail_price, cost_per_sqft, level, finishing,
             samples_amount, samples_importance, bundle_number, bundle_location,
+            block_number, material_id,
             DATE_FORMAT(delivery_date, '%Y-%m-%d') AS delivery_date, created_date
          FROM stones
          WHERE id = ? AND company_id = ? AND deleted_at IS NULL",

@@ -6779,6 +6779,360 @@
         ]
       }
     },
+    "/v1/stones/settings": {
+      "get": {
+        "tags": [
+          "stones"
+        ],
+        "summary": "Get the stone settings",
+        "description": "What the company's Stones page shows first: `stones` (one card per stone,\nthe default) or `materials` (one card per material, then its stones).",
+        "operationId": "get_stone_settings",
+        "responses": {
+          "200": {
+            "description": "The settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoneSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or of the shop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "stones"
+        ],
+        "summary": "Save the stone settings",
+        "description": "Admin › Stones › Settings. Switching to `materials` links every stone to\nthe material of its name (created when missing); `stones` keeps the\nlinks, so switching back and forth loses nothing.",
+        "operationId": "save_stone_settings",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoneSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Unknown `stone_view`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/stones/materials": {
+      "get": {
+        "tags": [
+          "stones"
+        ],
+        "summary": "List the company's materials",
+        "description": "Takes the filters of `GET /v1/stones` and returns, sorted by name, every\nmaterial that has a matching stone, with the slab counts of those stones\nsummed and how many installed project photos the material has. Links\nstones without a material first.",
+        "operationId": "list_stone_materials",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "description": "Only stones of these types, e.g. `granite`, `quartz`, `marble`.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "supplier_id",
+            "in": "query",
+            "description": "Only stones bought from this supplier (a supplier id).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "color_id",
+            "in": "query",
+            "description": "Only stones tagged with at least one of these colors (color ids).",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "description": "Only stones of these price levels (1 = cheapest ... 7).",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          },
+          {
+            "name": "finishing",
+            "in": "query",
+            "description": "Only stones with these surface finishes: `polished`, `leathered`, `honed`.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "include_sold_out",
+            "in": "query",
+            "description": "`true` also returns sold out stones: no available slab and not regular\nstock. Default `false`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "include_hidden",
+            "in": "query",
+            "description": "`true` also returns stones hidden from the catalogs (`is_display`\nfalse). Admins only (403 otherwise). Default `false`.",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Materials by name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StoneMaterial"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A filter has the wrong type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not staff, or asks for hidden stones without being an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/stones/materials/{id}": {
+      "get": {
+        "tags": [
+          "stones"
+        ],
+        "summary": "Get one material",
+        "description": "The material with all its stones (bundles, sold out ones included;\nhidden ones for admins only) sorted by bundle number, each with its slab\ncounts, and the installed project photos of every one of its stones.",
+        "operationId": "get_stone_material",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Material id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The material",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or of the shop",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such material in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/stones/quick": {
       "post": {
         "tags": [
@@ -11838,6 +12192,340 @@
           },
           "409": {
             "description": "Another type has this name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/stone-finishes": {
+      "get": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "List the company's stone finishes",
+        "description": "Returns the surface finishes stones of the company can have (`polished`,\n`honed`...), by name. A stone's `finishing` must be one of them.",
+        "operationId": "list_stone_finishes",
+        "responses": {
+          "200": {
+            "description": "Stone finishes by name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StoneType"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Add a stone finish",
+        "description": "Creates a finish for the caller's company. Names are unique per company,\nignoring case.",
+        "operationId": "create_stone_finish",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoneTypeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Finish created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoneType"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty or longer than 255 characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A finish with this name exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/stone-finishes/{id}": {
+      "delete": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Delete a stone finish",
+        "description": "Deletes a finish no live stone uses. When stones still use it, answers\n409 with those stones; delete or change them first.",
+        "operationId": "delete_stone_finish",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Stone finish id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Finish deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such finish in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Live stones use the finish",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoneTypeInUse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "catalog"
+        ],
+        "summary": "Rename a stone finish",
+        "description": "Renames the finish and sets the new name on every stone of the company\nthat had the old one.",
+        "operationId": "rename_stone_finish",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Stone finish id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoneTypeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Finish renamed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoneType"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty or longer than 255 characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such finish in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another finish has this name",
             "content": {
               "application/json": {
                 "schema": {
@@ -44778,6 +45466,170 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/EventSale"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/events/{id}/job-photos": {
+      "get": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "List the project's job photos",
+        "description": "The crew's Before and Installed photos from the job pages of every event\nof the event's project (its template, its install), oldest first.",
+        "operationId": "list_event_job_photos",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Photos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventPhoto"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/events/{id}/job-issues": {
+      "get": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "List the project's issues",
+        "description": "The problems the crew reported on every event of the event's project\n(its template, its install), oldest first.",
+        "operationId": "list_event_job_issues",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Issues",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EventIssue"
+                  }
                 }
               }
             }
@@ -92444,6 +93296,89 @@
           }
         }
       },
+      "MaterialDetail": {
+        "type": "object",
+        "description": "One material with its stones and installed photos.",
+        "required": [
+          "id",
+          "name",
+          "stones",
+          "images"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Material id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name, e.g. \"Fantasy Brown\"."
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stone type."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Photo: the material's own, else the first stone photo."
+          },
+          "stones": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Stone"
+            },
+            "description": "Its stones by bundle number; hidden ones only for admins."
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MaterialImage"
+            },
+            "description": "Installed project photos of all its stones."
+          }
+        }
+      },
+      "MaterialImage": {
+        "type": "object",
+        "description": "An installed project photo of one of the material's stones.",
+        "required": [
+          "id",
+          "stone_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Photo id (`installed_stones`)."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Photo URL."
+          },
+          "stone_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Stone the photo was added to."
+          },
+          "bundle_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That stone's bundle number."
+          }
+        }
+      },
       "MaterialSqft": {
         "type": "object",
         "description": "Square feet of one material.",
@@ -109996,6 +110931,21 @@
             ],
             "description": "Where the bundle is stored in the yard, free text."
           },
+          "block_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Number of the quarry block the bundle was cut from, free text."
+          },
+          "material_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Material the stone belongs to (`GET /v1/stones/materials`); null until\nthe company first uses the materials view."
+          },
           "delivery_date": {
             "type": [
               "string",
@@ -110151,6 +111101,21 @@
             ],
             "description": "Where the bundle is stored in the yard, free text."
           },
+          "block_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Number of the quarry block the bundle was cut from, free text."
+          },
+          "material_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Material the stone belongs to (`GET /v1/stones/materials`); null until\nthe company first uses the materials view."
+          },
           "delivery_date": {
             "type": [
               "string",
@@ -110244,7 +111209,7 @@
           },
           "finishing": {
             "type": "string",
-            "description": "`polished`, `leathered` or `honed`."
+            "description": "One of the company's stone finishes (`GET /v1/stone-finishes`)."
           },
           "image_url": {
             "type": [
@@ -110327,6 +111292,13 @@
             ],
             "description": "Where the bundle is in the yard."
           },
+          "block_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Number of the quarry block the bundle was cut from."
+          },
           "delivery_date": {
             "type": [
               "string",
@@ -110377,6 +111349,66 @@
           }
         }
       },
+      "StoneMaterial": {
+        "type": "object",
+        "description": "A material with the slab counts of its stones.",
+        "required": [
+          "id",
+          "name",
+          "stones",
+          "is_display",
+          "regular_stock",
+          "installed",
+          "slabs"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Material id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name, e.g. \"Fantasy Brown\"."
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stone type, lowercase: `granite`, `quartz`..."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Photo: the material's own, else the first stone photo."
+          },
+          "stones": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stones (bundles) of the material that match the filters."
+          },
+          "is_display": {
+            "type": "boolean",
+            "description": "Any of its stones is shown in catalogs."
+          },
+          "regular_stock": {
+            "type": "boolean",
+            "description": "Any of its stones is regular stock."
+          },
+          "installed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Installed project photos across its stones."
+          },
+          "slabs": {
+            "$ref": "#/components/schemas/SlabCounts",
+            "description": "Slab counts summed over its stones."
+          }
+        }
+      },
       "StoneRef": {
         "type": "object",
         "description": "A stone, by id and name.",
@@ -110397,6 +111429,20 @@
             "description": "Stone name."
           }
         }
+      },
+      "StoneSettings": {
+        "type": "object",
+        "description": "`GET` and `PUT /v1/stones/settings`.",
+        "required": [
+          "stone_view"
+        ],
+        "properties": {
+          "stone_view": {
+            "$ref": "#/components/schemas/StoneView",
+            "description": "`stones` (default) or `materials`."
+          }
+        },
+        "additionalProperties": false
       },
       "StoneSlab": {
         "type": "object",
@@ -110585,6 +111631,14 @@
             "description": "Stone name."
           }
         }
+      },
+      "StoneView": {
+        "type": "string",
+        "description": "What the Stones page shows first.",
+        "enum": [
+          "stones",
+          "materials"
+        ]
       },
       "StopDistance": {
         "type": "object",

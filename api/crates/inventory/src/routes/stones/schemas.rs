@@ -78,6 +78,11 @@ pub struct Stone {
     pub bundle_number: Option<String>,
     /// Where the bundle is stored in the yard, free text.
     pub bundle_location: Option<String>,
+    /// Number of the quarry block the bundle was cut from, free text.
+    pub block_number: Option<String>,
+    /// Material the stone belongs to (`GET /v1/stones/materials`); null until
+    /// the company first uses the materials view.
+    pub material_id: Option<i32>,
     /// Expected delivery date, `YYYY-MM-DD`; null if not set.
     pub delivery_date: Option<String>,
     /// When the stone was added.
@@ -148,6 +153,11 @@ pub struct StoneDetail {
     pub bundle_number: Option<String>,
     /// Where the bundle is stored in the yard, free text.
     pub bundle_location: Option<String>,
+    /// Number of the quarry block the bundle was cut from, free text.
+    pub block_number: Option<String>,
+    /// Material the stone belongs to (`GET /v1/stones/materials`); null until
+    /// the company first uses the materials view.
+    pub material_id: Option<i32>,
     /// Expected delivery date, `YYYY-MM-DD`; null if not set.
     pub delivery_date: Option<String>,
     /// When the stone was added.
