@@ -80,3 +80,56 @@ pub async fn slabs_by_ids(
     query.push(" ORDER BY slab.id");
     query.build_query_as::<SlabSummary>().fetch_all(pool).await
 }
+
+/// Whether a live, unsold, uncut slab of the company's stones has this id.
+pub async fn available_slab_in_company(
+    pool: &MySqlPool,
+    company_id: i32,
+    slab_id: i64,
+) -> Result<bool, sqlx::Error> {
+    let exists: Option<i64> = sqlx::query_scalar(
+        "SELECT CAST(slab.id AS SIGNED) FROM slab_inventory slab
+         JOIN stones ON stones.id = slab.stone_id
+         WHERE slab.id = ? AND stones.company_id = ? AND slab.deleted_at IS NULL
+           AND slab.sale_id IS NULL AND slab.cut_date IS NULL",
+    )
+    .bind(slab_id)
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(exists.is_some())
+}
+
+/// Puts a slab on hold for `days` days from now, by `user_id`. A new hold
+/// replaces the old one.
+pub async fn hold_slab(
+    pool: &MySqlPool,
+    slab_id: i64,
+    user_id: i32,
+    days: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE slab_inventory
+            SET hold_until = UTC_TIMESTAMP() + INTERVAL ? DAY,
+                hold_by = ?, hold_at = UTC_TIMESTAMP()
+          WHERE id = ?",
+    )
+    .bind(days)
+    .bind(user_id)
+    .bind(slab_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Takes a slab off hold.
+pub async fn release_slab(pool: &MySqlPool, slab_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE slab_inventory SET hold_until = NULL, hold_by = NULL, hold_at = NULL
+          WHERE id = ?",
+    )
+    .bind(slab_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

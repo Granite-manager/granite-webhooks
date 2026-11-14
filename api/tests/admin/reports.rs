@@ -50,3 +50,63 @@ async fn cut_slabs_report_lists_whole_cut_slabs(pool: MySqlPool) {
         .await
         .assert_status(axum::http::StatusCode::FORBIDDEN);
 }
+
+#[test_db::test(seed)]
+async fn slabs_report_by_status(pool: MySqlPool) {
+    sqlx::query(
+        "UPDATE slab_inventory SET hold_until = UTC_TIMESTAMP() + INTERVAL 3 DAY,
+                hold_by = (SELECT seller_id FROM sales WHERE id = 7010), hold_at = UTC_TIMESTAMP()
+          WHERE id = 6074",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // An ended hold counts as available.
+    sqlx::query(
+        "UPDATE slab_inventory SET hold_until = UTC_TIMESTAMP() - INTERVAL 1 DAY WHERE id = 6070",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let server = server(pool);
+    let report = |status: &'static str| {
+        let server = &server;
+        async move {
+            let body: Value = server
+                .get(&format!("/v1/reports/slabs?status={status}&stone_id=3010"))
+                .with_session(sessions::ADMIN)
+                .await
+                .json();
+            body.as_array().unwrap().clone()
+        }
+    };
+    let ids = |rows: &[Value]| {
+        let mut ids: Vec<i64> = rows.iter().map(|row| row["id"].as_i64().unwrap()).collect();
+        ids.sort();
+        ids
+    };
+    let on_hold = report("on_hold").await;
+    assert_eq!(ids(&on_hold), [6074]);
+    assert_eq!(on_hold[0]["held_by_name"], "Rita Rep");
+    let available = report("available").await;
+    assert!(ids(&available).contains(&6070));
+    assert!(!ids(&available).contains(&6074));
+    assert!(!ids(&available).contains(&6071));
+    let sold = report("sold").await;
+    assert!(ids(&sold).contains(&6071));
+    assert!(ids(&sold).contains(&6073));
+    assert_eq!(
+        sold.iter().find(|row| row["id"] == 6071).unwrap()["customer_name"],
+        "Alice Lead"
+    );
+    server
+        .get("/v1/reports/slabs?status=available")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(axum::http::StatusCode::FORBIDDEN);
+    server
+        .get("/v1/reports/slabs?status=nope")
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(axum::http::StatusCode::BAD_REQUEST);
+}

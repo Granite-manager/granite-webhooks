@@ -56,3 +56,11 @@ pub struct SlabStone {
     #[serde(rename = "type")]
     pub kind: Option<String>,
 }
+
+/// Body of `PUT /v1/slabs/{id}/hold`: how long to hold the slab.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HoldSlab {
+    /// Days to hold it: 3, 5, 7, 12 or 15.
+    pub days: i32,
+}

@@ -9912,6 +9912,168 @@
         ]
       }
     },
+    "/v1/slabs/{id}/hold": {
+      "put": {
+        "tags": [
+          "slabs"
+        ],
+        "summary": "Put a slab on hold",
+        "description": "Holds an available (unsold, uncut) slab or remnant of the caller's\ncompany for 3, 5, 7, 12 or 15 days from now; the hold ends by itself.\nHolding again replaces the old hold. `GET /v1/stones/{id}/slabs` shows it\nas `hold`.",
+        "operationId": "hold_slab",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Slab id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HoldSlab"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "On hold"
+          },
+          "400": {
+            "description": "Days is not 3, 5, 7, 12 or 15",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such available slab in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "slabs"
+        ],
+        "summary": "Take a slab off hold",
+        "description": "Ends the hold of a slab of the caller's company now. A slab that is not\non hold stays as it is.",
+        "operationId": "release_slab_hold",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Slab id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Off hold"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such slab in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/sales/{id}": {
       "get": {
         "tags": [
@@ -39594,6 +39756,127 @@
         ]
       }
     },
+    "/v1/reports/slabs": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Slabs by status report",
+        "description": "Slabs and remnants of the caller's company (deleted ones left out) with\nthe given status: `available` (in the yard, unsold, not on hold),\n`on_hold` (unsold, hold not ended yet) or `sold` (part of a sale, cut or\nnot). `from`/`to` filter on the day the slab was added, put on hold or\nsold. Newest first.",
+        "operationId": "get_slabs_by_status_report",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Which slabs: `available`, `on_hold` or `sold`.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/SlabStatus"
+            }
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "description": "On or after this day, `YYYY-MM-DD`: the day the slab was added\n(available), put on hold (on hold) or sold (sold).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "On or before this day, `YYYY-MM-DD`; same day as `from`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "supplier_id",
+            "in": "query",
+            "description": "Only stones of this supplier.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "stone_id",
+            "in": "query",
+            "description": "Only this stone.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Slabs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/StatusSlab"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or unknown status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/shop/cut-stats": {
       "get": {
         "tags": [
@@ -54463,6 +54746,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PromisesRun"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong job key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "job_key": []
+          }
+        ]
+      }
+    },
+    "/v1/jobs/raptor-jobs": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Make the Raptor jobs of new projects",
+        "description": "For each company with a Raptor login, the projects created since the login\nwas saved that have no Raptor job yet: their jobs are added to Raptor with\nthe job info, material, sink cutouts and the \"Notes\" note.",
+        "operationId": "run_raptor_jobs",
+        "responses": {
+          "200": {
+            "description": "How many projects were sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RaptorJobsRun"
                 }
               }
             }
@@ -78920,6 +79250,7 @@
         "required": [
           "id",
           "name",
+          "raptor_password_set",
           "quickbooks_enabled",
           "signature_enabled",
           "billing_required",
@@ -79043,6 +79374,17 @@
               "null"
             ],
             "description": "`SignWell` API key, or null."
+          },
+          "raptor_email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Raptor (templator.com) login email, or null: new projects become\nRaptor jobs."
+          },
+          "raptor_password_set": {
+            "type": "boolean",
+            "description": "A Raptor password is saved (it is never sent back)."
           },
           "quickbooks_enabled": {
             "type": "boolean",
@@ -79386,6 +79728,20 @@
               "null"
             ],
             "description": "`SignWell` API key; edit only."
+          },
+          "raptor_email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Raptor (templator.com) login email; edit only. Empty turns Raptor off."
+          },
+          "raptor_password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A new Raptor password; edit only. Omit or leave empty to keep it."
           },
           "quickbooks_enabled": {
             "type": [
@@ -88586,6 +88942,21 @@
             "description": "Its type: `audio/mpeg` or `audio/wav` (an `.mp3` / `.wav` name is\nenough)."
           }
         }
+      },
+      "HoldSlab": {
+        "type": "object",
+        "description": "Body of `PUT /v1/slabs/{id}/hold`: how long to hold the slab.",
+        "required": [
+          "days"
+        ],
+        "properties": {
+          "days": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Days to hold it: 3, 5, 7, 12 or 15."
+          }
+        },
+        "additionalProperties": false
       },
       "HoldState": {
         "type": "object",
@@ -103001,6 +103372,28 @@
           }
         }
       },
+      "RaptorJobsRun": {
+        "type": "object",
+        "description": "What a run did.",
+        "required": [
+          "done",
+          "failed"
+        ],
+        "properties": {
+          "done": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Projects whose Raptor jobs were made.",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Projects that failed this time (tried again later, three times in all).",
+            "minimum": 0
+          }
+        }
+      },
       "RateLimited": {
         "type": "object",
         "description": "`429`: wait before trying again.",
@@ -108135,6 +108528,35 @@
           }
         }
       },
+      "SlabHold": {
+        "type": "object",
+        "description": "A hold on an available slab: nobody else should sell it until it ends.",
+        "required": [
+          "until"
+        ],
+        "properties": {
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the hold ends by itself."
+          },
+          "held_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was put on hold."
+          },
+          "held_by_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name of the user who put it on hold; null when unknown."
+          }
+        }
+      },
       "SlabInput": {
         "type": "object",
         "description": "A slab to set.",
@@ -109150,6 +109572,127 @@
         },
         "additionalProperties": false
       },
+      "StatusSlab": {
+        "type": "object",
+        "description": "A slab or remnant with its stone, supplier, hold and sale.",
+        "required": [
+          "id",
+          "is_remnant",
+          "stone_id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Slab id."
+          },
+          "bundle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Bundle label."
+          },
+          "is_remnant": {
+            "type": "boolean",
+            "description": "A remnant cut from another slab (false for a whole slab)."
+          },
+          "length": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Length in inches as entered."
+          },
+          "width": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Width in inches as entered."
+          },
+          "stone_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Stone id."
+          },
+          "stone_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stone name."
+          },
+          "supplier_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Supplier id; null when the stone has none."
+          },
+          "supplier_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Supplier name."
+          },
+          "added_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the slab was added."
+          },
+          "hold_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the hold ends (on hold only)."
+          },
+          "held_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was put on hold (on hold only)."
+          },
+          "held_by_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who put it on hold (on hold only)."
+          },
+          "sale_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was sold (sold only)."
+          },
+          "seller_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who sold it (sold only)."
+          },
+          "customer_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who bought it (sold only)."
+          }
+        }
+      },
       "StepAuto": {
         "type": "object",
         "description": "What checks a process step off by itself.",
@@ -109949,6 +110492,17 @@
               {
                 "$ref": "#/components/schemas/SlabParentSale",
                 "description": "The sale of the slab this remnant was cut from; null for whole slabs\nand for remnants of unsold slabs."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hold": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SlabHold",
+                "description": "The slab's hold while it is on hold (unsold, hold not ended yet);\nnull otherwise. Set with `PUT /v1/slabs/{id}/hold`."
               },
               {
                 "type": "null"
