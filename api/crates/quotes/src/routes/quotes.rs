@@ -11,14 +11,20 @@
 
 use crate::auth::{EmployeeUser, ShopOrEmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
+use crate::extract::MultiQuery;
 use crate::openapi::{IntoParams, ToSchema};
 use crate::openapi::{OpenApiRouter, routes};
+use crate::quote_pricing::doc::QuoteDoc;
+use crate::quote_pricing::price_list;
+use crate::quote_pricing::takeoff::{area_takeoff, round_takeoff};
 use crate::routes::quote_editor::STONE_IN_STOCK_SQL;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sqlx::{MySql, QueryBuilder};
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -32,6 +38,7 @@ pub fn router() -> OpenApiRouter<AppState> {
             crate::routes::quote_editor::update_quote
         ))
         .routes(routes!(inventory_slabs))
+        .routes(routes!(quote_square_feet))
         .routes(routes!(print_preview))
 }
 
@@ -186,6 +193,141 @@ pub async fn delete_quote(
         return Err(ApiError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Query of `GET /v1/quotes/square-feet`.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct SquareFeetQuery {
+    /// Quote ids (`ids=1&ids=2`), at most 200.
+    #[serde(default)]
+    pub ids: Vec<i32>,
+}
+
+/// A quote's countertop square feet.
+#[derive(Debug, Serialize, ToSchema, PartialEq)]
+pub struct QuoteSquareFeet {
+    /// The quote.
+    pub id: i32,
+    /// Countertop sq ft of its drawing: each area's, rounded as its price
+    /// list rounds material (to 0.1 sq ft, or up to a whole foot), times how
+    /// many of that area the quote sells, added up. Not rounded again.
+    pub square_feet: f64,
+}
+
+/// A quote's id, drawing, and the rounding of its snapshot and revision.
+type SquareFeetRow = (i32, Option<String>, Option<String>, Option<String>);
+
+/// Most quotes one `GET /v1/quotes/square-feet` takes.
+const MAX_SQUARE_FEET_QUOTES: usize = 200;
+
+/// A price list (`column`, JSON) cut down to what `price_list::parse` checks
+/// and its sq ft rounding: its products and items, most of its size, stay in
+/// the database. Not an object, or missing a checked field: read as invalid.
+fn rounding_info_sql(column: &str) -> String {
+    format!(
+        "CAST(JSON_OBJECT(
+            'units', JSON_EXTRACT({column}, '$.units'),
+            'currency', JSON_EXTRACT({column}, '$.currency'),
+            'expirationDays', JSON_EXTRACT({column}, '$.expirationDays'),
+            'lineItemPriceRounding', JSON_EXTRACT({column}, '$.lineItemPriceRounding'),
+            'arrProducts', IF(JSON_TYPE(JSON_EXTRACT({column}, '$.arrProducts')) = 'ARRAY',
+                              JSON_ARRAY(), NULL),
+            'arrOtherItems', IF(JSON_TYPE(JSON_EXTRACT({column}, '$.arrOtherItems')) = 'ARRAY',
+                                JSON_ARRAY(), NULL),
+            'materialRounding', JSON_EXTRACT({column}, '$.materialRounding')) AS CHAR)"
+    )
+}
+
+/// Whether a price list read with [`rounding_info_sql`] rounds sq ft up to
+/// whole feet; none when it is not a price list.
+fn rounds_up(info: Option<&str>) -> Option<bool> {
+    let info = price_list::parse(&serde_json::from_str::<Value>(info?).ok()?)?;
+    Some(info.get("materialRounding").and_then(Value::as_str) == Some("up"))
+}
+
+/// List quotes' countertop square feet
+///
+/// The countertop sq ft of each of these quotes of the company, as the quote
+/// page shows it: every area of the drawing, rounded as the quote's prices
+/// round material (its price snapshot, else its price list revision), times
+/// the area's quantity. For a day's total on the schedule, where opening
+/// every quote (`GET /v1/quotes/{id}`) to add them up is far too much.
+/// Deleted quotes and other companies' are left out; a quote with no drawing
+/// has 0. Ordered by id.
+#[crate::openapi::path(
+    get,
+    path = "/v1/quotes/square-feet",
+    operation_id = "list_quote_square_feet",
+    tag = "quotes",
+    params(SquareFeetQuery),
+    responses(
+        (status = 200, description = "Each quote's sq ft", body = [QuoteSquareFeet]),
+        (status = 400, description = "More than 200 quotes asked for", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn quote_square_feet(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    MultiQuery(query): MultiQuery<SquareFeetQuery>,
+) -> ApiResult<Json<Vec<QuoteSquareFeet>>> {
+    let mut ids = query.ids;
+    ids.sort_unstable();
+    ids.dedup();
+    if ids.len() > MAX_SQUARE_FEET_QUOTES {
+        return Err(ApiError::BadRequest(format!(
+            "at most {MAX_SQUARE_FEET_QUOTES} quotes at once"
+        )));
+    }
+    if ids.is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+    // The quote's prices are its snapshot, else its price list revision
+    // (`pricing_with_stock`); only the rounding is read from them.
+    let mut sql = QueryBuilder::<MySql>::new(format!(
+        "SELECT q.id, CAST(q.draft_drawing_json AS CHAR), {snapshot},
+                IF(pl.id IS NULL, NULL, {revision})
+           FROM quotes q
+           LEFT JOIN price_list_revisions r ON r.id = q.price_list_revision_id
+           LEFT JOIN price_lists pl ON pl.id = r.price_list_id AND pl.company_id = q.company_id
+          WHERE q.deleted_at IS NULL AND q.company_id = ",
+        snapshot = rounding_info_sql("q.price_snapshot_json"),
+        revision = rounding_info_sql("r.info_json"),
+    ));
+    sql.push_bind(user.company_id);
+    crate::sql::push_in(&mut sql, "q.id", &ids);
+    sql.push(" ORDER BY q.id");
+    let rows: Vec<SquareFeetRow> = sql.build_query_as().fetch_all(&state.pool).await?;
+    let quotes = rows
+        .into_iter()
+        .map(|(id, drawing, snapshot, revision)| {
+            let drawing = drawing
+                .as_deref()
+                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+                .unwrap_or(Value::Null);
+            let doc = QuoteDoc::from_stored(&drawing);
+            let up = rounds_up(snapshot.as_deref())
+                .or_else(|| rounds_up(revision.as_deref()))
+                .unwrap_or(false);
+            let square_feet = doc
+                .areas
+                .iter()
+                .map(|area| {
+                    // The page's `area.quantity || 1`.
+                    let quantity = if area.quantity == 0 { 1 } else { area.quantity };
+                    #[allow(clippy::cast_precision_loss)]
+                    let quantity = quantity as f64;
+                    round_takeoff(&area_takeoff(&doc, &area.id), up).counter_sq_ft * quantity
+                })
+                .sum();
+            QuoteSquareFeet { id, square_feet }
+        })
+        .collect();
+    Ok(Json(quotes))
 }
 
 /// Query of `GET /v1/quotes/inventory-slabs`.
