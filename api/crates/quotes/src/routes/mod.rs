@@ -20,6 +20,7 @@ pub mod quote_portal;
 pub mod quote_presets;
 pub mod quote_price_lists;
 pub mod quote_sale_events;
+pub mod quote_square_feet;
 pub mod quotes;
 pub mod signature_requests;
 pub mod signatures;

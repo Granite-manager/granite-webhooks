@@ -3,6 +3,7 @@
 //! - `GET /v1/quotes` → the company's quotes for the quotes list (or one customer's)
 //! - `DELETE /v1/quotes/{id}` → soft-deletes a quote
 //! - `GET /v1/quotes/inventory-slabs` → a stone's free slabs for the layout
+//! - `GET /v1/quotes/square-feet` → many quotes' countertop sq ft (`quote_square_feet`)
 //! - `POST /v1/quotes/print-previews` → where to put a printed quote PDF to open it
 //!
 //! Replaces the Remix `employee.quotes` loader, the `employee.quotes.delete`
@@ -32,6 +33,9 @@ pub fn router() -> OpenApiRouter<AppState> {
             crate::routes::quote_editor::update_quote
         ))
         .routes(routes!(inventory_slabs))
+        .routes(routes!(
+            crate::routes::quote_square_feet::list_quotes_square_feet
+        ))
         .routes(routes!(print_preview))
 }
 

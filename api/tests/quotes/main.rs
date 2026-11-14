@@ -19,6 +19,7 @@ mod quote_invoice_sync;
 mod quote_presets;
 mod quote_price_lists;
 mod quote_pricing_parity;
+mod quote_square_feet;
 mod quotes;
 mod sent_signature_requests;
 mod signature_documents;
