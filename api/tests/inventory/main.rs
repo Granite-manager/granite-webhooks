@@ -18,6 +18,7 @@ mod sales;
 mod shop;
 mod sinks;
 mod stone_admin;
+mod stone_materials;
 mod stone_search;
 mod stone_slabs;
 mod stones;

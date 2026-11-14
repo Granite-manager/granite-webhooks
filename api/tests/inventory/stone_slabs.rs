@@ -54,6 +54,8 @@ async fn stone_has_every_field_and_its_colors(pool: MySqlPool) {
             "samples_importance": null,
             "bundle_number": null,
             "bundle_location": null,
+            "block_number": null,
+            "material_id": null,
             "delivery_date": null,
             "created_date": "2026-02-18T09:30:00.000Z",
             "color_ids": [2, 15]

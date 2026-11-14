@@ -57,6 +57,8 @@ async fn stone_has_every_field(pool: MySqlPool) {
             "samples_importance": 1,
             "bundle_number": "B-12",
             "bundle_location": "Rack 3",
+            "block_number": null,
+            "material_id": null,
             "delivery_date": "2026-05-01",
             "created_date": "2026-01-10T08:00:00.000Z",
             // 6 slabs: 3 free, 1 sold, 1 cut, 1 deleted.
