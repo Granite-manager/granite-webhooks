@@ -14,9 +14,12 @@
 //! gets its own job. Jobs the office made or deleted are left alone.
 //!
 //! Sale companies (`Config::sale_companies`, Granite Depot of Indianapolis
-//! for now) send a project only once its quote is marked as sold, as test
-//! jobs ("… TEST", reference "TEST"), and Unsell takes them out of Raptor
-//! again (`unsold`).
+//! for now) work from the quote's buttons instead, as test jobs ("… TEST",
+//! reference "TEST"). Mark as Sold queues the deal's project (`sold`: a
+//! `waiting` row, whenever the project was created) and Undo sale marks its
+//! jobs for deletion (`unsold`: `removing`). Neither waits for Raptor: the
+//! next run, a minute later, makes or deletes the jobs and tries again when
+//! Raptor is down.
 
 use super::client::{API, ListJob, Parts, Raptor, next_number};
 use super::plan::{self, Address, Cutout, Job, Material, Plan, Source};
@@ -27,6 +30,8 @@ use sqlx::{MySqlPool, Row};
 use std::time::{Duration, Instant};
 
 const MAX_ATTEMPTS: i32 = 3;
+/// How often deleting an unsold project's jobs is tried.
+const MAX_REMOVALS: i32 = 10;
 /// How long after the project its jobs follow the CRM.
 const FOLLOW_DAYS: i32 = 60;
 /// How often a project's jobs are compared with the CRM.
@@ -78,6 +83,8 @@ pub struct RunSummary {
     pub failed: u32,
     /// Projects whose jobs were brought up to the CRM.
     pub updated: u32,
+    /// Unsold projects whose jobs were deleted.
+    pub removed: u32,
 }
 
 /// One Raptor job made (or found) for a project.
@@ -169,17 +176,35 @@ async fn logins(pool: &MySqlPool, key: Option<&[u8; 32]>) -> sqlx::Result<Vec<Lo
         .collect())
 }
 
-/// Projects of `company_id` that still need Raptor jobs; for a sale
-/// company only those whose deal has a sold quote.
-async fn due_projects(pool: &MySqlPool, company_id: i32, sales: bool) -> sqlx::Result<Vec<i32>> {
+/// Projects of sale company `company_id` that Mark as Sold queued (or that
+/// failed and are due again) and whose deal still has a sold quote.
+async fn queued_projects(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<i32>> {
+    sqlx::query_scalar(
+        "SELECT r.project_id FROM project_raptor_jobs r JOIN projects p ON p.id = r.project_id
+          WHERE r.company_id = ? AND r.attempts < ?
+            AND (r.status = 'waiting'
+                 OR (r.status IN ('working', 'failed')
+                     AND r.updated_at <= NOW() - INTERVAL 10 MINUTE))
+            AND p.cancelled_at IS NULL AND p.archived_at IS NULL
+            AND EXISTS (
+                SELECT 1 FROM quotes q
+                 WHERE q.deal_id = p.source_deal_id AND q.company_id = p.company_id
+                   AND q.deleted_at IS NULL AND q.status IN ('accepted', 'converted'))
+          ORDER BY r.updated_at
+          LIMIT 20",
+    )
+    .bind(company_id)
+    .bind(MAX_ATTEMPTS)
+    .fetch_all(pool)
+    .await
+}
+
+/// Projects of `company_id` that still need Raptor jobs.
+async fn due_projects(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<i32>> {
     sqlx::query_scalar(
         "SELECT p.id FROM projects p JOIN company c ON c.id = p.company_id
           WHERE p.company_id = ? AND p.created_at >= c.raptor_since
             AND p.cancelled_at IS NULL AND p.archived_at IS NULL
-            AND (NOT ? OR EXISTS (
-                SELECT 1 FROM quotes q
-                 WHERE q.deal_id = p.source_deal_id AND q.company_id = p.company_id
-                   AND q.deleted_at IS NULL AND q.status IN ('accepted', 'converted')))
             AND NOT EXISTS (
                 SELECT 1 FROM project_raptor_jobs r
                  WHERE r.project_id = p.id
@@ -189,7 +214,6 @@ async fn due_projects(pool: &MySqlPool, company_id: i32, sales: bool) -> sqlx::R
           LIMIT 20",
     )
     .bind(company_id)
-    .bind(sales)
     .bind(MAX_ATTEMPTS)
     .fetch_all(pool)
     .await
@@ -227,7 +251,9 @@ async fn claim(
             let status: String = row.get(0);
             let attempts: i32 = row.get(1);
             let recent: bool = row.get(3);
-            if status == "done" || attempts >= MAX_ATTEMPTS || recent {
+            // A queued project goes at once; one being deleted not at all.
+            let waits = recent && status != "waiting";
+            if status == "done" || status == "removing" || attempts >= MAX_ATTEMPTS || waits {
                 None
             } else {
                 sqlx::query(
@@ -257,12 +283,15 @@ async fn finish(
     error: Option<&str>,
 ) -> sqlx::Result<()> {
     let error: Option<String> = error.map(|e| e.chars().take(1000).collect());
+    // Unsold meanwhile (`removing`): it stays so, with the jobs to delete.
     sqlx::query(
-        "UPDATE project_raptor_jobs SET status = ?, jobs = ?, error = ? WHERE project_id = ?",
+        "UPDATE project_raptor_jobs
+            SET jobs = ?, error = ?, status = IF(status = 'working', ?, status)
+          WHERE project_id = ?",
     )
-    .bind(if error.is_some() { "failed" } else { "done" })
     .bind(serde_json::to_string(jobs).unwrap_or_default())
-    .bind(error)
+    .bind(error.as_deref())
+    .bind(if error.is_some() { "failed" } else { "done" })
     .bind(project_id)
     .execute(pool)
     .await?;
@@ -589,8 +618,16 @@ pub async fn run(pool: &MySqlPool, budget: Duration, config: &Config) -> sqlx::R
     let mut summary = RunSummary::default();
     for login in logins(pool, config.key.as_ref()).await? {
         let mut session: Option<Session> = None;
-        let due = due_projects(pool, login.company_id, config.sales(login.company_id)).await?;
-        if !due.is_empty() {
+        let sales = config.sales(login.company_id);
+        if sales && !remove_unsold(pool, config, &login, &mut session, &mut summary).await? {
+            continue;
+        }
+        let due = if sales {
+            queued_projects(pool, login.company_id).await?
+        } else {
+            due_projects(pool, login.company_id).await?
+        };
+        if !due.is_empty() && session.is_none() {
             match open(config, &login).await {
                 Ok(open) => session = Some(open),
                 Err(error) => {
@@ -697,65 +734,154 @@ async fn new_project(
     Ok(())
 }
 
-/// Unsell: deletes the Raptor jobs made for the projects of `deal_id`.
-///
-/// They are forgotten too, so selling again makes them anew. Only for sale
-/// companies; jobs the office made are left. `Err` says why some are still there.
-pub async fn unsold(
+/// Deletes the Raptor jobs of the company's unsold projects (`removing`) and
+/// forgets them, so selling again makes them anew; jobs the office made are
+/// left. `false` when Raptor does not let the company in.
+async fn remove_unsold(
     pool: &MySqlPool,
     config: &Config,
-    company_id: i32,
-    deal_id: Option<i64>,
-) -> Result<(), String> {
-    let Some(deal_id) = deal_id.filter(|_| config.sales(company_id)) else {
-        return Ok(());
-    };
+    login: &Login,
+    session: &mut Option<Session>,
+    summary: &mut RunSummary,
+) -> sqlx::Result<bool> {
+    // A first try waits 3 minutes when a run was still sending the project
+    // (`unsold` leaves `updated_at` at now); later tries come 10 minutes apart.
     let rows: Vec<(i32, Option<String>)> = sqlx::query_as(
-        "SELECT r.project_id, CAST(r.jobs AS CHAR)
-           FROM project_raptor_jobs r JOIN projects p ON p.id = r.project_id
-          WHERE p.company_id = ? AND p.source_deal_id = ?",
+        "SELECT project_id, CAST(jobs AS CHAR) FROM project_raptor_jobs
+          WHERE company_id = ? AND status = 'removing' AND attempts < ?
+            AND updated_at <= NOW() - INTERVAL IF(attempts = 0, 3, 10) MINUTE
+          ORDER BY updated_at
+          LIMIT 20",
     )
-    .bind(company_id)
-    .bind(deal_id)
+    .bind(login.company_id)
+    .bind(MAX_REMOVALS)
     .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    if rows.is_empty() {
-        return Ok(());
-    }
-    let login = logins(pool, config.key.as_ref())
-        .await
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|l| l.company_id == company_id)
-        .ok_or("No Raptor login")?;
-    let raptor = Raptor::login(
-        common::http::client(),
-        &config.api_url,
-        &login.email,
-        &login.password,
-    )
     .await?;
     for (project_id, jobs) in rows {
         let jobs: Vec<JobRecord> = jobs
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default();
-        for job in jobs.iter().filter(|j| !j.existing) {
-            if let Err(error) = raptor.delete_job(&job.id).await {
-                let _ =
-                    sqlx::query("UPDATE project_raptor_jobs SET error = ? WHERE project_id = ?")
-                        .bind(format!("Unsell: {error}"))
-                        .bind(project_id)
-                        .execute(pool)
-                        .await;
-                return Err(error);
+        let mut result = Ok(());
+        let ours: Vec<&JobRecord> = jobs.iter().filter(|j| !j.existing).collect();
+        if !ours.is_empty() {
+            if session.is_none() {
+                match open(config, login).await {
+                    Ok(open) => *session = Some(open),
+                    Err(error) => {
+                        lambda_http::tracing::warn!(company_id = login.company_id, %error, "Raptor login failed");
+                        return Ok(false);
+                    }
+                }
+            }
+            let Some(Session { raptor, known }) = session.as_mut() else {
+                return Ok(false);
+            };
+            for job in ours {
+                result = raptor.delete_job(&job.id).await;
+                if result.is_err() {
+                    break;
+                }
+                if let Some(listed) = known.iter_mut().find(|k| k.id == job.id) {
+                    listed.status = Some("Deleted".into());
+                }
             }
         }
-        sqlx::query("DELETE FROM project_raptor_jobs WHERE project_id = ?")
-            .bind(project_id)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+        match result {
+            Ok(()) => {
+                // Sold again meanwhile: the row stays, without the deleted jobs.
+                let gone = sqlx::query(
+                    "DELETE FROM project_raptor_jobs WHERE project_id = ? AND status = 'removing'",
+                )
+                .bind(project_id)
+                .execute(pool)
+                .await?;
+                if gone.rows_affected() == 0 {
+                    sqlx::query("UPDATE project_raptor_jobs SET jobs = NULL WHERE project_id = ?")
+                        .bind(project_id)
+                        .execute(pool)
+                        .await?;
+                }
+                summary.removed += 1;
+            }
+            Err(error) => {
+                lambda_http::tracing::warn!(project_id, %error, "Raptor job not deleted");
+                let error: String = error.chars().take(1000).collect();
+                sqlx::query(
+                    "UPDATE project_raptor_jobs
+                        SET attempts = attempts + 1, error = ?, updated_at = NOW()
+                      WHERE project_id = ? AND status = 'removing'",
+                )
+                .bind(error)
+                .bind(project_id)
+                .execute(pool)
+                .await?;
+            }
+        }
     }
-    Ok(())
+    Ok(true)
+}
+
+/// Mark as Sold (a sale company's): queues the project of won deal `deal_id`.
+///
+/// It gets its Raptor jobs whenever it was created. One already sent
+/// stays as it is (its jobs follow the CRM); one that failed or is being
+/// deleted starts over. Nothing before the Raptor login is saved. Logged,
+/// never returned: the sale is already saved.
+pub async fn sold(pool: &MySqlPool, config: &Config, company_id: i32, deal_id: i64) {
+    if !config.sales(company_id) {
+        return;
+    }
+    let queued = sqlx::query(
+        "INSERT INTO project_raptor_jobs (project_id, company_id, status, attempts)
+         SELECT p.id, p.company_id, 'waiting', 0
+           FROM projects p JOIN company c ON c.id = p.company_id
+          WHERE p.company_id = ? AND p.source_deal_id = ?
+            AND p.cancelled_at IS NULL AND p.archived_at IS NULL
+            AND c.raptor_since IS NOT NULL
+         ON DUPLICATE KEY UPDATE
+            attempts = IF(project_raptor_jobs.status IN ('failed', 'removing'),
+                          0, project_raptor_jobs.attempts),
+            error = IF(project_raptor_jobs.status IN ('failed', 'removing'),
+                       NULL, project_raptor_jobs.error),
+            status = IF(project_raptor_jobs.status IN ('failed', 'removing'),
+                        'waiting', project_raptor_jobs.status)",
+    )
+    .bind(company_id)
+    .bind(deal_id)
+    .execute(pool)
+    .await;
+    if let Err(error) = queued {
+        lambda_http::tracing::error!(?error, deal_id, "could not queue the sale's Raptor jobs");
+    }
+}
+
+/// Undo sale (a sale company's): the Raptor jobs of the projects of
+/// `deal_id` are deleted by the next run; a project still waiting is just
+/// forgotten. Logged, never returned: the sale is already undone.
+pub async fn unsold(pool: &MySqlPool, config: &Config, company_id: i32, deal_id: Option<i64>) {
+    let Some(deal_id) = deal_id.filter(|_| config.sales(company_id)) else {
+        return;
+    };
+    // A run may be sending the project right now (`working`): its jobs are
+    // saved when it ends, so the deleting waits (`updated_at` now).
+    let marked = sqlx::query(
+        "UPDATE project_raptor_jobs
+            SET attempts = 0, error = NULL,
+                updated_at = IF(status = 'working', NOW(), NOW() - INTERVAL 1 HOUR),
+                status = 'removing'
+          WHERE status <> 'removing'
+            AND project_id IN (SELECT id FROM projects
+                                WHERE company_id = ? AND source_deal_id = ?)",
+    )
+    .bind(company_id)
+    .bind(deal_id)
+    .execute(pool)
+    .await;
+    if let Err(error) = marked {
+        lambda_http::tracing::error!(
+            ?error,
+            deal_id,
+            "could not mark the Raptor jobs for deletion"
+        );
+    }
 }

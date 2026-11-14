@@ -1,6 +1,6 @@
 use crate::common;
 
-use api::raptor::sync::{Config, run, unsold};
+use api::raptor::sync::{Config, run, sold, unsold};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post, put};
@@ -23,6 +23,7 @@ struct Fake {
     calls: Arc<Mutex<Vec<(String, String, Value)>>>,
     next_job: Arc<AtomicU32>,
     note_fails: Arc<AtomicBool>,
+    delete_fails: Arc<AtomicBool>,
     /// The notes Raptor holds, by job.
     notes: Arc<Mutex<Vec<(String, Value)>>>,
 }
@@ -132,8 +133,11 @@ async fn fake_raptor() -> (String, Fake) {
             "/entity/{id}/status",
             put(
                 |State(fake): State<Fake>, Path(id): Path<String>, Json(body): Json<Value>| async move {
+                    if fake.delete_fails.load(Ordering::SeqCst) {
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
                     fake.log("PUT", format!("/entity/{id}/status"), body);
-                    Json(json!({ "status": "Success" }))
+                    Ok(Json(json!({ "status": "Success" })))
                 },
             ),
         )
@@ -514,38 +518,51 @@ async fn a_changed_quote_updates_the_job_and_keeps_the_office_lines(pool: MySqlP
 }
 
 #[test_db::test(seed)]
-async fn a_sale_company_sends_test_jobs_once_sold_and_unsell_deletes_them(pool: MySqlPool) {
+async fn a_sale_company_follows_mark_as_sold_and_undo_sale(pool: MySqlPool) {
     let project = sold_project(&pool).await;
+    // The project is older than the Raptor login.
+    sqlx::query("UPDATE projects SET created_at = NOW() - INTERVAL 30 DAY WHERE id = ?")
+        .bind(project)
+        .execute(&pool)
+        .await
+        .unwrap();
     connect_raptor(&pool, "secret").await;
     let (url, fake) = fake_raptor().await;
     let sales = Config {
         sale_companies: vec![100],
         ..config(&url)
     };
+    let go = || async { run(&pool, Duration::from_secs(60), &sales).await.unwrap() };
+    let created = || fake.calls("POST", "/job/work/new");
+    let deleted = || fake.calls("PUT", "/entity/job-");
 
-    // Not sold (yet): nothing is sent.
+    // A project alone sends nothing: Mark as Sold queues it.
+    assert_eq!(go().await.done, 0);
+    sold(&pool, &sales, 100, 8002).await;
+    assert_eq!(row(&pool, project).await.0, "waiting");
+    assert_eq!(go().await.done, 1);
+    assert_eq!(created().len(), 1);
+    // A TEST job that keeps the office's numbers free.
+    assert_eq!(created()[0].1["name"], "Builder Erin Kitchen TEST");
+    assert_eq!(created()[0].1["reference"], "TEST");
+
+    // Sold again while it is there: nothing new.
+    sold(&pool, &sales, 100, 8002).await;
+    assert_eq!(row(&pool, project).await.0, "done");
+    assert_eq!(go().await.done, 0);
+
+    // Undo sale waits for no one; the next run deletes the job and forgets it.
     sql(&pool, "UPDATE quotes SET status = 'active' WHERE id = 9901").await;
-    let summary = run(&pool, Duration::from_secs(60), &sales).await.unwrap();
-    assert_eq!(summary.done, 0);
-
-    // Marked as sold: a TEST job that keeps the office's numbers free.
-    sql(
-        &pool,
-        "UPDATE quotes SET status = 'converted' WHERE id = 9901",
-    )
-    .await;
-    let summary = run(&pool, Duration::from_secs(60), &sales).await.unwrap();
-    assert_eq!(summary.done, 1);
-    let created = fake.calls("POST", "/job/work/new");
-    assert_eq!(created.len(), 1);
-    assert_eq!(created[0].1["name"], "Builder Erin Kitchen TEST");
-    assert_eq!(created[0].1["reference"], "TEST");
-
-    // Unsell deletes it and forgets it.
-    unsold(&pool, &sales, 100, Some(8002)).await.unwrap();
-    let deleted = fake.calls("PUT", "/entity/job-1/status");
-    assert_eq!(deleted.len(), 1);
-    assert_eq!(deleted[0].1, json!({ "status": 10, "setChildren": false }));
+    unsold(&pool, &sales, 100, Some(8002)).await;
+    assert_eq!(row(&pool, project).await.0, "removing");
+    assert!(deleted().is_empty());
+    assert_eq!(go().await.removed, 1);
+    assert_eq!(deleted().len(), 1);
+    assert_eq!(deleted()[0].0, "/entity/job-1/status");
+    assert_eq!(
+        deleted()[0].1,
+        json!({ "status": 10, "setChildren": false })
+    );
     let rows: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM project_raptor_jobs WHERE project_id = ?")
             .bind(project)
@@ -553,10 +570,60 @@ async fn a_sale_company_sends_test_jobs_once_sold_and_unsell_deletes_them(pool: 
             .await
             .unwrap();
     assert_eq!(rows, 0);
-    sql(&pool, "UPDATE quotes SET status = 'active' WHERE id = 9901").await;
-    run(&pool, Duration::from_secs(60), &sales).await.unwrap();
-    assert_eq!(fake.calls("POST", "/job/work/new").len(), 1);
+    assert_eq!(created().len(), 1);
 
-    // Another company's Unsell touches nothing.
-    unsold(&pool, &config(&url), 100, Some(8002)).await.unwrap();
+    // Sold again: a new job.
+    sql(
+        &pool,
+        "UPDATE quotes SET status = 'converted' WHERE id = 9901",
+    )
+    .await;
+    sold(&pool, &sales, 100, 8002).await;
+    assert_eq!(go().await.done, 1);
+    assert_eq!(created().len(), 2);
+
+    // Raptor is down at Undo sale: the job stays marked and is tried again.
+    fake.delete_fails.store(true, Ordering::SeqCst);
+    unsold(&pool, &sales, 100, Some(8002)).await;
+    assert_eq!(go().await.removed, 0);
+    let (status, attempts, _, error) = row(&pool, project).await;
+    assert_eq!((status.as_str(), attempts), ("removing", 1));
+    assert!(error.unwrap().contains("delete job"));
+    assert_eq!(go().await.removed, 0, "not again within 10 minutes");
+    fake.delete_fails.store(false, Ordering::SeqCst);
+    sqlx::query(
+        "UPDATE project_raptor_jobs SET updated_at = NOW() - INTERVAL 11 MINUTE WHERE project_id = ?",
+    )
+    .bind(project)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(go().await.removed, 1);
+    assert_eq!(deleted().len(), 2);
+
+    // Sold while its job is still marked: the job is kept, none is added.
+    sold(&pool, &sales, 100, 8002).await;
+    assert_eq!(go().await.done, 1);
+    assert_eq!(created().len(), 3);
+    unsold(&pool, &sales, 100, Some(8002)).await;
+    sold(&pool, &sales, 100, 8002).await;
+    assert_eq!(row(&pool, project).await.0, "waiting");
+    assert_eq!(go().await.done, 1);
+    assert_eq!((created().len(), deleted().len()), (3, 2));
+
+    // A project that gave up starts over on the next Mark as Sold.
+    sqlx::query(
+        "UPDATE project_raptor_jobs SET status = 'failed', attempts = 3, error = 'x' WHERE project_id = ?",
+    )
+    .bind(project)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sold(&pool, &sales, 100, 8002).await;
+    let (status, attempts, _, error) = row(&pool, project).await;
+    assert_eq!((status.as_str(), attempts, error), ("waiting", 0, None));
+
+    // Another company's buttons change nothing.
+    unsold(&pool, &config(&url), 100, Some(8002)).await;
+    assert_eq!(row(&pool, project).await.0, "waiting");
 }
