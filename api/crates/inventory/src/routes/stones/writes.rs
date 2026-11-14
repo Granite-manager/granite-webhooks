@@ -21,9 +21,6 @@ use sqlx::{MySql, MySqlConnection, QueryBuilder};
 /// Image of a stone added without one (served by the web app).
 const STONE_PLACEHOLDER: &str = "/placeholders/stone-placeholder.svg";
 
-/// Surface finishes a stone can have.
-pub const FINISHES: &[&str] = &["polished", "leathered", "honed"];
-
 /// Body of `POST /v1/stones` and `PUT /v1/stones/{id}`.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -34,7 +31,7 @@ pub struct StoneInput {
     #[serde(rename = "type")]
     #[schema(rename = "type")]
     pub kind: String,
-    /// `polished`, `leathered` or `honed`.
+    /// One of the company's stone finishes (`GET /v1/stone-finishes`).
     pub finishing: String,
     /// Image: the `url` of an upload to the `stones` folder
     /// (`POST /v1/uploads`). A new stone without one gets a placeholder
@@ -113,12 +110,6 @@ async fn validate(
             "Name is required (100 characters at most)".into(),
         ));
     }
-    if !FINISHES.contains(&input.finishing.as_str()) {
-        return Err(ApiError::BadRequest(format!(
-            "invalid finishing: {}",
-            input.finishing
-        )));
-    }
     if input.level.is_some_and(|level| !(1..=7).contains(&level)) {
         return Err(ApiError::BadRequest("level must be 1 to 7".into()));
     }
@@ -143,6 +134,19 @@ async fn validate(
     .await?;
     if has_type.is_none() {
         return Err(ApiError::BadRequest("Select a valid stone type.".into()));
+    }
+    let has_finish: Option<i64> = sqlx::query_scalar(
+        "SELECT CAST(id AS SIGNED) FROM stone_finishes WHERE company_id = ? AND LOWER(name) = LOWER(?) LIMIT 1",
+    )
+    .bind(company_id)
+    .bind(input.finishing.trim())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if has_finish.is_none() {
+        return Err(ApiError::BadRequest(format!(
+            "invalid finishing: {}",
+            input.finishing
+        )));
     }
     if let Some(supplier_id) = input.supplier_id {
         let found: Option<i32> =

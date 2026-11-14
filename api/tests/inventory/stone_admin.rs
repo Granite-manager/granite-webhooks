@@ -878,3 +878,78 @@ async fn slab_numbers_may_repeat_on_a_stone(pool: MySqlPool) {
         .await
         .assert_status(StatusCode::NO_CONTENT);
 }
+
+#[test_db::test(seed)]
+async fn stone_finishes_are_created_renamed_and_deleted(pool: MySqlPool) {
+    let server = server(pool.clone());
+    let created = server
+        .post("/v1/stone-finishes")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": " Brushed " }))
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let id = created.json::<Value>()["id"].as_i64().unwrap();
+    expect_error(
+        server
+            .post("/v1/stone-finishes")
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "name": "brushed" }))
+            .await,
+        StatusCode::CONFLICT,
+        "This stone finish already exists.",
+    )
+    .await;
+
+    // A stone may now have the new finish.
+    let mut body = stone_body(None);
+    body["finishing"] = json!("Brushed");
+    server
+        .post("/v1/stones")
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::CREATED);
+    body["finishing"] = json!("flamed");
+    expect_error(
+        server
+            .post("/v1/stones")
+            .with_session(sessions::ADMIN)
+            .json(&body)
+            .await,
+        StatusCode::BAD_REQUEST,
+        "invalid finishing",
+    )
+    .await;
+
+    // Renaming honed renames the stones that have it.
+    server
+        .patch("/v1/stone-finishes/102")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "Honed Matte" }))
+        .await
+        .assert_status_ok();
+    let finish: Option<String> = sqlx::query_scalar("SELECT finishing FROM stones WHERE id = 3001")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(finish.as_deref(), Some("Honed Matte"));
+
+    // A finish in use is not deleted; an unused one is.
+    let res = server
+        .delete(&format!("/v1/stone-finishes/{id}"))
+        .with_session(sessions::ADMIN)
+        .await;
+    res.assert_status(StatusCode::CONFLICT);
+    assert_eq!(res.json::<Value>()["stones"][0]["name"], "Blue Pearl");
+    server
+        .delete("/v1/stone-finishes/101")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    let listed = server
+        .get("/v1/stone-finishes")
+        .with_session(sessions::REP)
+        .await;
+    listed.assert_status_ok();
+    assert_eq!(listed.json::<Value>().as_array().unwrap().len(), 4);
+}
