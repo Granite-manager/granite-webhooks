@@ -35,6 +35,7 @@
 //! - `POST /v1/phone/calls/via-cell`           → Call via my cell
 //! - `POST /v1/phone/calls/test`               → our server calls this phone
 //! - `POST /v1/phone/calls/decline`            → declined on this phone: stop ringing
+//! - `POST /v1/phone/calls/reply`              → text the caller of a declined call (quick reply)
 //! - `POST /v1/phone/e911`                     → 911 was dialed: alert the admins
 //! - `POST /v1/phone/diagnostics`              → "Report a problem"
 //! - `GET  /v1/phone/texts/threads`            → the Texts tab: my threads (line + other number)
@@ -154,6 +155,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(calls::call_via_cell))
         .routes(routes!(calls::test_call))
         .routes(routes!(calls::decline_call))
+        .routes(routes!(calls::reply_to_call))
         .routes(routes!(directions::find_directions_point))
         .routes(routes!(support::report_e911))
         .routes(routes!(support::send_diagnostics))
