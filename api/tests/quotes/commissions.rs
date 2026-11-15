@@ -128,7 +128,7 @@ async fn admins_manage_rules_and_settings(pool: MySqlPool) {
             .with_session(sessions::ADMIN)
             .await
             .json::<Value>(),
-        json!({ "payrollWeekday": 5, "lastSyncedAt": null })
+        json!({ "payrollWeekday": 5, "lastSyncedAt": null, "jobPaySameWeek": false, "jobPayFrom": null })
     );
     server
         .put("/v1/commission-settings")
@@ -142,7 +142,7 @@ async fn admins_manage_rules_and_settings(pool: MySqlPool) {
             .with_session(sessions::ADMIN)
             .await
             .json::<Value>(),
-        json!({ "payrollWeekday": 6, "lastSyncedAt": null })
+        json!({ "payrollWeekday": 6, "lastSyncedAt": null, "jobPaySameWeek": false, "jobPayFrom": null })
     );
     server
         .get("/v1/commission-rules")
@@ -173,7 +173,7 @@ async fn the_sync_works_out_signed_quotes_and_payroll_pays_them(pool: MySqlPool)
     // The company has no QuickBooks: payments are unknown.
     assert_eq!(
         res.json::<Value>(),
-        json!({ "synced": 1, "qbo": "not_connected" })
+        json!({ "synced": 1, "qbo": "not_connected", "jobs": 0 })
     );
 
     let mine = server

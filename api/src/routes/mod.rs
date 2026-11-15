@@ -64,6 +64,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(online_quotes::router())
         .merge(commissions::router())
         .merge(feature_sales::router())
+        .merge(job_pay::router())
         .merge(company_frame::router())
         .merge(quote_forms::router())
         .merge(quote_price_lists::router())
