@@ -30,6 +30,7 @@ use crate::webhooks_client::{OutgoingSms, OutgoingSmsFile, SmsFailure};
 use chrono::{DateTime, SubsecRound, Utc};
 use lambda_http::tracing;
 use sqlx::MySqlPool;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -325,6 +326,63 @@ fn failure(status: u16, error: &str) -> SmsFailure {
         error: error.to_string(),
         sent_ids: Vec::new(),
         unsent_s3_keys: Vec::new(),
+    }
+}
+
+/// Whether a character is in the SMS alphabet (GSM-7, with its extension
+/// table). A text of only these is billed in parts of 153 characters (160
+/// alone); one other character makes the whole text UCS-2, billed in parts
+/// of 67 (70 alone).
+#[rustfmt::skip]
+const fn is_gsm7(c: char) -> bool {
+    matches!(c,
+        'A'..='Z' | 'a'..='z' | '0'..='9' | ' ' | '\n' | '\r'
+        | '@' | '£' | '$' | '¥' | 'è' | 'é' | 'ù' | 'ì' | 'ò' | 'Ç' | 'Ø' | 'ø' | 'Å' | 'å'
+        | 'Δ' | '_' | 'Φ' | 'Γ' | 'Λ' | 'Ω' | 'Π' | 'Ψ' | 'Σ' | 'Θ' | 'Ξ' | 'Æ' | 'æ' | 'ß' | 'É'
+        | '!' | '"' | '#' | '¤' | '%' | '&' | '\'' | '(' | ')' | '*' | '+' | ',' | '-' | '.' | '/'
+        | ':' | ';' | '<' | '=' | '>' | '?' | '¡' | 'Ä' | 'Ö' | 'Ñ' | 'Ü' | '§' | '¿'
+        | 'ä' | 'ö' | 'ñ' | 'ü' | 'à'
+        | '^' | '{' | '}' | '\\' | '[' | '~' | ']' | '|' | '€' | '\u{000C}')
+}
+
+/// The plain character(s) a typographic one stands for: curly quotes, long
+/// dashes, the ellipsis and the odd spaces that phones, Word and AI drafts
+/// put in a text. None for every other character.
+const fn plain_punctuation(c: char) -> Option<&'static str> {
+    Some(match c {
+        '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '\u{2032}' => "'",
+        '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' | '\u{2033}' => "\"",
+        '\u{2010}'..='\u{2015}' | '\u{2212}' => "-",
+        '\u{2026}' => "...",
+        '\u{00A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' => " ",
+        '\u{200B}' | '\u{2060}' | '\u{FEFF}' => "",
+        _ => return None,
+    })
+}
+
+/// The text as it is sent.
+///
+/// A text that fits the SMS alphabet but for typographic punctuation (a
+/// curly apostrophe, a long dash, an ellipsis) goes with the plain
+/// characters: one curly apostrophe made Telnyx bill a
+/// 200-character text as three parts instead of two, a quarter of all the
+/// parts billed in October and November 2026. A text that needs UCS-2 anyway
+/// (an emoji, another alphabet) is sent exactly as written.
+pub fn sms_text(text: &str) -> Cow<'_, str> {
+    if text.chars().all(is_gsm7) {
+        return Cow::Borrowed(text);
+    }
+    let mut plain = String::with_capacity(text.len());
+    for c in text.chars() {
+        match plain_punctuation(c) {
+            Some(replacement) => plain.push_str(replacement),
+            None => plain.push(c),
+        }
+    }
+    if plain.chars().all(is_gsm7) {
+        Cow::Owned(plain)
+    } else {
+        Cow::Borrowed(text)
     }
 }
 
@@ -701,8 +759,13 @@ pub async fn deliver(
                 .flatten(),
         );
     }
-    let text = sms.text.trim();
-    let planned = plan(text, &sms.attachments, &sizes);
+    // A caption rides in an MMS, which has no parts: only plain texts change.
+    let text = if sms.attachments.is_empty() {
+        sms_text(sms.text.trim())
+    } else {
+        Cow::Borrowed(sms.text.trim())
+    };
+    let planned = plan(&text, &sms.attachments, &sizes);
     let delivery = Delivery {
         state,
         sms,
@@ -1319,6 +1382,29 @@ pub async fn recheck_statuses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typographic_punctuation_goes_plain_when_that_saves_parts() {
+        // Fits the SMS alphabet as it is: untouched, not even copied.
+        assert!(matches!(
+            sms_text("It's 9-5, \"ok\"? £5 @ café [1]"),
+            Cow::Borrowed(_)
+        ));
+        assert_eq!(
+            sms_text(
+                "It\u{2019}s ready \u{2013} call \u{201C}Anna\u{201D}\u{2026}\u{00A0}thanks\u{200B}"
+            ),
+            "It's ready - call \"Anna\"... thanks"
+        );
+        // An emoji or another alphabet needs UCS-2 anyway: sent as written.
+        let emoji = "It\u{2019}s ready \u{1F44D}";
+        assert_eq!(sms_text(emoji), emoji);
+        let cyrillic = "Готово \u{2013} звоните";
+        assert_eq!(sms_text(cyrillic), cyrillic);
+        // A tab and a backtick are not in the alphabet either.
+        assert_eq!(sms_text("a\tb\u{2019}"), "a\tb\u{2019}");
+        assert_eq!(sms_text(""), "");
+    }
 
     #[test]
     fn forwarded_texts_say_who_sent_them() {
