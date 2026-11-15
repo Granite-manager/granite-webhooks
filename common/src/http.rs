@@ -2,7 +2,7 @@
 //! crypto provider: rustls' default (aws-lc-rs) is a long C build, so the
 //! clients use ring.
 
-use std::sync::Once;
+use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 /// Makes ring the process-wide rustls provider (once). reqwest is built with
@@ -25,7 +25,35 @@ const POOL_IDLE: Duration = Duration::from_secs(20);
 #[allow(clippy::disallowed_methods)]
 pub fn client_builder() -> reqwest::ClientBuilder {
     install_crypto_provider();
-    reqwest::Client::builder().pool_idle_timeout(POOL_IDLE)
+    reqwest::Client::builder()
+        .pool_idle_timeout(POOL_IDLE)
+        .tls_backend_preconfigured(tls_config())
+}
+
+/// The TLS settings reqwest would build for each client (ring, TLS 1.2 and
+/// 1.3, the platform's root certificates, h2 then HTTP/1.1), built once.
+/// reqwest builds a new platform verifier per client, and on Linux that reads
+/// and parses the system's CA bundle: about 14 ms a client on a 512 MB
+/// Lambda, and the api builds two dozen of them at cold start.
+fn tls_config() -> rustls::ClientConfig {
+    static CONFIG: OnceLock<rustls::ClientConfig> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let provider = rustls::crypto::CryptoProvider::get_default()
+                .cloned()
+                .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
+            let verifier = rustls_platform_verifier::Verifier::new(Arc::clone(&provider))
+                .expect("the platform's root certificates");
+            let mut config = rustls::ClientConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .expect("TLS 1.2 and 1.3")
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_no_client_auth();
+            config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            config
+        })
+        .clone()
 }
 
 /// `common::http::client()` with the crypto provider installed.

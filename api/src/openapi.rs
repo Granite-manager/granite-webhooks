@@ -11,7 +11,7 @@
 use crate::routes;
 use crate::state::AppState;
 use axum::Router;
-use std::sync::Arc;
+use std::borrow::Cow;
 
 // The route macros, so `crate::openapi::path` works here as in every crate.
 pub use api_core::openapi::*;
@@ -140,18 +140,20 @@ pub fn spec() -> OpenApiDoc {
 
 /// Every route, and the OpenAPI document as JSON for `GET /openapi.json`.
 #[cfg(feature = "openapi")]
-pub fn router_and_spec_json() -> (Router<AppState>, Arc<str>) {
+pub fn router_and_spec_json() -> (Router<AppState>, Cow<'static, str>) {
     let (router, spec) = router_with_spec();
     (
         router,
-        spec.to_json().expect("OpenAPI spec serializes").into(),
+        Cow::Owned(spec.to_json().expect("OpenAPI spec serializes")),
     )
 }
 
 /// Every route, and the checked-in OpenAPI document for `GET /openapi.json`.
+/// Borrowed, not copied: the 3 MB document is read from the binary only
+/// when it is asked for, not at every cold start.
 #[cfg(not(feature = "openapi"))]
-pub fn router_and_spec_json() -> (Router<AppState>, Arc<str>) {
-    (routes::router().into_router(), CHECKED_IN.into())
+pub fn router_and_spec_json() -> (Router<AppState>, Cow<'static, str>) {
+    (routes::router().into_router(), Cow::Borrowed(CHECKED_IN))
 }
 
 /// `api/openapi.json`, which `make api-openapi` writes.
