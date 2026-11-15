@@ -11,6 +11,7 @@
 mod common;
 
 mod company;
+mod company_exports;
 mod db_pool;
 mod drive_miles;
 mod file_ownership;
