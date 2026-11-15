@@ -790,7 +790,7 @@ impl FromRequestParts<AppState> for UserManager {
 }
 
 /// Who may pay for the company (`userCanManageBilling`): an employee who is
-/// a Manager of the company the request acts in.
+/// a Manager of the company the request acts in, or a superuser.
 pub struct BillingManager(pub SessionUser);
 
 impl FromRequestParts<AppState> for BillingManager {
@@ -801,7 +801,7 @@ impl FromRequestParts<AppState> for BillingManager {
         let manager = positions
             .iter()
             .any(|row| row.company_id == user.company_id && row.position_id == MANAGER_POSITION);
-        if (user.is_employee || user.is_admin || user.is_superuser) && manager {
+        if user.is_superuser || ((user.is_employee || user.is_admin) && manager) {
             Ok(Self(user))
         } else {
             Err(ApiError::Forbidden)

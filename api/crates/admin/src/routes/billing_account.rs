@@ -48,7 +48,7 @@ fn utc(date: Option<NaiveDateTime>) -> Option<DateTime<Utc>> {
 pub struct BillingGate {
     #[serde(flatten)]
     pub notice: BillingNotice,
-    /// The caller is a manager of the company (manages billing).
+    /// The caller is a manager of the company or a superuser (manages billing).
     pub can_manage: bool,
 }
 
@@ -76,14 +76,15 @@ pub async fn gate(
 ) -> ApiResult<Json<BillingGate>> {
     let notice =
         reactivation::billing_gate(&state.stripe, &state.pool, user.company_id, user.id).await;
-    let can_manage: bool = sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM users_positions WHERE user_id = ? AND company_id = ? AND position_id = ?",
-    )
-    .bind(user.id)
-    .bind(user.company_id)
-    .bind(MANAGER_POSITION)
-    .fetch_one(&state.pool)
-    .await?;
+    let can_manage: bool = user.is_superuser
+        || sqlx::query_scalar(
+            "SELECT COUNT(*) > 0 FROM users_positions WHERE user_id = ? AND company_id = ? AND position_id = ?",
+        )
+        .bind(user.id)
+        .bind(user.company_id)
+        .bind(MANAGER_POSITION)
+        .fetch_one(&state.pool)
+        .await?;
     Ok(Json(BillingGate { notice, can_manage }))
 }
 
