@@ -149,7 +149,10 @@ pub const TABLES: &[Table] = &[
     export("phone_call_rules", Company),
     export("phone_calls", Company),
     export("phone_contact_groups", Company),
-    skip("phone_devices", "phone app devices, push and SIP credentials"),
+    skip(
+        "phone_devices",
+        "phone app devices, push and SIP credentials",
+    ),
     export("phone_port_events", Company),
     export("phone_port_loa_invites", Company),
     export("phone_port_orders", Company),
@@ -244,20 +247,35 @@ pub const TABLES: &[Table] = &[
     // Tables without one.
     skip("_sqlx_migrations", "database bookkeeping"),
     skip("_sqlx_test_databases", "database bookkeeping"),
-    skip("activity_points_sources", "the app's own settings, the same for every company"),
-    skip("ai_model_pricing", "the app's own settings, the same for every company"),
+    skip(
+        "activity_points_sources",
+        "the app's own settings, the same for every company",
+    ),
+    skip(
+        "ai_model_pricing",
+        "the app's own settings, the same for every company",
+    ),
     export("ai_promise_digests", Parent("user_id", "users", "id")),
     export("answer_attempts", Parent("employee_id", "users", "id")),
     export("answer_choices", Parent("question_id", "questions", "id")),
     export("chat_history", Parent("user_id", "users", "id")),
     export("chat_messages", Parent("chat_id", "chats", "id")),
-    export("cloudtalk_sms_attachments", Parent("cloudtalk_sms_id", "cloudtalk_sms", "id")),
+    export(
+        "cloudtalk_sms_attachments",
+        Parent("cloudtalk_sms_id", "cloudtalk_sms", "id"),
+    ),
     export("colors", All),
     export("company", CompanyRow),
-    export("contact_sync_attempts", Parent("customer_id", "customers", "id")),
+    export(
+        "contact_sync_attempts",
+        Parent("customer_id", "customers", "id"),
+    ),
     skip("crm_manual_overrides", "the app's own manual"),
     export("customers_emails", Parent("customer_id", "customers", "id")),
-    export("customers_history", Parent("customer_id", "customers", "id")),
+    export(
+        "customers_history",
+        Parent("customer_id", "customers", "id"),
+    ),
     export("deal_stage_history", Parent("deal_id", "deals", "id")),
     export("deals", Parent("customer_id", "customers", "id")),
     export("deals_documents", Parent("deal_id", "deals", "id")),
@@ -267,10 +285,22 @@ pub const TABLES: &[Table] = &[
     export("email_participants", Parent("email_id", "emails", "id")),
     skip("email_processing_claims", "short-lived processing locks"),
     export("email_reads", Parent("message_id", "emails", "message_id")),
-    export("email_template_attachments", Parent("template_id", "email_templates", "id")),
-    export("event_issue_images", Parent("issue_id", "event_issues", "id")),
-    export("event_notification_picks", Parent("event_id", "events", "id")),
-    export("event_notification_skips", Parent("event_id", "events", "id")),
+    export(
+        "email_template_attachments",
+        Parent("template_id", "email_templates", "id"),
+    ),
+    export(
+        "event_issue_images",
+        Parent("issue_id", "event_issues", "id"),
+    ),
+    export(
+        "event_notification_picks",
+        Parent("event_id", "events", "id"),
+    ),
+    export(
+        "event_notification_skips",
+        Parent("event_id", "events", "id"),
+    ),
     // On the company's calendars; without a calendar, made by its users.
     export(
         "events",
@@ -281,41 +311,95 @@ pub const TABLES: &[Table] = &[
     ),
     export("faucets", Parent("faucet_type_id", "faucet_type", "id")),
     export("follow_ups", Parent("telnyx_call_id", "telnyx_calls", "id")),
-    skip("global_feature_flags", "the app's own settings, the same for every company"),
-    export("installed_faucets", Parent("faucet_id", "faucet_type", "id")),
+    skip(
+        "global_feature_flags",
+        "the app's own settings, the same for every company",
+    ),
+    export(
+        "installed_faucets",
+        Parent("faucet_id", "faucet_type", "id"),
+    ),
     export("installed_sinks", Parent("sink_id", "sink_type", "id")),
     export("installed_stones", Parent("stone_id", "stones", "id")),
-    export("instruction_access", Parent("instruction_id", "instructions", "id")),
+    export(
+        "instruction_access",
+        Parent("instruction_id", "instructions", "id"),
+    ),
     skip("login_attempts", "sign-in attempts"),
     export("notification_email_hides", Parent("user_id", "users", "id")),
     export("notifications", Parent("user_id", "users", "id")),
     skip("password_reset_tokens", "password reset links"),
     export("phone_call_legs", Parent("call_id", "phone_calls", "id")),
     export("phone_call_views", Parent("call_id", "phone_calls", "id")),
-    export("phone_contact_group_hidden", Parent("group_id", "phone_contact_groups", "id")),
-    export("phone_contact_group_members", Parent("group_id", "phone_contact_groups", "id")),
+    export(
+        "phone_contact_group_hidden",
+        Parent("group_id", "phone_contact_groups", "id"),
+    ),
+    export(
+        "phone_contact_group_members",
+        Parent("group_id", "phone_contact_groups", "id"),
+    ),
     skip("phone_job_marks", "the app's own job bookkeeping"),
     skip("phone_notice_acks", "phone app devices"),
     export("positions", All),
     skip("posthog_autofix_notices", "the app's own error tracking"),
     skip("posthog_autofix_runs", "the app's own error tracking"),
-    export("price_list_revisions", Parent("price_list_id", "price_lists", "id")),
-    export("project_process_step_auto_off", Parent("project_id", "projects", "id")),
-    export("project_process_step_events", Parent("step_id", "project_process_steps", "id")),
-    export("project_process_step_notify", Parent("step_id", "project_process_steps", "id")),
-    export("project_process_steps_done", Parent("project_id", "projects", "id")),
+    export(
+        "price_list_revisions",
+        Parent("price_list_id", "price_lists", "id"),
+    ),
+    export(
+        "project_process_step_auto_off",
+        Parent("project_id", "projects", "id"),
+    ),
+    export(
+        "project_process_step_events",
+        Parent("step_id", "project_process_steps", "id"),
+    ),
+    export(
+        "project_process_step_notify",
+        Parent("step_id", "project_process_steps", "id"),
+    ),
+    export(
+        "project_process_steps_done",
+        Parent("project_id", "projects", "id"),
+    ),
     export("quote_autosaves", Parent("quote_id", "quotes", "id")),
-    export("quote_email_views", Parent("quote_email_id", "quote_emails", "id")),
+    export(
+        "quote_email_views",
+        Parent("quote_email_id", "quote_emails", "id"),
+    ),
     export("quote_emails", Parent("quote_id", "quotes", "id")),
     export("quote_prints", Parent("quote_id", "quotes", "id")),
     export("quote_revisions", Parent("quote_id", "quotes", "id")),
-    export("ringcentral_sms_attachments", Parent("ringcentral_sms_id", "ringcentral_sms", "id")),
-    export("ringcentral_user_contacts", Parent("user_id", "users", "id")),
-    export("sales_order_items", Parent("order_id", "sales_orders", "id")),
-    export("sales_order_slabs", Parent("item_id", "sales_order_items", "id")),
-    export("sales_questionnaire_questions", Parent("questionnaire_id", "sales_questionnaires", "id")),
-    export("sales_questionnaire_responses", Parent("question_id", "sales_questionnaire_questions", "id")),
-    export("schedule_notification_sends", Parent("rule_id", "schedule_notification_rules", "id")),
+    export(
+        "ringcentral_sms_attachments",
+        Parent("ringcentral_sms_id", "ringcentral_sms", "id"),
+    ),
+    export(
+        "ringcentral_user_contacts",
+        Parent("user_id", "users", "id"),
+    ),
+    export(
+        "sales_order_items",
+        Parent("order_id", "sales_orders", "id"),
+    ),
+    export(
+        "sales_order_slabs",
+        Parent("item_id", "sales_order_items", "id"),
+    ),
+    export(
+        "sales_questionnaire_questions",
+        Parent("questionnaire_id", "sales_questionnaires", "id"),
+    ),
+    export(
+        "sales_questionnaire_responses",
+        Parent("question_id", "sales_questionnaire_questions", "id"),
+    ),
+    export(
+        "schedule_notification_sends",
+        Parent("rule_id", "schedule_notification_rules", "id"),
+    ),
     export(
         "schedule_notification_template_calendars",
         Parent("template_id", "schedule_notification_templates", "id"),
@@ -324,13 +408,19 @@ pub const TABLES: &[Table] = &[
     export("sinks", Parent("sink_type_id", "sink_type", "id")),
     export("slab_inventory", Parent("stone_id", "stones", "id")),
     export("sms_flow_steps", Parent("flow_id", "sms_flows", "id")),
-    export("statistics_widget_layout_items", Parent("layout_id", "statistics_widget_layouts", "id")),
+    export(
+        "statistics_widget_layout_items",
+        Parent("layout_id", "statistics_widget_layouts", "id"),
+    ),
     export("stone_colors", Parent("stone_id", "stones", "id")),
     export("stone_image_links", Parent("stone_id", "stones", "id")),
     export("stone_slab_links", Parent("stone_id", "stones", "id")),
     export("stripe_payments", Parent("sale_id", "sales", "id")),
     skip("stripe_webhook_events", "the app's own Stripe bookkeeping"),
-    export("supplier_file_chunks", Parent("supplier_file_id", "supplier_files", "id")),
+    export(
+        "supplier_file_chunks",
+        Parent("supplier_file_id", "supplier_files", "id"),
+    ),
     export("supplier_files", Parent("supplier_id", "suppliers", "id")),
     // AI line calls to or from the company's numbers.
     export(
@@ -340,12 +430,26 @@ pub const TABLES: &[Table] = &[
              OR from_number IN (SELECT e164 FROM telnyx_numbers WHERE company_id = ?)",
         ),
     ),
-    export("telnyx_number_users", Parent("number_id", "telnyx_numbers", "id")),
-    export("telnyx_sms_attachments", Parent("telnyx_sms_id", "telnyx_sms", "id")),
+    export(
+        "telnyx_number_users",
+        Parent("number_id", "telnyx_numbers", "id"),
+    ),
+    export(
+        "telnyx_sms_attachments",
+        Parent("telnyx_sms_id", "telnyx_sms", "id"),
+    ),
     export("todolist", Parent("user_id", "users", "id")),
     export("user_template_order", Parent("user_id", "users", "id")),
     export("user_template_order_mode", Parent("user_id", "users", "id")),
     export("user_template_usage", Parent("user_id", "users", "id")),
+];
+
+/// Tables of the production database that no migration creates (made by
+/// hand or by the old app); the test database does not have them.
+pub const PRODUCTION_ONLY_TABLES: &[&str] = &[
+    "_sqlx_test_databases",
+    "onboarding_analytics_events",
+    "users_onboarding_legacy_backup",
 ];
 
 /// Columns left out of exported tables: passwords, provider keys and sign-in
@@ -436,9 +540,7 @@ fn condition_at(name: &str, depth: usize) -> Option<(String, usize)> {
         Parent(column, parent, parent_column) => {
             let (inner, binds) = condition_at(parent, depth + 1)?;
             (
-                format!(
-                    "`{column}` IN (SELECT `{parent_column}` FROM `{parent}` WHERE {inner})"
-                ),
+                format!("`{column}` IN (SELECT `{parent_column}` FROM `{parent}` WHERE {inner})"),
                 binds,
             )
         }
@@ -553,6 +655,8 @@ pub const FILE_COLUMNS: &[FileColumn] = &[
 pub const NOT_FILE_COLUMNS: &[(&str, &str)] = &[
     ("cloudtalk_sms", "media_urls"),
     ("cloudtalk_sms_attachments", "filename"),
+    // The same file as `s3_key`.
+    ("cloudtalk_sms_attachments", "s3_url"),
     ("cloudtalk_sms_templates", "attachments"),
     ("company", "ringcentral_server_url"),
     ("company_billing_invoices", "hosted_invoice_url"),
@@ -561,6 +665,7 @@ pub const NOT_FILE_COLUMNS: &[(&str, &str)] = &[
     ("native_signature_delivery_items", "attachment_index"),
     ("onboarding_analytics_events", "path"),
     ("ringcentral_sms_attachments", "filename"),
+    ("ringcentral_sms_attachments", "s3_url"),
     ("signature_requests", "email_attachment_id"),
     ("signature_requests", "filename"),
     ("supplier_file_chunks", "supplier_file_id"),
@@ -571,15 +676,25 @@ pub const NOT_FILE_COLUMNS: &[(&str, &str)] = &[
     ("telnyx_company_config", "messaging_profile_id"),
     ("telnyx_company_config", "outbound_voice_profile_id"),
     ("telnyx_sms_attachments", "filename"),
+    ("telnyx_sms_attachments", "s3_url"),
 ];
 
 /// Whether a column's name looks like it holds a file (checked by the tests
 /// against [`FILE_COLUMNS`] and [`NOT_FILE_COLUMNS`]).
 pub fn looks_like_file_column(column: &str) -> bool {
     let column = column.to_ascii_lowercase();
-    ["url", "src", "s3_key", "object_key", "recording_key", "file", "path", "attachment"]
-        .iter()
-        .any(|word| column.contains(word))
+    [
+        "url",
+        "src",
+        "s3_key",
+        "object_key",
+        "recording_key",
+        "file",
+        "path",
+        "attachment",
+    ]
+    .iter()
+    .any(|word| column.contains(word))
 }
 
 #[cfg(test)]
@@ -605,7 +720,14 @@ mod tests {
         ] {
             assert!(is_secret_column(column), "{column}");
         }
-        for column in ["input_tokens", "name", "email", "pinned", "is_pinned", "pined_bar"] {
+        for column in [
+            "input_tokens",
+            "name",
+            "email",
+            "pinned",
+            "is_pinned",
+            "pined_bar",
+        ] {
             assert!(!is_secret_column(column), "{column}");
         }
         assert!(column_is_left_out("users", "password"));

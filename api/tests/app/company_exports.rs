@@ -28,7 +28,8 @@ fn state(pool: &MySqlPool) -> (AppState, Storage, Arc<Mutex<Vec<SentMail>>>) {
 
 /// `hour`:30 New York time on `day` of November 2026 (EST, UTC-5).
 fn new_york(day: u32, hour: u32) -> DateTime<Utc> {
-    Utc.with_ymd_and_hms(2026, 11, day, hour + 5, 30, 0).unwrap()
+    Utc.with_ymd_and_hms(2026, 11, day, hour + 5, 30, 0)
+        .unwrap()
 }
 
 async fn set_up(pool: &MySqlPool) {
@@ -78,8 +79,17 @@ impl Zip {
     }
 
     fn text(&self, name: &str) -> String {
-        let bytes = self.0.get(name).unwrap_or_else(|| panic!("{name} in the zip"));
-        String::from_utf8(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes).to_vec()).unwrap()
+        let bytes = self
+            .0
+            .get(name)
+            .unwrap_or_else(|| panic!("{name} in the zip"));
+        String::from_utf8(
+            bytes
+                .strip_prefix(b"\xEF\xBB\xBF")
+                .unwrap_or(bytes)
+                .to_vec(),
+        )
+        .unwrap()
     }
 
     /// A CSV's header and rows.
@@ -154,7 +164,13 @@ async fn every_table_and_column_of_the_database_is_classified(pool: MySqlPool) {
     }
     for table in TABLES {
         if !schema.contains_key(table.name) {
-            problems.push(format!("TABLES lists {} but the database has no such table", table.name));
+            if tables::PRODUCTION_ONLY_TABLES.contains(&table.name) {
+                continue;
+            }
+            problems.push(format!(
+                "TABLES lists {} but the database has no such table",
+                table.name
+            ));
             continue;
         }
         match table.rule {
@@ -176,7 +192,8 @@ async fn every_table_and_column_of_the_database_is_classified(pool: MySqlPool) {
                 let known_file = FILE_COLUMNS.iter().any(|file| {
                     let (FileColumn::Url(t, c) | FileColumn::Key(t, c, ..)) = file;
                     *t == table.name && *c == column.name
-                }) || NOT_FILE_COLUMNS.contains(&(table.name, column.name.as_str()));
+                }) || NOT_FILE_COLUMNS
+                    .contains(&(table.name, column.name.as_str()));
                 if tables::looks_like_file_column(&column.name)
                     && !known_file
                     && !tables::column_is_left_out(table.name, &column.name)
@@ -191,17 +208,24 @@ async fn every_table_and_column_of_the_database_is_classified(pool: MySqlPool) {
     }
     for (table, column) in SECRET_COLUMNS {
         if !has(table, column) {
-            problems.push(format!("SECRET_COLUMNS lists {table}.{column}, which does not exist"));
+            problems.push(format!(
+                "SECRET_COLUMNS lists {table}.{column}, which does not exist"
+            ));
         }
     }
     for file in FILE_COLUMNS {
         let (FileColumn::Url(table, column) | FileColumn::Key(table, column, ..)) = file;
         if !has(table, column) {
-            problems.push(format!("FILE_COLUMNS lists {table}.{column}, which does not exist"));
+            problems.push(format!(
+                "FILE_COLUMNS lists {table}.{column}, which does not exist"
+            ));
         }
     }
     // Each table's query runs.
     for table in TABLES {
+        if tables::PRODUCTION_ONLY_TABLES.contains(&table.name) {
+            continue;
+        }
         if let Some((condition, binds)) = tables::condition(table.name) {
             let sql = format!("SELECT COUNT(*) FROM `{}` WHERE {condition}", table.name);
             let mut query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql));
@@ -220,8 +244,18 @@ async fn every_table_and_column_of_the_database_is_classified(pool: MySqlPool) {
 async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySqlPool) {
     set_up(&pool).await;
     let (state, storage, sent) = state(&pool);
-    put(&storage, "dynamic-images/images/kitchen.jpg", b"kitchen-bytes").await;
-    put(&storage, "dynamic-images/images/theirs.jpg", b"theirs-bytes").await;
+    put(
+        &storage,
+        "dynamic-images/images/kitchen.jpg",
+        b"kitchen-bytes",
+    )
+    .await;
+    put(
+        &storage,
+        "dynamic-images/images/theirs.jpg",
+        b"theirs-bytes",
+    )
+    .await;
 
     // Before 6 AM New York time: nothing.
     let early = run_due(&state, new_york(10, 5)).await.unwrap();
@@ -232,24 +266,47 @@ async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySq
     assert_eq!((run.sent, run.failed), (1, 0), "{run:?}");
     let keys = zips(&storage);
     assert_eq!(keys.len(), 1);
-    assert!(keys[0].starts_with("company-exports/100/2026-11-10-"), "{keys:?}");
+    assert!(
+        keys[0].starts_with("company-exports/100/2026-11-10-"),
+        "{keys:?}"
+    );
 
     let mail = sent.lock().unwrap().clone();
     assert_eq!(mail.len(), 1);
     assert_eq!(
         mail[0].to,
-        vec!["owner@acme.test".to_string(), "Дмитрий Заика <dima@acme.test>".to_string()]
+        vec![
+            "owner@acme.test".to_string(),
+            "Дмитрий Заика <dima@acme.test>".to_string()
+        ]
     );
-    assert_eq!(mail[0].subject, "Acme Stone data export - November 10, 2026");
+    assert_eq!(
+        mail[0].subject,
+        "Acme Stone data export - November 10, 2026"
+    );
     assert!(mail[0].html.contains(&keys[0]), "{}", mail[0].html);
-    assert!(mail[0].html.contains("November 17, 2026"), "link expiry: {}", mail[0].html);
+    assert!(
+        mail[0].html.contains("November 17, 2026"),
+        "link expiry: {}",
+        mail[0].html
+    );
 
     let zip = Zip::read(&storage, &keys[0]).await;
     let manifest: serde_json::Value = serde_json::from_str(&zip.text("manifest.json")).unwrap();
     assert_eq!(manifest["company_id"], 100);
     assert_eq!(manifest["full_files"], true);
     assert_eq!(manifest["unknown_tables"], serde_json::json!([]));
-    assert_eq!(manifest["missing_tables"], serde_json::json!([]));
+    assert_eq!(
+        manifest["missing_tables"],
+        serde_json::json!(
+            TABLES
+                .iter()
+                .filter(|t| matches!(t.rule, Rule::Export(_))
+                    && tables::PRODUCTION_ONLY_TABLES.contains(&t.name))
+                .map(|t| t.name)
+                .collect::<Vec<_>>()
+        )
+    );
 
     // Every exported table's rows: the count the database has, and no
     // other company's row.
@@ -257,9 +314,16 @@ async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySq
     let mut total = 0;
     for table in TABLES {
         let Some((condition, binds)) = tables::condition(table.name) else {
-            assert!(!zip.0.contains_key(&format!("data/{}.csv", table.name)), "{}", table.name);
+            assert!(
+                !zip.0.contains_key(&format!("data/{}.csv", table.name)),
+                "{}",
+                table.name
+            );
             continue;
         };
+        if tables::PRODUCTION_ONLY_TABLES.contains(&table.name) {
+            continue;
+        }
         let sql = format!("SELECT COUNT(*) FROM `{}` WHERE {condition}", table.name);
         let mut query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql));
         for _ in 0..binds {
@@ -268,7 +332,11 @@ async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySq
         let expected = usize::try_from(query.fetch_one(&pool).await.unwrap()).unwrap();
         let (header, rows) = zip.csv(table.name);
         assert_eq!(rows.len(), expected, "{}", table.name);
-        assert!(rows.iter().all(|row| row.len() == header.len()), "{} row width", table.name);
+        assert!(
+            rows.iter().all(|row| row.len() == header.len()),
+            "{} row width",
+            table.name
+        );
         let entry = manifest["tables"]
             .as_array()
             .unwrap()
@@ -278,11 +346,20 @@ async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySq
         assert_eq!(entry["rows"], expected, "{}", table.name);
         total += expected;
         for column in &header {
-            assert!(!tables::column_is_left_out(table.name, column), "{}.{column}", table.name);
+            assert!(
+                !tables::column_is_left_out(table.name, column),
+                "{}.{column}",
+                table.name
+            );
         }
         if let Some(at) = header.iter().position(|column| column == "company_id") {
             for row in &rows {
-                assert_eq!(row[at].as_deref(), Some("100"), "{} row of another company", table.name);
+                assert_eq!(
+                    row[at].as_deref(),
+                    Some("100"),
+                    "{} row of another company",
+                    table.name
+                );
             }
         }
         if table.rule == Rule::Export(Scope::Company) {
@@ -293,7 +370,12 @@ async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySq
             .fetch_one(&pool)
             .await
             .unwrap();
-            assert_eq!(rows.len(), usize::try_from(independent).unwrap(), "{}", table.name);
+            assert_eq!(
+                rows.len(),
+                usize::try_from(independent).unwrap(),
+                "{}",
+                table.name
+            );
         }
         checked += 1;
     }
@@ -304,12 +386,16 @@ async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySq
     let (header, rows) = zip.csv("users");
     assert!(!header.contains(&"password".to_string()));
     assert!(header.contains(&"email".to_string()));
-    let customers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM customers WHERE company_id = 100")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+    let customers: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM customers WHERE company_id = 100")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert!(customers > 0);
-    assert_eq!(zip.csv("customers").1.len(), usize::try_from(customers).unwrap());
+    assert_eq!(
+        zip.csv("customers").1.len(),
+        usize::try_from(customers).unwrap()
+    );
     let users: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE company_id = 100")
         .fetch_one(&pool)
         .await
@@ -317,12 +403,30 @@ async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySq
     assert_eq!(rows.len(), usize::try_from(users).unwrap());
     let (header, rows) = zip.csv("company");
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0][header.iter().position(|c| c == "name").unwrap()].as_deref(), Some("Acme Stone"));
-    for secret in ["qbo_client_secret", "qbo_refresh_token", "ringcentral_jwt", "signwell_api_key", "raptor_password"] {
+    assert_eq!(
+        rows[0][header.iter().position(|c| c == "name").unwrap()].as_deref(),
+        Some("Acme Stone")
+    );
+    for secret in [
+        "qbo_client_secret",
+        "qbo_refresh_token",
+        "ringcentral_jwt",
+        "signwell_api_key",
+        "raptor_password",
+    ] {
         assert!(!header.contains(&secret.to_string()), "{secret}");
     }
-    for skipped in ["sessions", "access_tokens", "device_sessions", "phone_devices", "password_reset_tokens"] {
-        assert!(!zip.0.contains_key(&format!("data/{skipped}.csv")), "{skipped}");
+    for skipped in [
+        "sessions",
+        "access_tokens",
+        "device_sessions",
+        "phone_devices",
+        "password_reset_tokens",
+    ] {
+        assert!(
+            !zip.0.contains_key(&format!("data/{skipped}.csv")),
+            "{skipped}"
+        );
     }
     let deals_of_others: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM deals d JOIN customers c ON c.id = d.customer_id WHERE c.company_id <> 100",
@@ -333,22 +437,35 @@ async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySq
     assert!(deals_of_others > 0, "the seed has another company's deals");
     let (header, rows) = zip.csv("deals");
     let customer_at = header.iter().position(|c| c == "customer_id").unwrap();
-    let ours: Vec<String> = sqlx::query_scalar("SELECT CAST(id AS CHAR) FROM customers WHERE company_id = 100")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-    assert!(rows.iter().all(|row| ours.contains(row[customer_at].as_ref().unwrap())));
+    let ours: Vec<String> =
+        sqlx::query_scalar("SELECT CAST(id AS CHAR) FROM customers WHERE company_id = 100")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(
+        rows.iter()
+            .all(|row| ours.contains(row[customer_at].as_ref().unwrap()))
+    );
 
     // The files: ours in the zip, theirs not, links listed.
-    assert_eq!(zip.0["files/main/dynamic-images/images/kitchen.jpg"], b"kitchen-bytes");
+    assert_eq!(
+        zip.0["files/main/dynamic-images/images/kitchen.jpg"],
+        b"kitchen-bytes"
+    );
     assert!(!zip.0.keys().any(|name| name.contains("theirs")));
     let index = parse_csv(&zip.text("files.csv"));
     let statuses: HashMap<String, String> = index[1..]
         .iter()
         .map(|row| (row[3].clone().unwrap(), row[5].clone().unwrap()))
         .collect();
-    assert_eq!(statuses["https://files.test/bucket/dynamic-images/images/kitchen.jpg"], "included");
-    assert_eq!(statuses["https://example.test/logo.png"], "external link (not copied)");
+    assert_eq!(
+        statuses["https://files.test/bucket/dynamic-images/images/kitchen.jpg"],
+        "included"
+    );
+    assert_eq!(
+        statuses["https://example.test/logo.png"],
+        "external link (not copied)"
+    );
     assert!(!statuses.keys().any(|value| value.contains("theirs")));
     assert!(zip.text("README.txt").contains("Acme Stone"));
 
@@ -363,7 +480,12 @@ async fn the_export_holds_the_company_rows_and_files_and_nothing_else(pool: MySq
 async fn the_next_days_add_only_new_files_and_mondays_all(pool: MySqlPool) {
     set_up(&pool).await;
     let (state, storage, sent) = state(&pool);
-    put(&storage, "dynamic-images/images/kitchen.jpg", b"kitchen-bytes").await;
+    put(
+        &storage,
+        "dynamic-images/images/kitchen.jpg",
+        b"kitchen-bytes",
+    )
+    .await;
     run_due(&state, new_york(10, 6)).await.unwrap();
 
     sqlx::query(
@@ -377,12 +499,26 @@ async fn the_next_days_add_only_new_files_and_mondays_all(pool: MySqlPool) {
     // Wednesday: only the new picture.
     let run = run_due(&state, new_york(11, 8)).await.unwrap();
     assert_eq!(run.sent, 1);
-    let key = zips(&storage).into_iter().find(|key| key.contains("2026-11-11")).unwrap();
+    let key = zips(&storage)
+        .into_iter()
+        .find(|key| key.contains("2026-11-11"))
+        .unwrap();
     let zip = Zip::read(&storage, &key).await;
-    assert_eq!(zip.0["files/main/dynamic-images/images/bath.jpg"], b"bath-bytes");
-    assert!(!zip.0.contains_key("files/main/dynamic-images/images/kitchen.jpg"));
+    assert_eq!(
+        zip.0["files/main/dynamic-images/images/bath.jpg"],
+        b"bath-bytes"
+    );
+    assert!(
+        !zip.0
+            .contains_key("files/main/dynamic-images/images/kitchen.jpg")
+    );
     let index = zip.text("files.csv");
-    assert!(index.contains("kitchen.jpg,files/main/dynamic-images/images/kitchen.jpg,sent in an earlier export"), "{index}");
+    assert!(
+        index.contains(
+            "kitchen.jpg,files/main/dynamic-images/images/kitchen.jpg,sent in an earlier export"
+        ),
+        "{index}"
+    );
     let manifest: serde_json::Value = serde_json::from_str(&zip.text("manifest.json")).unwrap();
     assert_eq!(manifest["full_files"], false);
     assert_eq!(manifest["files"]["included"], 1);
@@ -390,10 +526,19 @@ async fn the_next_days_add_only_new_files_and_mondays_all(pool: MySqlPool) {
 
     // Monday 16th: every file again.
     run_due(&state, new_york(16, 6)).await.unwrap();
-    let key = zips(&storage).into_iter().find(|key| key.contains("2026-11-16")).unwrap();
+    let key = zips(&storage)
+        .into_iter()
+        .find(|key| key.contains("2026-11-16"))
+        .unwrap();
     let zip = Zip::read(&storage, &key).await;
-    assert!(zip.0.contains_key("files/main/dynamic-images/images/kitchen.jpg"));
-    assert!(zip.0.contains_key("files/main/dynamic-images/images/bath.jpg"));
+    assert!(
+        zip.0
+            .contains_key("files/main/dynamic-images/images/kitchen.jpg")
+    );
+    assert!(
+        zip.0
+            .contains_key("files/main/dynamic-images/images/bath.jpg")
+    );
     assert_eq!(sent.lock().unwrap().len(), 3);
 }
 
@@ -421,10 +566,12 @@ async fn a_failing_day_is_tried_three_times_then_alerted_once(pool: MySqlPool) {
     // Not again within five minutes.
     assert_eq!(run_due(&state, new_york(10, 6)).await.unwrap().failed, 0);
     for attempt in 2..=3 {
-        sqlx::query("UPDATE company_export_runs SET finished_at = finished_at - INTERVAL 10 MINUTE")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE company_export_runs SET finished_at = finished_at - INTERVAL 10 MINUTE",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
         let run = run_due(&state, new_york(10, 6)).await.unwrap();
         assert_eq!(run.failed, 1, "attempt {attempt}");
         assert_eq!(attempts().await.1, attempt);

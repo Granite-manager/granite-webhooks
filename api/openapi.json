@@ -18196,6 +18196,302 @@
         ]
       }
     },
+    "/v1/deal-stage-activity-rules": {
+      "get": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "List automatic activity rules",
+        "description": "Every rule of the company, oldest first.",
+        "operationId": "list_deal_stage_activity_rules",
+        "responses": {
+          "200": {
+            "description": "Rules",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ActivityRule"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "Add an automatic activity rule",
+        "operationId": "create_deal_stage_activity_rule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivityRuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedId"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing name, bad due time, unknown or mismatched lists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/deal-stage-activity-rules/{id}": {
+      "put": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "Change an automatic activity rule",
+        "description": "Replaces every field. Activities it already added stay.",
+        "operationId": "update_deal_stage_activity_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Rule id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivityRuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Changed"
+          },
+          "400": {
+            "description": "Missing name, bad due time, unknown or mismatched lists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such rule of the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "Delete an automatic activity rule",
+        "description": "Activities it already added stay.",
+        "operationId": "delete_deal_stage_activity_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Rule id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such rule of the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/projects": {
       "get": {
         "tags": [
@@ -40571,7 +40867,7 @@
           "shop"
         ],
         "summary": "Cut square feet per day",
-        "description": "Square feet of sold slabs whose room is fully cut, by the day each slab\nwas cut and by stone type, for the caller's company. A slab's square\nfeet are its `square_feet`, else length × width / 144. Rooms with any\nuncut slab are left out.",
+        "description": "Square feet of fully cut rooms, by the day the room's last slab was cut\nand by stone type, for the caller's company. A room counts once: the\nroom's square feet (every slab of a room carries the same `square_feet`),\nelse its slabs' length × width / 144 added up. Rooms with any uncut slab\nare left out.",
         "operationId": "get_shop_cut_stats",
         "parameters": [
           {
@@ -42464,7 +42760,7 @@
           "sales"
         ],
         "summary": "Record a cut piece",
-        "description": "Records the size of a piece cut from the slab (the\n`admin|shop.transactions.edit` `partial-cut` bookkeeping): it resizes the\nfirst piece with `replace_first`, else adds a piece copying the slab's\nsale details; unless `add_another`, the slab is then marked cut.",
+        "description": "Records the size of a piece cut from the slab (the\n`admin|shop.transactions.edit` `partial-cut` bookkeeping): it resizes the\nfirst piece with `replace_first`, else (or when the slab has no piece)\nadds a free piece of the slab's stone and bundle; unless `add_another`,\nthe slab is then marked cut. The sold slab keeps its own size.",
         "operationId": "partial_cut_sale_slab",
         "parameters": [
           {
@@ -54140,6 +54436,94 @@
         ]
       }
     },
+    "/v1/qbo/invoices/{invoice_id}/balance": {
+      "get": {
+        "tags": [
+          "quickbooks"
+        ],
+        "summary": "What the customer still owes on a QuickBooks invoice",
+        "description": "For the crew's job page: after Complete job it shows the amount to\ncollect. Installers only for an invoice linked to one of their jobs.",
+        "operationId": "get_qbo_invoice_balance",
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "description": "QuickBooks invoice id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The balance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceBalance"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid invoice id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not linked to one of the installer's jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "QuickBooks is not connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "QuickBooks failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/qbo/customers": {
       "get": {
         "tags": [
@@ -55803,6 +56187,53 @@
           },
           "502": {
             "description": "RingCentral refused the request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "job_key": []
+          }
+        ]
+      }
+    },
+    "/v1/jobs/company-exports": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Send today's company data exports",
+        "description": "Called by the scheduler every minute. For each company with an export set\nup, once its local time reaches the export hour, builds that day's zip\n(every table's rows as CSV, new pictures and documents, all of them on\nMondays), stores it privately and emails the recipients a download link\nthat works 7 days; once per company and day. Failed exports are retried\nthree times, then an alert is emailed. Zips older than 7 days are deleted.",
+        "operationId": "run_company_exports",
+        "responses": {
+          "200": {
+            "description": "What was sent, retried, alerted and deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportsRun"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong job key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
             "content": {
               "application/json": {
                 "schema": {
@@ -75028,7 +75459,8 @@
           "deal_id",
           "name",
           "priority",
-          "is_completed"
+          "is_completed",
+          "is_automatic"
         ],
         "properties": {
           "id": {
@@ -75082,6 +75514,10 @@
               "null"
             ],
             "description": "Name of the user who created it."
+          },
+          "is_automatic": {
+            "type": "boolean",
+            "description": "Added by a rule of Admin › Deals › Automatic Activities."
           }
         }
       },
@@ -75366,6 +75802,101 @@
             "description": "`CloudTalk` agent id."
           }
         }
+      },
+      "ActivityRule": {
+        "type": "object",
+        "description": "A rule, as the admin page shows it.",
+        "required": [
+          "id",
+          "to_list_id",
+          "activity_name",
+          "due_amount",
+          "due_unit",
+          "is_enabled"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rule id."
+          },
+          "from_list_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The list the deal leaves; null: any list."
+          },
+          "to_list_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The list the deal lands on."
+          },
+          "activity_name": {
+            "type": "string",
+            "description": "Name of the activity it adds."
+          },
+          "due_amount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Due this many `due_unit` after the move."
+          },
+          "due_unit": {
+            "type": "string",
+            "description": "`hours` or `days`."
+          },
+          "is_enabled": {
+            "type": "boolean",
+            "description": "Off: adds nothing."
+          }
+        }
+      },
+      "ActivityRuleInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/deal-stage-activity-rules` and `PUT /v1/deal-stage-activity-rules/{id}`.",
+        "required": [
+          "to_list_id",
+          "activity_name",
+          "due_amount",
+          "due_unit"
+        ],
+        "properties": {
+          "from_list_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The list the deal leaves; null: any list."
+          },
+          "to_list_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The list the deal lands on (same pipeline as `from_list_id`)."
+          },
+          "activity_name": {
+            "type": "string",
+            "description": "Name of the activity, 1–255 characters."
+          },
+          "due_amount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0–999."
+          },
+          "due_unit": {
+            "type": "string",
+            "description": "`hours` or `days`."
+          },
+          "is_enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Default on."
+          }
+        },
+        "additionalProperties": false
       },
       "ActivitySearchInput": {
         "type": "object",
@@ -82626,7 +83157,8 @@
         "description": "What the crew taps.",
         "enum": [
           "on_my_way",
-          "completed"
+          "completed",
+          "paid"
         ]
       },
       "CrewPosition": {
@@ -82723,7 +83255,7 @@
         "properties": {
           "status": {
             "$ref": "#/components/schemas/CrewButton",
-            "description": "`on_my_way` (today's jobs) or `completed`."
+            "description": "`on_my_way` (today's jobs), `completed`, or `paid` (a completed job)."
           }
         }
       },
@@ -87831,6 +88363,44 @@
           }
         }
       },
+      "ExportsRun": {
+        "type": "object",
+        "description": "What one call did.",
+        "required": [
+          "processed",
+          "sent",
+          "failed",
+          "alerts",
+          "deleted"
+        ],
+        "properties": {
+          "processed": {
+            "type": "integer",
+            "description": "Exports sent (what the scheduler logs).",
+            "minimum": 0
+          },
+          "sent": {
+            "type": "integer",
+            "description": "Exports sent.",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "description": "Export attempts that failed (tried again a few minutes later).",
+            "minimum": 0
+          },
+          "alerts": {
+            "type": "integer",
+            "description": "Failure alerts sent.",
+            "minimum": 0
+          },
+          "deleted": {
+            "type": "integer",
+            "description": "Old zips deleted from storage.",
+            "minimum": 0
+          }
+        }
+      },
       "ExtensionReport": {
         "type": "object",
         "description": "The texts of one extension in the window.",
@@ -91046,6 +91616,28 @@
             ],
             "format": "date-time",
             "description": "When it was paid (ISO 8601), or null."
+          }
+        }
+      },
+      "InvoiceBalance": {
+        "type": "object",
+        "description": "`GET /v1/qbo/invoices/{invoice_id}/balance`.",
+        "properties": {
+          "balance": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "What the customer still owes on it."
+          },
+          "total": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The invoice's total."
           }
         }
       },

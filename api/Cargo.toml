@@ -19,6 +19,11 @@ path = "examples/sign_session.rs"
 test = false
 
 [[example]]
+name = "company_export_dry_run"
+path = "examples/company_export_dry_run.rs"
+test = false
+
+[[example]]
 name = "rotate_aes_key"
 path = "examples/rotate_aes_key.rs"
 

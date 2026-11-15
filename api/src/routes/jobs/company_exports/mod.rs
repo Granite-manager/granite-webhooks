@@ -363,7 +363,13 @@ async fn export_and_send(
     let file_name = format!("{} export {day}.zip", safe_file_name(&company_name));
     let link = state
         .storage
-        .presign_get_in_for(Some(&bucket), &key, "application/zip", Some(&file_name), ttl)
+        .presign_get_in_for(
+            Some(&bucket),
+            &key,
+            "application/zip",
+            Some(&file_name),
+            ttl,
+        )
         .await
         .map_err(|error| format!("link: {error}"))?;
     let expires = local + chrono::Duration::days(link_days);
@@ -529,10 +535,12 @@ async fn delete_old_zips(state: &AppState) -> Result<usize, sqlx::Error> {
     for (run_id, key) in old {
         match state.storage.delete_in(bucket, &key).await {
             Ok(()) => {
-                sqlx::query("UPDATE company_export_runs SET deleted_at = UTC_TIMESTAMP() WHERE id = ?")
-                    .bind(run_id)
-                    .execute(&state.pool)
-                    .await?;
+                sqlx::query(
+                    "UPDATE company_export_runs SET deleted_at = UTC_TIMESTAMP() WHERE id = ?",
+                )
+                .bind(run_id)
+                .execute(&state.pool)
+                .await?;
                 deleted += 1;
             }
             Err(error) => tracing::warn!(%error, run_id, "Old company export not deleted"),
@@ -551,10 +559,20 @@ fn random_hex() -> String {
 fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let cleaned = cleaned.trim().to_string();
-    if cleaned.is_empty() { "Company".into() } else { cleaned }
+    if cleaned.is_empty() {
+        "Company".into()
+    } else {
+        cleaned
+    }
 }
 
 /// The export email: subject and HTML body.
@@ -569,9 +587,15 @@ fn email(
     let date = day.format("%B %-d, %Y").to_string();
     let expires = expires.format("%B %-d, %Y %-I:%M %p %Z").to_string();
     let files = if manifest.full_files {
-        format!("{} files (all pictures and documents)", manifest.files.included)
+        format!(
+            "{} files (all pictures and documents)",
+            manifest.files.included
+        )
     } else {
-        format!("{} new files since the last export", manifest.files.included)
+        format!(
+            "{} new files since the last export",
+            manifest.files.included
+        )
     };
     let link = crate::html::escape(link);
     let subject = format!("{company_name} data export - {date}");

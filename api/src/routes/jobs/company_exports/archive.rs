@@ -416,7 +416,10 @@ pub async fn build(state: &AppState, request: &Request<'_>) -> Result<Built, Bui
         let file_name = format!("data/{}.csv", table.name);
         zip.start_file(&file_name, deflate)?;
         zip.write_all(UTF8_BOM)?;
-        let header: Vec<Option<&str>> = kept.iter().map(|column| Some(column.name.as_str())).collect();
+        let header: Vec<Option<&str>> = kept
+            .iter()
+            .map(|column| Some(column.name.as_str()))
+            .collect();
         zip.write_all(csv_line(&header).as_bytes())?;
 
         // Names come from `TABLES` and `information_schema`, quoted; the
@@ -502,8 +505,7 @@ pub async fn build(state: &AppState, request: &Request<'_>) -> Result<Built, Bui
                         (path.clone(), *status)
                     } else {
                         let hash = file_hash(&bucket, &key);
-                        let status = if !request.full_files && request.sent_before.contains(&hash)
-                        {
+                        let status = if !request.full_files && request.sent_before.contains(&hash) {
                             manifest.files.sent_before += 1;
                             "sent in an earlier export"
                         } else if file_bytes >= MAX_FILE_BYTES {
