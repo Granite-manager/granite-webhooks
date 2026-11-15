@@ -21,4 +21,5 @@
 // Each crate re-exports the ones below it.
 pub use api_crm::*;
 
+pub mod mfa;
 pub mod routes;

@@ -10,6 +10,7 @@ mod app_shell;
 mod auth;
 mod auth_routes;
 mod leaderboard;
+mod login_mfa;
 mod manage_users;
 mod me;
 mod me_account;

@@ -15,9 +15,11 @@
 //! - `PUT /v1/me/ai-assistant` → switch my AI personal assistant on or off
 //! - `GET /v1/me/marketing-companies` → companies the user markets for
 //! - `/v1/me/todos`, `/v1/me/todo-order` → the to-do list (see [`todos`])
+//! - `/v1/me/mfa` → my two-step sign-in (see [`mfa`])
 
 pub mod account;
 pub mod handlers;
+pub mod mfa;
 pub mod photo;
 pub mod queries;
 pub mod ringcentral;
@@ -31,6 +33,10 @@ use crate::state::AppState;
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(handlers::me))
+        .routes(routes!(mfa::get_mfa))
+        .routes(routes!(mfa::start_setup))
+        .routes(routes!(mfa::confirm))
+        .routes(routes!(mfa::disable))
         .routes(routes!(account::account, account::update_account))
         .routes(routes!(ringcentral::start))
         .routes(routes!(ringcentral::finish, ringcentral::disconnect))

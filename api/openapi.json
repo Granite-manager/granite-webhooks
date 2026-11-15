@@ -53,6 +53,276 @@
         ]
       }
     },
+    "/v1/me/mfa": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "My two-step sign-in",
+        "description": "Whether two-step sign-in (an authenticator app code after the password)\nis on for the caller, since when, and whether they must keep it on\n(superusers). Turn it on with `POST /v1/me/mfa/setup` then `POST\n/v1/me/mfa/confirm`; off with `POST /v1/me/mfa/disable`.",
+        "operationId": "get_my_mfa",
+        "responses": {
+          "200": {
+            "description": "My two-step sign-in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/v1/me/mfa/setup": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Start setting up two-step sign-in",
+        "description": "A new secret for an authenticator app (Google Authenticator, Microsoft\nAuthenticator, 1Password...): a QR code to scan, an `otpauth://` link to\nopen on the phone that has the app, and the secret to type in. Asking\nagain within 10 minutes answers the same secret. Nothing changes until\n`POST /v1/me/mfa/confirm` gets a code from it; when it is already on,\nconfirming replaces the old authenticator.",
+        "operationId": "start_my_mfa_setup",
+        "responses": {
+          "200": {
+            "description": "What to add to the authenticator app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticatorSetup"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/v1/me/mfa/confirm": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Turn on two-step sign-in",
+        "description": "The code the authenticator app shows for the secret of `POST\n/v1/me/mfa/setup`: turns two-step sign-in on (from the next sign-in,\nevery sign-in asks for a code; sessions signed in now stay). 400 when\nthe code is wrong or no setup was started in the last hour.",
+        "operationId": "confirm_my_mfa",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaCode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "On",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong code, or no setup started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong codes; try later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/v1/me/mfa/disable": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Turn off two-step sign-in",
+        "description": "Needs a current code of the authenticator app. Superusers must keep it\non (403). Sign-ins then ask for the password only.",
+        "operationId": "disable_my_mfa",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaCode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Superusers must keep two-step sign-in on",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong codes; try later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/v1/me/account": {
       "get": {
         "tags": [
@@ -50580,7 +50850,7 @@
           "auth"
         ],
         "summary": "Sign in",
-        "description": "Checks the email and password; on success creates a session (it lasts\nuntil sign-out: never by time),\nsets it as the `__session` cookie (HttpOnly, SameSite=Lax, Secure in\nproduction) and says where the user starts. Too many failed attempts\nfor the email answer 429 until the 15-minute window passes. A wrong\nemail and a wrong password answer the same 401.",
+        "description": "Checks the email and password; on success creates a session (it lasts\nuntil sign-out: never by time),\nsets it as the `__session` cookie (HttpOnly, SameSite=Lax, Secure in\nproduction) and says where the user starts. Too many failed attempts\nfor the email answer 429 until the 15-minute window passes. A wrong\nemail and a wrong password answer the same 401.\n\nWhen the account needs another step first, answers 202 with a\n`LoginChallenge` instead and sets no cookie: `code` (two-step sign-in is\non: `POST /v1/auth/login/code`), `new_password` (the password is 1111:\n`POST /v1/auth/login/password`) or `setup_authenticator` (superusers must\nturn on two-step sign-in: `POST /v1/auth/login/authenticator`). The last\nstep signs in as this route would.",
         "operationId": "sign_in",
         "requestBody": {
           "content": {
@@ -50599,6 +50869,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Right password; another step is needed first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginChallenge"
                 }
               }
             }
@@ -51053,6 +51333,364 @@
           },
           "404": {
             "description": "Invalid or expired link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login/code": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Send the authenticator code of a sign-in",
+        "description": "The `code` step: checks the 6-digit code of the user's authenticator\napp (the current one, or the one just before or after). A code works\nonce. Answers the next step (202 `StepDone`) or signs in: 200\n`AuthSession` with the session cookie for a CRM sign-in, 201\n`DeviceSession` for the app's. A wrong code is 400; the fifth wrong code\nends the sign-in (401), and wrong codes count with wrong passwords for\nthe 429 limits.",
+        "operationId": "submit_sign_in_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in (CRM); the session cookie is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Signed in (app); the device token is in the body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Another step is needed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepDone"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The sign-in expired or had too many wrong codes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This step is not the one the sign-in needs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Choose a new password at sign-in",
+        "description": "The `new_password` step (the password was 1111): sets the new password\n(8 characters or more, not 1111), then answers the next step (202\n`StepDone`) or signs in: 200 `AuthSession` with the session cookie for a\nCRM sign-in, 201 `DeviceSession` for the app's. Other sessions of the\nuser stay signed in.",
+        "operationId": "set_sign_in_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in (CRM); the session cookie is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Signed in (app); the device token is in the body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Another step is needed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepDone"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Password too short, or 1111",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The sign-in expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This step is not the one the sign-in needs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login/authenticator": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get the authenticator QR code at sign-in",
+        "description": "The `setup_authenticator` step (superusers must use two-step sign-in):\nthe secret to add to an authenticator app, as a QR code to scan, an\n`otpauth://` link to open on the phone that has the app, and the secret\nto type in. Asking again within 10 minutes answers the same secret.\nNext: `POST /v1/auth/login/authenticator/confirm` with the code the app\nthen shows.",
+        "operationId": "start_sign_in_authenticator",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What to add to the authenticator app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticatorSetup"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The sign-in expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This step is not the one the sign-in needs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login/authenticator/confirm": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Turn on two-step sign-in at sign-in",
+        "description": "The `setup_authenticator` step's end: the first code the authenticator\napp shows for the secret of `POST /v1/auth/login/authenticator`. Turns\ntwo-step sign-in on (every later sign-in asks for a code) and signs in:\n200 `AuthSession` with the session cookie for a CRM sign-in, 201\n`DeviceSession` for the app's. A wrong code is 400; the fifth ends the\nsign-in (401).",
+        "operationId": "confirm_sign_in_authenticator",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in (CRM); the session cookie is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Signed in (app); the device token is in the body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Another step is needed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepDone"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The sign-in expired or had too many wrong codes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This step is not the one the sign-in needs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts",
             "content": {
               "application/json": {
                 "schema": {
@@ -58955,6 +59593,98 @@
         ]
       }
     },
+    "/v1/superuser/companies/{id}/first-payment-date": {
+      "put": {
+        "tags": [
+          "superuser"
+        ],
+        "summary": "Set a company's first payment date",
+        "description": "The day its next new subscription is first charged: it saves its card at\ncheckout, is charged on that day and then every month from it. Null\ncharges at checkout. A running subscription keeps its dates. Superusers\nonly.",
+        "operationId": "set_company_first_payment_date",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FirstPaymentDate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Date out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a superuser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/company/settings": {
       "get": {
         "tags": [
@@ -62975,7 +63705,7 @@
           "phone"
         ],
         "summary": "Sign a phone in",
-        "description": "Signs the Granite Manager app in with the CRM email and password and\nreturns its device token (send it as the `X-Granite-Device` header) and\nits call key (signs the calls it places), both shown only here. Only\nemployees, admins and superusers of a company that is not deleted may:\nothers get 403 `no_phone_access`.\nFailed attempts count together with `POST /v1/auth/login`'s (10 per\nemail and address, 50 per email in 15 minutes, then 429\n`rate_limited`), and a wrong email and a wrong password both answer 401\n`invalid_credentials`. The sign-in lasts until the phone signs out or is\nrevoked, never ending by time. Next:\n`POST /v1/phone/devices` registers the phone for calling.",
+        "description": "Signs the Granite Manager app in with the CRM email and password and\nreturns its device token (send it as the `X-Granite-Device` header) and\nits call key (signs the calls it places), both shown only here. Only\nemployees, admins and superusers of a company that is not deleted may:\nothers get 403 `no_phone_access`.\nFailed attempts count together with `POST /v1/auth/login`'s (10 per\nemail and address, 50 per email in 15 minutes, then 429\n`rate_limited`), and a wrong email and a wrong password both answer 401\n`invalid_credentials`. The sign-in lasts until the phone signs out or is\nrevoked, never ending by time. Next:\n`POST /v1/phone/devices` registers the phone for calling.\n\nWhen the account needs another step first (two-step sign-in is on, the\npassword is 1111, or a superuser has not set up two-step sign-in), the\nanswer is 202 with a `LoginChallenge` when `steps` is true (see `POST\n/v1/auth/login/code`, `/password`, `/authenticator`: the last step\nanswers this route's 201), else 403 asking to update the app.",
         "operationId": "create_device_session",
         "requestBody": {
           "content": {
@@ -62994,6 +63724,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeviceSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Right password; another step is needed first (`steps` true)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginChallenge"
                 }
               }
             }
@@ -63019,7 +63759,7 @@
             }
           },
           "403": {
-            "description": "`no_phone_access`: not an employee, admin or superuser, or the company is deleted",
+            "description": "`no_phone_access`: not an employee, admin or superuser, or the company is deleted; or the account needs a sign-in step this app cannot do (`steps` false)",
             "content": {
               "application/json": {
                 "schema": {
@@ -77525,6 +78265,29 @@
           }
         }
       },
+      "AuthenticatorSetup": {
+        "type": "object",
+        "description": "What the user adds to their authenticator app.",
+        "required": [
+          "secret",
+          "uri",
+          "qr"
+        ],
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "The secret as base32 (32 letters and digits), for typing into the\nauthenticator app when the QR code cannot be scanned (setting up on\nthe phone that shows it). Shown grouped by 4 is fine: apps ignore\nspaces."
+          },
+          "uri": {
+            "type": "string",
+            "description": "The `otpauth://totp/...` link: opening it on a phone adds the account\nto the authenticator app installed there."
+          },
+          "qr": {
+            "type": "string",
+            "description": "The QR code of `uri`, as a `data:image/png;base64,...` URL, for\nscanning with the authenticator app on another phone."
+          }
+        }
+      },
       "AuthorizeLink": {
         "type": "object",
         "description": "Where to send the browser.",
@@ -77970,7 +78733,7 @@
             "properties": {
               "can_manage": {
                 "type": "boolean",
-                "description": "The caller is a manager of the company (manages billing)."
+                "description": "The caller is a manager of the company or a superuser (manages billing)."
               }
             }
           }
@@ -80533,6 +81296,24 @@
           "sms"
         ]
       },
+      "CodeInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/auth/login/code` and\n`POST /v1/auth/login/authenticator/confirm`.",
+        "required": [
+          "token",
+          "code"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The sign-in's token (`LoginChallenge.token`)."
+          },
+          "code": {
+            "type": "string",
+            "description": "The 6-digit code the authenticator app shows now (spaces ignored)."
+          }
+        }
+      },
       "CodeRequest": {
         "type": "object",
         "description": "How the visitor wants their code.",
@@ -81567,6 +82348,14 @@
               "null"
             ],
             "description": "Why Stripe could not be read for this company; null when it was."
+          },
+          "first_payment_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The day its first charge is set for (its card is saved at checkout);\nnull to charge at checkout. Read when it subscribes."
           }
         }
       },
@@ -86062,6 +86851,10 @@
           "appVersion": {
             "type": "string",
             "description": "The app's version, e.g. `1.4.0`; cut to 32 characters."
+          },
+          "steps": {
+            "type": "boolean",
+            "description": "The app can do the sign-in steps (an authenticator code, a new\npassword, setting up the authenticator): when the account needs one,\nthe answer is 202 with a `LoginChallenge`. Without it (older apps)\nsuch an account gets 403 asking to update the app."
           }
         }
       },
@@ -89270,6 +90063,20 @@
             ],
             "format": "int32",
             "description": "The lead, when there is no deal."
+          }
+        }
+      },
+      "FirstPaymentDate": {
+        "type": "object",
+        "description": "Body of `PUT /v1/superuser/companies/{id}/first-payment-date`.",
+        "properties": {
+          "first_payment_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The day of the first charge (`YYYY-MM-DD`), 3 to 700 days from today;\nnull to charge at checkout."
           }
         }
       },
@@ -93619,6 +94426,24 @@
           }
         }
       },
+      "LoginChallenge": {
+        "type": "object",
+        "description": "A sign-in that needs another step (HTTP 202).",
+        "required": [
+          "step",
+          "token"
+        ],
+        "properties": {
+          "step": {
+            "$ref": "#/components/schemas/LoginStep",
+            "description": "The step to do now."
+          },
+          "token": {
+            "type": "string",
+            "description": "Send it as `token` with the step. It works for 10 minutes and stays\nthe same through every step of this sign-in."
+          }
+        }
+      },
       "LoginEmail": {
         "type": "object",
         "description": "An address to sign in with.",
@@ -93650,6 +94475,15 @@
             "description": "Password."
           }
         }
+      },
+      "LoginStep": {
+        "type": "string",
+        "description": "What the sign-in needs next.",
+        "enum": [
+          "code",
+          "new_password",
+          "setup_authenticator"
+        ]
       },
       "LookupInput": {
         "type": "object",
@@ -94405,6 +95239,45 @@
           "sending",
           "failed"
         ]
+      },
+      "MfaCode": {
+        "type": "object",
+        "description": "Body of `POST /v1/me/mfa/confirm` and `POST /v1/me/mfa/disable`.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The 6-digit code the authenticator app shows now (spaces ignored)."
+          }
+        }
+      },
+      "MfaStatus": {
+        "type": "object",
+        "description": "`GET /v1/me/mfa`.",
+        "required": [
+          "enabled",
+          "required"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Two-step sign-in is on: every sign-in asks for the authenticator\napp's code after the password."
+          },
+          "enabled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was turned on (ISO 8601, UTC); null while off."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "The user must keep it on (superusers): it cannot be turned off, and\na sign-in without it set up asks to set it up first."
+          }
+        }
       },
       "MonthCount": {
         "type": "object",
@@ -98030,6 +98903,24 @@
           }
         }
       },
+      "PasswordInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/auth/login/password`.",
+        "required": [
+          "token",
+          "password"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The sign-in's token (`LoginChallenge.token`)."
+          },
+          "password": {
+            "type": "string",
+            "description": "The new password: 8 characters or more (spaces around it are\ndropped, as sign-in drops them)."
+          }
+        }
+      },
       "PaymentPage": {
         "type": "object",
         "description": "What the payments page shows for a company.",
@@ -98046,6 +98937,14 @@
             "type": "integer",
             "format": "int32",
             "description": "The monthly price a new subscription starts at, in US cents."
+          },
+          "first_payment_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The day a new subscription is first charged (the card is saved at\ncheckout); null when it is charged at checkout."
           },
           "subscription": {
             "oneOf": [
@@ -116882,6 +117781,19 @@
           "rich_text": {
             "type": "string",
             "description": "The task, 1 to 255 characters."
+          }
+        }
+      },
+      "TokenInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/auth/login/authenticator`.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The sign-in's token (`LoginChallenge.token`)."
           }
         }
       },
