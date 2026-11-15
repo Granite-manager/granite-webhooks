@@ -21,6 +21,7 @@ use common::{ALLOWED_ORIGIN, SECRET, WithSession, sessions};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 const WEBHOOK_SECRET: &str = "whsec_connect_test";
@@ -271,9 +272,23 @@ async fn bell(pool: &MySqlPool) -> Vec<(i32, String, String)> {
     .unwrap()
 }
 
-/// Sends Stripe's event about `account`, signed.
+/// Sends Stripe's event about `account`, signed, with an id of its own.
 async fn webhook(server: &TestServer, kind: &str, account: &str, object: Value) -> StatusCode {
-    let body = json!({ "id": "evt_1", "type": kind, "account": account,
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let event = format!("evt_{}", NEXT.fetch_add(1, Ordering::Relaxed));
+    webhook_event(server, &event, kind, account, object).await
+}
+
+/// Sends Stripe's event `event` about `account`, signed: the same id twice
+/// is Stripe sending one event again.
+async fn webhook_event(
+    server: &TestServer,
+    event: &str,
+    kind: &str,
+    account: &str,
+    object: Value,
+) -> StatusCode {
+    let body = json!({ "id": event, "type": kind, "account": account,
                        "data": { "object": object } })
     .to_string();
     let signature = signature_header(
@@ -503,7 +518,7 @@ async fn a_link_is_for_an_amount_of_one_job(pool: MySqlPool) {
         json!({
             "id": id, "project_key": "deal-8000", "method": "card", "status": "created",
             "amount_cents": 100_000, "fee_cents": 3_000, "customer_fee_cents": 0,
-            "company_fee_cents": 3_000,
+            "customer_fee_bps": 0, "company_fee_cents": 3_000, "refunded_cents": 0,
             "url": format!("http://localhost:5173/pay/{id}"),
             "failure_reason": null, "created_at": card["created_at"],
         })
@@ -645,10 +660,17 @@ async fn a_sale_s_payment_follows_it_into_its_deal(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn the_page_sends_the_customer_to_stripe_checkout(pool: MySqlPool) {
     let (server, stripe) = connected_server(&pool).await;
-    sqlx::query("UPDATE company_payment_settings SET ach_customer_share_bps = 100")
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::raw_sql(
+        "UPDATE company_payment_settings SET ach_customer_share_bps = 100;
+         -- The deal's quotes: the signed one is the job's, though older.
+         INSERT INTO quotes (id, customer_id, quote_type, created_date, sales_rep, company_id,
+                             deal_id, signed_at)
+         VALUES (9100, 1000, 'kitchen', '2026-01-10', 'Rita Rep', 100, 8000, '2026-01-12'),
+                (9101, 1000, 'kitchen', '2026-01-20', 'Rita Rep', 100, 8000, NULL);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let payment = link(&server, 1000, "deal-8000", "ach", 100_000).await;
     let id = payment["id"].as_str().unwrap();
 
@@ -659,7 +681,7 @@ async fn the_page_sends_the_customer_to_stripe_checkout(pool: MySqlPool) {
         page.json::<Value>(),
         json!({ "company_name": "Acme Stone", "project_name": "Alice kitchen", "method": "ach",
                 "status": "created", "amount_cents": 100_000, "customer_fee_cents": 1_000,
-                "total_cents": 101_000, "demo": false })
+                "customer_fee_bps": 100, "total_cents": 101_000, "demo": false })
     );
     server
         .get("/v1/public/pay/pay_00000000000000000000000000000000")
@@ -681,6 +703,22 @@ async fn the_page_sends_the_customer_to_stripe_checkout(pool: MySqlPool) {
         assert_eq!(form["payment_method_types[0]"], "us_bank_account");
         assert_eq!(form["metadata[granite_payment]"], id);
         assert_eq!(form["payment_intent_data[metadata][granite_payment]"], id);
+        // Who and what it is for, on the session and on the payment.
+        for (key, value) in [
+            ("company_id", "100"),
+            ("customer_id", "1000"),
+            ("project_key", "deal-8000"),
+            ("deal_id", "8000"),
+            ("quote_id", "9100"),
+        ] {
+            assert_eq!(form[&format!("metadata[{key}]")], value, "{key}");
+            assert_eq!(
+                form[&format!("payment_intent_data[metadata][{key}]")],
+                value,
+                "{key}"
+            );
+        }
+        assert!(!form.contains_key("metadata[sale_id]"));
         assert_eq!(form["line_items[0][price_data][unit_amount]"], "100000");
         assert_eq!(
             form["line_items[0][price_data][product_data][name]"],
@@ -689,7 +727,7 @@ async fn the_page_sends_the_customer_to_stripe_checkout(pool: MySqlPool) {
         assert_eq!(form["line_items[1][price_data][unit_amount]"], "1000");
         assert_eq!(
             form["line_items[1][price_data][product_data][name]"],
-            "Processing fee"
+            "Processing fee (1%)"
         );
         // 1% less Stripe's $5 cap.
         assert_eq!(form["payment_intent_data[application_fee_amount]"], "500");
@@ -857,7 +895,7 @@ async fn a_card_payment_is_paid_at_once_and_the_company_hears(pool: MySqlPool) {
         ]
     );
 
-    // In the bell it opens the customer's Projects tab.
+    // In the bell it opens the customer's Projects tab at the payment.
     let listed: Value = server
         .get("/v1/notifications")
         .with_session(sessions::REP)
@@ -873,7 +911,10 @@ async fn a_card_payment_is_paid_at_once_and_the_company_hears(pool: MySqlPool) {
         .unwrap_or_else(|| panic!("no payment row in {listed}"));
     assert_eq!(row["message"], text);
     assert_eq!(row["type_title"], "Payment");
-    assert_eq!(row["href"], "/employee/customers/info/1000/projects");
+    assert_eq!(
+        row["href"],
+        format!("/employee/customers/info/1000/projects?payment={id}")
+    );
 
     let listed: Value = server
         .get("/v1/customers/1000/payments")
@@ -1054,6 +1095,346 @@ async fn refunds_and_disputes_follow_the_charge(pool: MySqlPool) {
     );
 }
 
+#[test_db::test(seed)]
+async fn a_declined_card_tells_the_company_and_the_link_stays_payable(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    let declined = |decline_code: &str| {
+        json!({ "id": "pi_1", "object": "payment_intent", "metadata": { "granite_payment": id },
+                "last_payment_error": { "code": "card_declined", "decline_code": decline_code,
+                                        "message": "Your card was declined." } })
+    };
+    // Stripe sends the same event twice: heard once.
+    for _ in 0..2 {
+        let status = webhook_event(
+            &server,
+            "evt_decline_1",
+            "payment_intent.payment_failed",
+            ACCOUNT,
+            declined("insufficient_funds"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    assert_eq!(status_of(&pool, id).await, "created");
+    let text = "Alice Lead's $500 card payment for Alice kitchen failed: insufficient funds.";
+    assert_eq!(
+        bell(&pool).await,
+        vec![
+            (100, "payment_failed".to_string(), text.to_string()),
+            (102, "payment_failed".to_string(), text.to_string()),
+        ]
+    );
+    // The customer tries another card: declined again, a new event.
+    webhook(
+        &server,
+        "payment_intent.payment_failed",
+        ACCOUNT,
+        declined("generic_decline"),
+    )
+    .await;
+    assert_eq!(
+        bell(&pool).await.last().unwrap().2,
+        "Alice Lead's $500 card payment for Alice kitchen failed: card declined."
+    );
+    // Another account's event about it is not heard.
+    webhook(
+        &server,
+        "payment_intent.payment_failed",
+        "acct_other",
+        declined("generic_decline"),
+    )
+    .await;
+    assert_eq!(bell(&pool).await.len(), 4);
+    // The link still takes a payment, and the third card works.
+    server
+        .post(&format!("/v1/public/pay/{id}/checkout"))
+        .await
+        .assert_status_ok();
+    webhook(
+        &server,
+        "payment_intent.succeeded",
+        ACCOUNT,
+        json!({ "id": "pi_1", "object": "payment_intent",
+                "metadata": { "granite_payment": id } }),
+    )
+    .await;
+    assert_eq!(status_of(&pool, id).await, "paid");
+    // A late decline of a paid payment changes nothing.
+    webhook(
+        &server,
+        "payment_intent.payment_failed",
+        ACCOUNT,
+        declined("generic_decline"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, id).await, "paid");
+    assert_eq!(bell(&pool).await.len(), 6);
+}
+
+#[test_db::test(seed)]
+async fn payment_intent_events_move_a_payment_like_checkout_s(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let ach = link(&server, 1004, "sale-7000", "ach", 50_000).await;
+    let id = ach["id"].as_str().unwrap();
+    let intent = json!({ "id": "pi_9", "object": "payment_intent",
+                         "metadata": { "granite_payment": id } });
+    webhook(&server, "payment_intent.processing", ACCOUNT, intent.clone()).await;
+    assert_eq!(status_of(&pool, id).await, "pending");
+    // Checkout says the same: nothing new.
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "unpaid", "pi_9"),
+    )
+    .await;
+    assert_eq!(bell(&pool).await.len(), 2);
+    // The bank returned it.
+    let mut returned = intent.clone();
+    returned["last_payment_error"] =
+        json!({ "code": "payment_method_insufficient_funds",
+                "message": "The customer's bank account has insufficient funds." });
+    webhook(&server, "payment_intent.payment_failed", ACCOUNT, returned).await;
+    assert_eq!(status_of(&pool, id).await, "failed");
+    assert_eq!(
+        bell(&pool).await.last().unwrap().2,
+        "Erin Builder's $500 ACH payment for 5 Oak Ave failed: The customer's bank account has insufficient funds."
+    );
+    // Checkout's word on it comes after: heard once.
+    webhook(
+        &server,
+        "checkout.session.async_payment_failed",
+        ACCOUNT,
+        session_event(id, "unpaid", "pi_9"),
+    )
+    .await;
+    assert_eq!(bell(&pool).await.len(), 4);
+
+    // A card is never pending.
+    let card = link(&server, 1004, "sale-7000", "card", 50_000).await;
+    let card = card["id"].as_str().unwrap();
+    let intent = json!({ "id": "pi_10", "object": "payment_intent",
+                         "metadata": { "granite_payment": card } });
+    webhook(&server, "payment_intent.processing", ACCOUNT, intent.clone()).await;
+    assert_eq!(status_of(&pool, card).await, "created");
+    webhook(&server, "payment_intent.succeeded", ACCOUNT, intent).await;
+    assert_eq!(status_of(&pool, card).await, "paid");
+    // Checkout's paid after it changes nothing.
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(card, "paid", "pi_10"),
+    )
+    .await;
+    assert_eq!(bell(&pool).await.len(), 6);
+}
+
+#[test_db::test(seed)]
+async fn a_partial_refund_keeps_the_payment_paid(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    sqlx::query("UPDATE company_payment_settings SET ach_customer_share_bps = 50")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // $1,000 by ACH, the customer charged $1,005.
+    let payment = link(&server, 1000, "deal-8000", "ach", 100_000).await;
+    let id = payment["id"].as_str().unwrap();
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "paid", "pi_1"),
+    )
+    .await;
+    let charge = |amount_refunded: i64, refunded: bool| {
+        json!({ "id": "ch_1", "payment_intent": "pi_1", "amount": 100_500,
+                "amount_refunded": amount_refunded, "refunded": refunded })
+    };
+    // $300 back, sent twice: heard once.
+    for _ in 0..2 {
+        webhook_event(
+            &server,
+            "evt_refund_1",
+            "charge.refunded",
+            ACCOUNT,
+            charge(30_000, false),
+        )
+        .await;
+    }
+    assert_eq!(status_of(&pool, id).await, "paid");
+    let listed: Value = server
+        .get("/v1/customers/1000/payments")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(
+        (&listed[0]["status"], &listed[0]["refunded_cents"], &listed[0]["customer_fee_bps"]),
+        (&json!("paid"), &json!(30_000), &json!(50))
+    );
+    // Another $200; an older event arriving late changes nothing.
+    webhook(&server, "charge.refunded", ACCOUNT, charge(50_000, false)).await;
+    webhook(&server, "charge.refunded", ACCOUNT, charge(30_000, false)).await;
+    // The rest.
+    webhook(&server, "charge.refunded", ACCOUNT, charge(100_500, true)).await;
+    assert_eq!(status_of(&pool, id).await, "refunded");
+    let refunds: Vec<String> = bell(&pool)
+        .await
+        .into_iter()
+        .filter(|(user, kind, _)| *user == 102 && kind == "payment_refunded")
+        .map(|(_, _, text)| text)
+        .collect();
+    assert_eq!(
+        refunds,
+        [
+            "$300 was refunded to Alice Lead for Alice kitchen.",
+            "$200 was refunded to Alice Lead for Alice kitchen.",
+            "$505 was refunded to Alice Lead for Alice kitchen.",
+        ]
+    );
+}
+
+#[test_db::test(seed)]
+async fn a_dispute_names_the_payment(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "paid", "pi_1"),
+    )
+    .await;
+    webhook(
+        &server,
+        "charge.dispute.created",
+        ACCOUNT,
+        json!({ "id": "dp_1", "payment_intent": "pi_1", "status": "needs_response" }),
+    )
+    .await;
+    assert_eq!(
+        bell(&pool).await.last().unwrap().2,
+        "Alice Lead disputed the $500 payment for Alice kitchen."
+    );
+}
+
+#[test_db::test(seed)]
+async fn two_tabs_at_once_get_one_checkout_page(pool: MySqlPool) {
+    let (server, stripe) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    let path = format!("/v1/public/pay/{id}/checkout");
+    let (first, second, third) =
+        tokio::join!(server.post(&path), server.post(&path), server.post(&path));
+    for response in [&first, &second, &third] {
+        response.assert_status_ok();
+        assert_eq!(
+            response.json::<Value>()["url"],
+            "https://checkout.stripe.com/c/pay/cs_1"
+        );
+    }
+    assert_eq!(
+        stripe
+            .lock()
+            .unwrap()
+            .count("POST", "/v1/checkout/sessions"),
+        1
+    );
+}
+
+#[test_db::test(seed)]
+async fn a_link_paid_twice_tells_the_company_to_refund_one(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    let paid = |intent: &str| {
+        json!({ "id": intent, "object": "payment_intent", "metadata": { "granite_payment": id } })
+    };
+    webhook(&server, "payment_intent.succeeded", ACCOUNT, paid("pi_1")).await;
+    // The same payment again (Checkout's word on it): nothing new.
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "paid", "pi_1"),
+    )
+    .await;
+    assert_eq!(bell(&pool).await.len(), 2);
+    // Another payment on the same link, told twice: heard once.
+    webhook(&server, "payment_intent.succeeded", ACCOUNT, paid("pi_2")).await;
+    webhook(&server, "payment_intent.succeeded", ACCOUNT, paid("pi_2")).await;
+    let duplicates: Vec<(i32, String, String)> = bell(&pool)
+        .await
+        .into_iter()
+        .filter(|(_, kind, _)| kind == "payment_duplicate")
+        .collect();
+    let text = "Alice Lead paid $500 by card for Alice kitchen a second time. Refund the extra payment in Stripe.";
+    assert_eq!(
+        duplicates,
+        vec![
+            (100, "payment_duplicate".to_string(), text.to_string()),
+            (102, "payment_duplicate".to_string(), text.to_string()),
+        ]
+    );
+    // The first payment stays the one recorded.
+    let intent: String = sqlx::query_scalar(
+        "SELECT stripe_payment_intent_id FROM customer_payments WHERE public_id = ?",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((status_of(&pool, id).await, intent), ("paid".into(), "pi_1".into()));
+}
+
+#[test_db::test(seed)]
+async fn a_dispute_sent_again_after_it_was_won_changes_nothing(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "paid", "pi_1"),
+    )
+    .await;
+    let dispute = |status: &str| json!({ "id": "dp_1", "payment_intent": "pi_1", "status": status });
+    webhook(&server, "charge.dispute.created", ACCOUNT, dispute("needs_response")).await;
+    // Sent again while open: heard once.
+    webhook(&server, "charge.dispute.created", ACCOUNT, dispute("needs_response")).await;
+    assert_eq!(status_of(&pool, id).await, "disputed");
+    webhook(&server, "charge.dispute.closed", ACCOUNT, dispute("won")).await;
+    assert_eq!(status_of(&pool, id).await, "paid");
+    // Stripe sends the dispute again after it was won.
+    webhook(&server, "charge.dispute.created", ACCOUNT, dispute("needs_response")).await;
+    assert_eq!(status_of(&pool, id).await, "paid");
+    let disputes = bell(&pool)
+        .await
+        .into_iter()
+        .filter(|(_, kind, _)| kind == "payment_disputed")
+        .count();
+    assert_eq!(disputes, 2, "one per user");
+
+    // Closed (won) before Stripe's created arrives: never disputed.
+    let late = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let late = late["id"].as_str().unwrap();
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(late, "paid", "pi_2"),
+    )
+    .await;
+    let dispute = |status: &str| json!({ "id": "dp_2", "payment_intent": "pi_2", "status": status });
+    webhook(&server, "charge.dispute.closed", ACCOUNT, dispute("won")).await;
+    webhook(&server, "charge.dispute.created", ACCOUNT, dispute("needs_response")).await;
+    assert_eq!(status_of(&pool, late).await, "paid");
+}
+
 // ---- demo mode
 
 #[test_db::test(seed)]
@@ -1099,6 +1480,20 @@ async fn demo_mode_never_calls_stripe(pool: MySqlPool) {
         .with_session(sessions::REP)
         .await
         .assert_status(StatusCode::CONFLICT);
+
+    // A declined card is heard, and the link can still be paid.
+    let card = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let card = card["id"].as_str().unwrap();
+    server
+        .post(&format!("/v1/public/pay/{card}/demo"))
+        .json(&json!({ "outcome": "failed" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(status_of(&pool, card).await, "created");
+    assert_eq!(
+        bell(&pool).await.last().unwrap().2,
+        "Alice Lead's $500 card payment for Alice kitchen failed: card declined."
+    );
 }
 
 #[test_db::test(seed)]
@@ -1257,7 +1652,8 @@ async fn the_customer_sees_what_they_paid_and_owe(pool: MySqlPool) {
         payments["payments"][0],
         json!({ "id": id(&open), "project_key": "sale-7001", "project_name": "5 Oak Ave",
                 "sale_id": 7001, "method": "card", "status": "created", "amount_cents": 25_000,
-                "customer_fee_cents": 0, "url": open["url"], "failure_reason": null,
+                "customer_fee_cents": 0, "refunded_cents": 0, "url": open["url"],
+                "failure_reason": null,
                 "created_at": open["created_at"] })
     );
     // Her jobs: the deal she signed (Erin backsplash, $1,200), then her two

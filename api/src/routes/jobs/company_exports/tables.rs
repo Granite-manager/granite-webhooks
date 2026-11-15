@@ -97,6 +97,10 @@ pub const TABLES: &[Table] = &[
     export("customer_phone_index_builds", Company),
     export("customer_sources", Company),
     export("customer_surveys", Company),
+    skip(
+        "customer_payment_events",
+        "Stripe event ids, kept so an event is applied once",
+    ),
     export("customer_payments", Company),
     skip("customer_view_codes", "customer sign-in codes"),
     export("customers", Company),

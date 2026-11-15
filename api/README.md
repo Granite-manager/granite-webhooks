@@ -226,10 +226,27 @@ holds the links and their status (`created`, `canceled`, `pending`, `paid`,
 the fee split. Stripe reports to `POST /v1/webhooks/stripe-connect` (a
 Connect webhook: `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`,
-`checkout.session.async_payment_failed`, `charge.refunded`,
-`charge.dispute.created`, `charge.dispute.closed`, `account.updated`); each
-status change puts a `payment_*` row in the bell of the company's Managers
-and of whoever made the link. The customer's own page reads
+`checkout.session.async_payment_failed`, `payment_intent.succeeded`,
+`payment_intent.processing`, `payment_intent.payment_failed`,
+`charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`,
+`account.updated`; the Checkout and payment intent events overlap, and
+whichever comes first moves the payment on); each status change puts a
+`payment_*` row in the bell of the company's Managers and of whoever made the
+link, opening the customer's Projects tab at that payment's project. A
+declined card only notifies (once per Stripe event, kept in
+`customer_payment_events`): the link stays payable. One Checkout session
+per link at a time (the row is locked while it is made, and Stripe gets an
+`Idempotency-Key`), so two tabs cannot both pay; a second payment that still
+arrives (another payment intent) is a `payment_duplicate` bell: refund it in
+Stripe. Each dispute disputes a payment once and never after it closed
+(steps kept in `customer_payment_events`). Demo mode is off unless `APP_URL`
+is localhost and the run is not a real Lambda (`AWS_EXECUTION_ENV`). A partial refund keeps
+the payment `paid` and adds to `refunded_cents`. The Checkout session and its
+payment intent carry `company_id`, `customer_id`, `project_key`, `deal_id`,
+`sale_id` and `quote_id` in their metadata. The card fee is always the
+company's for now: a card surcharge is legal only on credit cards (Checkout
+cannot tell credit from debit before the customer pays), not in every state,
+and needs notice to Visa and Mastercard first. The customer's own page reads
 `GET /v1/public/customer-view/{company_id}/{view_id}/payments`; its balance
 counts only payments made through links.
 

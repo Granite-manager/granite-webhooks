@@ -6213,7 +6213,7 @@
           "customer-payments"
         ],
         "summary": "Open Stripe's page for a payment link",
-        "description": "A Stripe Checkout page on the company's account for the payment's amount\nplus the customer's part of the fee, with the payment's one method. A\npage opened before is reused while Stripe keeps it open (24 hours), so a\npayment is not made twice. 409 unless the payment is `created`.",
+        "description": "A Stripe Checkout page on the company's account for the payment's amount\nplus the customer's part of the fee, with the payment's one method. A\npage opened before is reused while Stripe keeps it open (24 hours), and\nrequests at the same time (two tabs) get the same page, so a payment is\nnot made twice. 409 unless the payment is `created`.",
         "operationId": "create_pay_checkout",
         "parameters": [
           {
@@ -6435,7 +6435,7 @@
           "customer-payments"
         ],
         "summary": "Receive a Stripe Connect event",
-        "description": "Stripe's webhook for the companies' connected accounts: Checkout,\nrefund and dispute events move a customer's payment on (and notify the\ncompany), and account events update the company's bank status. Each\nchange is made once, however often Stripe sends the event. Needs a valid\n`Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.",
+        "description": "Stripe's webhook for the companies' connected accounts: Checkout,\npayment intent, refund and dispute events move a customer's payment on\n(and notify the company), and account events update the company's bank\nstatus. A declined card only notifies: the link stays payable. A partial\nrefund keeps the payment `paid` and records what was given back. Each\nchange is made once, however often Stripe sends the event. Needs a valid\n`Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.",
         "operationId": "receive_stripe_connect_webhook",
         "parameters": [
           {
@@ -85010,7 +85010,9 @@
           "amount_cents",
           "fee_cents",
           "customer_fee_cents",
+          "customer_fee_bps",
           "company_fee_cents",
+          "refunded_cents",
           "url",
           "created_at"
         ],
@@ -85046,10 +85048,20 @@
             "format": "int32",
             "description": "The part of the fee added to what the customer pays."
           },
+          "customer_fee_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer's share of the fee in basis points (50 = 0.5%), as set\nwhen the link was made."
+          },
           "company_fee_cents": {
             "type": "integer",
             "format": "int32",
             "description": "The part of the fee taken from what the company receives."
+          },
+          "refunded_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "What was given back of what the customer was charged, in US cents: 0\nunless refunded. Above 0 on a `paid` payment, it was refunded in part."
           },
           "url": {
             "type": "string",
@@ -85465,7 +85477,7 @@
           "paid_cents": {
             "type": "integer",
             "format": "int64",
-            "description": "What they paid through payment links."
+            "description": "What they paid through payment links, less what was refunded."
           },
           "pending_cents": {
             "type": "integer",
@@ -99141,6 +99153,7 @@
           "status",
           "amount_cents",
           "customer_fee_cents",
+          "customer_fee_bps",
           "total_cents",
           "demo"
         ],
@@ -99173,6 +99186,11 @@
             "type": "integer",
             "format": "int32",
             "description": "The customer's part of the fee, added on top."
+          },
+          "customer_fee_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "That part as a share of the amount, in basis points (50 = 0.5%)."
           },
           "total_cents": {
             "type": "integer",
@@ -119448,6 +119466,7 @@
           "status",
           "amount_cents",
           "customer_fee_cents",
+          "refunded_cents",
           "url",
           "created_at"
         ],
@@ -119492,6 +119511,11 @@
             "type": "integer",
             "format": "int32",
             "description": "The customer's part of the fee, added on top."
+          },
+          "refunded_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "What was given back to the customer, in US cents (0 unless refunded)."
           },
           "url": {
             "type": "string",

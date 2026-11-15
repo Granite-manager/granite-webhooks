@@ -13,6 +13,14 @@
 //! - `GET  /v1/public/customer-view/{company_id}/{view_id}/payments` → the customer's own page
 //! - `POST /v1/webhooks/stripe-connect`                → Stripe's events about the companies' accounts
 //!
+//! Stripe's events used: `checkout.session.completed`,
+//! `checkout.session.async_payment_succeeded`,
+//! `checkout.session.async_payment_failed`, `payment_intent.succeeded`,
+//! `payment_intent.processing`, `payment_intent.payment_failed`,
+//! `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed` and
+//! `account.updated`. The Checkout and payment intent events say the same
+//! things twice; whichever comes first moves the payment on.
+//!
 //! Each company gets a Standard connected account, and a payment is a direct
 //! charge on it: the money and Stripe's own fee are the company's, and the
 //! platform keeps an application fee. The company is quoted one fee per
@@ -103,19 +111,53 @@ impl CustomerPayments {
         }
     }
 
-    /// `STRIPE_CONNECT_WEBHOOK_SECRET` and `CUSTOMER_PAYMENTS_DEMO=1`.
-    pub fn from_env() -> Self {
+    /// `STRIPE_CONNECT_WEBHOOK_SECRET` and `CUSTOMER_PAYMENTS_DEMO=1`. Demo
+    /// mode lets anyone with a link mark it paid, so it is only ever on for a
+    /// local run: `app_url` on localhost and not in a real Lambda
+    /// (`AWS_EXECUTION_ENV`, which local runs do not set). Asked for anywhere
+    /// else, it stays off and says so in the log.
+    pub fn from_env(app_url: &str) -> Self {
+        let asked = std::env::var("CUSTOMER_PAYMENTS_DEMO").is_ok_and(|value| value.trim() == "1");
+        let local = is_local_url(app_url) && std::env::var_os("AWS_EXECUTION_ENV").is_none();
+        if asked && !local {
+            tracing::error!(
+                app_url,
+                "CUSTOMER_PAYMENTS_DEMO=1 ignored: demo mode is for local runs only"
+            );
+        }
         Self::new(
             &std::env::var("STRIPE_CONNECT_WEBHOOK_SECRET").unwrap_or_default(),
-            std::env::var("CUSTOMER_PAYMENTS_DEMO").is_ok_and(|value| value.trim() == "1"),
+            asked && local,
         )
     }
 
     /// The settings `state` was given (`AppState::with_extension`), else the
     /// environment's.
     pub fn of(state: &AppState) -> Arc<Self> {
-        state.extensions.get_or_insert_with(Self::from_env)
+        state
+            .extensions
+            .get_or_insert_with(|| Self::from_env(&state.app_url))
     }
+}
+
+/// Whether `url` is on this computer: `localhost`, `*.localhost`, `127.0.0.1`
+/// or `[::1]`, any port.
+fn is_local_url(url: &str) -> bool {
+    let url = url.trim().to_ascii_lowercase();
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .unwrap_or_default();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = if authority.starts_with('[') {
+        authority.split(']').next().map(|host| &host[1..]).unwrap_or_default()
+    } else {
+        authority.split(':').next().unwrap_or_default()
+    };
+    host == "localhost" || host.ends_with(".localhost") || host == "127.0.0.1" || host == "::1"
+}
+
+impl CustomerPayments {
 }
 
 fn stripe_error(error: StripeError) -> ApiError {
@@ -249,6 +291,26 @@ fn dollars(cents: i64) -> String {
     match cents % 100 {
         0 => format!("${grouped}"),
         rest => format!("${grouped}.{rest:02}"),
+    }
+}
+
+/// `50` → `0.5%`, `100` → `1%`, `5` → `0.05%`.
+fn percent(bps: i32) -> String {
+    let (whole, rest) = (bps / 100, bps % 100);
+    if rest == 0 {
+        format!("{whole}%")
+    } else {
+        let rest = format!("{rest:02}");
+        format!("{whole}.{}%", rest.trim_end_matches('0'))
+    }
+}
+
+/// The name of the fee's line on Stripe's page: `Processing fee (0.5%)`.
+fn fee_line_name(customer_fee_bps: i32) -> String {
+    if customer_fee_bps > 0 {
+        format!("Processing fee ({})", percent(customer_fee_bps))
+    } else {
+        "Processing fee".into()
     }
 }
 
@@ -687,8 +749,14 @@ pub struct CustomerPayment {
     pub fee_cents: i32,
     /// The part of the fee added to what the customer pays.
     pub customer_fee_cents: i32,
+    /// The customer's share of the fee in basis points (50 = 0.5%), as set
+    /// when the link was made.
+    pub customer_fee_bps: i32,
     /// The part of the fee taken from what the company receives.
     pub company_fee_cents: i32,
+    /// What was given back of what the customer was charged, in US cents: 0
+    /// unless refunded. Above 0 on a `paid` payment, it was refunded in part.
+    pub refunded_cents: i32,
     /// The page the customer pays on. It never expires.
     pub url: String,
     /// Why it failed (Stripe's words); null unless `failed`.
@@ -699,6 +767,7 @@ pub struct CustomerPayment {
 
 #[derive(sqlx::FromRow)]
 struct PaymentRow {
+    id: u64,
     public_id: String,
     company_id: i32,
     customer_id: i32,
@@ -709,10 +778,11 @@ struct PaymentRow {
     amount_cents: i32,
     fee_cents: i32,
     customer_fee_cents: i32,
+    customer_fee_bps: i32,
     company_fee_cents: i32,
     application_fee_cents: i32,
+    refunded_cents: i32,
     stripe_account_id: String,
-    stripe_session_id: Option<String>,
     failure_reason: Option<String>,
     created_by: Option<i32>,
     created_at: NaiveDateTime,
@@ -723,11 +793,12 @@ struct PaymentRow {
 /// Every payment column, with the job it shows under: a payment made for a
 /// sale moves to the sale's deal once the sale is part of one, as the job
 /// itself does in `GET /v1/customers/{id}/projects`.
-const PAYMENT_SELECT: &str = "SELECT p.public_id, p.company_id, p.customer_id,
+const PAYMENT_SELECT: &str = "SELECT p.id, p.public_id, p.company_id, p.customer_id,
         CAST(COALESCE(p.deal_id, pd.id) AS SIGNED) AS deal_id, p.sale_id,
         CAST(p.method AS CHAR) AS method, CAST(p.status AS CHAR) AS status,
-        p.amount_cents, p.fee_cents, p.customer_fee_cents, p.company_fee_cents,
-        p.application_fee_cents, p.stripe_account_id, p.stripe_session_id,
+        p.amount_cents, p.fee_cents, p.customer_fee_cents, p.customer_fee_bps,
+        p.company_fee_cents, p.application_fee_cents, p.refunded_cents,
+        p.stripe_account_id,
         p.failure_reason, p.created_by, p.created_at,
         NULLIF(TRIM(pc.name), '') AS customer_name,
         COALESCE(NULLIF(TRIM(pd.title), ''), NULLIF(TRIM(ps.project_address), ''))
@@ -761,6 +832,16 @@ impl PaymentRow {
         self.created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
     }
 
+    /// What it put toward the job: its amount when paid, less what was given
+    /// back (a refund takes the customer's fee back last).
+    fn paid_toward_job(&self) -> i64 {
+        if self.status() == CustomerPaymentStatus::Paid {
+            i64::from(self.amount_cents - self.refunded_cents.min(self.amount_cents))
+        } else {
+            0
+        }
+    }
+
     fn into_payment(self, origin: &str) -> CustomerPayment {
         CustomerPayment {
             project_key: self.project_key(),
@@ -772,18 +853,23 @@ impl PaymentRow {
             amount_cents: self.amount_cents,
             fee_cents: self.fee_cents,
             customer_fee_cents: self.customer_fee_cents,
+            customer_fee_bps: self.customer_fee_bps,
             company_fee_cents: self.company_fee_cents,
+            refunded_cents: self.refunded_cents,
             failure_reason: self.failure_reason,
         }
     }
 }
 
-async fn payment_by_id(pool: &MySqlPool, public_id: &str) -> sqlx::Result<Option<PaymentRow>> {
+async fn payment_by_id<'e>(
+    executor: impl sqlx::MySqlExecutor<'e>,
+    public_id: &str,
+) -> sqlx::Result<Option<PaymentRow>> {
     sqlx::query_as(AssertSqlSafe(format!(
         "{PAYMENT_SELECT} WHERE p.public_id = ?"
     )))
     .bind(public_id)
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await
 }
 
@@ -979,11 +1065,10 @@ pub async fn create_payment(
         ));
     }
     let account = settings.account(config.demo).unwrap_or_default();
-    let split = split_fee(
-        input.method,
-        input.amount_cents,
-        settings.share_bps(input.method),
-    );
+    let share_bps = settings
+        .share_bps(input.method)
+        .clamp(0, input.method.rate_bps());
+    let split = split_fee(input.method, input.amount_cents, share_bps);
     let public_id = new_public_id()?;
     let (deal_id, sale_id) = match job {
         Job::Deal(deal) => (Some(deal), None),
@@ -992,9 +1077,9 @@ pub async fn create_payment(
     sqlx::query(
         "INSERT INTO customer_payments
                 (public_id, company_id, customer_id, deal_id, sale_id, method, amount_cents,
-                 fee_cents, customer_fee_cents, company_fee_cents, application_fee_cents,
-                 stripe_account_id, created_by, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())",
+                 fee_cents, customer_fee_cents, customer_fee_bps, company_fee_cents,
+                 application_fee_cents, stripe_account_id, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())",
     )
     .bind(&public_id)
     .bind(user.company_id)
@@ -1005,6 +1090,7 @@ pub async fn create_payment(
     .bind(input.amount_cents)
     .bind(split.fee)
     .bind(split.customer_fee)
+    .bind(if split.customer_fee > 0 { share_bps } else { 0 })
     .bind(split.company_fee)
     .bind(split.application_fee)
     .bind(account)
@@ -1050,8 +1136,8 @@ pub async fn cancel_payment(
 ) -> ApiResult<StatusCode> {
     let pool = &state.pool;
     let head = family_of(pool, user.company_id, id).await?;
-    let found: Option<(String, Option<String>, String)> = sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT CAST(p.status AS CHAR), p.stripe_session_id, p.stripe_account_id
+    let found: Option<(String, String)> = sqlx::query_as(AssertSqlSafe(format!(
+        "SELECT CAST(p.status AS CHAR), p.stripe_account_id
            FROM customer_payments p
           WHERE p.public_id = ? AND p.company_id = ? AND p.customer_id IN ({FAMILY_SQL})"
     )))
@@ -1062,24 +1148,30 @@ pub async fn cancel_payment(
     .bind(head)
     .fetch_optional(pool)
     .await?;
-    let (status, session, account) = found.ok_or(ApiError::NotFound)?;
+    let (status, account) = found.ok_or(ApiError::NotFound)?;
     if status == "canceled" {
         return Ok(StatusCode::NO_CONTENT);
     }
-    let canceled = sqlx::query(
-        "UPDATE customer_payments SET status = 'canceled'
-          WHERE public_id = ? AND status = 'created'",
+    // Under the row's lock, so a Checkout page opened meanwhile (`POST
+    // /v1/public/pay/{payment_id}/checkout`) is the one closed below.
+    let mut tx = pool.begin().await?;
+    let session: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT stripe_session_id FROM customer_payments
+          WHERE public_id = ? AND status = 'created' FOR UPDATE",
     )
     .bind(&payment_id)
-    .execute(pool)
-    .await?
-    .rows_affected()
-        == 1;
-    if !canceled {
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(session) = session else {
         return Err(ApiError::Conflict(
             "This payment was already made or started, so it cannot be canceled".into(),
         ));
-    }
+    };
+    sqlx::query("UPDATE customer_payments SET status = 'canceled' WHERE public_id = ?")
+        .bind(&payment_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     // So nobody pays on a page opened before. A payment that still arrives
     // is recorded: the money is the company's either way.
     if let Some(session) = session.filter(|_| !account.starts_with(DEMO_ACCOUNT_PREFIX))
@@ -1111,6 +1203,8 @@ pub struct PayPage {
     pub amount_cents: i32,
     /// The customer's part of the fee, added on top.
     pub customer_fee_cents: i32,
+    /// That part as a share of the amount, in basis points (50 = 0.5%).
+    pub customer_fee_bps: i32,
     /// What the customer is charged: the two above together.
     pub total_cents: i32,
     /// Demo mode: nothing is charged, and the page reports the outcome
@@ -1161,6 +1255,7 @@ pub async fn pay_page(
         total_cents: payment.amount_cents + payment.customer_fee_cents,
         amount_cents: payment.amount_cents,
         customer_fee_cents: payment.customer_fee_cents,
+        customer_fee_bps: payment.customer_fee_bps,
         project_name: payment.project_name,
         demo: CustomerPayments::of(&state).demo,
     })))
@@ -1188,12 +1283,52 @@ fn not_payable(status: CustomerPaymentStatus) -> ApiError {
     )
 }
 
+/// Who and what a payment is for, on its Stripe session and payment intent:
+/// the company, the customer, the job (`project_key`, `deal_id`, `sale_id`)
+/// and its quote (the signed one, else the newest; for a sale, the quote it
+/// was sold from). Empty values are left out.
+async fn checkout_metadata(
+    pool: &MySqlPool,
+    payment: &PaymentRow,
+) -> sqlx::Result<Vec<(&'static str, String)>> {
+    let quote: Option<i32> = sqlx::query_scalar(
+        "SELECT q.id FROM quotes q
+          WHERE q.company_id = ? AND q.deleted_at IS NULL
+            AND (q.id IN (SELECT so.quote_id FROM sales_orders so
+                           WHERE so.sale_id = ? AND so.company_id = q.company_id)
+                 OR (q.deal_id IS NOT NULL AND q.deal_id = ?))
+          ORDER BY q.signed_at IS NULL, q.signed_at DESC, q.id DESC
+          LIMIT 1",
+    )
+    .bind(payment.company_id)
+    .bind(payment.sale_id)
+    .bind(payment.deal_id)
+    .fetch_optional(pool)
+    .await?;
+    let mut metadata = vec![
+        ("company_id", payment.company_id.to_string()),
+        ("customer_id", payment.customer_id.to_string()),
+        ("project_key", payment.project_key()),
+    ];
+    if let Some(deal) = payment.deal_id {
+        metadata.push(("deal_id", deal.to_string()));
+    }
+    if let Some(sale) = payment.sale_id {
+        metadata.push(("sale_id", sale.to_string()));
+    }
+    if let Some(quote) = quote {
+        metadata.push(("quote_id", quote.to_string()));
+    }
+    Ok(metadata)
+}
+
 /// Open Stripe's page for a payment link
 ///
 /// A Stripe Checkout page on the company's account for the payment's amount
 /// plus the customer's part of the fee, with the payment's one method. A
-/// page opened before is reused while Stripe keeps it open (24 hours), so a
-/// payment is not made twice. 409 unless the payment is `created`.
+/// page opened before is reused while Stripe keeps it open (24 hours), and
+/// requests at the same time (two tabs) get the same page, so a payment is
+/// not made twice. 409 unless the payment is `created`.
 #[crate::openapi::path(
     post,
     path = "/v1/public/pay/{payment_id}/checkout",
@@ -1224,7 +1359,24 @@ pub async fn pay_checkout(
     if account.starts_with(DEMO_ACCOUNT_PREFIX) || !state.stripe.is_enabled() {
         return Err(ApiError::Unavailable("Payments are not set up".into()));
     }
-    if let Some(session) = &payment.stripe_session_id {
+    // One Checkout page per payment at a time: the payment's row stays
+    // locked until its page is saved, so a second tab (or a second click)
+    // waits here and then reuses that page instead of opening another one
+    // the customer could pay on as well.
+    let mut tx = state.pool.begin().await?;
+    let locked: Option<(String, Option<String>)> = sqlx::query_as(
+        "SELECT CAST(status AS CHAR), stripe_session_id FROM customer_payments
+          WHERE public_id = ? FOR UPDATE",
+    )
+    .bind(&payment.public_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (status, previous) = locked.ok_or(ApiError::NotFound)?;
+    let status = CustomerPaymentStatus::parse(&status);
+    if status != CustomerPaymentStatus::Created {
+        return Err(not_payable(status));
+    }
+    if let Some(session) = &previous {
         let session = state
             .stripe
             .checkout_session(account, session)
@@ -1242,10 +1394,19 @@ pub async fn pay_checkout(
         }
     }
     let link = payment.url(&company_origin(&state, payment.company_id).await?);
+    let metadata = checkout_metadata(&state.pool, &payment).await?;
+    let fee_name = fee_line_name(payment.customer_fee_bps);
     let description = payment
         .project_name
         .clone()
         .unwrap_or_else(|| "Your project".into());
+    // The same for every request that follows the same page (none yet, or
+    // one Stripe let expire): Stripe makes one session for them all.
+    let idempotency_key = format!(
+        "granite-checkout-{}-after-{}",
+        payment.public_id,
+        previous.as_deref().unwrap_or("none")
+    );
     let session = state
         .stripe
         .create_payment_checkout_session(
@@ -1256,9 +1417,12 @@ pub async fn pay_checkout(
                 description: &description,
                 amount_cents: i64::from(payment.amount_cents),
                 customer_fee_cents: i64::from(payment.customer_fee_cents),
+                customer_fee_name: &fee_name,
+                metadata: &metadata,
                 application_fee_cents: i64::from(payment.application_fee_cents),
                 success_url: &format!("{link}?checkout=success"),
                 cancel_url: &format!("{link}?checkout=cancel"),
+                idempotency_key: &idempotency_key,
             },
         )
         .await
@@ -1271,8 +1435,9 @@ pub async fn pay_checkout(
     sqlx::query("UPDATE customer_payments SET stripe_session_id = ? WHERE public_id = ?")
         .bind(id)
         .bind(&payment.public_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(no_store(Json(PayCheckout {
         url: Some(url.into()),
     })))
@@ -1326,13 +1491,15 @@ pub async fn pay_demo(
         return Err(ApiError::NotFound);
     }
     let payment = page_payment(&state, &payment_id).await?;
-    let outcome = match input.outcome {
-        DemoOutcome::Paid => Outcome::Paid,
-        DemoOutcome::Pending => Outcome::Pending,
-        DemoOutcome::Failed => Outcome::Failed(match payment.method() {
-            PaymentMethod::Card => "card declined".into(),
-            PaymentMethod::Ach => "insufficient funds".into(),
-        }),
+    let outcome = match (input.outcome, payment.method()) {
+        (DemoOutcome::Paid, _) => Outcome::Paid,
+        (DemoOutcome::Pending, _) => Outcome::Pending,
+        // A declined card leaves the link payable, as on Stripe.
+        (DemoOutcome::Failed, PaymentMethod::Card) => {
+            attempt_failed(&state.pool, &payment.public_id, None, None, "card declined").await?;
+            return Ok(StatusCode::NO_CONTENT);
+        }
+        (DemoOutcome::Failed, PaymentMethod::Ach) => Outcome::Failed("insufficient funds".into()),
     };
     settle(&state.pool, &payment.public_id, None, None, outcome).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -1348,8 +1515,6 @@ enum Outcome {
     Paid,
     /// It did not go through, and why.
     Failed(String),
-    /// The whole payment was given back.
-    Refunded,
     /// The customer disputed it.
     Disputed,
     /// The dispute was decided for the company: paid again.
@@ -1363,7 +1528,6 @@ impl Outcome {
             Self::Pending => ("pending", "'created', 'canceled'"),
             Self::Paid => ("paid", "'created', 'canceled', 'pending'"),
             Self::Failed(_) => ("failed", "'created', 'canceled', 'pending'"),
-            Self::Refunded => ("refunded", "'paid', 'disputed'"),
             Self::Disputed => ("disputed", "'paid'"),
             Self::DisputeWon => ("paid", "'disputed'"),
         }
@@ -1375,19 +1539,71 @@ impl Outcome {
             Self::Pending => Some("payment_pending"),
             Self::Paid => Some("payment_paid"),
             Self::Failed(_) => Some("payment_failed"),
-            Self::Refunded => Some("payment_refunded"),
             Self::Disputed => Some("payment_disputed"),
             Self::DisputeWon => None,
         }
     }
 }
 
-/// Moves a payment on and, when that changed it, tells the company. Stripe
-/// may send an event twice or out of order: a step that does not follow the
-/// payment's status changes nothing. With `account`, only a payment of that
-/// connected account is touched.
+/// Moves a payment on and, when that changed it, tells the company, all in
+/// one transaction. Stripe may send an event twice or out of order: a step
+/// that does not follow the payment's status changes nothing. Only an ACH
+/// payment can be pending. With `account`, only a payment of that connected
+/// account is touched.
 async fn settle(
     pool: &MySqlPool,
+    public_id: &str,
+    account: Option<&str>,
+    intent: Option<&str>,
+    outcome: Outcome,
+) -> sqlx::Result<bool> {
+    let mut tx = pool.begin().await?;
+    let changed = settle_in(&mut tx, public_id, account, intent, outcome).await?;
+    tx.commit().await?;
+    Ok(changed)
+}
+
+/// [`settle`] once per `key` (a step of a Stripe object, such as
+/// `dispute_created:dp_1`), and not at all once `unless` was recorded (the
+/// step that undoes it, such as the dispute's close): the same event sent
+/// again, or one that arrives after the event that settled it, changes
+/// nothing. `outcome` None only records `key`.
+async fn settle_once(
+    pool: &MySqlPool,
+    key: &str,
+    unless: Option<&str>,
+    public_id: &str,
+    account: &str,
+    outcome: Option<Outcome>,
+) -> sqlx::Result<bool> {
+    let mut tx = pool.begin().await?;
+    let first = sqlx::query("INSERT IGNORE INTO customer_payment_events (event_id) VALUES (?)")
+        .bind(key)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+        == 1;
+    let undone: Option<String> = match unless {
+        Some(unless) => {
+            sqlx::query_scalar("SELECT event_id FROM customer_payment_events WHERE event_id = ?")
+                .bind(unless)
+                .fetch_optional(&mut *tx)
+                .await?
+        }
+        None => None,
+    };
+    let changed = match outcome {
+        Some(outcome) if first && undone.is_none() => {
+            settle_in(&mut tx, public_id, Some(account), None, outcome).await?
+        }
+        _ => false,
+    };
+    tx.commit().await?;
+    Ok(changed)
+}
+
+async fn settle_in(
+    tx: &mut sqlx::MySqlConnection,
     public_id: &str,
     account: Option<&str>,
     intent: Option<&str>,
@@ -1404,6 +1620,7 @@ async fn settle(
                 paid_at = IF('{status}' = 'paid', COALESCE(paid_at, UTC_TIMESTAMP()), paid_at),
                 stripe_payment_intent_id = COALESCE(?, stripe_payment_intent_id)
           WHERE public_id = ? AND status IN ({from})
+            AND ('{status}' <> 'pending' OR method = 'ach')
             AND (? IS NULL OR stripe_account_id = ?)"
     )))
     .bind(&reason)
@@ -1411,48 +1628,220 @@ async fn settle(
     .bind(public_id)
     .bind(account)
     .bind(account)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?
     .rows_affected()
         == 1;
     if changed && let Some(kind) = outcome.notification() {
-        notify(pool, public_id, kind).await?;
+        notify(&mut *tx, public_id, kind, Bell::default()).await?;
+    } else if !changed
+        && matches!(outcome, Outcome::Paid | Outcome::Pending)
+        && let (Some(intent), Some(account)) = (intent, account)
+    {
+        paid_twice(&mut *tx, public_id, account, intent).await?;
     }
     Ok(changed)
 }
 
+/// A payment arrived on a link someone already paid (or whose transfer is
+/// on its way) with another payment intent: the customer paid twice. The
+/// company hears once per intent, to refund the extra one in Stripe.
+async fn paid_twice(
+    tx: &mut sqlx::MySqlConnection,
+    public_id: &str,
+    account: &str,
+    intent: &str,
+) -> sqlx::Result<()> {
+    let other: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT stripe_payment_intent_id FROM customer_payments
+          WHERE public_id = ? AND stripe_account_id = ?
+            AND status IN ('pending', 'paid', 'refunded', 'disputed')",
+    )
+    .bind(public_id)
+    .bind(account)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(Some(other)) = other else {
+        return Ok(());
+    };
+    if other == intent {
+        return Ok(());
+    }
+    let first = sqlx::query("INSERT IGNORE INTO customer_payment_events (event_id) VALUES (?)")
+        .bind(format!("paid_twice:{intent}"))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+        == 1;
+    if first {
+        tracing::error!(payment = public_id, intent, "a payment link was paid twice");
+        notify(&mut *tx, public_id, "payment_duplicate", Bell::default()).await?;
+    }
+    Ok(())
+}
+
+/// A try to pay that failed on a link that stays payable (a declined card):
+/// the link stays `created`, so the customer can try again, and the company
+/// hears why. `event`: Stripe's event id, so an event sent twice is heard
+/// once (none in demo mode). True when the company was told.
+async fn attempt_failed(
+    pool: &MySqlPool,
+    public_id: &str,
+    account: Option<&str>,
+    event: Option<&str>,
+    reason: &str,
+) -> sqlx::Result<bool> {
+    let mut tx = pool.begin().await?;
+    if let Some(event) = event {
+        let first = sqlx::query("INSERT IGNORE INTO customer_payment_events (event_id) VALUES (?)")
+            .bind(event)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+            == 1;
+        if !first {
+            return Ok(false);
+        }
+    }
+    let payable: Option<u64> = sqlx::query_scalar(
+        "SELECT id FROM customer_payments
+          WHERE public_id = ? AND status = 'created' AND (? IS NULL OR stripe_account_id = ?)
+          FOR UPDATE",
+    )
+    .bind(public_id)
+    .bind(account)
+    .bind(account)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if payable.is_some() {
+        let bell = Bell {
+            reason: Some(reason),
+            ..Bell::default()
+        };
+        notify(&mut tx, public_id, "payment_failed", bell).await?;
+    }
+    tx.commit().await?;
+    Ok(payable.is_some())
+}
+
+/// Money given back on a payment (`charge.refunded`). `refunded_total`: all
+/// that was given back so far, in cents of what the customer was charged
+/// (Stripe's `amount_refunded`); `full`: the whole charge was. A partial
+/// refund leaves the payment `paid`; the whole one makes it `refunded`. The
+/// company hears how much each refund gave back. The total only grows, so an
+/// event sent twice or late changes nothing.
+async fn refund(
+    pool: &MySqlPool,
+    public_id: &str,
+    account: &str,
+    refunded_total: Option<i64>,
+    full: bool,
+) -> sqlx::Result<()> {
+    let mut tx = pool.begin().await?;
+    let row: Option<(String, i64, i64)> = sqlx::query_as(
+        "SELECT CAST(status AS CHAR), CAST(refunded_cents AS SIGNED),
+                CAST(amount_cents + customer_fee_cents AS SIGNED)
+           FROM customer_payments
+          WHERE public_id = ? AND stripe_account_id = ?
+          FOR UPDATE",
+    )
+    .bind(public_id)
+    .bind(account)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((status, before, charged)) = row else {
+        return Ok(());
+    };
+    if !matches!(status.as_str(), "paid" | "disputed" | "refunded") {
+        return Ok(());
+    }
+    let total = refunded_total
+        .unwrap_or(if full { charged } else { before })
+        .clamp(0, charged)
+        .max(before);
+    let given_back = total - before;
+    let now_refunded = full && status != "refunded";
+    if given_back == 0 && !now_refunded {
+        return Ok(());
+    }
+    sqlx::query(
+        "UPDATE customer_payments
+            SET refunded_cents = ?, status = IF(?, 'refunded', status)
+          WHERE public_id = ?",
+    )
+    .bind(total)
+    .bind(now_refunded)
+    .bind(public_id)
+    .execute(&mut *tx)
+    .await?;
+    let bell = Bell {
+        amount_cents: Some(if given_back > 0 { given_back } else { charged }),
+        ..Bell::default()
+    };
+    notify(&mut tx, public_id, "payment_refunded", bell).await?;
+    tx.commit().await
+}
+
+/// What a bell row says beyond the payment itself.
+#[derive(Default, Clone, Copy)]
+struct Bell<'a> {
+    /// The amount to name instead of the payment's (a refund's).
+    amount_cents: Option<i64>,
+    /// Why it failed, instead of the payment's `failure_reason`.
+    reason: Option<&'a str>,
+}
+
 /// What the bell says about a payment.
-fn message(payment: &PaymentRow, kind: &str) -> String {
-    let customer = payment.customer_name.as_deref().unwrap_or("A customer");
+fn message(payment: &PaymentRow, kind: &str, bell: Bell<'_>) -> String {
+    let customer = payment.customer_name.as_deref();
     let project = payment.project_name.as_deref().unwrap_or("their project");
-    let amount = dollars(i64::from(payment.amount_cents));
+    let amount = dollars(
+        bell.amount_cents
+            .unwrap_or_else(|| i64::from(payment.amount_cents)),
+    );
     let method = payment.method().words();
     let text = match kind {
         "payment_pending" => format!(
-            "{customer} started an ACH payment of {amount} for {project}. It takes about 4 business days."
+            "{} started an ACH payment of {amount} for {project}. It takes about 4 business days.",
+            customer.unwrap_or("A customer")
         ),
         "payment_failed" => format!(
-            "{customer}'s {amount} {method} payment for {project} failed: {}.",
-            payment
-                .failure_reason
-                .as_deref()
+            "{}'s {amount} {method} payment for {project} failed: {}.",
+            customer.unwrap_or("A customer"),
+            bell.reason
+                .or(payment.failure_reason.as_deref())
                 .unwrap_or("the payment was declined")
                 .trim_end_matches('.')
         ),
-        "payment_refunded" => {
-            format!("{customer}'s {amount} {method} payment for {project} was refunded.")
-        }
-        "payment_disputed" => {
-            format!("{customer} disputed their {amount} {method} payment for {project}.")
-        }
-        _ => format!("{customer} paid {amount} by {method} for {project}."),
+        "payment_refunded" => format!(
+            "{amount} was refunded to {} for {project}.",
+            customer.unwrap_or("the customer")
+        ),
+        "payment_disputed" => format!(
+            "{} disputed the {amount} payment for {project}.",
+            customer.unwrap_or("A customer")
+        ),
+        "payment_duplicate" => format!(
+            "{} paid {amount} by {method} for {project} a second time. Refund the extra payment in Stripe.",
+            customer.unwrap_or("A customer")
+        ),
+        _ => format!(
+            "{} paid {amount} by {method} for {project}.",
+            customer.unwrap_or("A customer")
+        ),
     };
     text.chars().take(MESSAGE_CHARS).collect()
 }
 
-/// A bell row for each Manager of the company and for whoever made the link.
-async fn notify(pool: &MySqlPool, public_id: &str, kind: &str) -> sqlx::Result<()> {
-    let Some(payment) = payment_by_id(pool, public_id).await? else {
+/// A bell row for each Manager of the company and for whoever made the link;
+/// it opens the payment's project.
+async fn notify(
+    conn: &mut sqlx::MySqlConnection,
+    public_id: &str,
+    kind: &str,
+    bell: Bell<'_>,
+) -> sqlx::Result<()> {
+    let Some(payment) = payment_by_id(&mut *conn, public_id).await? else {
         return Ok(());
     };
     let users: Vec<i32> = sqlx::query_scalar(
@@ -1466,26 +1855,28 @@ async fn notify(pool: &MySqlPool, public_id: &str, kind: &str) -> sqlx::Result<(
     .bind(payment.company_id)
     .bind(MANAGER_POSITION)
     .bind(payment.created_by)
-    .fetch_all(pool)
+    .fetch_all(&mut *conn)
     .await?;
-    let message = message(&payment, kind);
+    let message = message(&payment, kind, bell);
     for user in users {
         sqlx::query(
-            "INSERT INTO notifications (user_id, customer_id, message, notification_type, due_at)
-             VALUES (?, ?, ?, ?, NOW())",
+            "INSERT INTO notifications
+                    (user_id, customer_id, customer_payment_id, message, notification_type, due_at)
+             VALUES (?, ?, ?, ?, ?, NOW())",
         )
         .bind(user)
         .bind(payment.customer_id)
+        .bind(payment.id)
         .bind(&message)
         .bind(kind)
-        .execute(pool)
+        .execute(&mut *conn)
         .await?;
     }
     Ok(())
 }
 
-/// Our id of the payment a Stripe object (a Checkout session, a charge) was
-/// made for.
+/// Our id of the payment a Stripe object (a Checkout session, a payment
+/// intent, a charge) was made for.
 fn payment_of(object: &Value) -> Option<&str> {
     object["metadata"]["granite_payment"]
         .as_str()
@@ -1540,6 +1931,89 @@ async fn failure_reason(state: &AppState, account: &str, intent: Option<&str>) -
     }
 }
 
+/// Why a payment failed, from a payment intent's `last_payment_error`: a
+/// card's decline code in plain words (a lost or stolen card reads as
+/// declined), else Stripe's message.
+fn decline_reason(method: PaymentMethod, error: &Value) -> String {
+    let code = error["decline_code"]
+        .as_str()
+        .or_else(|| error["code"].as_str())
+        .unwrap_or_default();
+    let words = match code {
+        "insufficient_funds" => Some("insufficient funds"),
+        "expired_card" => Some("the card has expired"),
+        "incorrect_cvc" | "invalid_cvc" => Some("wrong security code"),
+        "incorrect_number" | "invalid_number" => Some("wrong card number"),
+        "card_velocity_exceeded" | "withdrawal_count_limit_exceeded" => {
+            Some("the card's limit was reached")
+        }
+        "generic_decline" | "card_declined" | "do_not_honor" | "lost_card" | "stolen_card"
+        | "fraudulent" | "pickup_card" | "restricted_card" | "merchant_blacklist" => {
+            Some("card declined")
+        }
+        _ => None,
+    };
+    words
+        .map(str::to_string)
+        .or_else(|| {
+            error["message"]
+                .as_str()
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| {
+            match method {
+                PaymentMethod::Card => "card declined",
+                PaymentMethod::Ach => "the bank declined the transfer",
+            }
+            .into()
+        })
+}
+
+/// A failed payment intent: a declined card (or a bank that refused at once)
+/// leaves the link payable and only tells the company; an ACH transfer on
+/// its way that bounced fails the payment.
+async fn intent_failed(
+    pool: &MySqlPool,
+    account: &str,
+    event: Option<&str>,
+    object: &Value,
+) -> sqlx::Result<()> {
+    let Some(payment) = payment_of(object) else {
+        return Ok(());
+    };
+    let found: Option<(String, String)> = sqlx::query_as(
+        "SELECT CAST(status AS CHAR), CAST(method AS CHAR) FROM customer_payments
+          WHERE public_id = ? AND stripe_account_id = ?",
+    )
+    .bind(payment)
+    .bind(account)
+    .fetch_optional(pool)
+    .await?;
+    let Some((status, method)) = found else {
+        return Ok(());
+    };
+    let reason = decline_reason(PaymentMethod::parse(&method), &object["last_payment_error"]);
+    match status.as_str() {
+        "created" => {
+            attempt_failed(pool, payment, Some(account), event, &reason).await?;
+        }
+        "pending" => {
+            settle(
+                pool,
+                payment,
+                Some(account),
+                object["id"].as_str(),
+                Outcome::Failed(reason),
+            )
+            .await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Applies one event of a connected account.
 async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
     let pool = &state.pool;
@@ -1580,19 +2054,62 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
             )
             .await?;
         }
-        "charge.refunded" if object["refunded"].as_bool() == Some(true) => {
-            if let Some(payment) = payment_of_charge(pool, account, object).await? {
-                settle(pool, &payment, Some(account), None, Outcome::Refunded).await?;
+        "payment_intent.succeeded" => {
+            if let Some(payment) = payment_of(object) {
+                let id = object["id"].as_str();
+                settle(pool, payment, Some(account), id, Outcome::Paid).await?;
             }
         }
+        // ACH: the transfer started (a card's is never pending).
+        "payment_intent.processing" => {
+            if let Some(payment) = payment_of(object) {
+                let id = object["id"].as_str();
+                settle(pool, payment, Some(account), id, Outcome::Pending).await?;
+            }
+        }
+        "payment_intent.payment_failed" => {
+            intent_failed(pool, account, event["id"].as_str(), object).await?;
+        }
+        "charge.refunded" => {
+            if let Some(payment) = payment_of_charge(pool, account, object).await? {
+                let full = object["refunded"].as_bool() == Some(true);
+                let total = object["amount_refunded"].as_i64();
+                refund(pool, &payment, account, total, full).await?;
+            }
+        }
+        // Once per dispute, and never after it closed: Stripe sending the
+        // dispute again after it was won must not dispute the payment anew.
         "charge.dispute.created" => {
-            if let Some(payment) = payment_of_charge(pool, account, object).await? {
-                settle(pool, &payment, Some(account), None, Outcome::Disputed).await?;
+            if let (Some(payment), Some(dispute)) = (
+                payment_of_charge(pool, account, object).await?,
+                object["id"].as_str(),
+            ) {
+                settle_once(
+                    pool,
+                    &format!("dispute_created:{dispute}"),
+                    Some(&format!("dispute_closed:{dispute}")),
+                    &payment,
+                    account,
+                    Some(Outcome::Disputed),
+                )
+                .await?;
             }
         }
-        "charge.dispute.closed" if object["status"] == "won" => {
-            if let Some(payment) = payment_of_charge(pool, account, object).await? {
-                settle(pool, &payment, Some(account), None, Outcome::DisputeWon).await?;
+        "charge.dispute.closed" => {
+            if let (Some(payment), Some(dispute)) = (
+                payment_of_charge(pool, account, object).await?,
+                object["id"].as_str(),
+            ) {
+                let won = (object["status"] == "won").then_some(Outcome::DisputeWon);
+                settle_once(
+                    pool,
+                    &format!("dispute_closed:{dispute}"),
+                    None,
+                    &payment,
+                    account,
+                    won,
+                )
+                .await?;
             }
         }
         _ => {}
@@ -1610,8 +2127,10 @@ pub struct ConnectWebhookReceived {
 /// Receive a Stripe Connect event
 ///
 /// Stripe's webhook for the companies' connected accounts: Checkout,
-/// refund and dispute events move a customer's payment on (and notify the
-/// company), and account events update the company's bank status. Each
+/// payment intent, refund and dispute events move a customer's payment on
+/// (and notify the company), and account events update the company's bank
+/// status. A declined card only notifies: the link stays payable. A partial
+/// refund keeps the payment `paid` and records what was given back. Each
 /// change is made once, however often Stripe sends the event. Needs a valid
 /// `Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.
 #[crate::openapi::path(
@@ -1676,6 +2195,8 @@ pub struct ViewPayment {
     pub amount_cents: i32,
     /// The customer's part of the fee, added on top.
     pub customer_fee_cents: i32,
+    /// What was given back to the customer, in US cents (0 unless refunded).
+    pub refunded_cents: i32,
     /// The page to pay on, while `created`.
     pub url: String,
     /// Why it failed; null unless `failed`.
@@ -1702,7 +2223,7 @@ pub struct ViewJob {
 pub struct CustomerViewPayments {
     /// What their jobs cost together (`projects`), in US cents.
     pub total_cents: i64,
-    /// What they paid through payment links.
+    /// What they paid through payment links, less what was refunded.
     pub paid_cents: i64,
     /// ACH transfers on their way.
     pub pending_cents: i64,
@@ -1830,14 +2351,12 @@ pub async fn view_payments(
     .bind(customer.id)
     .fetch_all(&state.pool)
     .await?;
-    let sum = |status: CustomerPaymentStatus| -> i64 {
-        rows.iter()
-            .filter(|row| row.status() == status)
-            .map(|row| i64::from(row.amount_cents))
-            .sum()
-    };
-    let paid_cents = sum(CustomerPaymentStatus::Paid);
-    let pending_cents = sum(CustomerPaymentStatus::Pending);
+    let paid_cents: i64 = rows.iter().map(PaymentRow::paid_toward_job).sum();
+    let pending_cents: i64 = rows
+        .iter()
+        .filter(|row| row.status() == CustomerPaymentStatus::Pending)
+        .map(|row| i64::from(row.amount_cents))
+        .sum();
     let origin = company_origin(&state, company_id).await?;
     let payments = rows
         .into_iter()
@@ -1852,6 +2371,7 @@ pub async fn view_payments(
             sale_id: row.sale_id,
             amount_cents: row.amount_cents,
             customer_fee_cents: row.customer_fee_cents,
+            refunded_cents: row.refunded_cents,
             failure_reason: row.failure_reason,
         })
         .collect();
@@ -1930,6 +2450,60 @@ mod tests {
         assert_eq!(dollars(100_000), "$1,000");
         assert_eq!(dollars(123_456_705), "$1,234,567.05");
         assert_eq!(dollars(99), "$0.99");
+    }
+
+    #[test]
+    fn the_fee_line_names_the_customer_s_share() {
+        assert_eq!(fee_line_name(50), "Processing fee (0.5%)");
+        assert_eq!(fee_line_name(100), "Processing fee (1%)");
+        assert_eq!(fee_line_name(5), "Processing fee (0.05%)");
+        assert_eq!(fee_line_name(0), "Processing fee");
+    }
+
+    #[test]
+    fn a_decline_reads_in_plain_words() {
+        let card = |error: Value| decline_reason(PaymentMethod::Card, &error);
+        assert_eq!(
+            card(serde_json::json!({ "code": "card_declined", "decline_code": "insufficient_funds",
+                                     "message": "Your card has insufficient funds." })),
+            "insufficient funds"
+        );
+        assert_eq!(
+            card(serde_json::json!({ "code": "card_declined", "decline_code": "stolen_card" })),
+            "card declined"
+        );
+        assert_eq!(
+            card(serde_json::json!({ "code": "processing_error",
+                                     "message": "An error occurred while processing your card." })),
+            "An error occurred while processing your card."
+        );
+        assert_eq!(card(Value::Null), "card declined");
+        assert_eq!(
+            decline_reason(PaymentMethod::Ach, &Value::Null),
+            "the bank declined the transfer"
+        );
+    }
+
+    #[test]
+    fn demo_mode_is_only_for_this_computer() {
+        for local in [
+            "http://localhost:5173",
+            "http://127.0.0.1:3000/x",
+            "https://acme.localhost",
+            "http://[::1]:5173",
+            "HTTP://LOCALHOST",
+        ] {
+            assert!(is_local_url(local), "{local}");
+        }
+        for remote in [
+            "https://app.granite-manager.com",
+            "https://localhost.evil.com",
+            "http://10.0.0.5",
+            "",
+            "localhost",
+        ] {
+            assert!(!is_local_url(remote), "{remote}");
+        }
     }
 
     #[test]

@@ -462,7 +462,7 @@ fn type_title(kind: &str) -> Option<&'static str> {
         SALES_ORDER => "Sales Order",
         // Customer payments (`routes::customer_payments`).
         "payment_paid" | "payment_pending" | "payment_failed" | "payment_refunded"
-        | "payment_disputed" => "Payment",
+        | "payment_disputed" | "payment_duplicate" => "Payment",
         "note_added" => "Added a Note",
         "note_edited" => "Edited a Note",
         "note_deleted" => "Deleted a Note",
@@ -542,6 +542,8 @@ struct ActivityRow {
     created_at: String,
     notification_type: Option<String>,
     actor_name: Option<String>,
+    /// A customer payment's id (`pay_...`), for its `payment_*` rows.
+    payment: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -646,6 +648,7 @@ async fn activity(
         "SELECT CAST(n.id AS SIGNED) AS id, CAST(n.deal_id AS SIGNED) AS deal_id,
                 pr.id AS project_id, n.event_id, c.id AS customer_id, n.message,
                 c.name AS customer_name, n.notification_type, n.actor_name,
+                cp.public_id AS payment,
                 -- A deadline reminder happens at its deadline, not when it was scheduled.
                 DATE_FORMAT(CASE WHEN n.notification_type IN ('activity_deadline_reminder',
                                                               'project_task_reminder')
@@ -655,6 +658,7 @@ async fn activity(
            LEFT JOIN deals d ON d.id = n.deal_id AND d.deleted_at IS NULL
            LEFT JOIN projects pr ON pr.id = n.project_id
            LEFT JOIN customers c ON c.id = COALESCE(d.customer_id, pr.customer_id, n.customer_id)
+           LEFT JOIN customer_payments cp ON cp.id = n.customer_payment_id
           WHERE n.user_id = ? AND n.is_done = 0 AND (? IS NULL OR n.id = ?)
             -- On a live deal or a project, except 911 alerts, the texting
             -- registration's, number ports' and AI promises' (they name no
@@ -710,9 +714,10 @@ async fn activity(
                 _ if promise => PROMISES_HREF.to_string(),
                 _ if kind == Some(TENDLC_READY) => TENDLC_READY_HREF.to_string(),
                 _ if kind == Some(SALES_ORDER) => SALES_ORDERS_HREF.to_string(),
-                // A payment opens the customer's Projects tab, where it is listed.
+                // A payment opens the customer's Projects tab at its project.
                 (_, Some(customer)) if kind.is_some_and(|kind| kind.starts_with("payment_")) => {
-                    format!("/employee/customers/info/{customer}/projects")
+                    let at = row.payment.as_ref().map(|id| format!("?payment={id}"));
+                    format!("/employee/customers/info/{customer}/projects{}", at.unwrap_or_default())
                 }
                 _ if texting || port => E911_ALERT_HREF.to_string(),
                 _ if row.project_id.is_some() => format!(

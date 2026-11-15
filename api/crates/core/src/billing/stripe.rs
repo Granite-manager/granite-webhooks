@@ -85,6 +85,20 @@ impl Stripe {
         path: &str,
         form: &[(&str, String)],
     ) -> Result<Value, StripeError> {
+        self.send_once(account, None, method, path, form).await
+    }
+
+    /// `idempotency`: Stripe's `Idempotency-Key`: a request sent again with
+    /// the same key within 24 hours gets the first one's answer, so it is
+    /// made once.
+    async fn send_once(
+        &self,
+        account: Option<&str>,
+        idempotency: Option<&str>,
+        method: reqwest::Method,
+        path: &str,
+        form: &[(&str, String)],
+    ) -> Result<Value, StripeError> {
         let key = self.key.as_ref().ok_or(StripeError::NotConfigured)?;
         let encoded = serde_html_form::to_string(form)
             .map_err(|err| StripeError::Request(err.to_string()))?;
@@ -102,6 +116,10 @@ impl Stripe {
             .timeout(Duration::from_secs(30));
         let request = match account {
             Some(account) => request.header("Stripe-Account", account),
+            None => request,
+        };
+        let request = match idempotency {
+            Some(idempotency) => request.header("Idempotency-Key", idempotency),
             None => request,
         };
         let request = if get {
@@ -521,10 +539,18 @@ pub struct PaymentCheckout<'a> {
     pub amount_cents: i64,
     /// The customer's part of the fee, a second line when above zero.
     pub customer_fee_cents: i64,
+    /// That line's name, e.g. `Processing fee (0.5%)`.
+    pub customer_fee_name: &'a str,
+    /// More metadata for the session and its payment intent, e.g.
+    /// `("company_id", "100")`: who and what the payment is for.
+    pub metadata: &'a [(&'a str, String)],
     /// What the platform keeps of the payment, when above zero.
     pub application_fee_cents: i64,
     pub success_url: &'a str,
     pub cancel_url: &'a str,
+    /// Stripe's `Idempotency-Key` for the request: two requests with the same
+    /// key make one session.
+    pub idempotency_key: &'a str,
 }
 
 /// Stripe Connect: a company's customers pay the company on its own
@@ -583,6 +609,16 @@ impl Stripe {
         account: &str,
         checkout: &PaymentCheckout<'_>,
     ) -> Result<Value, StripeError> {
+        let metadata: Vec<(String, String)> = checkout
+            .metadata
+            .iter()
+            .flat_map(|(key, value)| {
+                [
+                    (format!("metadata[{key}]"), value.clone()),
+                    (format!("payment_intent_data[metadata][{key}]"), value.clone()),
+                ]
+            })
+            .collect();
         let mut form: Vec<(&str, String)> = vec![
             ("mode", "payment".into()),
             ("payment_method_types[0]", checkout.payment_method.into()),
@@ -615,18 +651,24 @@ impl Stripe {
                 ),
                 (
                     "line_items[1][price_data][product_data][name]",
-                    "Processing fee".to_string(),
+                    checkout.customer_fee_name.to_string(),
                 ),
             ]);
         }
+        form.extend(
+            metadata
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone())),
+        );
         if checkout.application_fee_cents > 0 {
             form.push((
                 "payment_intent_data[application_fee_amount]",
                 checkout.application_fee_cents.to_string(),
             ));
         }
-        self.send_as(
+        self.send_once(
             Some(account),
+            Some(checkout.idempotency_key),
             reqwest::Method::POST,
             "/v1/checkout/sessions",
             &form,
