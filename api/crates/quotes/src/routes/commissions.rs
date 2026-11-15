@@ -66,6 +66,10 @@ struct RuleRow {
     level_max: Option<f64>,
     line_match: String,
     threshold: Option<f64>,
+    discount_min: Option<f64>,
+    discount_max: Option<f64>,
+    made_by: String,
+    paid_only: i8,
     active: i8,
 }
 
@@ -84,7 +88,9 @@ pub async fn load_rules(pool: &MySqlPool, company_id: i32) -> ApiResult<Vec<Comm
         "SELECT id, name, applies, rate_type, CAST(rate AS DOUBLE) AS rate, priority, stop,
                 CAST(materials_json AS CHAR) AS materials_json, CAST(colors_json AS CHAR) AS colors_json,
                 CAST(level_min AS DOUBLE) AS level_min, CAST(level_max AS DOUBLE) AS level_max,
-                line_match, CAST(threshold AS DOUBLE) AS threshold, active
+                line_match, CAST(threshold AS DOUBLE) AS threshold,
+                CAST(discount_min AS DOUBLE) AS discount_min,
+                CAST(discount_max AS DOUBLE) AS discount_max, made_by, paid_only, active
            FROM commission_rules
           WHERE company_id = ? AND deleted_at IS NULL
           ORDER BY priority DESC, id",
@@ -108,6 +114,10 @@ pub async fn load_rules(pool: &MySqlPool, company_id: i32) -> ApiResult<Vec<Comm
             level_max: r.level_max,
             line_match: r.line_match,
             threshold: r.threshold,
+            discount_min: r.discount_min,
+            discount_max: r.discount_max,
+            made_by: r.made_by,
+            paid_only: r.paid_only == 1,
             active: r.active == 1,
         })
         .collect())
@@ -152,6 +162,7 @@ pub struct RuleInput {
     #[serde(default)]
     pub priority: i64,
     /// Material rules: a match keeps lower rules from paying on the area.
+    /// Line rules: their lines are left out of the room's stone percent.
     #[serde(default)]
     pub stop: bool,
     /// Material rules: only these materials.
@@ -172,9 +183,26 @@ pub struct RuleInput {
     /// Monthly goals: the month's paid sales that earn the bonus.
     #[serde(default)]
     pub threshold: Option<f64>,
+    /// Only when the quote's discount is over this percent (0 to 100).
+    #[serde(default)]
+    pub discount_min: Option<f64>,
+    /// Only when the quote's discount is at most this percent (0 to 100).
+    #[serde(default)]
+    pub discount_max: Option<f64>,
+    /// Who made the quote: `any` (default), `rep` (the rep themself) or
+    /// `other` (someone else made it for them).
+    #[serde(default = "any")]
+    pub made_by: String,
+    /// Line rules: only lines the customer pays for.
+    #[serde(default)]
+    pub paid_only: bool,
     /// Off rules pay nothing.
     #[serde(default = "yes")]
     pub active: bool,
+}
+
+fn any() -> String {
+    "any".into()
 }
 
 const fn yes() -> bool {
@@ -201,6 +229,22 @@ fn checked(input: RuleInput) -> ApiResult<RuleInput> {
         return Err(ApiError::BadRequest("Rate cannot be negative".into()));
     }
     if input.threshold.is_some_and(|t| t < 0.0) {
+        return Err(ApiError::BadRequest("Check the rule.".into()));
+    }
+    let percent = |value: Option<f64>| value.is_none_or(|v| (0.0..=100.0).contains(&v));
+    if !percent(input.discount_min) || !percent(input.discount_max) {
+        return Err(ApiError::BadRequest(
+            "A discount is a percent from 0 to 100".into(),
+        ));
+    }
+    if let (Some(min), Some(max)) = (input.discount_min, input.discount_max)
+        && min >= max
+    {
+        return Err(ApiError::BadRequest(
+            "\"Discount over\" must be less than \"up to\"".into(),
+        ));
+    }
+    if !matches!(input.made_by.as_str(), "any" | "rep" | "other") {
         return Err(ApiError::BadRequest("Check the rule.".into()));
     }
     let list = |values: Vec<String>| -> ApiResult<Vec<String>> {
@@ -233,7 +277,8 @@ async fn save_rule(
             "UPDATE commission_rules
                 SET name = ?, applies = ?, rate_type = ?, rate = ?, priority = ?, stop = ?,
                     materials_json = ?, colors_json = ?, level_min = ?, level_max = ?,
-                    line_match = ?, threshold = ?, active = ?
+                    line_match = ?, threshold = ?, discount_min = ?, discount_max = ?,
+                    made_by = ?, paid_only = ?, active = ?
               WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
         )
         .bind(&rule.name)
@@ -248,6 +293,10 @@ async fn save_rule(
         .bind(rule.level_max)
         .bind(&rule.line_match)
         .bind(rule.threshold)
+        .bind(rule.discount_min)
+        .bind(rule.discount_max)
+        .bind(&rule.made_by)
+        .bind(rule.paid_only)
         .bind(rule.active)
         .bind(id)
         .bind(company_id)
@@ -262,8 +311,9 @@ async fn save_rule(
     let id = sqlx::query(
         "INSERT INTO commission_rules
            (name, applies, rate_type, rate, priority, stop, materials_json, colors_json,
-            level_min, level_max, line_match, threshold, active, company_id, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            level_min, level_max, line_match, threshold, discount_min, discount_max, made_by,
+            paid_only, active, company_id, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&rule.name)
     .bind(&rule.applies)
@@ -277,6 +327,10 @@ async fn save_rule(
     .bind(rule.level_max)
     .bind(&rule.line_match)
     .bind(rule.threshold)
+    .bind(rule.discount_min)
+    .bind(rule.discount_max)
+    .bind(&rule.made_by)
+    .bind(rule.paid_only)
     .bind(rule.active)
     .bind(company_id)
     .bind(user_id)
@@ -381,23 +435,33 @@ pub async fn delete_rule(
 }
 
 /// The payroll week (base pay has its own schedules: `/v1/commission-base-pay`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommissionSettings {
     /// 0 = Sunday … 6 = Saturday: the day payroll goes out.
     pub payroll_weekday: u32,
+    /// When the sync last ran (UTC, `YYYY-MM-DDTHH:MM:SSZ`); never: null.
+    /// Read only: a saved value is ignored.
+    #[serde(default)]
+    pub last_synced_at: Option<String>,
 }
 
 /// `loadCommissionSettings` (Friday payroll until saved).
 pub async fn load_settings(pool: &MySqlPool, company_id: i32) -> ApiResult<CommissionSettings> {
-    let weekday: Option<i32> = sqlx::query_scalar(
-        "SELECT CAST(payroll_weekday AS SIGNED) FROM commission_settings WHERE company_id = ?",
+    let row: Option<(i32, Option<String>)> = sqlx::query_as(
+        "SELECT CAST(payroll_weekday AS SIGNED),
+                DATE_FORMAT(CONVERT_TZ(last_synced_at, @@session.time_zone, '+00:00'),
+                            '%Y-%m-%dT%H:%i:%sZ')
+           FROM commission_settings WHERE company_id = ?",
     )
     .bind(company_id)
     .fetch_optional(pool)
     .await?;
     Ok(CommissionSettings {
-        payroll_weekday: weekday.map_or(5, |w| u32::try_from(w.clamp(0, 6)).unwrap_or(5)),
+        payroll_weekday: row
+            .as_ref()
+            .map_or(5, |(w, _)| u32::try_from((*w).clamp(0, 6)).unwrap_or(5)),
+        last_synced_at: row.and_then(|(_, synced)| synced),
     })
 }
 
@@ -1191,7 +1255,11 @@ pub async fn sync_commissions(
             let accepted = usize::try_from(quote.customer_accepted_option_id.unwrap_or(0).max(0))
                 .unwrap_or_default()
                 .min(prices.len().saturating_sub(1));
-            let commission = quote_commission(&doc, &price_list, &rules, accepted, &prices);
+            let rep = quote.salesperson_id.or(quote.created_by);
+            // Made by the rep themself unless someone else created it.
+            let made_by_rep = quote.created_by.is_none() || quote.created_by == rep;
+            let commission =
+                quote_commission(&doc, &price_list, &rules, accepted, &prices, made_by_rep);
             let features = prices.get(accepted).map(feature_sales).unwrap_or_default();
             let installed = installed_on(
                 &state.pool,
@@ -1203,7 +1271,7 @@ pub async fn sync_commissions(
             .await?;
             Ok(Some(Worked {
                 quote_id: quote.id,
-                user_id: quote.salesperson_id.or(quote.created_by),
+                user_id: rep,
                 customer_id: quote.customer_id,
                 option_id: prices.get(accepted).map(|p| p.option_id.clone()),
                 total: prices.get(accepted).map_or(0.0, |p| p.total),
@@ -1297,6 +1365,13 @@ pub async fn sync_commissions(
             }
         }
     }
+    sqlx::query(
+        "INSERT INTO commission_settings (company_id, last_synced_at) VALUES (?, NOW())
+         ON DUPLICATE KEY UPDATE last_synced_at = NOW()",
+    )
+    .bind(company_id)
+    .execute(&state.pool)
+    .await?;
     Ok(Json(SyncResult {
         synced,
         qbo: found.status.into(),

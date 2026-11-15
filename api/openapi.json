@@ -39411,6 +39411,50 @@
         }
       }
     },
+    "/v1/public/companies/{company_id}/lens-hint": {
+      "post": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Claim the magnifier highlight",
+        "description": "The customer stones page highlights its magnifier (lens) button once per\nvisitor IP address: the first call from an address answers `show: true`,\nevery later one `false`.",
+        "operationId": "claim_lens_hint",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether to highlight",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LensHint"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/quote-forms": {
       "get": {
         "tags": [
@@ -81627,7 +81671,7 @@
           },
           "stop": {
             "type": "boolean",
-            "description": "Material rules: a match keeps lower rules from paying on the same area."
+            "description": "Material rules: a match keeps lower rules from paying on the same area.\nLine rules: the lines it matches earn only this rule, not the room's\nstone percent too."
           },
           "materials": {
             "type": "array",
@@ -81671,6 +81715,30 @@
             "format": "double",
             "description": "Monthly goals: the month's paid sales that earn the bonus."
           },
+          "discountMin": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Only when the quote's discount is over this percent."
+          },
+          "discountMax": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Only when the quote's discount is at most this percent."
+          },
+          "madeBy": {
+            "type": "string",
+            "description": "Who made the quote: `any`, `rep` (the rep themself) or `other`\n(someone else made it for them)."
+          },
+          "paidOnly": {
+            "type": "boolean",
+            "description": "Line rules: only lines the customer pays for (a free line earns nothing)."
+          },
           "active": {
             "type": "boolean",
             "description": "Off rules pay nothing."
@@ -81689,6 +81757,13 @@
             "format": "int32",
             "description": "0 = Sunday … 6 = Saturday: the day payroll goes out.",
             "minimum": 0
+          },
+          "lastSyncedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the sync last ran (UTC, `YYYY-MM-DDTHH:MM:SSZ`); never: null.\nRead only: a saved value is ignored."
           }
         },
         "additionalProperties": false
@@ -93922,6 +93997,19 @@
           "learned": {
             "type": "boolean",
             "description": "The edit taught something (the notes were rewritten)."
+          }
+        }
+      },
+      "LensHint": {
+        "type": "object",
+        "description": "Whether the customer stones page should highlight its magnifier button.",
+        "required": [
+          "show"
+        ],
+        "properties": {
+          "show": {
+            "type": "boolean",
+            "description": "True only the first time this visitor's IP address asks."
           }
         }
       },
@@ -107501,7 +107589,7 @@
           },
           "stop": {
             "type": "boolean",
-            "description": "Material rules: a match keeps lower rules from paying on the area."
+            "description": "Material rules: a match keeps lower rules from paying on the area.\nLine rules: their lines are left out of the room's stone percent."
           },
           "materials": {
             "type": "array",
@@ -107544,6 +107632,30 @@
             ],
             "format": "double",
             "description": "Monthly goals: the month's paid sales that earn the bonus."
+          },
+          "discountMin": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Only when the quote's discount is over this percent (0 to 100)."
+          },
+          "discountMax": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Only when the quote's discount is at most this percent (0 to 100)."
+          },
+          "madeBy": {
+            "type": "string",
+            "description": "Who made the quote: `any` (default), `rep` (the rep themself) or\n`other` (someone else made it for them)."
+          },
+          "paidOnly": {
+            "type": "boolean",
+            "description": "Line rules: only lines the customer pays for."
           },
           "active": {
             "type": "boolean",
