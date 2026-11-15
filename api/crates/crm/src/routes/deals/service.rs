@@ -10,6 +10,7 @@ use crate::state::AppState;
 use crate::telegram::Bot;
 use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::America::Indiana::Indianapolis;
+use common::crud::deal_stage_activities::add_for_move as add_stage_activities;
 use common::crud::lead_automation::DRIP_TEMPLATE_FOR_REP;
 use common::crud::phone_app::has_app;
 use common::telegram::crm::format_activity_notification;
@@ -19,18 +20,30 @@ use common::utils::email_send_window::{
 use lambda_http::tracing;
 use sqlx::{MySqlConnection, MySqlPool};
 
-/// Closes the open stage of `deal_id` and opens `list_id`.
+/// Closes the open stage of `deal_id` and opens `list_id`. Leaving one list
+/// for another adds the activities of the company's matching rules
+/// (Admin › Deals › Automatic Activities).
 pub async fn enter_stage(
     conn: &mut MySqlConnection,
     deal_id: i64,
     list_id: i32,
 ) -> Result<(), sqlx::Error> {
+    let from: Option<i32> = sqlx::query_scalar(
+        "SELECT list_id FROM deal_stage_history
+          WHERE deal_id = ? AND exited_at IS NULL ORDER BY id DESC LIMIT 1",
+    )
+    .bind(deal_id)
+    .fetch_optional(&mut *conn)
+    .await?;
     close_stage(conn, deal_id).await?;
     sqlx::query("INSERT INTO deal_stage_history (deal_id, list_id) VALUES (?, ?)")
         .bind(deal_id)
         .bind(list_id)
         .execute(&mut *conn)
         .await?;
+    if let Some(from) = from {
+        add_stage_activities(conn, deal_id, from, list_id).await?;
+    }
     Ok(())
 }
 

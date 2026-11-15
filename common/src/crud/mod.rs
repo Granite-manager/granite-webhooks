@@ -1,3 +1,4 @@
+pub mod deal_stage_activities;
 pub mod email_template;
 pub mod lead_automation;
 pub mod notifications;

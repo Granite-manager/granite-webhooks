@@ -401,7 +401,8 @@ pub async fn stage_history(pool: &MySqlPool, deal_id: i64) -> Result<Vec<StageVi
 
 const ACTIVITY_COLUMNS: &str = "id, CAST(deal_id AS SIGNED) AS deal_id, name,
     DATE_FORMAT(deadline, '%Y-%m-%dT%H:%i:%s') AS deadline, CAST(priority AS CHAR) AS priority,
-    is_completed, completed_at, created_at, created_by";
+    is_completed, completed_at, created_at, created_by,
+    stage_rule_id IS NOT NULL AS is_automatic";
 
 pub async fn list_activities(
     pool: &MySqlPool,

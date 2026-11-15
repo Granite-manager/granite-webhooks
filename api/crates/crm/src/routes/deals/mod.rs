@@ -16,10 +16,12 @@
 //! - `GET    /v1/deal-activities/suggestions`     → the caller's frequent activity names
 //! - `POST   /v1/deal-activities/suggestions/hidden` → never suggest a name to the caller again
 //! - `/v1/deal-pipelines[/{id}[/stages|/stage-order]]`, `DELETE /v1/deal-stages/{id}` → admin pipeline setup
+//! - `/v1/deal-stage-activity-rules[/{id}]`       → admin automatic activities on list moves
 //! - `/v1/deals/{id}/notes[/{note_id}[/comments[/{comment_id}]]]` → notes and comments
 //!
 //! Replaces the Remix `employee.deals*` loaders/actions and `api.deal*` routes.
 
+mod activity_rules;
 mod documents;
 pub mod files;
 mod handlers;
@@ -65,4 +67,6 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(pipelines::create_stage))
         .routes(routes!(pipelines::order_stages))
         .routes(routes!(pipelines::delete_stage))
+        .routes(routes!(activity_rules::list, activity_rules::create))
+        .routes(routes!(activity_rules::update, activity_rules::delete))
 }
