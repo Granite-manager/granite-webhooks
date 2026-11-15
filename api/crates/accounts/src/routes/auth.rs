@@ -1,6 +1,8 @@
 //! Sign-in and the session cookie.
 //!
 //! - `POST /v1/auth/login`                       → check the password, set the session cookie
+//!   (or answer the next step: an authenticator code, a new password,
+//!   setting up the authenticator; see `login_steps`)
 //! - `POST /v1/auth/logout`                      → end the session, clear the cookie
 //! - `GET  /v1/auth/session`                     → who is signed in and where they start
 //! - `PUT  /v1/auth/active-company`              → a super admin acts in another company
@@ -39,6 +41,7 @@ use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
 use crate::openapi::{OpenApiRouter, routes};
+use crate::routes::login_steps::{self, LoginChallenge};
 use crate::state::AppState;
 use crate::webhooks_client::OutgoingEmail;
 use axum::Json;
@@ -330,6 +333,13 @@ pub async fn record_failed_login(
 /// production) and says where the user starts. Too many failed attempts
 /// for the email answer 429 until the 15-minute window passes. A wrong
 /// email and a wrong password answer the same 401.
+///
+/// When the account needs another step first, answers 202 with a
+/// `LoginChallenge` instead and sets no cookie: `code` (two-step sign-in is
+/// on: `POST /v1/auth/login/code`), `new_password` (the password is 1111:
+/// `POST /v1/auth/login/password`) or `setup_authenticator` (superusers must
+/// turn on two-step sign-in: `POST /v1/auth/login/authenticator`). The last
+/// step signs in as this route would.
 #[crate::openapi::path(
     post,
     path = "/v1/auth/login",
@@ -338,6 +348,7 @@ pub async fn record_failed_login(
     request_body = LoginInput,
     responses(
         (status = 200, description = "Signed in; the session cookie is set", body = AuthSession),
+        (status = 202, description = "Right password; another step is needed first", body = LoginChallenge),
         (status = 400, description = "Email or password missing", body = ErrorBody),
         (status = 401, description = "Incorrect email or password", body = ErrorBody),
         (status = 429, description = "Too many failed attempts", body = ErrorBody),
@@ -368,6 +379,10 @@ pub async fn login(
             "Incorrect email or password. Please try again.".into(),
         ));
     };
+    if let Some(step) = login_steps::first_step(pool, user_id, &password).await? {
+        return login_steps::begin(pool, user_id, step, &password, &email_hash, &ip_hash, None)
+            .await;
+    }
     sqlx::query("DELETE FROM login_attempts WHERE email_hash = ?")
         .bind(&email_hash)
         .execute(pool)
@@ -376,7 +391,7 @@ pub async fn login(
 }
 
 /// Signs the user in: a new session, the sign-in answer and its cookie.
-async fn start_session(state: &AppState, user_id: i32) -> ApiResult<Response> {
+pub async fn start_session(state: &AppState, user_id: i32) -> ApiResult<Response> {
     let pool = &state.pool;
     let session_id = uuid::Uuid::new_v4().to_string();
     sqlx::query("INSERT INTO sessions (id, user_id, expiration_date) VALUES (?, ?, NULL)")

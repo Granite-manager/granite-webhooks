@@ -96,5 +96,6 @@ hickory-resolver = "0.26"
 
 [dev-dependencies]
 test-db = { path = "../test-db" }
+api-accounts = { path = "crates/accounts" }
 axum-test = "19"
 tower = { version = "0.5", features = ["util"] }
