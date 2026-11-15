@@ -111626,6 +111626,7 @@
           "stones",
           "is_display",
           "regular_stock",
+          "on_sale",
           "installed",
           "slabs"
         ],
@@ -111665,6 +111666,10 @@
           "regular_stock": {
             "type": "boolean",
             "description": "Any of its stones is regular stock."
+          },
+          "on_sale": {
+            "type": "boolean",
+            "description": "Any of its stones is on sale."
           },
           "installed": {
             "type": "integer",

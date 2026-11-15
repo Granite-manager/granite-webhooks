@@ -73,6 +73,8 @@ pub struct StoneMaterial {
     pub is_display: bool,
     /// Any of its stones is regular stock.
     pub regular_stock: bool,
+    /// Any of its stones is on sale.
+    pub on_sale: bool,
     /// Installed project photos across its stones.
     pub installed: i64,
     /// Slab counts summed over its stones.
@@ -305,6 +307,7 @@ fn group(
                 stones: i64::try_from(own.len()).unwrap_or(i64::MAX),
                 is_display: own.iter().any(|s| s.is_display),
                 regular_stock: own.iter().any(|s| s.regular_stock),
+                on_sale: own.iter().any(|s| s.on_sale),
                 installed: installed.get(&row.id).copied().unwrap_or(0),
                 slabs: SlabCounts {
                     total: sum(|c| c.total),
