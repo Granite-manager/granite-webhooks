@@ -18,7 +18,7 @@
 //! not its user linked Telegram, as it does new email.
 
 use super::calls::SALES_MANAGER_POSITION;
-use super::devices::{push_to_company, push_to_users};
+use super::devices::{push_to_company, push_to_users, push_to_users_unless_muted};
 use crate::openapi::ToSchema;
 use crate::state::AppState;
 use common::telegram::crm::notification_type_title;
@@ -71,7 +71,8 @@ pub async fn push_notification(state: &AppState, notification_id: i64) -> sqlx::
             ),
         ],
     );
-    push_to_users(state, company_id, &[user_id], &data).await
+    let setting = super::push_mutes::setting_of_notification(kind.as_deref().unwrap_or_default());
+    push_to_users_unless_muted(state, company_id, &[user_id], &data, setting).await
 }
 
 /// [`push_notification`], logged instead of returned: the notification is
