@@ -26,8 +26,7 @@ use crate::openapi::{OpenApiRouter, routes};
 use crate::quote_pricing::pricing::price_quote;
 use crate::quote_pricing::{load_company_quote, price_list_for_quote};
 use crate::routes::created::CreatedId;
-use crate::routes::quickbooks::invoice::InvoiceSummary;
-use crate::routes::quickbooks::{InvoicesStatus, invoices_of_customer};
+use crate::routes::quickbooks::invoice_batch::invoices_of_customers;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -36,7 +35,7 @@ use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -1060,6 +1059,23 @@ struct SignedQuote {
     signed_at: Option<String>,
 }
 
+/// The Sales Representative position: only its holders earn commissions.
+const SALES_REP: i32 = 1;
+
+/// A sold quote worked out by the sync, before its `QuickBooks` invoice.
+struct Worked {
+    quote_id: i32,
+    user_id: Option<i32>,
+    customer_id: i32,
+    option_id: Option<String>,
+    total: f64,
+    commission: f64,
+    parts_json: String,
+    features_json: String,
+    installed: Option<String>,
+    signed_at: Option<String>,
+}
+
 /// When a job was installed: the day of its last event on the Installations
 /// calendar, once every one of them is dated and gone by. The quote's own
 /// events, else the customer's from the sale on.
@@ -1098,10 +1114,12 @@ async fn installed_on(
 
 /// Sync commissions with QuickBooks
 ///
-/// Works out what every sold quote earns, whether its customer paid (the
-/// matching `QuickBooks` invoice) and when it was installed. Commissions
-/// already added to the salary are left alone; ones of quotes no longer sold
-/// go (unless an admin set their amounts).
+/// Works out what every sales rep's sold quote earns, whether its customer
+/// paid (the matching `QuickBooks` invoice) and when it was installed.
+/// `QuickBooks` is asked for all the customers' invoices together, a few
+/// requests in all. Commissions already added to the salary are left alone;
+/// ones of quotes no longer sold, or of someone who is not a Sales
+/// Representative, go (unless an admin set their amounts).
 #[allow(clippy::too_many_lines)]
 #[crate::openapi::path(
     post,
@@ -1122,19 +1140,24 @@ pub async fn sync_commissions(
 ) -> ApiResult<Json<SyncResult>> {
     let company_id = user.company_id;
     let rules = load_rules(&state.pool, company_id).await?;
+    // Rows of quotes no longer sold, or whose rep is not a sales rep, go.
     sqlx::query(
         "DELETE qc FROM quote_commissions qc
            JOIN quotes q ON q.id = qc.quote_id
           WHERE qc.company_id = ? AND qc.payroll_date IS NULL
             AND qc.total_override IS NULL AND qc.commission_override IS NULL
             AND (q.deleted_at IS NOT NULL
-                 OR (q.signed_at IS NULL AND q.status NOT IN ('converted', 'accepted')))",
+                 OR (q.signed_at IS NULL AND q.status NOT IN ('converted', 'accepted'))
+                 OR NOT EXISTS (SELECT 1 FROM users_positions up
+                                 WHERE up.user_id = COALESCE(q.salesperson_id, q.created_by)
+                                   AND up.company_id = q.company_id AND up.position_id = ?))",
     )
     .bind(company_id)
+    .bind(SALES_REP)
     .execute(&state.pool)
     .await?;
     // Sold: signed by the customer, or marked sold (its waiting jobs were
-    // added then).
+    // added then). Only sales reps' quotes earn a commission.
     let quotes: Vec<SignedQuote> = sqlx::query_as(
         "SELECT q.id,
                 DATE_FORMAT(COALESCE(q.signed_at,
@@ -1145,18 +1168,22 @@ pub async fn sync_commissions(
            LEFT JOIN quote_commissions qc ON qc.quote_id = q.id
           WHERE q.company_id = ? AND q.deleted_at IS NULL
             AND (q.signed_at IS NOT NULL OR q.status IN ('converted', 'accepted'))
-            AND (qc.id IS NULL OR qc.payroll_date IS NULL)",
+            AND (qc.id IS NULL OR qc.payroll_date IS NULL)
+            AND EXISTS (SELECT 1 FROM users_positions up
+                         WHERE up.user_id = COALESCE(q.salesperson_id, q.created_by)
+                           AND up.company_id = q.company_id AND up.position_id = ?)",
     )
     .bind(company_id)
+    .bind(SALES_REP)
     .fetch_all(&state.pool)
     .await?;
-    let mut invoices_by_customer: HashMap<i32, Option<Vec<InvoiceSummary>>> = HashMap::new();
-    let mut qbo = "ok";
-    let mut synced = 0;
+    // First what each quote earns (the database only), then every customer's
+    // QuickBooks invoices in a few joint requests, then the rows.
+    let mut worked: Vec<Worked> = Vec::new();
     for signed in quotes {
-        let result: ApiResult<()> = async {
+        let result: ApiResult<Option<Worked>> = async {
             let Some(quote) = load_company_quote(&state.pool, signed.id, company_id).await? else {
-                return Ok(());
+                return Ok(None);
             };
             let doc = quote.doc();
             let price_list = price_list_for_quote(&state.pool, &quote).await?;
@@ -1164,52 +1191,8 @@ pub async fn sync_commissions(
             let accepted = usize::try_from(quote.customer_accepted_option_id.unwrap_or(0).max(0))
                 .unwrap_or_default()
                 .min(prices.len().saturating_sub(1));
-            let total = prices.get(accepted).map_or(0.0, |p| p.total);
             let commission = quote_commission(&doc, &price_list, &rules, accepted, &prices);
             let features = prices.get(accepted).map(feature_sales).unwrap_or_default();
-            if let std::collections::hash_map::Entry::Vacant(slot) =
-                invoices_by_customer.entry(quote.customer_id)
-            {
-                let found = invoices_of_customer(&state, company_id, quote.customer_id, true).await;
-                let invoices = if let Ok(found) = found {
-                    match found.status {
-                        InvoicesStatus::Ok => Some(found.invoices),
-                        InvoicesStatus::NotConnected => {
-                            qbo = "not_connected";
-                            None
-                        }
-                        InvoicesStatus::Error => {
-                            qbo = "error";
-                            None
-                        }
-                        InvoicesStatus::MissingQboId => None,
-                    }
-                } else {
-                    qbo = "error";
-                    None
-                };
-                slot.insert(invoices);
-            }
-            let invoices = invoices_by_customer
-                .get(&quote.customer_id)
-                .cloned()
-                .flatten();
-            let invoice = invoices
-                .as_deref()
-                .and_then(|list| pick_invoice(list, &[total], signed.signed_at.as_deref()));
-            let status = if invoices.is_none() {
-                "no_invoice"
-            } else {
-                status_of(invoice)
-            };
-            let paid_date = (status == "paid").then(|| {
-                invoice
-                    .and_then(|i| i.last_updated.clone().or_else(|| i.txn_date.clone()))
-                    .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string())
-                    .chars()
-                    .take(10)
-                    .collect::<String>()
-            });
             let installed = installed_on(
                 &state.pool,
                 company_id,
@@ -1218,52 +1201,97 @@ pub async fn sync_commissions(
                 signed.signed_at.as_deref(),
             )
             .await?;
-            // The payroll date stays empty until an admin adds the job to the
-            // salary (POST /v1/commissions/{id}/payroll).
-            sqlx::query(
-                "INSERT INTO quote_commissions
-                   (company_id, quote_id, user_id, customer_id, option_id, quote_total,
-                    commission_amount, parts_json, features_json, qbo_invoice_id, invoice_total,
-                    invoice_balance, status, paid_date, installed_date, signed_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                   user_id = VALUES(user_id), customer_id = VALUES(customer_id),
-                   option_id = VALUES(option_id), quote_total = VALUES(quote_total),
-                   commission_amount = VALUES(commission_amount), parts_json = VALUES(parts_json),
-                   features_json = VALUES(features_json),
-                   qbo_invoice_id = VALUES(qbo_invoice_id), invoice_total = VALUES(invoice_total),
-                   invoice_balance = VALUES(invoice_balance), status = VALUES(status),
-                   paid_date = IF(VALUES(status) = 'paid', COALESCE(paid_date, VALUES(paid_date)), NULL),
-                   installed_date = VALUES(installed_date),
-                   synced_at = NOW()",
-            )
-            .bind(company_id)
-            .bind(quote.id)
-            .bind(quote.salesperson_id.or(quote.created_by))
-            .bind(quote.customer_id)
-            .bind(prices.get(accepted).map(|p| p.option_id.clone()))
-            .bind(total)
-            .bind(commission.total)
-            .bind(serde_json::to_string(&commission.parts).expect("parts serialize"))
-            .bind(serde_json::to_string(&features).expect("features serialize"))
-            .bind(invoice.map(|i| i.id.clone()))
-            .bind(invoice.and_then(|i| i.total_amt))
-            .bind(invoice.and_then(|i| i.balance))
-            .bind(status)
-            .bind(paid_date)
-            .bind(installed)
-            .bind(signed.signed_at.as_deref())
-            .execute(&state.pool)
-            .await?;
-            Ok(())
+            Ok(Some(Worked {
+                quote_id: quote.id,
+                user_id: quote.salesperson_id.or(quote.created_by),
+                customer_id: quote.customer_id,
+                option_id: prices.get(accepted).map(|p| p.option_id.clone()),
+                total: prices.get(accepted).map_or(0.0, |p| p.total),
+                commission: commission.total,
+                parts_json: serde_json::to_string(&commission.parts).expect("parts serialize"),
+                features_json: serde_json::to_string(&features).expect("features serialize"),
+                installed,
+                signed_at: signed.signed_at.clone(),
+            }))
         }
         .await;
         match result {
-            Ok(()) => synced += 1,
+            Ok(Some(row)) => worked.push(row),
+            Ok(None) => {}
             Err(error) => {
                 tracing::error!(
                     ?error,
                     quote = signed.id,
+                    "failed to work out a quote commission"
+                );
+            }
+        }
+    }
+    let mut customer_ids: Vec<i32> = worked.iter().map(|w| w.customer_id).collect();
+    customer_ids.sort_unstable();
+    customer_ids.dedup();
+    let found = invoices_of_customers(&state, company_id, &customer_ids).await?;
+    let mut synced = 0;
+    for row in worked {
+        let invoices = found.invoices.get(&row.customer_id);
+        let invoice =
+            invoices.and_then(|list| pick_invoice(list, &[row.total], row.signed_at.as_deref()));
+        let status = if invoices.is_none() {
+            "no_invoice"
+        } else {
+            status_of(invoice)
+        };
+        let paid_date = (status == "paid").then(|| {
+            invoice
+                .and_then(|i| i.last_updated.clone().or_else(|| i.txn_date.clone()))
+                .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string())
+                .chars()
+                .take(10)
+                .collect::<String>()
+        });
+        // The payroll date stays empty until an admin adds the job to the
+        // salary (POST /v1/commissions/{id}/payroll).
+        let saved = sqlx::query(
+            "INSERT INTO quote_commissions
+               (company_id, quote_id, user_id, customer_id, option_id, quote_total,
+                commission_amount, parts_json, features_json, qbo_invoice_id, invoice_total,
+                invoice_balance, status, paid_date, installed_date, signed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               user_id = VALUES(user_id), customer_id = VALUES(customer_id),
+               option_id = VALUES(option_id), quote_total = VALUES(quote_total),
+               commission_amount = VALUES(commission_amount), parts_json = VALUES(parts_json),
+               features_json = VALUES(features_json),
+               qbo_invoice_id = VALUES(qbo_invoice_id), invoice_total = VALUES(invoice_total),
+               invoice_balance = VALUES(invoice_balance), status = VALUES(status),
+               paid_date = IF(VALUES(status) = 'paid', COALESCE(paid_date, VALUES(paid_date)), NULL),
+               installed_date = VALUES(installed_date),
+               synced_at = NOW()",
+        )
+        .bind(company_id)
+        .bind(row.quote_id)
+        .bind(row.user_id)
+        .bind(row.customer_id)
+        .bind(&row.option_id)
+        .bind(row.total)
+        .bind(row.commission)
+        .bind(&row.parts_json)
+        .bind(&row.features_json)
+        .bind(invoice.map(|i| i.id.clone()))
+        .bind(invoice.and_then(|i| i.total_amt))
+        .bind(invoice.and_then(|i| i.balance))
+        .bind(status)
+        .bind(paid_date)
+        .bind(&row.installed)
+        .bind(row.signed_at.as_deref())
+        .execute(&state.pool)
+        .await;
+        match saved {
+            Ok(_) => synced += 1,
+            Err(error) => {
+                tracing::error!(
+                    ?error,
+                    quote = row.quote_id,
                     "failed to sync a quote commission"
                 );
             }
@@ -1271,7 +1299,7 @@ pub async fn sync_commissions(
     }
     Ok(Json(SyncResult {
         synced,
-        qbo: qbo.into(),
+        qbo: found.status.into(),
     }))
 }
 

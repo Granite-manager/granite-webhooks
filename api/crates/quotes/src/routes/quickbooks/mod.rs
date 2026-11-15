@@ -34,6 +34,7 @@ pub mod fields;
 pub mod habits;
 pub mod instructions;
 pub mod invoice;
+pub mod invoice_batch;
 pub mod products;
 mod reconcile;
 pub mod rules;

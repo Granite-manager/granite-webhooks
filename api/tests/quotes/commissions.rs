@@ -31,6 +31,40 @@ async fn signed_quote(pool: &MySqlPool) {
     .execute(pool)
     .await
     .unwrap();
+    // Its rep is a Sales Representative: only their quotes earn commissions.
+    sqlx::query(
+        "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (100, 1, 100)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test_db::test(seed)]
+async fn only_sales_reps_quotes_are_synced(pool: MySqlPool) {
+    let server = server(pool.clone());
+    signed_quote(&pool).await;
+    let res = server
+        .post("/v1/commissions/sync")
+        .with_session(sessions::ADMIN)
+        .await;
+    assert_eq!(res.json::<Value>()["synced"], 1);
+    // No longer a Sales Representative: the quote is skipped and its row goes.
+    sqlx::query("DELETE FROM users_positions WHERE user_id = 100 AND position_id = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = server
+        .post("/v1/commissions/sync")
+        .with_session(sessions::ADMIN)
+        .await;
+    assert_eq!(res.json::<Value>()["synced"], 0);
+    let rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM quote_commissions WHERE quote_id = 9701")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, 0);
 }
 
 async fn add_rule(server: &axum_test::TestServer, rule: Value) -> i64 {

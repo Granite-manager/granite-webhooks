@@ -38909,7 +38909,7 @@
           "commissions"
         ],
         "summary": "Sync commissions with QuickBooks",
-        "description": "Works out what every sold quote earns, whether its customer paid (the\nmatching `QuickBooks` invoice) and when it was installed. Commissions\nalready added to the salary are left alone; ones of quotes no longer sold\ngo (unless an admin set their amounts).",
+        "description": "Works out what every sales rep's sold quote earns, whether its customer\npaid (the matching `QuickBooks` invoice) and when it was installed.\n`QuickBooks` is asked for all the customers' invoices together, a few\nrequests in all. Commissions already added to the salary are left alone;\nones of quotes no longer sold, or of someone who is not a Sales\nRepresentative, go (unless an admin set their amounts).",
         "operationId": "sync_commissions",
         "responses": {
           "200": {
