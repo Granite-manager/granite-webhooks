@@ -71,6 +71,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_invoice, update_invoice))
         .routes(routes!(customer_invoice_pdf))
         .routes(routes!(invoice_pdf))
+        .routes(routes!(invoice_balance))
         .routes(routes!(customers))
         .routes(routes!(items))
         .routes(routes!(recent_invoices))
@@ -1068,6 +1069,83 @@ pub async fn customer_invoice_pdf_of(
     Ok(pdf_response(invoice_id, bytes).into_response())
 }
 
+/// A valid invoice id; installers only for an invoice linked to one of their
+/// jobs.
+async fn crew_may_open(state: &AppState, user: &SessionUser, invoice_id: &str) -> ApiResult<()> {
+    if !valid_id(invoice_id) {
+        return Err(ApiError::BadRequest("Invalid invoice".into()));
+    }
+    if installer_only(state, user).await? {
+        let linked: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM event_qbo_invoices i
+               JOIN events e ON e.id = i.event_id
+              WHERE i.company_id = ? AND i.qbo_invoice_id = ?
+                AND e.assigned_user_id = ? AND e.deleted_date IS NULL
+              LIMIT 1",
+        )
+        .bind(user.company_id)
+        .bind(invoice_id)
+        .bind(user.id)
+        .fetch_optional(&state.pool)
+        .await?;
+        if linked.is_none() {
+            return Err(ApiError::Denied(
+                "This invoice is not linked to one of your jobs.".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `GET /v1/qbo/invoices/{invoice_id}/balance`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InvoiceBalance {
+    /// What the customer still owes on it.
+    pub balance: Option<f64>,
+    /// The invoice's total.
+    pub total: Option<f64>,
+}
+
+/// What the customer still owes on a QuickBooks invoice
+///
+/// For the crew's job page: after Complete job it shows the amount to
+/// collect. Installers only for an invoice linked to one of their jobs.
+#[crate::openapi::path(
+    get,
+    path = "/v1/qbo/invoices/{invoice_id}/balance",
+    operation_id = "get_qbo_invoice_balance",
+    tag = "quickbooks",
+    params(("invoice_id" = String, Path, description = "QuickBooks invoice id")),
+    responses(
+        (status = 200, description = "The balance", body = InvoiceBalance),
+        (status = 400, description = "Invalid invoice id", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Not linked to one of the installer's jobs", body = ErrorBody),
+        (status = 409, description = "QuickBooks is not connected", body = ErrorBody),
+        (status = 502, description = "QuickBooks failed", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn invoice_balance(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    Path(invoice_id): Path<String>,
+) -> ApiResult<Json<InvoiceBalance>> {
+    crew_may_open(&state, &user, &invoice_id).await?;
+    let access = state
+        .qbo
+        .access(&state.pool, user.company_id)
+        .await
+        .map_err(qbo_error)?;
+    let raw = fetch_invoice(&state, &access, &invoice_id)
+        .await
+        .map_err(qbo_error)?;
+    Ok(Json(InvoiceBalance {
+        balance: raw["Balance"].as_f64(),
+        total: raw["TotalAmt"].as_f64(),
+    }))
+}
+
 /// Get a QuickBooks invoice as a PDF
 ///
 /// Any invoice of the company's `QuickBooks`, for the rep's sales panel and
@@ -1093,28 +1171,7 @@ pub async fn invoice_pdf(
     EmployeeUser(user): EmployeeUser,
     Path(invoice_id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    if !valid_id(&invoice_id) {
-        return Err(ApiError::BadRequest("Invalid invoice".into()));
-    }
-    if installer_only(&state, &user).await? {
-        let linked: Option<i32> = sqlx::query_scalar(
-            "SELECT 1 FROM event_qbo_invoices i
-               JOIN events e ON e.id = i.event_id
-              WHERE i.company_id = ? AND i.qbo_invoice_id = ?
-                AND e.assigned_user_id = ? AND e.deleted_date IS NULL
-              LIMIT 1",
-        )
-        .bind(user.company_id)
-        .bind(&invoice_id)
-        .bind(user.id)
-        .fetch_optional(&state.pool)
-        .await?;
-        if linked.is_none() {
-            return Err(ApiError::Denied(
-                "This invoice is not linked to one of your jobs.".into(),
-            ));
-        }
-    }
+    crew_may_open(&state, &user, &invoice_id).await?;
     let access = state
         .qbo
         .access(&state.pool, user.company_id)
