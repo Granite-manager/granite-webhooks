@@ -49,6 +49,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(save_quote_invoice_sync))
         .routes(routes!(save_auto_project))
         .routes(routes!(save_auto_sales_order))
+        .routes(routes!(save_quote_link_signing))
         .routes(routes!(email_api_token))
         .routes(routes!(
             quickbooks_status,
@@ -700,6 +701,58 @@ pub async fn save_auto_sales_order(
         return Err(ApiError::NotFound);
     }
     sqlx::query("UPDATE company SET auto_sales_order = ? WHERE id = ?")
+        .bind(input.enabled)
+        .bind(company_id)
+        .execute(&state.pool)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Body of `PUT /v1/company/quote-link-signing`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QuoteLinkSigningInput {
+    /// On: the customer's quote link shows Accept & Sign.
+    pub enabled: bool,
+}
+
+/// Switch signing on the customer's quote link
+///
+/// Admin › Quotes › Automation "Sign on the quote link". When on, the
+/// customer's quote link lets them pick an option and sign
+/// (`POST /v1/public/quote-portal/{token}/acceptance`); off, the link only
+/// shows the quote (`quote_link_signing` in `GET /v1/company/features`).
+#[crate::openapi::path(
+    put,
+    path = "/v1/company/quote-link-signing",
+    operation_id = "save_company_quote_link_signing",
+    tag = "company",
+    params(TargetCompany),
+    request_body = QuoteLinkSigningInput,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller does not manage the company", body = ErrorBody),
+        (status = 404, description = "No such company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn save_quote_link_signing(
+    State(state): State<AppState>,
+    UserManager(user): UserManager,
+    Query(query): Query<TargetCompany>,
+    JsonBody(input): JsonBody<QuoteLinkSigningInput>,
+) -> ApiResult<StatusCode> {
+    let company_id = target(&user, &query);
+    let exists: bool = sqlx::query_scalar("SELECT COUNT(*) > 0 FROM company WHERE id = ?")
+        .bind(company_id)
+        .fetch_one(&state.pool)
+        .await?;
+    if !exists {
+        return Err(ApiError::NotFound);
+    }
+    sqlx::query("UPDATE company SET quote_link_signing = ? WHERE id = ?")
         .bind(input.enabled)
         .bind(company_id)
         .execute(&state.pool)

@@ -37485,7 +37485,7 @@
           "quotes"
         ],
         "summary": "Accept and sign a quote",
-        "description": "Records the option and the signature and sets the quote's status to\n`accepted`; it does not mark the quote sold or win its deal (staff do\nthat). The quote's sales rep (else its creator) is then emailed the\ncustomer, the option, each area's material, color and edges, and the\ntotal, and notified in the app when the quote has a deal; the customer is\nemailed their own copy with a link back to the quote. Refused once signed,\nfor an option with a sold-out color, or when the link is switched off.",
+        "description": "Records the option and the signature and sets the quote's status to\n`accepted`; it does not mark the quote sold or win its deal (staff do\nthat). The quote's sales rep (else its creator) is then emailed the\ncustomer, the option, each area's material, color and edges, and the\ntotal, and notified in the app when the quote has a deal; the customer is\nemailed their own copy with a link back to the quote. Refused once signed,\nfor an option with a sold-out color, when the link is switched off, or\nwhen the company has \"Sign on the quote link\" off.",
         "operationId": "accept_quote_portal",
         "parameters": [
           {
@@ -37533,7 +37533,7 @@
             }
           },
           "409": {
-            "description": "Already signed, or the link is off",
+            "description": "Already signed, the link is off, or signing on the link is off",
             "content": {
               "application/json": {
                 "schema": {
@@ -59698,6 +59698,88 @@
         ]
       }
     },
+    "/v1/company/quote-link-signing": {
+      "put": {
+        "tags": [
+          "company"
+        ],
+        "summary": "Switch signing on the customer's quote link",
+        "description": "Admin › Quotes › Automation \"Sign on the quote link\". When on, the\ncustomer's quote link lets them pick an option and sign\n(`POST /v1/public/quote-portal/{token}/acceptance`); off, the link only\nshows the quote (`quote_link_signing` in `GET /v1/company/features`).",
+        "operationId": "save_company_quote_link_signing",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "query",
+            "description": "Superusers only: the company to act on (default: the caller's).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteLinkSigningInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not manage the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/company/api-token-email": {
       "post": {
         "tags": [
@@ -81040,6 +81122,7 @@
           "quote_invoice_sync",
           "auto_project",
           "auto_sales_order",
+          "quote_link_signing",
           "sale_event_templates"
         ],
         "properties": {
@@ -81114,6 +81197,10 @@
           "auto_sales_order": {
             "type": "boolean",
             "description": "Marking a quote sold makes its sales order for the Inventory Manager\n(Admin › Quotes › Automation \"Sales order on a sale\",\n`PUT /v1/company/auto-sales-order`)."
+          },
+          "quote_link_signing": {
+            "type": "boolean",
+            "description": "The customer's quote link shows Accept & Sign (Admin › Quotes ›\nAutomation \"Sign on the quote link\",\n`PUT /v1/company/quote-link-signing`)."
           },
           "sale_event_templates": {
             "type": "boolean",
@@ -100514,7 +100601,8 @@
           "doc",
           "prices",
           "sold_out",
-          "stone_images"
+          "stone_images",
+          "signing"
         ],
         "properties": {
           "inactive": {
@@ -100570,6 +100658,10 @@
               "$ref": "#/components/schemas/StoneImage"
             },
             "description": "Photos of the quote's colors."
+          },
+          "signing": {
+            "type": "boolean",
+            "description": "The company lets customers accept and sign on the link (Admin ›\nQuotes › Automation \"Sign on the quote link\")."
           }
         }
       },
@@ -104632,6 +104724,20 @@
           "enabled": {
             "type": "boolean",
             "description": "On: a new invoice from a quote starts with \"Keep in sync with the\nquote\" ticked."
+          }
+        },
+        "additionalProperties": false
+      },
+      "QuoteLinkSigningInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/company/quote-link-signing`.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "On: the customer's quote link shows Accept & Sign."
           }
         },
         "additionalProperties": false
