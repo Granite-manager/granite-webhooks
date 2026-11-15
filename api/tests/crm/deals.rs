@@ -1527,3 +1527,119 @@ async fn negative_amounts_are_rejected_on_create_and_patch(pool: MySqlPool) {
         .await
         .assert_status(StatusCode::NO_CONTENT);
 }
+
+#[test_db::test(seed)]
+async fn automatic_activities_follow_list_moves(pool: MySqlPool) {
+    // Deal 8600 (Dina's) sits in 'New' (100); a rule adds "Check the quote"
+    // when it moves from there to 'Quoted' (101).
+    sqlx::query("INSERT INTO deal_stage_history (deal_id, list_id) VALUES (8600, 100)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = server(pool.clone());
+    app.get("/v1/deal-stage-activity-rules")
+        .with_session(sessions::DEALER)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    // Lists of two groups, or of another company, are refused.
+    for body in [
+        json!({ "from_list_id": 100, "to_list_id": 104, "activity_name": "x", "due_amount": 1, "due_unit": "hours" }),
+        json!({ "from_list_id": null, "to_list_id": 103, "activity_name": "x", "due_amount": 1, "due_unit": "hours" }),
+        json!({ "from_list_id": 100, "to_list_id": 101, "activity_name": " ", "due_amount": 1, "due_unit": "hours" }),
+        json!({ "from_list_id": 100, "to_list_id": 101, "activity_name": "x", "due_amount": 1, "due_unit": "weeks" }),
+    ] {
+        app.post("/v1/deal-stage-activity-rules")
+            .with_session(sessions::ADMIN)
+            .json(&body)
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+    }
+    let created = app
+        .post("/v1/deal-stage-activity-rules")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "from_list_id": 100, "to_list_id": 101, "activity_name": "Check the quote", "due_amount": 24, "due_unit": "hours" }))
+        .await;
+    created.assert_status(StatusCode::CREATED);
+    let rule = created.json::<Value>()["id"].as_i64().unwrap();
+    assert_eq!(
+        app.get("/v1/deal-stage-activity-rules")
+            .with_session(sessions::ADMIN)
+            .await
+            .json::<Value>(),
+        json!([{ "id": rule, "from_list_id": 100, "to_list_id": 101, "activity_name": "Check the quote",
+                 "due_amount": 24, "due_unit": "hours", "is_enabled": true }])
+    );
+
+    let move_to = |list: i64| {
+        let app = server(pool.clone());
+        async move {
+            app.patch("/v1/deals/8600")
+                .with_session(sessions::DEALER)
+                .json(&json!({ "list_id": list }))
+                .await
+                .assert_status(StatusCode::NO_CONTENT);
+        }
+    };
+    let added = format!(
+        "SELECT COUNT(*) FROM deal_activities WHERE deal_id = 8600 AND stage_rule_id = {rule}"
+    );
+    move_to(101).await;
+    assert_eq!(scalar_i64(&pool, &added).await, 1);
+    assert_eq!(
+        rows(&pool, &format!(
+            "SELECT name, created_by, CAST(TIMESTAMPDIFF(HOUR, NOW(), deadline) BETWEEN 18 AND 30 AS CHAR)
+               FROM deal_activities WHERE stage_rule_id = {rule}"
+        ))
+        .await,
+        vec![vec!["Check the quote", "Automatic", "1"]]
+    );
+    assert_eq!(
+        scalar_i64(&pool, "SELECT COUNT(*) FROM notifications WHERE deal_id = 8600 AND user_id = 107 AND notification_type = 'activity_deadline_reminder' AND message = 'Check the quote'").await,
+        1
+    );
+    let activities = get(&pool, "/v1/deals/8600/activities", sessions::DEALER).await;
+    let automatic: Vec<bool> = activities
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["is_automatic"].as_bool().unwrap())
+        .collect();
+    assert_eq!(automatic.iter().filter(|a| **a).count(), 1);
+
+    // Back and forth while it is open adds nothing; once done, it adds again.
+    move_to(100).await;
+    move_to(101).await;
+    assert_eq!(scalar_i64(&pool, &added).await, 1);
+    sqlx::query("UPDATE deal_activities SET is_completed = 1 WHERE stage_rule_id = ?")
+        .bind(rule)
+        .execute(&pool)
+        .await
+        .unwrap();
+    move_to(100).await;
+    move_to(101).await;
+    assert_eq!(scalar_i64(&pool, &added).await, 2);
+
+    // A rule turned off adds nothing.
+    app.put(&format!("/v1/deal-stage-activity-rules/{rule}"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "from_list_id": null, "to_list_id": 101, "activity_name": "Check the quote", "due_amount": 2, "due_unit": "days", "is_enabled": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    sqlx::query("UPDATE deal_activities SET is_completed = 1 WHERE stage_rule_id = ?")
+        .bind(rule)
+        .execute(&pool)
+        .await
+        .unwrap();
+    move_to(100).await;
+    move_to(101).await;
+    assert_eq!(scalar_i64(&pool, &added).await, 2);
+
+    app.delete(&format!("/v1/deal-stage-activity-rules/{rule}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    app.delete(&format!("/v1/deal-stage-activity-rules/{rule}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+}

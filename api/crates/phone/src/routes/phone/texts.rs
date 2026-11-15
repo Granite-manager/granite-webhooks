@@ -5,6 +5,7 @@
 
 use super::{bad_request, denied, rate_limited};
 use crate::auth::device::DeviceUser;
+use crate::auth::session::SessionUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::{JsonBody, MultiQuery};
 use crate::openapi::{IntoParams, ToSchema};
@@ -443,9 +444,18 @@ pub async fn send_text(
     device: DeviceUser,
     JsonBody(body): JsonBody<SendText>,
 ) -> ApiResult<Response> {
-    let user = &device.user;
+    send(&state, &device.user, body).await
+}
+
+/// `POST /v1/phone/texts`'s send, also the call screen's quick reply
+/// (`POST /v1/phone/calls/reply`): 201 with the stored text.
+pub(super) async fn send(
+    state: &AppState,
+    user: &SessionUser,
+    body: SendText,
+) -> ApiResult<Response> {
     let pool = &state.pool;
-    texting_on(&state, user.company_id).await?;
+    texting_on(state, user.company_id).await?;
     let lines = texts::my_lines(pool, user.company_id, user.id).await?;
     let line = lines
         .get(&body.our_number_id)
@@ -498,7 +508,7 @@ pub async fn send_text(
     if texting::is_opted_out(pool, user.company_id, &to).await? {
         return Err(ApiError::Conflict("opted_out".into()));
     }
-    if let Some(wait) = crate::routes::sms::send::send_slot_wait(&state, user.id) {
+    if let Some(wait) = crate::routes::sms::send::send_slot_wait(state, user.id) {
         return Ok(rate_limited(wait));
     }
     let sms = OutgoingSms {
@@ -512,7 +522,7 @@ pub async fn send_text(
         is_automated: false,
         idempotency_key: None,
     };
-    let ids = match texting::deliver(&state, &line, &sms).await {
+    let ids = match texting::deliver(state, &line, &sms).await {
         Ok(ids) => ids,
         Err(failure) if failure.error == "opted_out" => {
             return Err(ApiError::Conflict("opted_out".into()));

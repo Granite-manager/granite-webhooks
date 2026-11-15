@@ -672,6 +672,23 @@ async fn the_customer_accepts_and_signs(pool: MySqlPool) {
         .json::<Value>();
     assert_eq!(portal["sold_out"], json!([false]));
     assert_eq!(portal["prices"][0]["total"], 107.25);
+    // "Sign on the quote link" is off: the link only shows the quote.
+    assert_eq!(portal["signing"], false);
+    server
+        .post(&format!("/v1/public/quote-portal/{token}/acceptance"))
+        .json(&json!({ "option": 0, "signature": "data:image/png;base64,AAAA" }))
+        .await
+        .assert_status(StatusCode::CONFLICT);
+    // The company turns it on (Admin › Quotes › Automation).
+    sqlx::query("UPDATE company SET quote_link_signing = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let portal = server
+        .get(&format!("/v1/public/quote-portal/{token}"))
+        .await
+        .json::<Value>();
+    assert_eq!(portal["signing"], true);
 
     server
         .post(&format!("/v1/public/quote-portal/{token}/acceptance"))

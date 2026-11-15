@@ -9,7 +9,7 @@ use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::openapi::{IntoParams, ToSchema};
 use crate::openapi::{OpenApiRouter, routes};
 use crate::quote_pricing::pricing::price_quote;
-use crate::quote_pricing::{Quote, load_company_quotes, load_stock, pricing_with_stock};
+use crate::quote_pricing::{ManyPricings, Quote, load_company_quotes, load_stock};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Query, State};
@@ -170,13 +170,20 @@ pub async fn list_feature_sales(
     } else {
         Some(load_stock(&state.pool, user.company_id).await?)
     };
+    let mut pricings = match stock.as_ref() {
+        Some(stock) => {
+            let all: Vec<&Quote> = loaded.values().collect();
+            Some(ManyPricings::load(&state.pool, user.company_id, &all, stock).await?)
+        }
+        None => None,
+    };
     let mut rows = Vec::new();
     for sold in quotes {
-        let (Some(quote), Some(stock)) = (loaded.remove(&sold.id), stock.as_ref()) else {
+        let (Some(quote), Some(pricings)) = (loaded.remove(&sold.id), pricings.as_mut()) else {
             continue;
         };
         let doc = quote.doc();
-        let (price_list, _) = pricing_with_stock(&state.pool, &quote, stock).await?;
+        let price_list = pricings.price_list(&state.pool, &quote, &doc).await;
         let prices = price_quote(&doc, &price_list, quote.options());
         let accepted = usize::try_from(quote.customer_accepted_option_id.unwrap_or(0).max(0))
             .unwrap_or_default()

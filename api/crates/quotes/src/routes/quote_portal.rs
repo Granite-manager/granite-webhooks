@@ -39,6 +39,16 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(accept_quote))
 }
 
+/// The company's "Sign on the quote link" switch.
+async fn signing_on(pool: &MySqlPool, company_id: i32) -> ApiResult<bool> {
+    let on: Option<bool> =
+        sqlx::query_scalar("SELECT quote_link_signing <> 0 FROM company WHERE id = ?")
+            .bind(company_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(on.unwrap_or(false))
+}
+
 async fn by_token(pool: &MySqlPool, token: &str) -> ApiResult<QuoteRow> {
     if token.trim().is_empty() {
         return Err(ApiError::NotFound);
@@ -131,6 +141,9 @@ pub struct PortalQuote {
     pub form_view: Option<Value>,
     /// Photos of the quote's colors.
     pub stone_images: Vec<StoneImage>,
+    /// The company lets customers accept and sign on the link (Admin ›
+    /// Quotes › Automation "Sign on the quote link").
+    pub signing: bool,
 }
 
 /// `loadQuoteFormData`: what a printed form shows for the quote.
@@ -213,6 +226,7 @@ pub async fn portal_quote(
             sold_out: Vec::new(),
             form_view: None,
             stone_images: Vec::new(),
+            signing: false,
         }));
     }
     // An emailed link counts as a view.
@@ -345,6 +359,7 @@ pub async fn portal_quote(
         prices,
         sold_out,
         form_view,
+        signing: signing_on(&state.pool, row.company_id).await?,
     }))
 }
 
@@ -369,7 +384,8 @@ pub struct Acceptance {
 /// customer, the option, each area's material, color and edges, and the
 /// total, and notified in the app when the quote has a deal; the customer is
 /// emailed their own copy with a link back to the quote. Refused once signed,
-/// for an option with a sold-out color, or when the link is switched off.
+/// for an option with a sold-out color, when the link is switched off, or
+/// when the company has "Sign on the quote link" off.
 #[crate::openapi::path(
     post,
     path = "/v1/public/quote-portal/{token}/acceptance",
@@ -381,7 +397,7 @@ pub struct Acceptance {
         (status = 204, description = "Signed"),
         (status = 400, description = "No such option, no signature, or a sold-out color", body = ErrorBody),
         (status = 404, description = "No such quote", body = ErrorBody),
-        (status = 409, description = "Already signed, or the link is off", body = ErrorBody),
+        (status = 409, description = "Already signed, the link is off, or signing on the link is off", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     )
 )]
@@ -402,6 +418,11 @@ pub async fn accept_quote(
     }
     if row.signed_at.is_some() {
         return Err(ApiError::Conflict("This quote is already signed.".into()));
+    }
+    if !signing_on(&state.pool, row.company_id).await? {
+        return Err(ApiError::Conflict(
+            "This quote can't be signed online. Please contact us to accept it.".into(),
+        ));
     }
     let quote = load_company_quote(&state.pool, row.id, row.company_id)
         .await?

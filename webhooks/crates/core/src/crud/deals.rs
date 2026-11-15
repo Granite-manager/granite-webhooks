@@ -137,6 +137,16 @@ async fn apply_deal_list_move(
     .execute(pool)
     .await?;
 
+    // Admin › Deals › Automatic Activities.
+    let mut conn = pool.acquire().await?;
+    common::crud::deal_stage_activities::add_for_move(
+        &mut conn,
+        i64::try_from(deal.id).unwrap_or_default(),
+        deal.list_id,
+        next_list.id,
+    )
+    .await?;
+
     Ok(())
 }
 

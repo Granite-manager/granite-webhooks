@@ -148,11 +148,27 @@ pub fn company_scope(alias: &str, company_id: i32) -> Sql {
     )
 }
 
+/// `{alias}` has a to/cc participant row of the user (binds: their id, then
+/// their address). Two lookups, each on its own index
+/// (`idx_email_participants_user_type`, `idx_email_participants_email`): one
+/// `user_id = ? OR email = ?` subquery read the whole table each time.
+fn to_or_cc(alias: &str) -> String {
+    format!(
+        "({alias}.id IN (
+          SELECT /*+ SUBQUERY(MATERIALIZATION) */ ep.email_id FROM email_participants ep
+          WHERE ep.user_id = ? AND ep.type IN ('to', 'cc'))
+        OR {alias}.id IN (
+          SELECT /*+ SUBQUERY(MATERIALIZATION) */ ep.email_id FROM email_participants ep
+          WHERE ep.email = ? AND ep.type IN ('to', 'cc')))"
+    )
+}
+
 /// The inbox addressee test (list, trash): the receiver columns or a to/cc
 /// participant row of this user. `receiver_user_id` covers BCC'd copies, whose
 /// headers never name the user.
 pub fn receiver_condition(alias: &str, mailbox: &Mailbox) -> Sql {
     let receiver = normalized(&format!("{alias}.receiver_email"));
+    let to_or_cc = to_or_cc(alias);
     Sql::new(
         format!(
             "(
@@ -160,10 +176,7 @@ pub fn receiver_condition(alias: &str, mailbox: &Mailbox) -> Sql {
       OR {receiver} = ?
       OR ({alias}.receiver_email NOT LIKE '%<%' AND LOWER(TRIM({alias}.receiver_email)) = ?)
       OR {alias}.receiver_email LIKE ?
-      OR {alias}.id IN (
-        SELECT /*+ SUBQUERY(MATERIALIZATION) */ ep.email_id FROM email_participants ep
-        WHERE ep.type IN ('to', 'cc') AND (ep.user_id = ? OR ep.email = ?)
-      )
+      OR {to_or_cc}
     )"
         ),
         vec![
@@ -218,6 +231,7 @@ pub fn sender_condition(alias: &str, mailbox: &Mailbox) -> Sql {
 
 fn addressed_to_user(alias: &str, mailbox: &Mailbox) -> Sql {
     let receiver = normalized(&format!("{alias}.receiver_email"));
+    let to_or_cc = to_or_cc(alias);
     Sql::new(
         format!(
             "(
@@ -225,10 +239,7 @@ fn addressed_to_user(alias: &str, mailbox: &Mailbox) -> Sql {
     OR {receiver} = ?
     OR ({alias}.receiver_email NOT LIKE '%<%' AND LOWER(TRIM({alias}.receiver_email)) = ?)
     OR {alias}.receiver_email LIKE ?
-    OR {alias}.id IN (
-      SELECT /*+ SUBQUERY(MATERIALIZATION) */ ep.email_id FROM email_participants ep
-      WHERE ep.type IN ('to', 'cc') AND (ep.user_id = ? OR ep.email = ?)
-    )
+    OR {to_or_cc}
   )"
         ),
         vec![
@@ -247,6 +258,7 @@ fn addressed_to_user(alias: &str, mailbox: &Mailbox) -> Sql {
 /// `LEFT JOIN deals d`.
 pub fn unread_incoming(alias: &str, mailbox: &Mailbox) -> Sql {
     let receiver = normalized(&format!("{alias}.receiver_email"));
+    let to_or_cc = to_or_cc(alias);
     let addressed = addressed_to_user(alias, mailbox);
     let mut args: Vec<Arg> = vec![
         mailbox.user_id.into(),
@@ -270,10 +282,7 @@ pub fn unread_incoming(alias: &str, mailbox: &Mailbox) -> Sql {
           OR {receiver} = ?
           OR ({alias}.receiver_email NOT LIKE '%<%' AND LOWER(TRIM({alias}.receiver_email)) = ?)
           OR {alias}.receiver_email LIKE ?
-          OR {alias}.id IN (
-            SELECT /*+ SUBQUERY(MATERIALIZATION) */ ep.email_id FROM email_participants ep
-            WHERE ep.type IN ('to', 'cc') AND (ep.user_id = ? OR ep.email = ?)
-          )
+          OR {to_or_cc}
         )
       )
       OR (

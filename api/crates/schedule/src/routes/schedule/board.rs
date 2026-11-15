@@ -96,8 +96,17 @@ pub struct ScheduleEvent {
     /// Null when that user has no name.
     #[sqlx(default)]
     pub created_user_name: Option<String>,
+    /// That user's picture (`PUT /v1/me/photo`); null when they have none.
+    #[sqlx(default)]
+    pub created_user_photo_url: Option<String>,
     /// The installer or template maker on it.
     pub assigned_user_id: Option<i32>,
+    /// The assignee's name; null when no one is assigned or they have no name.
+    #[sqlx(default)]
+    pub assigned_user_name: Option<String>,
+    /// The assignee's picture (`PUT /v1/me/photo`); null when they have none.
+    #[sqlx(default)]
+    pub assigned_user_photo_url: Option<String>,
     /// Its sale.
     pub sale_id: Option<i32>,
     /// The customer it is for.
@@ -253,6 +262,9 @@ async fn load_events(
                 NULLIF(TRIM(e.recurrence_exdates), '') AS recurrence_exdates,
                 e.created_user_id, e.assigned_user_id, e.sale_id, e.customer_id,
                 c.name AS customer_name, u.name AS created_user_name,
+                NULLIF(TRIM(u.photo_url), '') AS created_user_photo_url,
+                au.name AS assigned_user_name,
+                NULLIF(TRIM(au.photo_url), '') AS assigned_user_photo_url,
                 e.quote_id IS NOT NULL AS automated, e.urgent <> 0 AS urgent,
                 e.contact_phone, e.contact_email, e.contact_phone_2, e.contact_email_2, e.crew_status,
                 DATE_FORMAT(e.on_my_way_at, '%Y-%m-%dT%H:%i:%sZ') AS on_my_way_at,
@@ -263,6 +275,7 @@ async fn load_events(
                 e.quote_id
            FROM events e
            JOIN users u ON e.created_user_id = u.id
+           LEFT JOIN users au ON au.id = e.assigned_user_id
            LEFT JOIN customers c
              ON c.id = e.customer_id AND c.company_id = u.company_id AND c.deleted_at IS NULL
           WHERE u.company_id = ? AND e.deleted_date IS NULL AND e.unscheduled = 0
@@ -376,10 +389,14 @@ pub async fn unscheduled(
                 e.calendar_id, NULL AS rrule, NULL AS recurrence_until,
                 e.created_user_id, e.assigned_user_id, e.sale_id, e.customer_id,
                 c.name AS customer_name, u.name AS created_user_name,
+                NULLIF(TRIM(u.photo_url), '') AS created_user_photo_url,
+                au.name AS assigned_user_name,
+                NULLIF(TRIM(au.photo_url), '') AS assigned_user_photo_url,
                 e.quote_id IS NOT NULL AS automated, e.urgent <> 0 AS urgent,
                 e.contact_phone, e.contact_email, e.contact_phone_2, e.contact_email_2
            FROM events e
            JOIN users u ON e.created_user_id = u.id
+           LEFT JOIN users au ON au.id = e.assigned_user_id
            LEFT JOIN customers c
              ON c.id = e.customer_id AND c.company_id = u.company_id AND c.deleted_at IS NULL
           WHERE u.company_id = ? AND e.deleted_date IS NULL AND e.unscheduled = 1

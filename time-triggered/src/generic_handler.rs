@@ -344,6 +344,13 @@ async fn start_raptor_jobs() {
     start_api_job("raptor-jobs", "Raptor jobs").await;
 }
 
+/// Starts the daily company data exports without waiting for them: an
+/// export zips the company's tables and files, which outlasts a tick's wait.
+/// The API sends each company's export once a day from its hour.
+async fn start_company_exports_job() {
+    start_api_job("company-exports", "company data exports").await;
+}
+
 async fn start_promises_job() {
     start_api_job("promises", "AI promises").await;
 }
@@ -553,6 +560,7 @@ pub(crate) async fn function_handler(
     start_tendlc_checks_job().await;
     start_promises_job().await;
     start_raptor_jobs().await;
+    start_company_exports_job().await;
     let call_points_count = match report_job("call-points", process_call_points().await).await {
         Ok(count) => count,
         Err(error) => {

@@ -68,12 +68,15 @@ impl CrewStatus {
 pub enum CrewButton {
     OnMyWay,
     Completed,
+    /// After Complete job: the customer paid the crew (owner, 2026-11-14).
+    /// Sets `paid_at`; the status stays `completed`.
+    Paid,
 }
 
 /// Body of `POST /v1/events/{id}/crew-status`.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CrewStatusInput {
-    /// `on_my_way` (today's jobs) or `completed`.
+    /// `on_my_way` (today's jobs), `completed`, or `paid` (a completed job).
     pub status: CrewButton,
 }
 
@@ -339,6 +342,33 @@ pub async fn set_status(
     let (first, last) = job.days();
     let by = user.name.as_deref();
     match input.status {
+        CrewButton::Paid => {
+            if job.status() != Some(CrewStatus::Completed) {
+                return Err(bad("Complete the job first"));
+            }
+            let marked = sqlx::query(
+                "UPDATE events SET paid_at = UTC_TIMESTAMP(), paid_by_user_id = ?
+                  WHERE id = ? AND paid_at IS NULL",
+            )
+            .bind(user.id)
+            .bind(id)
+            .execute(pool)
+            .await?
+            .rows_affected()
+                == 1;
+            if marked {
+                record(
+                    pool,
+                    &History::new(id, user.company_id, "updated", by).message("Customer paid"),
+                )
+                .await;
+            }
+            Ok(Json(CrewStatusSaved {
+                status: CrewStatus::Completed,
+                customer_told: None,
+                message_error: None,
+            }))
+        }
         CrewButton::Completed => {
             if today < first {
                 return Err(bad("The job has not started yet"));

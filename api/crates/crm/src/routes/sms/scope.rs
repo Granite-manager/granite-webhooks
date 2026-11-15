@@ -595,18 +595,26 @@ async fn my_number_threads(
     if lines.is_empty() {
         return Ok(Vec::new());
     }
-    // idx_sms_inbound_recipient (company_id, direction, recipient10, ...) and
-    // idx_sms_sender10 (company_id, sender10).
-    let (on_lines, line_params) = on_lines(lines);
+    // Two halves, each on its own index: idx_sms_inbound_recipient
+    // (company_id, direction, recipient10, ...) and idx_sms_sender10
+    // (company_id, sender10). One query ORing them read the thread index
+    // instead, about twice as long.
+    let table = provider.sms_table();
+    let marks = marks(lines.len());
     let mut params: Vec<Param> = vec![company_id.into()];
-    params.extend(line_params);
+    params.extend(lines.iter().map(Param::from));
+    params.push(company_id.into());
+    params.extend(lines.iter().map(Param::from));
     let rows: Vec<(String,)> = super::provider::fetch_all(
         pool,
         format!(
-            "SELECT DISTINCT s.phone_digits FROM {} s
-              WHERE s.company_id = ? AND {on_lines}
-                AND s.is_echo = 0 AND s.phone_digits IS NOT NULL",
-            provider.sms_table()
+            "SELECT s.phone_digits FROM {table} s
+              WHERE s.company_id = ? AND s.direction = 'inbound' AND s.recipient10 IN ({marks})
+                AND s.is_echo = 0 AND s.phone_digits IS NOT NULL
+             UNION
+             SELECT s.phone_digits FROM {table} s
+              WHERE s.company_id = ? AND s.direction = 'outbound' AND s.sender10 IN ({marks})
+                AND s.is_echo = 0 AND s.phone_digits IS NOT NULL"
         ),
         &params,
     )

@@ -974,3 +974,82 @@ pub async fn decline_call(
     }
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// Body of `POST /v1/phone/calls/reply`.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CallReplyInput {
+    /// The call id of Telnyx's incoming-call push (as for
+    /// `POST /v1/phone/calls/decline`).
+    pub telnyx_call_id: String,
+    /// The text to send the caller, up to 1600 characters ("I'll call you
+    /// back.").
+    pub text: String,
+}
+
+/// Text the caller of an incoming call
+///
+/// The call screen's quick replies: after the user declined a ringing call
+/// on this phone with a message, the message goes to the caller as a text
+/// from the line they called (the call's number), as `POST /v1/phone/texts`
+/// sends it, and shows in the Texts tab's thread. Returns 201 with the stored
+/// text. 404 when the call did not ring this phone or has
+/// no caller number or line; 403 `texting_disabled` or `not_my_line` (the
+/// called line is not one the user texts from), 409 `opted_out`, 429
+/// `rate_limited`, 502 when Telnyx failed. Device token only.
+#[crate::openapi::path(
+    post,
+    path = "/v1/phone/calls/reply",
+    operation_id = "reply_to_phone_call",
+    tag = "phone",
+    request_body = CallReplyInput,
+    responses(
+        (status = 201, description = "Sent", body = crate::phone::texts::TextMessage),
+        (status = 400, description = "Empty id, `empty_message` or `text_too_long`", body = ErrorBody),
+        (status = 401, description = "No valid device token", body = ErrorBody),
+        (status = 403, description = "`texting_disabled` or `not_my_line`", body = ErrorBody),
+        (status = 404, description = "Not a call that rang this phone, or no caller number or line", body = ErrorBody),
+        (status = 409, description = "`opted_out`: the person texted STOP", body = ErrorBody),
+        (status = 429, description = "`rate_limited`", body = RateLimited),
+        (status = 502, description = "Telnyx failed", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("device_token" = []))
+)]
+pub async fn reply_to_call(
+    State(state): State<AppState>,
+    device: DeviceUser,
+    JsonBody(input): JsonBody<CallReplyInput>,
+) -> ApiResult<Response> {
+    let telnyx_call_id = input.telnyx_call_id.trim();
+    if telnyx_call_id.is_empty() {
+        return Err(ApiError::BadRequest("telnyxCallId is required".into()));
+    }
+    let not_found = || ApiError::NotFound;
+    let device_id = device.device_id.ok_or_else(not_found)?;
+    let user = &device.user;
+    let call: Option<(Option<i32>, String)> = sqlx::query_as(
+        "SELECT pc.number_id, pc.other_number
+           FROM phone_call_legs l JOIN phone_calls pc ON pc.id = l.call_id
+          WHERE l.leg_call_sid = ? AND l.device_id = ? AND pc.company_id = ?
+            AND pc.direction = 'inbound'",
+    )
+    .bind(telnyx_call_id)
+    .bind(device_id)
+    .bind(user.company_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (Some(number_id), other_number) = call.ok_or_else(not_found)? else {
+        return Err(not_found());
+    };
+    if other_number.trim().is_empty() {
+        return Err(not_found());
+    }
+    let body = super::texts::SendText {
+        our_number_id: number_id,
+        to: other_number,
+        text: input.text,
+        attachments: Vec::new(),
+    };
+    super::texts::send(&state, user, body).await
+}

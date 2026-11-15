@@ -186,13 +186,24 @@ fn panic_response(panic: Box<dyn std::any::Any + Send + 'static>) -> Response {
 }
 
 pub fn app(state: AppState) -> Router {
+    app_with_routes(state, openapi::router_and_spec_json())
+}
+
+/// [`app`] around routes built beforehand ([`openapi::router_and_spec_json`]):
+/// `main` builds them while the secrets load, since they need no state.
+pub fn app_with_routes(
+    state: AppState,
+    (routes, spec): (Router<AppState>, std::borrow::Cow<'static, str>),
+) -> Router {
     let cors = state.cors_layer();
-    let (routes, spec) = openapi::router_and_spec_json();
     let all_routes = Router::new()
         .route("/", get(health_check))
         .route(
             "/openapi.json",
-            get(move || async move { ([(CONTENT_TYPE, "application/json")], spec.to_string()) }),
+            get(move || {
+                let spec = spec.clone();
+                async move { ([(CONTENT_TYPE, "application/json")], spec) }
+            }),
         )
         .route(
             "/ingest/{*rest}",

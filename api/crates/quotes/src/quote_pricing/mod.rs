@@ -390,9 +390,169 @@ pub async fn pricing_with_stock(
             .await;
         taken
     };
-    let quoted: HashSet<String> = quote
-        .doc()
-        .color_options
+    Ok(with_quoted_choices(quote, &taken, latest))
+}
+
+/// [`pricing_with_stock`] for many quotes of one company, as
+/// `GET /v1/feature-sales` prices every sold quote.
+///
+/// The price snapshots are read in one query, and each price list (its current revision) and each
+/// revision is read, parsed and synced with the stock once instead of once
+/// per quote (three queries and the whole list parsed twice per quote took
+/// seconds for a company's sold quotes).
+pub struct ManyPricings<'a> {
+    stock: &'a Stock,
+    /// Parsed price snapshots by quote id.
+    snapshots: HashMap<i32, Value>,
+    /// Parsed current revisions by price list id (live lists only).
+    lists: HashMap<i32, Value>,
+    /// Parsed revisions by revision id.
+    revisions: HashMap<i32, Value>,
+    /// Lists and revisions synced with the stock: (is a list, id), or none
+    /// for the empty list.
+    priced: HashMap<Option<(bool, i32)>, Value>,
+}
+
+/// How many ids one `IN (...)` of [`ManyPricings::load`] takes.
+const MANY_PRICINGS_CHUNK: usize = 500;
+
+impl<'a> ManyPricings<'a> {
+    /// Reads what pricing `quotes` (all of `company_id`) needs.
+    pub async fn load(
+        pool: &MySqlPool,
+        company_id: i32,
+        quotes: &[&Quote],
+        stock: &'a Stock,
+    ) -> ApiResult<Self> {
+        let mut snapshots = HashMap::new();
+        let ids: Vec<i32> = quotes.iter().map(|q| q.id).collect();
+        for chunk in ids.chunks(MANY_PRICINGS_CHUNK) {
+            let mut query = sqlx::QueryBuilder::<sqlx::MySql>::new(
+                "SELECT id, CAST(price_snapshot_json AS CHAR) FROM quotes WHERE id IN (",
+            );
+            let mut list = query.separated(", ");
+            for id in chunk {
+                list.push_bind(*id);
+            }
+            query.push(")");
+            // As one quote's: a snapshot that cannot be read prices live.
+            let rows: Vec<(i32, Option<String>)> = query
+                .build_query_as()
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
+            snapshots.extend(rows.into_iter().filter_map(|(id, text)| {
+                Some(json_value(Some(&text?)))
+                    .filter(|v| js::truthy(Some(v)))
+                    .and_then(|v| price_list::parse(&v))
+                    .map(|v| (id, v))
+            }));
+        }
+        let list_ids: HashSet<i32> = quotes.iter().filter_map(|q| q.price_list_id).collect();
+        let mut lists = HashMap::new();
+        for chunk in list_ids.into_iter().collect::<Vec<_>>().chunks(MANY_PRICINGS_CHUNK) {
+            let mut query = sqlx::QueryBuilder::<sqlx::MySql>::new(
+                "SELECT pl.id, CAST(r.info_json AS CHAR) FROM price_lists pl
+                   LEFT JOIN price_list_revisions r ON r.id = pl.current_revision_id
+                  WHERE pl.company_id = ",
+            );
+            query.push_bind(company_id);
+            query.push(" AND pl.deleted_at IS NULL AND pl.id IN (");
+            let mut list = query.separated(", ");
+            for id in chunk {
+                list.push_bind(*id);
+            }
+            query.push(")");
+            let rows: Vec<(i32, Option<String>)> =
+                query.build_query_as().fetch_all(pool).await?;
+            lists.extend(rows.into_iter().filter_map(|(id, info)| {
+                price_list::parse(&json_value(info.as_deref())).map(|v| (id, v))
+            }));
+        }
+        let revision_ids: HashSet<i32> = quotes
+            .iter()
+            .filter_map(|q| q.price_list_revision_id)
+            .collect();
+        let mut revisions = HashMap::new();
+        for chunk in revision_ids.into_iter().collect::<Vec<_>>().chunks(MANY_PRICINGS_CHUNK) {
+            let mut query = sqlx::QueryBuilder::<sqlx::MySql>::new(
+                "SELECT r.id, CAST(r.info_json AS CHAR) FROM price_list_revisions r
+                   JOIN price_lists pl ON pl.id = r.price_list_id
+                  WHERE pl.company_id = ",
+            );
+            query.push_bind(company_id);
+            query.push(" AND r.id IN (");
+            let mut list = query.separated(", ");
+            for id in chunk {
+                list.push_bind(*id);
+            }
+            query.push(")");
+            let rows: Vec<(i32, Option<String>)> =
+                query.build_query_as().fetch_all(pool).await?;
+            revisions.extend(rows.into_iter().filter_map(|(id, info)| {
+                price_list::parse(&json_value(info.as_deref())).map(|v| (id, v))
+            }));
+        }
+        Ok(Self {
+            stock,
+            snapshots,
+            lists,
+            revisions,
+            priced: HashMap::new(),
+        })
+    }
+
+    /// Syncs the list or revision `key` names with the stock, once.
+    fn ensure_priced(&mut self, key: Option<(bool, i32)>) {
+        if self.priced.contains_key(&key) {
+            return;
+        }
+        let info = match key {
+            Some((true, id)) => self.lists.get(&id),
+            Some((false, id)) => self.revisions.get(&id),
+            None => None,
+        };
+        let empty = price_list::empty();
+        let value = price_list::sync_with_stock(info.unwrap_or(&empty), self.stock);
+        self.priced.insert(key, value);
+    }
+
+    /// The prices `quote` (one of the loaded ones, whose drawing is `doc`)
+    /// is priced with: the first half of what [`pricing_with_stock`] answers.
+    /// Nothing is copied but the result.
+    pub async fn price_list(&mut self, pool: &MySqlPool, quote: &Quote, doc: &QuoteDoc) -> Value {
+        let list_key = quote
+            .price_list_id
+            .filter(|id| self.lists.contains_key(id))
+            .map(|id| (true, id));
+        let revision_key = quote
+            .price_list_revision_id
+            .filter(|id| self.revisions.contains_key(id))
+            .map(|id| (false, id));
+        let latest_key = list_key.or(revision_key);
+        self.ensure_priced(latest_key);
+        if !self.snapshots.contains_key(&quote.id) {
+            self.ensure_priced(revision_key);
+            let taken = self.priced[&revision_key].clone();
+            // Before the snapshot migration quotes keep pricing live.
+            let _ = sqlx::query("UPDATE quotes SET price_snapshot_json = ? WHERE id = ?")
+                .bind(taken.to_string())
+                .bind(quote.id)
+                .execute(pool)
+                .await;
+            self.snapshots.insert(quote.id, taken);
+        }
+        price_list::with_live_choices(
+            &self.snapshots[&quote.id],
+            &self.priced[&latest_key],
+            &quoted_choices(doc),
+        )
+    }
+}
+
+/// The `material|color` keys of the colors a drawing quotes.
+fn quoted_choices(doc: &QuoteDoc) -> HashSet<String> {
+    doc.color_options
         .iter()
         .flat_map(|o| o.by_area.values())
         .map(|c| {
@@ -402,11 +562,16 @@ pub async fn pricing_with_stock(
                 price_list::key(&c.color)
             )
         })
-        .collect();
-    Ok((
-        price_list::with_live_choices(&taken, &latest, &quoted),
+        .collect()
+}
+
+/// The prices a quote shows: `taken` with today's choices of the products
+/// and colors it quotes (from `latest`), and `latest`.
+fn with_quoted_choices(quote: &Quote, taken: &Value, latest: Value) -> (Value, Value) {
+    (
+        price_list::with_live_choices(taken, &latest, &quoted_choices(&quote.doc())),
         latest,
-    ))
+    )
 }
 
 fn lower(text: &str) -> String {

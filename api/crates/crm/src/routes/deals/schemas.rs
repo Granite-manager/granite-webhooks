@@ -355,6 +355,8 @@ pub struct Activity {
     pub created_at: Option<DateTime<Utc>>,
     /// Name of the user who created it.
     pub created_by: Option<String>,
+    /// Added by a rule of Admin › Deals › Automatic Activities.
+    pub is_automatic: bool,
 }
 
 /// Body of `POST /v1/deals/{id}/activities`.

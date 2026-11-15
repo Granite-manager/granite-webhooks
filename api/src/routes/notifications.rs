@@ -68,6 +68,45 @@ async fn ringcentral_calls_cached(
     records
 }
 
+/// How long an agent's `CloudTalk` call log is reused between bell polls.
+/// Every open tab polls each minute, and reading the log is one or more
+/// requests to `CloudTalk` (about a quarter of a second each), which was most
+/// of the bell's time. Same as [`RINGCENTRAL_CALLS_TTL`].
+const CLOUDTALK_CALLS_TTL: Duration = Duration::from_secs(180);
+
+/// Call logs by company, agent and first day, with when they were read.
+type CloudTalkCalls = HashMap<(i32, String, String), (Instant, Arc<Vec<serde_json::Value>>)>;
+static CLOUDTALK_CALLS: LazyLock<Mutex<CloudTalkCalls>> = LazyLock::new(Mutex::default);
+
+/// The agent's `CloudTalk` calls since `from` (a day), read at most once per
+/// [`CLOUDTALK_CALLS_TTL`] by this instance. A failed read (no calls) is kept
+/// as well, so a company whose `CloudTalk` key stopped working does not wait
+/// on `CloudTalk` at every poll.
+async fn cloudtalk_calls_cached(
+    state: &AppState,
+    company_id: i32,
+    agent: &str,
+    from: &str,
+) -> Arc<Vec<serde_json::Value>> {
+    use crate::routes::users::call_activity::agent_calls;
+    let key = (company_id, agent.to_string(), from.to_string());
+    let cached = CLOUDTALK_CALLS.lock().ok().and_then(|cache| {
+        cache
+            .get(&key)
+            .filter(|(read_at, _)| read_at.elapsed() < CLOUDTALK_CALLS_TTL)
+            .map(|(_, items)| Arc::clone(items))
+    });
+    if let Some(items) = cached {
+        return items;
+    }
+    let items = Arc::new(agent_calls(state, company_id, agent, from).await);
+    if let Ok(mut cache) = CLOUDTALK_CALLS.lock() {
+        cache.retain(|_, (read_at, _)| read_at.elapsed() < CLOUDTALK_CALLS_TTL);
+        cache.insert(key, (Instant::now(), Arc::clone(&items)));
+    }
+    items
+}
+
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list))
@@ -841,7 +880,7 @@ async fn billing(state: &AppState, user_id: i32) -> Result<Vec<NotificationItem>
 /// `CloudTalk` line and `RingCentral` extension.
 async fn missed_calls(state: &AppState, user: &SessionUser) -> Vec<NotificationItem> {
     use crate::routes::users::call_activity::{
-        CallActivity, activity, agent_calls, name_customers, ringcentral_activity,
+        CallActivity, activity, name_customers, ringcentral_activity,
     };
     let present = |value: &Option<String>| {
         value
@@ -856,7 +895,7 @@ async fn missed_calls(state: &AppState, user: &SessionUser) -> Vec<NotificationI
             return Vec::new();
         };
         let from = since.format("%Y-%m-%d").to_string();
-        agent_calls(state, user.company_id, &agent, &from)
+        cloudtalk_calls_cached(state, user.company_id, &agent, &from)
             .await
             .iter()
             .map(|item| activity(item, user.id, ""))

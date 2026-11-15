@@ -19027,6 +19027,302 @@
         ]
       }
     },
+    "/v1/deal-stage-activity-rules": {
+      "get": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "List automatic activity rules",
+        "description": "Every rule of the company, oldest first.",
+        "operationId": "list_deal_stage_activity_rules",
+        "responses": {
+          "200": {
+            "description": "Rules",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ActivityRule"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "Add an automatic activity rule",
+        "operationId": "create_deal_stage_activity_rule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivityRuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedId"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing name, bad due time, unknown or mismatched lists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/deal-stage-activity-rules/{id}": {
+      "put": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "Change an automatic activity rule",
+        "description": "Replaces every field. Activities it already added stay.",
+        "operationId": "update_deal_stage_activity_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Rule id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivityRuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Changed"
+          },
+          "400": {
+            "description": "Missing name, bad due time, unknown or mismatched lists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such rule of the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "Delete an automatic activity rule",
+        "description": "Activities it already added stay.",
+        "operationId": "delete_deal_stage_activity_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Rule id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such rule of the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/projects": {
       "get": {
         "tags": [
@@ -38020,7 +38316,7 @@
           "quotes"
         ],
         "summary": "Accept and sign a quote",
-        "description": "Records the option and the signature and sets the quote's status to\n`accepted`; it does not mark the quote sold or win its deal (staff do\nthat). The quote's sales rep (else its creator) is then emailed the\ncustomer, the option, each area's material, color and edges, and the\ntotal, and notified in the app when the quote has a deal; the customer is\nemailed their own copy with a link back to the quote. Refused once signed,\nfor an option with a sold-out color, or when the link is switched off.",
+        "description": "Records the option and the signature and sets the quote's status to\n`accepted`; it does not mark the quote sold or win its deal (staff do\nthat). The quote's sales rep (else its creator) is then emailed the\ncustomer, the option, each area's material, color and edges, and the\ntotal, and notified in the app when the quote has a deal; the customer is\nemailed their own copy with a link back to the quote. Refused once signed,\nfor an option with a sold-out color, when the link is switched off, or\nwhen the company has \"Sign on the quote link\" off.",
         "operationId": "accept_quote_portal",
         "parameters": [
           {
@@ -38068,7 +38364,7 @@
             }
           },
           "409": {
-            "description": "Already signed, or the link is off",
+            "description": "Already signed, the link is off, or signing on the link is off",
             "content": {
               "application/json": {
                 "schema": {
@@ -41402,7 +41698,7 @@
           "shop"
         ],
         "summary": "Cut square feet per day",
-        "description": "Square feet of sold slabs whose room is fully cut, by the day each slab\nwas cut and by stone type, for the caller's company. A slab's square\nfeet are its `square_feet`, else length × width / 144. Rooms with any\nuncut slab are left out.",
+        "description": "Square feet of fully cut rooms, by the day the room's last slab was cut\nand by stone type, for the caller's company. A room counts once: the\nroom's square feet (every slab of a room carries the same `square_feet`),\nelse its slabs' length × width / 144 added up. Rooms with any uncut slab\nare left out.",
         "operationId": "get_shop_cut_stats",
         "parameters": [
           {
@@ -43295,7 +43591,7 @@
           "sales"
         ],
         "summary": "Record a cut piece",
-        "description": "Records the size of a piece cut from the slab (the\n`admin|shop.transactions.edit` `partial-cut` bookkeeping): it resizes the\nfirst piece with `replace_first`, else adds a piece copying the slab's\nsale details; unless `add_another`, the slab is then marked cut.",
+        "description": "Records the size of a piece cut from the slab (the\n`admin|shop.transactions.edit` `partial-cut` bookkeeping): it resizes the\nfirst piece with `replace_first`, else (or when the slab has no piece)\nadds a free piece of the slab's stone and bundle; unless `add_another`,\nthe slab is then marked cut. The sold slab keeps its own size.",
         "operationId": "partial_cut_sale_slab",
         "parameters": [
           {
@@ -54971,6 +55267,94 @@
         ]
       }
     },
+    "/v1/qbo/invoices/{invoice_id}/balance": {
+      "get": {
+        "tags": [
+          "quickbooks"
+        ],
+        "summary": "What the customer still owes on a QuickBooks invoice",
+        "description": "For the crew's job page: after Complete job it shows the amount to\ncollect. Installers only for an invoice linked to one of their jobs.",
+        "operationId": "get_qbo_invoice_balance",
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "description": "QuickBooks invoice id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The balance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvoiceBalance"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid invoice id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not linked to one of the installer's jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "QuickBooks is not connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "QuickBooks failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/qbo/customers": {
       "get": {
         "tags": [
@@ -56634,6 +57018,53 @@
           },
           "502": {
             "description": "RingCentral refused the request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "job_key": []
+          }
+        ]
+      }
+    },
+    "/v1/jobs/company-exports": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Send today's company data exports",
+        "description": "Called by the scheduler every minute. For each company with an export set\nup, once its local time reaches the export hour, builds that day's zip\n(every table's rows as CSV, new pictures and documents, all of them on\nMondays), stores it privately and emails the recipients a download link\nthat works 7 days; once per company and day. Failed exports are retried\nthree times, then an alert is emailed. Zips older than 7 days are deleted.",
+        "operationId": "run_company_exports",
+        "responses": {
+          "200": {
+            "description": "What was sent, retried, alerted and deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExportsRun"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong job key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
             "content": {
               "application/json": {
                 "schema": {
@@ -60041,6 +60472,88 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/AutoSalesOrderInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller does not manage the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/company/quote-link-signing": {
+      "put": {
+        "tags": [
+          "company"
+        ],
+        "summary": "Switch signing on the customer's quote link",
+        "description": "Admin › Quotes › Automation \"Sign on the quote link\". When on, the\ncustomer's quote link lets them pick an option and sign\n(`POST /v1/public/quote-portal/{token}/acceptance`); off, the link only\nshows the quote (`quote_link_signing` in `GET /v1/company/features`).",
+        "operationId": "save_company_quote_link_signing",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "query",
+            "description": "Superusers only: the company to act on (default: the caller's).",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuoteLinkSigningInput"
               }
             }
           },
@@ -66085,6 +66598,123 @@
           },
           "500": {
             "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/v1/phone/calls/reply": {
+      "post": {
+        "tags": [
+          "phone"
+        ],
+        "summary": "Text the caller of an incoming call",
+        "description": "The call screen's quick replies: after the user declined a ringing call\non this phone with a message, the message goes to the caller as a text\nfrom the line they called (the call's number), as `POST /v1/phone/texts`\nsends it, and shows in the Texts tab's thread. Returns 201 with the stored\ntext. 404 when the call did not ring this phone or has\nno caller number or line; 403 `texting_disabled` or `not_my_line` (the\ncalled line is not one the user texts from), 409 `opted_out`, 429\n`rate_limited`, 502 when Telnyx failed. Device token only.",
+        "operationId": "reply_to_phone_call",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallReplyInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TextMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty id, `empty_message` or `text_too_long`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid device token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`texting_disabled` or `not_my_line`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a call that rang this phone, or no caller number or line",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`opted_out`: the person texted STOP",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "`rate_limited`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Telnyx failed",
             "content": {
               "application/json": {
                 "schema": {
@@ -75318,6 +75948,13 @@
               "type": "string"
             },
             "description": "The Granite Manager numbers the user can call from (E.164); an admin\nassigns them on the Phone page."
+          },
+          "photo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "My picture (`PUT /v1/me/photo`); null when I have none."
           }
         }
       },
@@ -75735,7 +76372,8 @@
           "deal_id",
           "name",
           "priority",
-          "is_completed"
+          "is_completed",
+          "is_automatic"
         ],
         "properties": {
           "id": {
@@ -75789,6 +76427,10 @@
               "null"
             ],
             "description": "Name of the user who created it."
+          },
+          "is_automatic": {
+            "type": "boolean",
+            "description": "Added by a rule of Admin › Deals › Automatic Activities."
           }
         }
       },
@@ -76073,6 +76715,101 @@
             "description": "`CloudTalk` agent id."
           }
         }
+      },
+      "ActivityRule": {
+        "type": "object",
+        "description": "A rule, as the admin page shows it.",
+        "required": [
+          "id",
+          "to_list_id",
+          "activity_name",
+          "due_amount",
+          "due_unit",
+          "is_enabled"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Rule id."
+          },
+          "from_list_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The list the deal leaves; null: any list."
+          },
+          "to_list_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The list the deal lands on."
+          },
+          "activity_name": {
+            "type": "string",
+            "description": "Name of the activity it adds."
+          },
+          "due_amount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Due this many `due_unit` after the move."
+          },
+          "due_unit": {
+            "type": "string",
+            "description": "`hours` or `days`."
+          },
+          "is_enabled": {
+            "type": "boolean",
+            "description": "Off: adds nothing."
+          }
+        }
+      },
+      "ActivityRuleInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/deal-stage-activity-rules` and `PUT /v1/deal-stage-activity-rules/{id}`.",
+        "required": [
+          "to_list_id",
+          "activity_name",
+          "due_amount",
+          "due_unit"
+        ],
+        "properties": {
+          "from_list_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The list the deal leaves; null: any list."
+          },
+          "to_list_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The list the deal lands on (same pipeline as `from_list_id`)."
+          },
+          "activity_name": {
+            "type": "string",
+            "description": "Name of the activity, 1–255 characters."
+          },
+          "due_amount": {
+            "type": "integer",
+            "format": "int32",
+            "description": "0–999."
+          },
+          "due_unit": {
+            "type": "string",
+            "description": "`hours` or `days`."
+          },
+          "is_enabled": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Default on."
+          }
+        },
+        "additionalProperties": false
       },
       "ActivitySearchInput": {
         "type": "object",
@@ -79315,6 +80052,24 @@
           }
         }
       },
+      "CallReplyInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/phone/calls/reply`.",
+        "required": [
+          "telnyxCallId",
+          "text"
+        ],
+        "properties": {
+          "telnyxCallId": {
+            "type": "string",
+            "description": "The call id of Telnyx's incoming-call push (as for\n`POST /v1/phone/calls/decline`)."
+          },
+          "text": {
+            "type": "string",
+            "description": "The text to send the caller, up to 1600 characters (\"I'll call you\nback.\")."
+          }
+        }
+      },
       "CallRow": {
         "type": "object",
         "description": "One call, as Recents and the call details show it.",
@@ -81247,6 +82002,7 @@
           "quote_invoice_sync",
           "auto_project",
           "auto_sales_order",
+          "quote_link_signing",
           "sale_event_templates"
         ],
         "properties": {
@@ -81321,6 +82077,10 @@
           "auto_sales_order": {
             "type": "boolean",
             "description": "Marking a quote sold makes its sales order for the Inventory Manager\n(Admin › Quotes › Automation \"Sales order on a sale\",\n`PUT /v1/company/auto-sales-order`)."
+          },
+          "quote_link_signing": {
+            "type": "boolean",
+            "description": "The customer's quote link shows Accept & Sign (Admin › Quotes ›\nAutomation \"Sign on the quote link\",\n`PUT /v1/company/quote-link-signing`)."
           },
           "sale_event_templates": {
             "type": "boolean",
@@ -83395,7 +84155,8 @@
         "description": "What the crew taps.",
         "enum": [
           "on_my_way",
-          "completed"
+          "completed",
+          "paid"
         ]
       },
       "CrewPosition": {
@@ -83492,7 +84253,7 @@
         "properties": {
           "status": {
             "$ref": "#/components/schemas/CrewButton",
-            "description": "`on_my_way` (today's jobs) or `completed`."
+            "description": "`on_my_way` (today's jobs), `completed`, or `paid` (a completed job)."
           }
         }
       },
@@ -88745,6 +89506,44 @@
           }
         }
       },
+      "ExportsRun": {
+        "type": "object",
+        "description": "What one call did.",
+        "required": [
+          "processed",
+          "sent",
+          "failed",
+          "alerts",
+          "deleted"
+        ],
+        "properties": {
+          "processed": {
+            "type": "integer",
+            "description": "Exports sent (what the scheduler logs).",
+            "minimum": 0
+          },
+          "sent": {
+            "type": "integer",
+            "description": "Exports sent.",
+            "minimum": 0
+          },
+          "failed": {
+            "type": "integer",
+            "description": "Export attempts that failed (tried again a few minutes later).",
+            "minimum": 0
+          },
+          "alerts": {
+            "type": "integer",
+            "description": "Failure alerts sent.",
+            "minimum": 0
+          },
+          "deleted": {
+            "type": "integer",
+            "description": "Old zips deleted from storage.",
+            "minimum": 0
+          }
+        }
+      },
       "ExtensionReport": {
         "type": "object",
         "description": "The texts of one extension in the window.",
@@ -91960,6 +92759,28 @@
             ],
             "format": "date-time",
             "description": "When it was paid (ISO 8601), or null."
+          }
+        }
+      },
+      "InvoiceBalance": {
+        "type": "object",
+        "description": "`GET /v1/qbo/invoices/{invoice_id}/balance`.",
+        "properties": {
+          "balance": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "What the customer still owes on it."
+          },
+          "total": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The invoice's total."
           }
         }
       },
@@ -100999,7 +101820,8 @@
           "doc",
           "prices",
           "sold_out",
-          "stone_images"
+          "stone_images",
+          "signing"
         ],
         "properties": {
           "inactive": {
@@ -101055,6 +101877,10 @@
               "$ref": "#/components/schemas/StoneImage"
             },
             "description": "Photos of the quote's colors."
+          },
+          "signing": {
+            "type": "boolean",
+            "description": "The company lets customers accept and sign on the link (Admin ›\nQuotes › Automation \"Sign on the quote link\")."
           }
         }
       },
@@ -105121,6 +105947,20 @@
         },
         "additionalProperties": false
       },
+      "QuoteLinkSigningInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/company/quote-link-signing`.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "On: the customer's quote link shows Accept & Sign."
+          }
+        },
+        "additionalProperties": false
+      },
       "QuoteList": {
         "type": "object",
         "description": "`GET /v1/quotes`.",
@@ -108644,6 +109484,13 @@
             ],
             "description": "Name of the user who made it (the schedule shows it on the event).\nNull when that user has no name."
           },
+          "created_user_photo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That user's picture (`PUT /v1/me/photo`); null when they have none."
+          },
           "assigned_user_id": {
             "type": [
               "integer",
@@ -108651,6 +109498,20 @@
             ],
             "format": "int32",
             "description": "The installer or template maker on it."
+          },
+          "assigned_user_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The assignee's name; null when no one is assigned or they have no name."
+          },
+          "assigned_user_photo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The assignee's picture (`PUT /v1/me/photo`); null when they have none."
           },
           "sale_id": {
             "type": [
@@ -112682,6 +113543,7 @@
           "stones",
           "is_display",
           "regular_stock",
+          "on_sale",
           "installed",
           "slabs"
         ],
@@ -112721,6 +113583,10 @@
           "regular_stock": {
             "type": "boolean",
             "description": "Any of its stones is regular stock."
+          },
+          "on_sale": {
+            "type": "boolean",
+            "description": "Any of its stones is on sale."
           },
           "installed": {
             "type": "integer",

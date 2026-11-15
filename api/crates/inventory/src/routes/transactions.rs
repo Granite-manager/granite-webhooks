@@ -202,8 +202,8 @@ pub async fn list(
                 s.project_address, CAST({sf} AS DOUBLE) AS sf,
                 GROUP_CONCAT(DISTINCT CONCAT(si.bundle, ':', IF(si.cut_date IS NOT NULL, 'CUT', 'UNCUT'), ':',
                                              IF(si.deleted_at IS NOT NULL, 'DELETED', 'ACTIVE'))) AS bundle_with_cut,
-                CAST(MIN(CASE WHEN si.cut_date IS NULL THEN 0 ELSE 1 END) AS SIGNED) AS all_cut,
-                CAST(MAX(CASE WHEN si.cut_date IS NOT NULL THEN 1 ELSE 0 END) AS SIGNED) AS any_cut,
+                CAST(MIN(CASE WHEN si.deleted_at IS NOT NULL THEN NULL WHEN si.cut_date IS NULL THEN 0 ELSE 1 END) AS SIGNED) AS all_cut,
+                CAST(MAX(CASE WHEN si.deleted_at IS NULL AND si.cut_date IS NOT NULL THEN 1 ELSE 0 END) AS SIGNED) AS any_cut,
                 COUNT(si.id) AS total_slabs,
                 CAST(SUM(CASE WHEN si.cut_date IS NOT NULL THEN 1 ELSE 0 END) AS SIGNED) AS cut_slabs
            FROM sales s
