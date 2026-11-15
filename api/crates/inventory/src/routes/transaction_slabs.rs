@@ -501,8 +501,9 @@ pub struct PartialCut {
 ///
 /// Records the size of a piece cut from the slab (the
 /// `admin|shop.transactions.edit` `partial-cut` bookkeeping): it resizes the
-/// first piece with `replace_first`, else adds a piece copying the slab's
-/// sale details; unless `add_another`, the slab is then marked cut.
+/// first piece with `replace_first`, else (or when the slab has no piece)
+/// adds a free piece of the slab's stone and bundle; unless `add_another`,
+/// the slab is then marked cut. The sold slab keeps its own size.
 #[crate::openapi::path(
     post,
     path = "/v1/transactions/{id}/slabs/{slab_id}/partial-cut",
@@ -576,53 +577,36 @@ pub async fn partial_cut(
         }
         None => None,
     };
-    // The slab itself (on this sale) when nothing else fits.
-    let target = sold_child
-        .or(candidate)
-        .or(parent_in_sale)
-        .unwrap_or_else(|| slab.clone());
+    // A slab sold whole has no piece yet: its leftover becomes a new free
+    // piece, and the sold slab keeps its size.
+    let piece = sold_child.or(candidate).or(parent_in_sale);
+    let resizes_piece = input.replace_first && piece.is_some();
+    let target = piece.unwrap_or_else(|| slab.clone());
     let (length, width) = (input.length, input.width);
-    let resize = |slab: i64| {
+    if resizes_piece {
         sqlx::query("UPDATE slab_inventory SET length = ?, width = ? WHERE id = ?")
             .bind(length)
             .bind(width)
-            .bind(slab)
-    };
-    if input.replace_first {
-        resize(target.id).execute(&mut *tx).await?;
+            .bind(target.id)
+            .execute(&mut *tx)
+            .await?;
     } else {
         let parent_for_new = if target.sale_id.is_none() {
             target.parent_id.unwrap_or(target.id)
         } else {
             i64::from(slab_id)
         };
+        // A leftover is free stock: never on a sale, a room or uncut there.
         sqlx::query(
-            "INSERT INTO slab_inventory (stone_id, bundle, parent_id, sale_id, length, width, url, notes,
-                    price, square_feet, room, room_uuid, seam, backsplash, tear_out, stove,
-                    ten_year_sealer, waterfall, corbels, extras, edge)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO slab_inventory (stone_id, bundle, parent_id, length, width, url)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(target.stone_id)
         .bind(&target.bundle)
         .bind(parent_for_new)
-        .bind(target.sale_id)
         .bind(length)
         .bind(width)
         .bind(&target.url)
-        .bind(&target.notes)
-        .bind(&target.price)
-        .bind(&target.square_feet)
-        .bind(&target.room)
-        .bind(&target.room_uuid)
-        .bind(&target.seam)
-        .bind(&target.backsplash)
-        .bind(&target.tear_out)
-        .bind(&target.stove)
-        .bind(target.ten_year_sealer)
-        .bind(&target.waterfall)
-        .bind(target.corbels)
-        .bind(&target.extras)
-        .bind(&target.edge)
         .execute(&mut *tx)
         .await?;
     }

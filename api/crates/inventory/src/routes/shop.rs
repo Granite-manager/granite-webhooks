@@ -74,10 +74,11 @@ fn by_most(map: BTreeMap<String, f64>) -> Vec<MaterialSqft> {
 
 /// Cut square feet per day
 ///
-/// Square feet of sold slabs whose room is fully cut, by the day each slab
-/// was cut and by stone type, for the caller's company. A slab's square
-/// feet are its `square_feet`, else length × width / 144. Rooms with any
-/// uncut slab are left out.
+/// Square feet of fully cut rooms, by the day the room's last slab was cut
+/// and by stone type, for the caller's company. A room counts once: the
+/// room's square feet (every slab of a room carries the same `square_feet`),
+/// else its slabs' length × width / 144 added up. Rooms with any uncut slab
+/// are left out.
 #[crate::openapi::path(
     get,
     path = "/v1/shop/cut-stats",
@@ -106,17 +107,19 @@ pub async fn cut_stats(
         return Err(ApiError::BadRequest("start must not be after end".into()));
     }
     let rows: Vec<(NaiveDate, String, f64)> = sqlx::query_as(
-        "SELECT DATE(si.cut_date), COALESCE(st.type, 'Unknown'),
-                CAST(COALESCE(si.square_feet, (si.length * si.width) / 144, 0) AS DOUBLE)
+        "SELECT DATE(MAX(si.cut_date)), COALESCE(st.type, 'Unknown'),
+                CAST(COALESCE(MAX(si.square_feet), SUM((si.length * si.width) / 144), 0) AS DOUBLE)
            FROM slab_inventory si
            JOIN sales s ON si.sale_id = s.id
            JOIN stones st ON si.stone_id = st.id
           WHERE s.company_id = ? AND si.deleted_at IS NULL AND si.room IS NOT NULL
-            AND si.cut_date IS NOT NULL AND DATE(si.cut_date) BETWEEN ? AND ?
+            AND si.cut_date IS NOT NULL
             AND NOT EXISTS (
               SELECT 1 FROM slab_inventory si2
                WHERE si2.sale_id = si.sale_id AND si2.room = si.room
-                 AND si2.deleted_at IS NULL AND si2.cut_date IS NULL)",
+                 AND si2.deleted_at IS NULL AND si2.cut_date IS NULL)
+          GROUP BY si.sale_id, COALESCE(HEX(si.room_uuid), si.room), COALESCE(st.type, 'Unknown')
+         HAVING DATE(MAX(si.cut_date)) BETWEEN ? AND ?",
     )
     .bind(user.company_id)
     .bind(start)
