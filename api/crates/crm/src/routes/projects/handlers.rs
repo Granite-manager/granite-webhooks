@@ -487,6 +487,8 @@ pub async fn get(
     let process_steps = super::process::company_steps(&mut conn, company).await?;
     let done_steps = super::process::done_steps(&mut conn, &[id]).await?;
     let parts = super::parts::parts_of(&mut conn, company, &[id]).await?;
+    let customer_todos =
+        crate::routes::customer_todos::project_todos(&mut conn, company, id).await?;
     let part_types = super::parts::part_types(&mut conn, company).await?;
     Ok(Json(ProjectWorkspace {
         project,
@@ -495,6 +497,7 @@ pub async fn get(
         notes,
         files,
         job_photos,
+        customer_todos,
         issues,
         history,
         sales,

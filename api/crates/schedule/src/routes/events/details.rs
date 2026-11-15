@@ -136,6 +136,9 @@ pub struct EventDetails {
     /// Problems reported on the job (`POST /v1/events/{id}/issues`), oldest
     /// first, each with its pictures.
     pub issues: Vec<super::issues::EventIssue>,
+    /// What the customer must do before install, sent from this template
+    /// appointment (`POST /v1/events/{id}/customer-todos`).
+    pub customer_todos: crate::routes::customer_todos::EventCustomerTodos,
     /// History, oldest first.
     pub history: Vec<EventHistoryItem>,
     /// Who made the event. For an `automated` event, whoever sold the quote.
@@ -266,6 +269,8 @@ pub async fn details(
     .fetch_all(pool)
     .await?;
     let issues = super::issues::list(pool, user.company_id, id).await?;
+    let customer_todos =
+        crate::routes::customer_todos::event_todos(pool, user.company_id, id).await?;
     let photos = images
         .into_iter()
         .map(
@@ -296,6 +301,7 @@ pub async fn details(
         photos,
         attachments,
         issues,
+        customer_todos,
         history,
         creator: EventPerson {
             id: event.created_user_id,

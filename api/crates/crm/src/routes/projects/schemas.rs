@@ -554,6 +554,9 @@ pub struct ProjectWorkspace {
     pub files: Vec<ProjectFile>,
     /// The crew's job photos from its appointments, newest first.
     pub job_photos: Vec<ProjectJobPhoto>,
+    /// What the customer must do before install, from its template
+    /// appointments: open ones first. Tick one off with `PUT /v1/customer-todos/{id}`.
+    pub customer_todos: Vec<crate::routes::customer_todos::CustomerTodo>,
     /// The problems the crew reported on its jobs, newest first.
     pub issues: Vec<ProjectIssue>,
     /// What happened, newest first.

@@ -459,6 +459,7 @@ fn type_title(kind: &str) -> Option<&'static str> {
         "template_appointment_reminder" => "Template Appointment Reminder",
         "installation_completed" => "Installation Completed",
         "event_issue" => "Reported an Issue",
+        "customer_todos" => "Customer To-dos",
         SALES_ORDER => "Sales Order",
         "note_added" => "Added a Note",
         "note_edited" => "Edited a Note",

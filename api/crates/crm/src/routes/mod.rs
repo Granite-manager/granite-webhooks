@@ -4,6 +4,7 @@
 pub use api_core::routes::*;
 
 pub mod calls;
+pub mod customer_todos;
 pub mod customers;
 pub mod deals;
 pub mod emails;
