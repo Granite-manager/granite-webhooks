@@ -27,7 +27,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Days, NaiveDate, NaiveTime, Utc};
 use futures_util::{StreamExt, stream};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(open_portal))
         .routes(routes!(list_payments))
         .routes(routes!(set_subscription_price))
+        .routes(routes!(set_first_payment_date))
 }
 
 /// Where the payments page is when `PAYMENTS_APP_URL` is not set.
@@ -180,6 +181,7 @@ struct CompanyRow {
     name: String,
     subscription_price_cents: i32,
     stripe_customer_id: Option<String>,
+    first_payment_on: Option<NaiveDate>,
 }
 
 /// The company a link names; 404 for a forged link or a deleted company.
@@ -191,7 +193,8 @@ async fn linked_company(
     let company_id = payments.company_of(token).ok_or(ApiError::NotFound)?;
     sqlx::query_as(
         "SELECT id, COALESCE(NULLIF(TRIM(name), ''), CONCAT('Company ', id)) AS name,
-                subscription_price_cents, NULLIF(stripe_customer_id, '') AS stripe_customer_id
+                subscription_price_cents, NULLIF(stripe_customer_id, '') AS stripe_customer_id,
+                subscription_first_payment_on AS first_payment_on
            FROM company WHERE id = ? AND deleted_at IS NULL",
     )
     .bind(company_id)
@@ -286,6 +289,9 @@ pub struct PaymentPage {
     pub company_name: String,
     /// The monthly price a new subscription starts at, in US cents.
     pub price_cents: i32,
+    /// The day a new subscription is first charged (the card is saved at
+    /// checkout); null when it is charged at checkout.
+    pub first_payment_on: Option<NaiveDate>,
     /// The company's live subscription (active, trialing, past due, unpaid,
     /// paused or incomplete, possibly set to cancel); null when it has none
     /// and can subscribe.
@@ -322,6 +328,9 @@ pub async fn payment_page(
     Ok(Json(PaymentPage {
         company_name: company.name,
         price_cents: company.subscription_price_cents,
+        first_payment_on: company
+            .first_payment_on
+            .filter(|_| first_charge_at(company.first_payment_on, Utc::now()).is_some()),
         subscription,
     }))
 }
@@ -415,6 +424,7 @@ pub async fn start_checkout(
             i64::from(company.subscription_price_cents),
             &format!("{page}&checkout=success"),
             &format!("{page}&checkout=cancel"),
+            first_charge_at(company.first_payment_on, Utc::now()),
         )
         .await
         .map_err(stripe_error)?;
@@ -495,6 +505,9 @@ pub struct CompanyPayments {
     pub last_payment_cents: Option<i64>,
     /// Why Stripe could not be read for this company; null when it was.
     pub stripe_error: Option<String>,
+    /// The day its first charge is set for (its card is saved at checkout);
+    /// null to charge at checkout. Read when it subscribes.
+    pub first_payment_on: Option<NaiveDate>,
 }
 
 /// The newest paid invoice with money in it: (paid at, cents).
@@ -528,6 +541,7 @@ async fn company_payments(
         last_payment_at: None,
         last_payment_cents: None,
         stripe_error: None,
+        first_payment_on: row.first_payment_on,
     };
     let Some(customer) = company.stripe_customer_id.as_deref() else {
         return company;
@@ -583,7 +597,8 @@ pub async fn list_payments(
     let payments = configured(&state)?;
     let rows: Vec<CompanyRow> = sqlx::query_as(
         "SELECT id, COALESCE(NULLIF(TRIM(name), ''), CONCAT('Company ', id)) AS name,
-                subscription_price_cents, NULLIF(stripe_customer_id, '') AS stripe_customer_id
+                subscription_price_cents, NULLIF(stripe_customer_id, '') AS stripe_customer_id,
+                subscription_first_payment_on AS first_payment_on
            FROM company WHERE deleted_at IS NULL ORDER BY name, id",
     )
     .fetch_all(&state.pool)
@@ -659,10 +674,117 @@ pub async fn set_subscription_price(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The hour (UTC) of a first charge: 10 a.m. Eastern, 7 a.m. Pacific.
+const FIRST_CHARGE_HOUR_UTC: u32 = 15;
+/// Stripe starts a Checkout subscription's free period only when it ends at
+/// least 48 hours later; an hour more covers the payer filling the page.
+const FIRST_CHARGE_MIN_HOURS: i64 = 49;
+/// The latest first payment day accepted, in days from today (Stripe allows
+/// up to 730).
+const FIRST_PAYMENT_MAX_DAYS: u64 = 700;
+/// The earliest first payment day accepted, in days from today.
+const FIRST_PAYMENT_MIN_DAYS: u64 = 3;
+
+/// When Stripe first charges a company that checks out `now`, as unix
+/// seconds: its first payment day, else None (charged at checkout). A day
+/// too close to `now` for Stripe is charged at checkout too.
+pub fn first_charge_at(day: Option<NaiveDate>, now: DateTime<Utc>) -> Option<i64> {
+    let at = day?
+        .and_time(NaiveTime::from_hms_opt(FIRST_CHARGE_HOUR_UTC, 0, 0)?)
+        .and_utc();
+    (at - now >= chrono::Duration::hours(FIRST_CHARGE_MIN_HOURS)).then_some(at.timestamp())
+}
+
+/// Body of `PUT /v1/superuser/companies/{id}/first-payment-date`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct FirstPaymentDate {
+    /// The day of the first charge (`YYYY-MM-DD`), 3 to 700 days from today;
+    /// null to charge at checkout.
+    pub first_payment_on: Option<NaiveDate>,
+}
+
+/// Set a company's first payment date
+///
+/// The day its next new subscription is first charged: it saves its card at
+/// checkout, is charged on that day and then every month from it. Null
+/// charges at checkout. A running subscription keeps its dates. Superusers
+/// only.
+#[crate::openapi::path(
+    put,
+    path = "/v1/superuser/companies/{id}/first-payment-date",
+    operation_id = "set_company_first_payment_date",
+    tag = "superuser",
+    params(("id" = i32, Path, description = "Company id")),
+    request_body = FirstPaymentDate,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "Date out of range", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not a superuser", body = ErrorBody),
+        (status = 404, description = "No such company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_first_payment_date(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i32>,
+    JsonBody(input): JsonBody<FirstPaymentDate>,
+) -> ApiResult<StatusCode> {
+    if !user.is_superuser {
+        return Err(ApiError::Forbidden);
+    }
+    if let Some(day) = input.first_payment_on {
+        let today = Utc::now().date_naive();
+        let earliest = today + Days::new(FIRST_PAYMENT_MIN_DAYS);
+        let latest = today + Days::new(FIRST_PAYMENT_MAX_DAYS);
+        if day < earliest || day > latest {
+            return Err(ApiError::BadRequest(format!(
+                "The first payment date must be between {} and {}",
+                earliest.format("%b %-d, %Y"),
+                latest.format("%b %-d, %Y"),
+            )));
+        }
+    }
+    let exists: Option<i32> =
+        sqlx::query_scalar("SELECT id FROM company WHERE id = ? AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?;
+    exists.ok_or(ApiError::NotFound)?;
+    sqlx::query("UPDATE company SET subscription_first_payment_on = ? WHERE id = ?")
+        .bind(input.first_payment_on)
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_first_charge_too_close_for_stripe_is_charged_at_checkout() {
+        let now = DateTime::parse_from_rfc3339("2027-01-10T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        let day = |text: &str| Some(text.parse::<NaiveDate>().unwrap());
+        assert_eq!(first_charge_at(None, now), None);
+        // Jan 12 15:00 is 51 hours away; Jan 11 15:00 only 27.
+        assert_eq!(
+            first_charge_at(day("2027-01-12"), now),
+            Some(
+                DateTime::parse_from_rfc3339("2027-01-12T15:00:00Z")
+                    .unwrap()
+                    .timestamp()
+            )
+        );
+        assert_eq!(first_charge_at(day("2027-01-11"), now), None);
+        assert_eq!(first_charge_at(day("2027-01-01"), now), None);
+    }
 
     #[test]
     fn links_name_their_company_and_cannot_be_forged() {
