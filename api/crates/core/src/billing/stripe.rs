@@ -73,6 +73,18 @@ impl Stripe {
         path: &str,
         form: &[(&str, String)],
     ) -> Result<Value, StripeError> {
+        self.send_as(None, method, path, form).await
+    }
+
+    /// `account`: the connected account the request acts on (Stripe Connect's
+    /// `Stripe-Account` header); `None` for the platform's own account.
+    async fn send_as(
+        &self,
+        account: Option<&str>,
+        method: reqwest::Method,
+        path: &str,
+        form: &[(&str, String)],
+    ) -> Result<Value, StripeError> {
         let key = self.key.as_ref().ok_or(StripeError::NotConfigured)?;
         let encoded = serde_html_form::to_string(form)
             .map_err(|err| StripeError::Request(err.to_string()))?;
@@ -88,6 +100,10 @@ impl Stripe {
             .bearer_auth(&**key)
             .header("Stripe-Version", API_VERSION)
             .timeout(Duration::from_secs(30));
+        let request = match account {
+            Some(account) => request.header("Stripe-Account", account),
+            None => request,
+        };
         let request = if get {
             request
         } else {
@@ -488,6 +504,173 @@ impl Stripe {
             )
             .await?;
         Ok(created["id"].as_str().map(str::to_string))
+    }
+}
+
+/// What a customer pays a company on Stripe Checkout
+/// ([`Stripe::create_payment_checkout_session`]).
+pub struct PaymentCheckout<'a> {
+    /// Our id of the payment, saved on the session and its payment intent
+    /// (`metadata[granite_payment]`), so webhooks find the payment.
+    pub payment_id: &'a str,
+    /// `card` or `us_bank_account` (ACH): the one method the page offers.
+    pub payment_method: &'a str,
+    /// The line the customer reads, e.g. the job's name.
+    pub description: &'a str,
+    /// What goes toward the job, in US cents.
+    pub amount_cents: i64,
+    /// The customer's part of the fee, a second line when above zero.
+    pub customer_fee_cents: i64,
+    /// What the platform keeps of the payment, when above zero.
+    pub application_fee_cents: i64,
+    pub success_url: &'a str,
+    pub cancel_url: &'a str,
+}
+
+/// Stripe Connect: a company's customers pay the company on its own
+/// connected account (direct charges), and the platform takes an application
+/// fee. Requests about a connected account's objects carry `Stripe-Account`.
+impl Stripe {
+    /// A Standard connected account for the company: Stripe charges its fees
+    /// to the company and handles its disputes.
+    pub async fn create_connected_account(
+        &self,
+        name: &str,
+        company_id: i32,
+    ) -> Result<Value, StripeError> {
+        self.post(
+            "/v1/accounts",
+            &[
+                ("type", "standard".into()),
+                ("country", "US".into()),
+                ("business_profile[name]", name.into()),
+                ("metadata[company_id]", company_id.to_string()),
+            ],
+        )
+        .await
+    }
+
+    /// A connected account: `charges_enabled` says whether it can be paid.
+    pub async fn account(&self, id: &str) -> Result<Value, StripeError> {
+        self.get(&format!("/v1/accounts/{}", path_part(id)), &[])
+            .await
+    }
+
+    /// Stripe's onboarding page for the account (business details, bank
+    /// account). The link works once and for a few minutes.
+    pub async fn create_account_link(
+        &self,
+        account: &str,
+        refresh_url: &str,
+        return_url: &str,
+    ) -> Result<Value, StripeError> {
+        self.post(
+            "/v1/account_links",
+            &[
+                ("account", account.into()),
+                ("refresh_url", refresh_url.into()),
+                ("return_url", return_url.into()),
+                ("type", "account_onboarding".into()),
+            ],
+        )
+        .await
+    }
+
+    /// A Checkout page on the connected `account` for one payment. It expires
+    /// in 24 hours.
+    pub async fn create_payment_checkout_session(
+        &self,
+        account: &str,
+        checkout: &PaymentCheckout<'_>,
+    ) -> Result<Value, StripeError> {
+        let mut form: Vec<(&str, String)> = vec![
+            ("mode", "payment".into()),
+            ("payment_method_types[0]", checkout.payment_method.into()),
+            ("client_reference_id", checkout.payment_id.into()),
+            ("metadata[granite_payment]", checkout.payment_id.into()),
+            (
+                "payment_intent_data[metadata][granite_payment]",
+                checkout.payment_id.into(),
+            ),
+            ("line_items[0][quantity]", "1".into()),
+            ("line_items[0][price_data][currency]", "usd".into()),
+            (
+                "line_items[0][price_data][unit_amount]",
+                checkout.amount_cents.to_string(),
+            ),
+            (
+                "line_items[0][price_data][product_data][name]",
+                checkout.description.into(),
+            ),
+            ("success_url", checkout.success_url.into()),
+            ("cancel_url", checkout.cancel_url.into()),
+        ];
+        if checkout.customer_fee_cents > 0 {
+            form.extend([
+                ("line_items[1][quantity]", "1".to_string()),
+                ("line_items[1][price_data][currency]", "usd".to_string()),
+                (
+                    "line_items[1][price_data][unit_amount]",
+                    checkout.customer_fee_cents.to_string(),
+                ),
+                (
+                    "line_items[1][price_data][product_data][name]",
+                    "Processing fee".to_string(),
+                ),
+            ]);
+        }
+        if checkout.application_fee_cents > 0 {
+            form.push((
+                "payment_intent_data[application_fee_amount]",
+                checkout.application_fee_cents.to_string(),
+            ));
+        }
+        self.send_as(
+            Some(account),
+            reqwest::Method::POST,
+            "/v1/checkout/sessions",
+            &form,
+        )
+        .await
+    }
+
+    /// A Checkout session of the connected `account`: `status` is `open`,
+    /// `complete` or `expired`.
+    pub async fn checkout_session(&self, account: &str, id: &str) -> Result<Value, StripeError> {
+        self.send_as(
+            Some(account),
+            reqwest::Method::GET,
+            &format!("/v1/checkout/sessions/{}", path_part(id)),
+            &[],
+        )
+        .await
+    }
+
+    /// Closes an open Checkout session, so nobody can pay on it any more.
+    pub async fn expire_checkout_session(
+        &self,
+        account: &str,
+        id: &str,
+    ) -> Result<Value, StripeError> {
+        self.send_as(
+            Some(account),
+            reqwest::Method::POST,
+            &format!("/v1/checkout/sessions/{}/expire", path_part(id)),
+            &[],
+        )
+        .await
+    }
+
+    /// A payment intent of the connected `account` (`last_payment_error`
+    /// says why it failed).
+    pub async fn payment_intent(&self, account: &str, id: &str) -> Result<Value, StripeError> {
+        self.send_as(
+            Some(account),
+            reqwest::Method::GET,
+            &format!("/v1/payment_intents/{}", path_part(id)),
+            &[],
+        )
+        .await
     }
 }
 

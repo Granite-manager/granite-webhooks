@@ -204,6 +204,42 @@ is separate from `company_billing` above. Env: `STRIPE_SECRET_KEY`,
 against a fake Stripe in `tests/admin/payments.rs` and against Stripe's test
 mode in `tests/admin/payments_stripe_live.rs` (`STRIPE_TEST_SECRET_KEY`).
 
+### Customer payments (Stripe Connect)
+
+`routes/customer_payments.rs` (api-quotes) lets a company's customers pay for
+their jobs by card or ACH. Each company gets a Standard connected account
+(Admin → Company → Payments starts Stripe's onboarding), and a payment is a
+direct charge on it: the money and Stripe's own fee are the company's, and
+the platform keeps an application fee. The company is quoted 3% on cards and
+1% on ACH; the application fee is what Stripe's usual fee (2.9% + 30¢; 0.8%
+capped at $5) leaves of that, never below zero. The card fee is always the
+company's; the ACH fee can be passed on to the customer in 0.1% steps.
+
+A payment link (`<app>/pay/<payment id>`, 128 random bits) is for an amount
+of one job of the customer, a deal or a sale outside a deal, and never
+expires: the page asks `POST /v1/public/pay/{payment_id}/checkout` for a
+Checkout session, reused while Stripe keeps it open. `customer_payments`
+holds the links and their status (`created`, `canceled`, `pending`, `paid`,
+`failed`, `refunded`, `disputed`), `company_payment_settings` the account and
+the fee split. Stripe reports to `POST /v1/webhooks/stripe-connect` (a
+Connect webhook: `checkout.session.completed`,
+`checkout.session.async_payment_succeeded`,
+`checkout.session.async_payment_failed`, `charge.refunded`,
+`charge.dispute.created`, `charge.dispute.closed`, `account.updated`); each
+status change puts a `payment_*` row in the bell of the company's Managers
+and of whoever made the link. The customer's own page reads
+`GET /v1/public/customer-view/{company_id}/{view_id}/payments`; its balance
+counts only payments made through links.
+
+Env: `STRIPE_SECRET_KEY` (the platform account, with Connect enabled),
+`STRIPE_CONNECT_WEBHOOK_SECRET` (the Connect webhook's own signing secret) and
+`APP_URL` (the links). `CUSTOMER_PAYMENTS_DEMO=1`, for local runs only, never
+calls Stripe: the bank account connects at once, checkout answers no URL and
+the page reports the outcome with `POST /v1/public/pay/{payment_id}/demo`.
+Migration: `20270104090000_customer-payments.sql`. Tested against a fake
+Stripe in `tests/quotes/customer_payments.rs`; not yet run against Stripe's
+test mode (Connect is not enabled on the account).
+
 ### Uploads and storage
 
 Images go straight from the browser to the bucket with a presigned PUT

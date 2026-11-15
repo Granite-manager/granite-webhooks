@@ -421,6 +421,9 @@ fn type_title(kind: &str) -> Option<&'static str> {
         "installation_completed" => "Installation Completed",
         "event_issue" => "Reported an Issue",
         SALES_ORDER => "Sales Order",
+        // Customer payments (`routes::customer_payments`).
+        "payment_paid" | "payment_pending" | "payment_failed" | "payment_refunded"
+        | "payment_disputed" => "Payment",
         "note_added" => "Added a Note",
         "note_edited" => "Edited a Note",
         "note_deleted" => "Deleted a Note",
@@ -626,7 +629,9 @@ async fn activity(
                                             'phone_port', 'ai_promise_due',
                                             'ai_promise_approval', 'delayed_message_sent',
                                             'delayed_message_failed', 'event_issue',
-                                            'sales_order'))
+                                            'sales_order')
+                 -- A customer's payment shows whether or not they have a deal.
+                 OR (n.notification_type LIKE 'payment\\_%' AND c.id IS NOT NULL))
             -- A project task's reminder shows while the task is open.
             AND (COALESCE(n.notification_type, '') <> 'project_task_reminder' OR EXISTS (
                   SELECT 1 FROM project_activities pa
@@ -666,6 +671,10 @@ async fn activity(
                 _ if promise => PROMISES_HREF.to_string(),
                 _ if kind == Some(TENDLC_READY) => TENDLC_READY_HREF.to_string(),
                 _ if kind == Some(SALES_ORDER) => SALES_ORDERS_HREF.to_string(),
+                // A payment opens the customer's Projects tab, where it is listed.
+                (_, Some(customer)) if kind.is_some_and(|kind| kind.starts_with("payment_")) => {
+                    format!("/employee/customers/info/{customer}/projects")
+                }
                 _ if texting || port => E911_ALERT_HREF.to_string(),
                 _ if row.project_id.is_some() => format!(
                     "/employee/projects/edit/{}",

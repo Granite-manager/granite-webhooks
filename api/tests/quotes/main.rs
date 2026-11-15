@@ -7,6 +7,7 @@
 mod common;
 
 mod commissions;
+mod customer_payments;
 mod customer_view;
 mod feature_sales;
 mod invoice_queue;
