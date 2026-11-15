@@ -74604,6 +74604,13 @@
               "type": "string"
             },
             "description": "The Granite Manager numbers the user can call from (E.164); an admin\nassigns them on the Phone page."
+          },
+          "photo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "My picture (`PUT /v1/me/photo`); null when I have none."
           }
         }
       },
