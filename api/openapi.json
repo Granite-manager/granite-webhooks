@@ -4374,6 +4374,659 @@
         ]
       }
     },
+    "/v1/customer-checklists": {
+      "get": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "List the company's customer checklists",
+        "description": "The lists of to-dos a template maker picks from at a template appointment\n(what the customer must do before install), in order, each with its\nto-dos. Anyone in the company. Send the picked ones with `POST\n/v1/events/{id}/customer-todos`.",
+        "operationId": "list_customer_checklists",
+        "responses": {
+          "200": {
+            "description": "The lists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerChecklist"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Add a customer checklist",
+        "description": "A named list of to-dos the customer may need to do before install. Admins\nonly. It goes last. Returns every list, the new one included.",
+        "operationId": "create_customer_checklist",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerChecklistInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Added; every list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerChecklist"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No name, one over 120 characters, a to-do over 200 characters, or over 60 to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/customer-checklists/{id}": {
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Rename a customer checklist and set its to-dos",
+        "description": "Replaces the name and the to-dos, in the order given. To-dos already sent\nto customers stay as they were. Admins only. Returns every list.",
+        "operationId": "update_customer_checklist",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Checklist id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerChecklistInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved; every list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerChecklist"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No name, one over 120 characters, a to-do over 200 characters, or over 60 to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such list in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Delete a customer checklist",
+        "description": "Template makers no longer see it. To-dos already sent to customers stay.\nAdmins only.",
+        "operationId": "delete_customer_checklist",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Checklist id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such list in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/events/{id}/customer-todos": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Send a template appointment's customer to-dos",
+        "description": "What the customer must do before install, picked at the template\nappointment (from `GET /v1/customer-checklists`, or written in), each\nwith an optional note. Empty `items` means there is nothing to do.\nSending again adds to what was sent. The to-dos go on the appointment's\ncustomer and their open project, and the job's sales rep (the sale's\nseller, else the deal's owner, else the project's sales rep, else the\ncustomer's sales rep, else whoever made the event) gets a bell\nnotification of type `customer_todos` and a phone push, unless they sent\nthem. Returns the appointment's to-dos.",
+        "operationId": "send_event_customer_todos",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendCustomerTodosInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Sent; the appointment's to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventCustomerTodos"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A to-do over 200 characters, a note over 1000, or over 60 to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The appointment has no customer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/customer-todos/{id}": {
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Tick a customer to-do off, or mark it not done again",
+        "description": "Anyone in the company: the sales rep on the deal, the office on the\nproject, the template maker on the appointment. Done keeps who did it\nfirst and when.",
+        "operationId": "set_customer_todo_done",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "To-do id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerTodoDoneInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such to-do in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Delete a customer to-do",
+        "description": "For one sent by mistake. Only whoever sent it, an admin or a superuser.",
+        "operationId": "delete_customer_todo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "To-do id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a to-do the caller may delete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/customers/{id}/customer-todos": {
+      "get": {
+        "tags": [
+          "customers"
+        ],
+        "summary": "List a customer's to-dos",
+        "description": "What the customer must do before install, from their template\nappointments: open ones first, then done ones, each oldest first. For the\ncustomer's page and their deals. Tick one off with `PUT\n/v1/customer-todos/{id}`.",
+        "operationId": "list_customer_todos",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerTodo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such customer in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/customer-sources": {
       "get": {
         "tags": [
@@ -84431,6 +85084,72 @@
           }
         }
       },
+      "CustomerChecklist": {
+        "type": "object",
+        "description": "A list of to-dos the template maker picks from.",
+        "required": [
+          "id",
+          "name",
+          "items"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The list's id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name, e.g. \"Before install\"."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomerChecklistItem"
+            },
+            "description": "Its to-dos, in order."
+          }
+        }
+      },
+      "CustomerChecklistInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/customer-checklists` and `PUT /v1/customer-checklists/{id}`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name: 1 to 120 characters (trimmed)."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The to-dos, in order: each 1 to 200 characters (trimmed; blank ones\nare dropped), at most 60. Saving replaces the list's to-dos; to-dos\nalready sent to customers stay as they are."
+          }
+        }
+      },
+      "CustomerChecklistItem": {
+        "type": "object",
+        "description": "One to-do on a list.",
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The to-do's id."
+          },
+          "label": {
+            "type": "string",
+            "description": "What the customer must do, e.g. \"Level the cabinets\"."
+          }
+        }
+      },
       "CustomerDeal": {
         "type": "object",
         "description": "A deal of a customer, with a preview of its notes and activities.",
@@ -85313,6 +86032,125 @@
           "is_walkin": {
             "type": "boolean",
             "description": "Counts as a walk-in (Walk-in filter, walk-in statistics). The\nbuilt-in walk-in always does, whatever this says."
+          }
+        }
+      },
+      "CustomerTodo": {
+        "type": "object",
+        "description": "One to-do of one customer.",
+        "required": [
+          "id",
+          "customer_id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The to-do's id."
+          },
+          "customer_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer who must do it."
+          },
+          "event_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The template appointment it came from; null once that is deleted."
+          },
+          "project_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The project it is for; null when the customer had no open project."
+          },
+          "label": {
+            "type": "string",
+            "description": "What the customer must do."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The template maker's note, e.g. \"Island, 2 corbels on the seating side\"."
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was sent (UTC)."
+          },
+          "created_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The sender's user id; null once that user is gone."
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The sender's name."
+          },
+          "done_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was ticked off (UTC); null while the customer still has to do it."
+          },
+          "done_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who ticked it off."
+          }
+        }
+      },
+      "CustomerTodoDoneInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/customer-todos/{id}`.",
+        "required": [
+          "done"
+        ],
+        "properties": {
+          "done": {
+            "type": "boolean",
+            "description": "Done, or not done again."
+          }
+        }
+      },
+      "CustomerTodoInput": {
+        "type": "object",
+        "description": "One to-do sent from a template appointment.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What the customer must do: 1 to 200 characters (trimmed)."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A note for the sales rep: at most 1000 characters; blank means none."
           }
         }
       },
@@ -88730,6 +89568,42 @@
           }
         }
       },
+      "EventCustomerTodos": {
+        "type": "object",
+        "description": "A template appointment's to-dos.",
+        "required": [
+          "nothing_to_do",
+          "todos"
+        ],
+        "properties": {
+          "sent_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the template maker sent them (UTC); null until then."
+          },
+          "sent_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who sent them."
+          },
+          "nothing_to_do": {
+            "type": "boolean",
+            "description": "True when they said there is nothing to do."
+          },
+          "todos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomerTodo"
+            },
+            "description": "The to-dos sent from this appointment, in the order they were sent."
+          }
+        }
+      },
       "EventDetails": {
         "type": "object",
         "description": "`GET /v1/events/{id}/details`.",
@@ -88738,6 +89612,7 @@
           "photos",
           "attachments",
           "issues",
+          "customer_todos",
           "history",
           "creator",
           "automated"
@@ -88770,6 +89645,10 @@
               "$ref": "#/components/schemas/EventIssue"
             },
             "description": "Problems reported on the job (`POST /v1/events/{id}/issues`), oldest\nfirst, each with its pictures."
+          },
+          "customer_todos": {
+            "$ref": "#/components/schemas/EventCustomerTodos",
+            "description": "What the customer must do before install, sent from this template\nappointment (`POST /v1/events/{id}/customer-todos`)."
           },
           "history": {
             "type": "array",
@@ -103710,6 +104589,7 @@
           "notes",
           "files",
           "job_photos",
+          "customer_todos",
           "issues",
           "history",
           "sales",
@@ -103762,6 +104642,13 @@
               "$ref": "#/components/schemas/ProjectJobPhoto"
             },
             "description": "The crew's job photos from its appointments, newest first."
+          },
+          "customer_todos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomerTodo"
+            },
+            "description": "What the customer must do before install, from its template\nappointments: open ones first. Tick one off with `PUT /v1/customer-todos/{id}`."
           },
           "issues": {
             "type": "array",
@@ -109756,6 +110643,27 @@
           }
         },
         "additionalProperties": false
+      },
+      "SendCustomerTodosInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/events/{id}/customer-todos`.",
+        "properties": {
+          "checklist_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The list they were picked from (`GET /v1/customer-checklists`), if any."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomerTodoInput"
+            },
+            "description": "The to-dos that apply to this customer, at most 60. Empty means there\nis nothing to do."
+          }
+        }
       },
       "SendEmailRequest": {
         "type": "object",
