@@ -236,7 +236,7 @@ Env: `STRIPE_SECRET_KEY` (the platform account, with Connect enabled),
 `APP_URL` (the links). `CUSTOMER_PAYMENTS_DEMO=1`, for local runs only, never
 calls Stripe: the bank account connects at once, checkout answers no URL and
 the page reports the outcome with `POST /v1/public/pay/{payment_id}/demo`.
-Migration: `20270104090000_customer-payments.sql`. Tested against a fake
+Migration: `20270108090000_customer-payments.sql`. Tested against a fake
 Stripe in `tests/quotes/customer_payments.rs`; not yet run against Stripe's
 test mode (Connect is not enabled on the account).
 
