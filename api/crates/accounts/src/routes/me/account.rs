@@ -71,6 +71,8 @@ pub struct Account {
     /// The Granite Manager numbers the user can call from (E.164); an admin
     /// assigns them on the Phone page.
     pub granite_phone_numbers: Vec<String>,
+    /// My picture (`PUT /v1/me/photo`); null when I have none.
+    pub photo_url: Option<String>,
 }
 
 /// Body of `PUT /v1/me/account`. A field left out keeps its value; an empty
@@ -216,6 +218,11 @@ pub async fn account(
     } else {
         Vec::new()
     };
+    let photo_url: Option<String> =
+        sqlx::query_scalar("SELECT NULLIF(TRIM(photo_url), '') FROM users WHERE id = ?")
+            .bind(actor.user_id)
+            .fetch_one(pool)
+            .await?;
     let ringcentral_signed_in = features.ringcentral
         && crate::ringcentral_connect::texts_as_user(pool, actor.company_id, actor.user_id).await?;
     Ok(Json(Account {
@@ -237,6 +244,7 @@ pub async fn account(
         feedback_dismissed: progress.has_row && progress.state.feedback_dismissed,
         has_granite_phone,
         granite_phone_numbers,
+        photo_url,
     }))
 }
 
