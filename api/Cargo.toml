@@ -78,6 +78,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 jpeg-encoder = "0.7"
 # Pure Rust: HEIC photos (iPhone) and PDF pages, no system libraries on Lambda.
 zune-heic = "0.5"
+# The daily company data export (`routes/jobs/company_exports`).
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 hayro = "0.8"
 url = "2"
 uuid = { version = "1", features = ["v4"] }

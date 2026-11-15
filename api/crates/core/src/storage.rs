@@ -560,6 +560,32 @@ impl Storage {
         }
     }
 
+    /// Deletes `key` of `bucket` (a private bucket too, read with the same
+    /// credentials); deleting a missing object is not an error. The
+    /// in-memory bucket ignores bucket names.
+    pub async fn delete_in(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+        match self {
+            Self::S3(s3) => {
+                let url = s3.object_url(bucket, key);
+                s3.send("DELETE", &url, &[], axum::body::Bytes::new())
+                    .await?
+                    .s3_result()
+                    .await?;
+                Ok(())
+            }
+            Self::Memory(_) | Self::Disabled => self.delete(key).await,
+        }
+    }
+
+    /// The name of this bucket (`STORAGE_BUCKET`); `None` in memory or when
+    /// disabled.
+    pub fn main_bucket(&self) -> Option<&str> {
+        match self {
+            Self::S3(s3) => Some(&s3.bucket),
+            Self::Memory(_) | Self::Disabled => None,
+        }
+    }
+
     /// Keys stored in the in-memory bucket (tests).
     pub fn memory_keys(&self) -> Vec<String> {
         match self {
