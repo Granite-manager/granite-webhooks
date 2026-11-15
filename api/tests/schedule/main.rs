@@ -7,6 +7,7 @@ mod common;
 
 mod calendars;
 mod crew;
+mod customer_todos;
 mod estimates;
 mod events;
 mod issues;
