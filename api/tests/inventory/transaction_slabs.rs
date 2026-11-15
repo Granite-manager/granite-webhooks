@@ -169,9 +169,10 @@ async fn the_shop_records_cut_pieces(pool: MySqlPool) {
     .fetch_one(&pool)
     .await
     .unwrap();
+    // A leftover is free stock, not an uncut slab of the sale.
     assert_eq!(
         (piece.1, piece.2.as_str(), piece.3.as_str()),
-        (Some(7012), "50.5", "20")
+        (None, "50.5", "20")
     );
     assert!(!slab(&pool, 6077).await.unwrap().cut);
     assert_eq!(
@@ -195,6 +196,34 @@ async fn the_shop_records_cut_pieces(pool: MySqlPool) {
         post(&server, ADMIN, path, json!({ "length": 0, "width": 20 })).await,
         StatusCode::BAD_REQUEST
     );
+}
+
+#[test_db::test(seed)]
+async fn a_slab_sold_whole_keeps_its_size_when_partly_cut(pool: MySqlPool) {
+    let server = server(pool.clone());
+    let before = slab(&pool, 6077).await.unwrap();
+    // The dialog's first Done sends `replace_first`; the slab has no piece yet.
+    assert_eq!(
+        post(
+            &server,
+            ADMIN,
+            "/v1/transactions/7012/slabs/6077/partial-cut",
+            json!({ "length": 40, "width": 30, "replace_first": true })
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    let after = slab(&pool, 6077).await.unwrap();
+    assert_eq!((after.length, after.width), (before.length, before.width));
+    assert!(after.cut);
+    let pieces: Vec<(Option<i32>, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT sale_id, length, width, room FROM slab_inventory WHERE parent_id = 6077",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(pieces, vec![(None, "40".into(), "30".into(), None)]);
+    assert_eq!(status(&pool, 7012).await, "cut");
 }
 
 #[test_db::test(seed)]
