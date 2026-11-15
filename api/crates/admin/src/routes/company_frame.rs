@@ -10,10 +10,13 @@ use crate::openapi::{OpenApiRouter, routes};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use serde::Serialize;
 
 pub fn router() -> OpenApiRouter<AppState> {
-    OpenApiRouter::new().routes(routes!(company_frame))
+    OpenApiRouter::new()
+        .routes(routes!(company_frame))
+        .routes(routes!(lens_hint))
 }
 
 /// A type or supplier of the catalog filters.
@@ -128,4 +131,45 @@ pub async fn company_frame(
         )
         .await?,
     }))
+}
+
+/// Whether the customer stones page should highlight its magnifier button.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LensHint {
+    /// True only the first time this visitor's IP address asks.
+    pub show: bool,
+}
+
+/// Claim the magnifier highlight
+///
+/// The customer stones page highlights its magnifier (lens) button once per
+/// visitor IP address: the first call from an address answers `show: true`,
+/// every later one `false`.
+#[crate::openapi::path(
+    post,
+    path = "/v1/public/companies/{company_id}/lens-hint",
+    operation_id = "claim_lens_hint",
+    tag = "public",
+    params(("company_id" = i32, Path, description = "Company id")),
+    responses(
+        (status = 200, description = "Whether to highlight", body = LensHint),
+        (status = 500, description = "Database error", body = ErrorBody),
+    )
+)]
+pub async fn lens_hint(
+    State(state): State<AppState>,
+    Path(_company_id): Path<i32>,
+    headers: HeaderMap,
+) -> ApiResult<Json<LensHint>> {
+    let ip = api_accounts::routes::auth::client_ip(&headers);
+    if ip == "unknown" {
+        return Ok(Json(LensHint { show: false }));
+    }
+    let ip: String = ip.chars().take(64).collect();
+    let inserted = sqlx::query("INSERT IGNORE INTO lens_hint_ips (ip) VALUES (?)")
+        .bind(ip)
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+    Ok(Json(LensHint { show: inserted > 0 }))
 }
