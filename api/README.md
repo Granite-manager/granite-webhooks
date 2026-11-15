@@ -212,7 +212,9 @@ their jobs by card or ACH. Each company gets a Standard connected account
 direct charge on it: the money and Stripe's own fee are the company's, and
 the platform keeps an application fee. The company is quoted 3% on cards and
 1% on ACH; the application fee is what Stripe's usual fee (2.9% + 30¢; 0.8%
-capped at $5) leaves of that, never below zero. The card fee is always the
+capped at $5) leaves of that, never below zero. A card payment's fee is at
+least $9 (3% of $300, under which Stripe's fee is more than 3%), and a card
+payment at least $10. The card fee is always the
 company's; the ACH fee can be passed on to the customer in 0.1% steps.
 
 A payment link (`<app>/pay/<payment id>`, 128 random bits) is for an amount

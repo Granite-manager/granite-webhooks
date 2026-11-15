@@ -96114,7 +96114,7 @@
           "amount_cents": {
             "type": "integer",
             "format": "int64",
-            "description": "What goes toward the job, in US cents: 100 ($1) to 99999999\n($999,999.99). The customer's part of the fee is added on top."
+            "description": "What goes toward the job, in US cents: 100 ($1) to 99999999\n($999,999.99); a card payment at least 1000 ($10). The customer's part\nof the fee is added on top."
           }
         },
         "additionalProperties": false
@@ -99183,6 +99183,7 @@
         "required": [
           "rate_bps",
           "customer_share_bps",
+          "min_fee_cents",
           "locked"
         ],
         "properties": {
@@ -99195,6 +99196,11 @@
             "type": "integer",
             "format": "int32",
             "description": "The customer's part of it, `0..=rate_bps`; the company pays the rest."
+          },
+          "min_fee_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The least the fee on one payment can be, in US cents (900 = $9 for\ncards, 0 for ACH): a small payment's fee is this, not the rate."
           },
           "locked": {
             "type": "boolean",

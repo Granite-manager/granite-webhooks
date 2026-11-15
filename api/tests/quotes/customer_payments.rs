@@ -310,8 +310,10 @@ async fn a_company_starts_without_a_bank_account(pool: MySqlPool) {
         json!({
             "bank": { "status": "not_connected", "bank_name": null, "last4": null },
             "fees": {
-                "card": { "rate_bps": 300, "customer_share_bps": 0, "locked": true },
-                "ach": { "rate_bps": 100, "customer_share_bps": 0, "locked": false },
+                "card": { "rate_bps": 300, "customer_share_bps": 0, "min_fee_cents": 900,
+                          "locked": true },
+                "ach": { "rate_bps": 100, "customer_share_bps": 0, "min_fee_cents": 0,
+                         "locked": false },
             },
         })
     );
@@ -578,6 +580,23 @@ async fn a_link_is_only_for_the_family_s_own_jobs(pool: MySqlPool) {
         refused.assert_status(StatusCode::BAD_REQUEST);
         assert_eq!(refused.json::<Value>()["error"], "Unknown project", "{key}");
     }
+    // A card payment under $300 costs the $9 minimum; under $10 it is refused.
+    let small = link(&server, 1004, "sale-7000", "card", 10_000).await;
+    assert_eq!(
+        (&small["fee_cents"], &small["company_fee_cents"]),
+        (&json!(900), &json!(900))
+    );
+    let tiny = server
+        .post("/v1/customers/1004/payments")
+        .with_session(sessions::REP)
+        .json(&json!({ "project_key": "sale-7000", "method": "card", "amount_cents": 999 }))
+        .await;
+    tiny.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(
+        tiny.json::<Value>()["error"],
+        "A card payment must be at least $10. Use ACH for a smaller amount"
+    );
+    link(&server, 1004, "sale-7000", "ach", 999).await;
     for cents in [0, 99, 100_000_000, -5] {
         server
             .post("/v1/customers/1004/payments")

@@ -68,6 +68,11 @@ pub fn router() -> OpenApiRouter<AppState> {
 pub const CARD_RATE_BPS: i32 = 300;
 /// The fee a company is quoted on an ACH payment: 1%.
 pub const ACH_RATE_BPS: i32 = 100;
+/// The least a card payment's fee can be, $9: 3% of $300, the amount under
+/// which Stripe's own fee (2.9% + 30¢) is more than 3%.
+pub const CARD_MIN_FEE_CENTS: i64 = 900;
+/// The smallest card payment, $10: the minimum fee must fit inside it.
+const MIN_CARD_AMOUNT_CENTS: i64 = 1_000;
 /// The fee sliders move in 0.1% steps.
 const SHARE_STEP_BPS: i32 = 10;
 /// The smallest payment, $1, and the largest Stripe takes, $999,999.99.
@@ -166,6 +171,14 @@ impl PaymentMethod {
         }
     }
 
+    /// The least its fee can be, in cents.
+    const fn min_fee(self) -> i64 {
+        match self {
+            Self::Card => CARD_MIN_FEE_CENTS,
+            Self::Ach => 0,
+        }
+    }
+
     /// Stripe's `payment_method_types` value.
     const fn stripe_type(self) -> &'static str {
         match self {
@@ -212,7 +225,7 @@ pub struct FeeSplit {
 pub fn split_fee(method: PaymentMethod, amount: i64, customer_share_bps: i32) -> FeeSplit {
     let rate = method.rate_bps();
     let share = customer_share_bps.clamp(0, rate);
-    let fee = bps_of(amount, i64::from(rate));
+    let fee = bps_of(amount, i64::from(rate)).max(method.min_fee());
     let customer_fee = bps_of(amount, i64::from(share)).min(fee);
     let charged = amount + customer_fee;
     FeeSplit {
@@ -272,6 +285,9 @@ pub struct PaymentFeeSetting {
     pub rate_bps: i32,
     /// The customer's part of it, `0..=rate_bps`; the company pays the rest.
     pub customer_share_bps: i32,
+    /// The least the fee on one payment can be, in US cents (900 = $9 for
+    /// cards, 0 for ACH): a small payment's fee is this, not the rate.
+    pub min_fee_cents: i64,
     /// The split cannot be changed: the company pays the whole fee. True for
     /// cards for now.
     pub locked: bool,
@@ -423,11 +439,13 @@ pub async fn payment_settings(
             card: PaymentFeeSetting {
                 rate_bps: CARD_RATE_BPS,
                 customer_share_bps: row.share_bps(PaymentMethod::Card),
+                min_fee_cents: PaymentMethod::Card.min_fee(),
                 locked: true,
             },
             ach: PaymentFeeSetting {
                 rate_bps: ACH_RATE_BPS,
                 customer_share_bps: row.share_bps(PaymentMethod::Ach),
+                min_fee_cents: PaymentMethod::Ach.min_fee(),
                 locked: false,
             },
         },
@@ -845,7 +863,8 @@ pub struct NewPayment {
     /// How the customer will pay.
     pub method: PaymentMethod,
     /// What goes toward the job, in US cents: 100 ($1) to 99999999
-    /// ($999,999.99). The customer's part of the fee is added on top.
+    /// ($999,999.99); a card payment at least 1000 ($10). The customer's part
+    /// of the fee is added on top.
     pub amount_cents: i64,
 }
 
@@ -946,6 +965,11 @@ pub async fn create_payment(
     if !(MIN_AMOUNT_CENTS..=MAX_AMOUNT_CENTS).contains(&input.amount_cents) {
         return Err(ApiError::BadRequest(
             "The amount must be between $1 and $999,999.99".into(),
+        ));
+    }
+    if input.method == PaymentMethod::Card && input.amount_cents < MIN_CARD_AMOUNT_CENTS {
+        return Err(ApiError::BadRequest(
+            "A card payment must be at least $10. Use ACH for a smaller amount".into(),
         ));
     }
     let settings = settings_row(pool, user.company_id).await?;
@@ -1787,8 +1811,21 @@ mod tests {
 
     #[test]
     fn the_platform_never_pays_to_take_a_payment() {
-        // $100 by card: 3% is $3.00 and Stripe takes $3.20.
-        assert_eq!(split_fee(PaymentMethod::Card, 10_000, 0).application_fee, 0);
+        // $100 by card: 3% would be $3.00 and Stripe takes $3.20, so the
+        // fee is the $9 minimum and $5.80 is left.
+        let small = split_fee(PaymentMethod::Card, 10_000, 0);
+        assert_eq!(
+            (small.fee, small.company_fee, small.application_fee),
+            (900, 900, 580)
+        );
+        // $300 is where 3% reaches the minimum.
+        assert_eq!(split_fee(PaymentMethod::Card, 30_000, 0).fee, 900);
+        assert_eq!(split_fee(PaymentMethod::Card, 30_100, 0).fee, 903);
+        // The smallest card payment still holds its fee.
+        let least = split_fee(PaymentMethod::Card, 1_000, 0);
+        assert_eq!((least.fee, least.application_fee), (900, 841));
+        // ACH has no minimum.
+        assert_eq!(split_fee(PaymentMethod::Ach, 10_000, 0).fee, 100);
         // A share above the rate is the whole fee, never more.
         let split = split_fee(PaymentMethod::Ach, 100_000, 900);
         assert_eq!((split.customer_fee, split.company_fee), (1_000, 0));
