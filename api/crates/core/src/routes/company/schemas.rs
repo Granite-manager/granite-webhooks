@@ -68,6 +68,10 @@ pub struct CompanyFeatures {
     /// (Admin › Quotes › Automation "Sales order on a sale",
     /// `PUT /v1/company/auto-sales-order`).
     pub auto_sales_order: bool,
+    /// The customer's quote link shows Accept & Sign (Admin › Quotes ›
+    /// Automation "Sign on the quote link",
+    /// `PUT /v1/company/quote-link-signing`).
+    pub quote_link_signing: bool,
     /// The company has event templates: Mark as Sold offers them as Extra
     /// events, and each one ticked adds an event to the schedule's Unscheduled
     /// list, whatever `auto_unscheduled_jobs` says (`GET /v1/quote-sale-events`).
