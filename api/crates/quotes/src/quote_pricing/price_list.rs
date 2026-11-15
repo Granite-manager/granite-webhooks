@@ -633,19 +633,22 @@ pub fn sync_with_inventory(info: &Value, stock: &Stock) -> Value {
 /// price stays until Update prices.
 pub fn with_live_choices(snapshot: &Value, latest: &Value, quoted: &HashSet<String>) -> Value {
     let latest_products = arr(Some(latest), "arrProducts");
+    // Today's products and their colors by key, the first of each name as
+    // `find` would pick it: price lists hold thousands of colors, and
+    // matching each against every one of today's took most of the time of
+    // pricing a quote.
+    let latest_by_key = first_by_key(latest_products);
     let products: Vec<Value> = arr(Some(snapshot), "arrProducts")
         .iter()
         .map(|p| {
-            let now = latest_products
-                .iter()
-                .find(|x| key(name_of(x)) == key(name_of(p)));
+            let material = key(name_of(p));
+            let now = latest_by_key.get(&material).copied();
             let now_variants = arr(now, "arrVariants");
+            let now_by_key = first_by_key(now_variants);
             let mut variants: Vec<Value> = arr(Some(p), "arrVariants")
                 .iter()
                 .map(|v| {
-                    let live = now_variants
-                        .iter()
-                        .find(|x| key(name_of(x)) == key(name_of(v)));
+                    let live = now_by_key.get(&key(name_of(v))).copied();
                     let sold_out =
                         live.map_or(Some(Value::Bool(true)), |l| l.get("soldOut").cloned());
                     let mut rest = obj(v);
@@ -671,7 +674,6 @@ pub fn with_live_choices(snapshot: &Value, latest: &Value, quoted: &HashSet<Stri
                 .iter()
                 .map(|v| key(name_of(v)))
                 .collect();
-            let material = key(name_of(p));
             variants.extend(
                 now_variants
                     .iter()
@@ -691,7 +693,7 @@ pub fn with_live_choices(snapshot: &Value, latest: &Value, quoted: &HashSet<Stri
     let known_products = names(arr(Some(snapshot), "arrProducts"));
     let known_sinks = names(arr(Some(snapshot), "arrSinkModels"));
     let known_items = names(arr(Some(snapshot), "arrOtherItems"));
-    let mut out = snapshot.clone();
+    let mut out = without_lists(snapshot);
     let mut all_products = products;
     all_products.extend(
         latest_products
@@ -709,12 +711,11 @@ pub fn with_live_choices(snapshot: &Value, latest: &Value, quoted: &HashSet<Stri
     );
     out["arrSinkModels"] = Value::Array(sinks);
     let latest_items = arr(Some(latest), "arrOtherItems");
+    let latest_items_by_key = first_by_key(latest_items);
     let mut items: Vec<Value> = arr(Some(snapshot), "arrOtherItems")
         .iter()
         .map(|o| {
-            let now = latest_items
-                .iter()
-                .find(|x| key(name_of(x)) == key(name_of(o)));
+            let now = latest_items_by_key.get(&key(name_of(o))).copied();
             let mut rest = obj(o);
             rest.remove("fillFromAreaSqFt");
             if let Some(fill) = now
@@ -734,6 +735,34 @@ pub fn with_live_choices(snapshot: &Value, latest: &Value, quoted: &HashSet<Stri
     );
     out["arrOtherItems"] = Value::Array(items);
     out
+}
+
+/// `snapshot` without copying the three lists [`with_live_choices`] replaces
+/// (each key keeps its place).
+fn without_lists(snapshot: &Value) -> Value {
+    let Some(map) = snapshot.as_object() else {
+        return snapshot.clone();
+    };
+    Value::Object(
+        map.iter()
+            .map(|(k, v)| {
+                let replaced = matches!(
+                    k.as_str(),
+                    "arrProducts" | "arrSinkModels" | "arrOtherItems"
+                );
+                (k.clone(), if replaced { Value::Null } else { v.clone() })
+            })
+            .collect(),
+    )
+}
+
+/// `list`'s entries by the key of their name; the first one of a name wins.
+fn first_by_key(list: &[Value]) -> HashMap<String, &Value> {
+    let mut by_key = HashMap::with_capacity(list.len());
+    for item in list {
+        by_key.entry(key(name_of(item))).or_insert(item);
+    }
+    by_key
 }
 
 #[cfg(test)]

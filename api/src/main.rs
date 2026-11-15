@@ -21,6 +21,15 @@ async fn main() -> Result<(), Error> {
     }
     let url = std::env::var("DATABASE_URL").map_err(|_| "DATABASE_URL must be set")?;
     let pool = lambda_pool(common::db::connect_options(&url)?);
+    // Opens the database connection while the rest of the startup runs, so
+    // the first request does not wait the ~100 ms (TLS and sign-in) alone.
+    // Best effort: a failure (a full database) is left to the first query,
+    // which answers it as before, and the timeout frees the pool's one slot
+    // if Lambda froze the container halfway (an environment started ahead).
+    let warm = pool.clone();
+    tokio::spawn(async move {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), warm.acquire()).await;
+    });
     // The PostHog auto-fix settings live in a crate above `AppState`'s.
     let state = AppState::from_env(pool)?.with_extension(Autofix::from_env());
     let app = app_with_routes(state, routes.join().expect("the routes build"));

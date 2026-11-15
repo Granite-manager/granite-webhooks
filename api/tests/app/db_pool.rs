@@ -17,7 +17,7 @@ async fn lambda_pool_uses_one_short_lived_connection(
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(wait_timeout, 60);
+    assert_eq!(wait_timeout, 120);
     assert_eq!(pool.options().get_max_connections(), 1);
 
     // Parallel queries share the single connection instead of deadlocking.

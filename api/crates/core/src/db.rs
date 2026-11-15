@@ -31,12 +31,17 @@ fn wall_ms() -> u64 {
 ///   connection count tracks the number of warm containers. No handler queries
 ///   the pool while holding a transaction or a streaming query, and the
 ///   `tokio::join!`s just run one after another.
-/// - Session `wait_timeout` of 60 seconds: Lambda freezes, then discards,
+/// - Session `wait_timeout` of 120 seconds: Lambda freezes, then discards,
 ///   containers without closing their connections, so the pool's own idle
 ///   timeout never runs. The server's setting (8 hours) let those idle
 ///   connections fill the database's limit; this makes MySQL drop them
 ///   itself. A warm container whose connection was dropped reconnects on its
-///   next query.
+///   next query, which costs about 100 ms (TLS and sign-in on a 512 MB
+///   Lambda). 120, not 60: in a week of logs (Nov 2026) the most containers
+///   that served a request within any 2 minutes was 64, the same as within
+///   any minute (3 minutes: 75, against the limit of 90), and it cut the
+///   requests that reconnect from 4.9% to 1.2%. The pool's idle timeout is
+///   the same, so a connection is reused for as long as MySQL keeps it.
 /// - A ping before a query only after a pause: sqlx pings the connection
 ///   before every query and again when the query hands it back, two more
 ///   round trips to the database each time, and a handler runs ten to forty
@@ -52,7 +57,7 @@ pub fn lambda_pool(options: MySqlConnectOptions) -> MySqlPool {
     MySqlPoolOptions::new()
         .max_connections(1)
         .acquire_timeout(Duration::from_secs(10))
-        .idle_timeout(Duration::from_secs(30))
+        .idle_timeout(Duration::from_secs(120))
         .max_lifetime(Duration::from_mins(10))
         .test_before_acquire(false)
         .before_acquire(move |conn, meta| {
@@ -75,7 +80,7 @@ pub fn lambda_pool(options: MySqlConnectOptions) -> MySqlPool {
         })
         .after_connect(|conn, _meta| {
             Box::pin(async move {
-                sqlx::query("SET SESSION wait_timeout = 60")
+                sqlx::query("SET SESSION wait_timeout = 120")
                     .execute(&mut *conn)
                     .await?;
                 Ok(())
