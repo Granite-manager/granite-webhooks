@@ -24,6 +24,7 @@ use crate::phone::revoke::{RevokeReason, revoke_device_session};
 use crate::routes::auth::{
     client_ip, normalized_credentials, record_failed_login, too_many_failures, verify_login,
 };
+use crate::routes::login_steps::{self, LoginChallenge, PhoneDetails};
 use crate::serde_helpers::{js_date, js_date_required};
 use crate::state::AppState;
 use axum::Json;
@@ -121,6 +122,12 @@ pub struct DeviceSignIn {
     pub platform: Platform,
     /// The app's version, e.g. `1.4.0`; cut to 32 characters.
     pub app_version: String,
+    /// The app can do the sign-in steps (an authenticator code, a new
+    /// password, setting up the authenticator): when the account needs one,
+    /// the answer is 202 with a `LoginChallenge`. Without it (older apps)
+    /// such an account gets 403 asking to update the app.
+    #[serde(default)]
+    pub steps: bool,
 }
 
 impl std::fmt::Debug for DeviceSignIn {
@@ -319,6 +326,12 @@ async fn signed_in_user(pool: &MySqlPool, user_id: i32) -> sqlx::Result<Option<S
 /// `invalid_credentials`. The sign-in lasts until the phone signs out or is
 /// revoked, never ending by time. Next:
 /// `POST /v1/phone/devices` registers the phone for calling.
+///
+/// When the account needs another step first (two-step sign-in is on, the
+/// password is 1111, or a superuser has not set up two-step sign-in), the
+/// answer is 202 with a `LoginChallenge` when `steps` is true (see `POST
+/// /v1/auth/login/code`, `/password`, `/authenticator`: the last step
+/// answers this route's 201), else 403 asking to update the app.
 #[crate::openapi::path(
     post,
     path = "/v1/auth/device-sessions",
@@ -327,9 +340,10 @@ async fn signed_in_user(pool: &MySqlPool, user_id: i32) -> sqlx::Result<Option<S
     request_body = DeviceSignIn,
     responses(
         (status = 201, description = "Signed in; the device token and call key are in the body", body = DeviceSession),
+        (status = 202, description = "Right password; another step is needed first (`steps` true)", body = LoginChallenge),
         (status = 400, description = "A field is missing or empty, or the platform is unknown", body = ErrorBody),
         (status = 401, description = "`invalid_credentials`: wrong email or password", body = ErrorBody),
-        (status = 403, description = "`no_phone_access`: not an employee, admin or superuser, or the company is deleted", body = ErrorBody),
+        (status = 403, description = "`no_phone_access`: not an employee, admin or superuser, or the company is deleted; or the account needs a sign-in step this app cannot do (`steps` false)", body = ErrorBody),
         (status = 429, description = "`rate_limited`: too many failed attempts; try later", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     )
@@ -360,23 +374,68 @@ pub async fn sign_in(
         record_failed_login(pool, &email_hash, &ip_hash).await?;
         return Ok(refuse(StatusCode::UNAUTHORIZED, "invalid_credentials"));
     };
-    let Some(user) = signed_in_user(pool, user_id)
-        .await?
-        .filter(|user| user.is_employee || user.is_admin || user.is_superuser)
-    else {
+    let Some(user) = phone_access_user(pool, user_id).await? else {
         return Ok(refuse(StatusCode::FORBIDDEN, "no_phone_access"));
     };
-    let body_user = phone_user(pool, &user).await?;
+    let phone = PhoneDetails {
+        device_name,
+        platform: input.platform,
+        app_version,
+    };
+    if let Some(step) = login_steps::first_step(pool, user_id, &password).await? {
+        if !input.steps {
+            return Err(ApiError::Denied(
+                "Update Granite Manager to sign in: your account needs a new password or a sign-in code first.".into(),
+            ));
+        }
+        return login_steps::begin(
+            pool,
+            user_id,
+            step,
+            &password,
+            &email_hash,
+            &ip_hash,
+            Some(&phone),
+        )
+        .await;
+    }
+    sqlx::query("DELETE FROM login_attempts WHERE email_hash = ?")
+        .bind(&email_hash)
+        .execute(pool)
+        .await?;
+    sign_phone_in(&state, &user, &phone).await
+}
+
+/// The user who signed in when they may use the app (employees, admins,
+/// superusers of a live company).
+pub async fn phone_access_user(
+    pool: &MySqlPool,
+    user_id: i32,
+) -> sqlx::Result<Option<SessionUser>> {
+    Ok(signed_in_user(pool, user_id)
+        .await?
+        .filter(|user| user.is_employee || user.is_admin || user.is_superuser))
+}
+
+/// The 403 `no_phone_access` of a user who may not use the app.
+pub fn no_phone_access() -> Response {
+    refuse(StatusCode::FORBIDDEN, "no_phone_access")
+}
+
+/// Creates the device session of a phone whose sign-in is complete and
+/// answers it (201): the token and call key, shown only here.
+pub async fn sign_phone_in(
+    state: &AppState,
+    user: &SessionUser,
+    phone: &PhoneDetails,
+) -> ApiResult<Response> {
+    let pool = &state.pool;
+    let body_user = phone_user(pool, user).await?;
     let token = new_token().map_err(|err| ApiError::Internal(err.to_string()))?;
     let expires_at = Utc::now()
         .trunc_subsecs(0)
         .checked_add_months(Months::new(SESSION_MONTHS))
         .ok_or_else(|| ApiError::Internal("no date a year from now".into()))?;
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM login_attempts WHERE email_hash = ?")
-        .bind(&email_hash)
-        .execute(&mut *tx)
-        .await?;
     let session_id = sqlx::query(
         "INSERT INTO device_sessions
            (user_id, company_id, token_hash, device_name, platform, app_version, expires_at)
@@ -385,14 +444,13 @@ pub async fn sign_in(
     .bind(user.id)
     .bind(user.company_id)
     .bind(token_hash(&token))
-    .bind(&device_name)
-    .bind(input.platform.as_str())
-    .bind(app_version)
+    .bind(&phone.device_name)
+    .bind(phone.platform.as_str())
+    .bind(phone.app_version.as_deref())
     .bind(expires_at)
-    .execute(&mut *tx)
+    .execute(pool)
     .await?
     .last_insert_id();
-    tx.commit().await?;
     let session_id = i64::try_from(session_id)
         .map_err(|_| ApiError::Internal("device session id out of range".into()))?;
     let body = DeviceSession {

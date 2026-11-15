@@ -50,6 +50,7 @@ fn every_operation_is_documented() {
             let public = path.starts_with("/v1/public/")
                 || path.starts_with("/v1/webhooks/")
                 || path == "/v1/auth/login"
+                || path.starts_with("/v1/auth/login/")
                 || path == "/v1/auth/logout"
                 || path.starts_with("/v1/auth/password-reset")
                 || path == "/v1/auth/device-sessions"

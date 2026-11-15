@@ -362,7 +362,7 @@ async fn a_new_company_sees_its_name_and_the_default_price(pool: MySqlPool) {
     response.assert_status_ok();
     assert_eq!(
         response.json::<Value>(),
-        json!({ "company_name": "Acme Stone", "price_cents": 80000, "subscription": null })
+        json!({ "company_name": "Acme Stone", "price_cents": 80000, "first_payment_on": null, "subscription": null })
     );
     // No customer yet, so Stripe is not asked.
     assert!(stripe.lock().unwrap().requests.is_empty());
@@ -773,7 +773,7 @@ async fn superusers_see_every_company_s_payments(pool: MySqlPool) {
         response.json::<Value>(),
         json!([
             {
-                "id": 100, "name": "Acme Stone", "subscription_price_cents": 80000,
+                "id": 100, "name": "Acme Stone", "subscription_price_cents": 80000, "first_payment_on": null,
                 "payment_link": format!("{APP_URL}/?c={}", token(100)),
                 "stripe_customer_id": "cus_acme",
                 "subscription": {
@@ -784,7 +784,7 @@ async fn superusers_see_every_company_s_payments(pool: MySqlPool) {
                 "stripe_error": null,
             },
             {
-                "id": 102, "name": "Bravo Marble", "subscription_price_cents": 80000,
+                "id": 102, "name": "Bravo Marble", "subscription_price_cents": 80000, "first_payment_on": null,
                 "payment_link": format!("{APP_URL}/?c={}", token(102)),
                 "stripe_customer_id": "cus_broken", "subscription": null,
                 "last_payment_at": null, "last_payment_cents": null,
@@ -792,13 +792,13 @@ async fn superusers_see_every_company_s_payments(pool: MySqlPool) {
             },
             {
                 // Made by the migrations; never checked out.
-                "id": 1, "name": "Default Company", "subscription_price_cents": 80000,
+                "id": 1, "name": "Default Company", "subscription_price_cents": 80000, "first_payment_on": null,
                 "payment_link": format!("{APP_URL}/?c={}", token(1)),
                 "stripe_customer_id": null, "subscription": null,
                 "last_payment_at": null, "last_payment_cents": null, "stripe_error": null,
             },
             {
-                "id": 101, "name": "Other Granite Co", "subscription_price_cents": 50000,
+                "id": 101, "name": "Other Granite Co", "subscription_price_cents": 50000, "first_payment_on": null,
                 "payment_link": format!("{APP_URL}/?c={}", token(101)),
                 "stripe_customer_id": "cus_other",
                 "subscription": {
@@ -861,4 +861,81 @@ async fn superusers_set_a_company_price(pool: MySqlPool) {
             .await
             .unwrap();
     assert_eq!(prices, vec![(1, 80000), (100, 80000), (101, 95000)]);
+}
+
+#[test_db::test(seed)]
+async fn a_first_payment_date_saves_the_card_now_and_charges_on_that_day(pool: MySqlPool) {
+    let (server, stripe) = server(&pool).await;
+    make_superuser(&pool).await;
+    let today = chrono::Utc::now().date_naive();
+    let day = today + chrono::Days::new(10);
+    // Too soon for Stripe, too far, and a company that does not exist.
+    for bad in [
+        today,
+        today + chrono::Days::new(2),
+        today + chrono::Days::new(701),
+    ] {
+        server
+            .put("/v1/superuser/companies/100/first-payment-date")
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "first_payment_on": bad }))
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+    }
+    server
+        .put("/v1/superuser/companies/999/first-payment-date")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "first_payment_on": day }))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    server
+        .put("/v1/superuser/companies/100/first-payment-date")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "first_payment_on": day }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Not for anyone but a superuser.
+    server
+        .put("/v1/superuser/companies/100/first-payment-date")
+        .with_session(sessions::MANAGER)
+        .json(&json!({ "first_payment_on": null }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+
+    let page = server
+        .get(&format!("/v1/public/payments/{}", token(100)))
+        .await
+        .json::<Value>();
+    assert_eq!(page["first_payment_on"], json!(day));
+    server
+        .post(&format!("/v1/public/payments/{}/checkout", token(100)))
+        .await
+        .assert_status_ok();
+    let at = day.and_hms_opt(15, 0, 0).unwrap().and_utc().timestamp();
+    assert_eq!(
+        stripe
+            .lock()
+            .unwrap()
+            .last_form("POST", "/v1/checkout/sessions")["subscription_data[trial_end]"],
+        at.to_string()
+    );
+
+    // Cleared: charged at checkout again.
+    server
+        .put("/v1/superuser/companies/100/first-payment-date")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "first_payment_on": null }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    server
+        .post(&format!("/v1/public/payments/{}/checkout", token(100)))
+        .await
+        .assert_status_ok();
+    assert!(
+        !stripe
+            .lock()
+            .unwrap()
+            .last_form("POST", "/v1/checkout/sessions")
+            .contains_key("subscription_data[trial_end]")
+    );
 }

@@ -15,6 +15,12 @@ openapi = ["dep:utoipa", "dep:utoipa-axum", "api-crm/openapi"]
 [dependencies]
 api-crm = { path = "../crm" }
 bcrypt = "0.17"
+base64 = "0.22"
+hmac = "0.13"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+qrcode = { version = "0.14", default-features = false }
+sha1 = "0.11"
+sha2 = "0.11"
 getrandom = "0.3"
 common = { path = "../../../common" }
 axum = "0.8"

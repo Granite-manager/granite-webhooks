@@ -7,6 +7,7 @@ pub mod app_shell;
 pub mod auth;
 pub mod device_sessions;
 pub mod leaderboard;
+pub mod login_steps;
 pub mod me;
 pub mod onboarding;
 pub mod teach_mode;
