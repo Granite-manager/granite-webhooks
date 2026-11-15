@@ -1065,6 +1065,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rustls",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "serde_urlencoded",
