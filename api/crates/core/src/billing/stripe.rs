@@ -379,7 +379,10 @@ impl Stripe {
     }
 
     /// A Checkout page that starts a monthly subscription to `product` at
-    /// `unit_amount_cents` (USD), for the company's existing customer.
+    /// `unit_amount_cents` (USD), for the company's existing customer. With
+    /// `first_payment_at` (unix seconds) the card is saved now and first
+    /// charged then, then every month from that day.
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_monthly_checkout_session(
         &self,
         customer: &str,
@@ -388,34 +391,35 @@ impl Stripe {
         unit_amount_cents: i64,
         success_url: &str,
         cancel_url: &str,
+        first_payment_at: Option<i64>,
     ) -> Result<Value, StripeError> {
-        self.post(
-            "/v1/checkout/sessions",
-            &[
-                ("mode", "subscription".into()),
-                ("customer", customer.into()),
-                ("client_reference_id", company_id.to_string()),
-                ("line_items[0][quantity]", "1".into()),
-                ("line_items[0][price_data][currency]", "usd".into()),
-                ("line_items[0][price_data][product]", product.into()),
-                (
-                    "line_items[0][price_data][unit_amount]",
-                    unit_amount_cents.to_string(),
-                ),
-                (
-                    "line_items[0][price_data][recurring][interval]",
-                    "month".into(),
-                ),
-                ("success_url", success_url.into()),
-                ("cancel_url", cancel_url.into()),
-                ("metadata[company_id]", company_id.to_string()),
-                (
-                    "subscription_data[metadata][company_id]",
-                    company_id.to_string(),
-                ),
-            ],
-        )
-        .await
+        let mut form: Vec<(&str, String)> = vec![
+            ("mode", "subscription".into()),
+            ("customer", customer.into()),
+            ("client_reference_id", company_id.to_string()),
+            ("line_items[0][quantity]", "1".into()),
+            ("line_items[0][price_data][currency]", "usd".into()),
+            ("line_items[0][price_data][product]", product.into()),
+            (
+                "line_items[0][price_data][unit_amount]",
+                unit_amount_cents.to_string(),
+            ),
+            (
+                "line_items[0][price_data][recurring][interval]",
+                "month".into(),
+            ),
+            ("success_url", success_url.into()),
+            ("cancel_url", cancel_url.into()),
+            ("metadata[company_id]", company_id.to_string()),
+            (
+                "subscription_data[metadata][company_id]",
+                company_id.to_string(),
+            ),
+        ];
+        if let Some(at) = first_payment_at {
+            form.push(("subscription_data[trial_end]", at.to_string()));
+        }
+        self.post("/v1/checkout/sessions", &form).await
     }
 
     /// A billing portal page (cancel, payment method, invoices) with the
