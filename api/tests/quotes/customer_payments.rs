@@ -1227,10 +1227,10 @@ async fn the_customer_sees_what_they_paid_and_owe(pool: MySqlPool) {
             &payments["balance_cents"]
         ),
         (
-            &json!(300_050),
+            &json!(420_050),
             &json!(100_050),
             &json!(50_000),
-            &json!(200_000)
+            &json!(320_000)
         )
     );
     let listed: Vec<(&str, &str)> = payments["payments"]
@@ -1255,8 +1255,52 @@ async fn the_customer_sees_what_they_paid_and_owe(pool: MySqlPool) {
     // The company's side of the fee is not the customer's business.
     assert_eq!(
         payments["payments"][0],
-        json!({ "id": id(&open), "project_key": "sale-7001", "sale_id": 7001, "method": "card",
-                "status": "created", "amount_cents": 25_000, "customer_fee_cents": 0,
-                "url": open["url"], "failure_reason": null, "created_at": open["created_at"] })
+        json!({ "id": id(&open), "project_key": "sale-7001", "project_name": "5 Oak Ave",
+                "sale_id": 7001, "method": "card", "status": "created", "amount_cents": 25_000,
+                "customer_fee_cents": 0, "url": open["url"], "failure_reason": null,
+                "created_at": open["created_at"] })
+    );
+    // Her jobs: the deal she signed (Erin backsplash, $1,200), then her two
+    // sales. Her other deals are neither won nor sold.
+    assert_eq!(
+        payments["projects"],
+        json!([
+            { "project_key": "deal-8010", "name": "Erin backsplash", "price_cents": 120_000 },
+            { "project_key": "sale-7000", "name": "5 Oak Ave", "price_cents": 100_050 },
+            { "project_key": "sale-7001", "name": "5 Oak Ave", "price_cents": 200_000 },
+        ])
+    );
+
+    // A deal she signed is a job too, at the deal's amount, and a sale made
+    // for it is part of it. A cancelled sale is owed nothing.
+    sqlx::raw_sql(
+        "UPDATE deals SET is_won = 1 WHERE id = 8002;
+         UPDATE sales SET deal_id = 8002 WHERE id = 7000;
+         UPDATE sales SET cancelled_date = '2026-05-01 00:00:00' WHERE id = 7001;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let payments: Value = server.get(&page("/payments")).await.json();
+    assert_eq!(
+        payments["projects"],
+        json!([
+            { "project_key": "deal-8010", "name": "Erin backsplash", "price_cents": 120_000 },
+            { "project_key": "deal-8002", "name": "Erin countertops", "price_cents": 250_050 },
+        ])
+    );
+    assert_eq!(
+        (
+            &payments["total_cents"],
+            &payments["paid_cents"],
+            &payments["balance_cents"]
+        ),
+        (&json!(370_050), &json!(100_050), &json!(270_000))
+    );
+    // The payment made for the sale now shows under the deal.
+    let last = payments["payments"].as_array().unwrap().last().unwrap();
+    assert_eq!(
+        (&last["project_key"], &last["project_name"]),
+        (&json!("deal-8002"), &json!("Erin countertops"))
     );
 }

@@ -6362,7 +6362,7 @@
           "customer-view"
         ],
         "summary": "List the customer's payments",
-        "description": "What the customer's jobs cost, what they paid through payment links and\nwhat is left, with each payment and each link still to pay. Needs a\nverified visitor.",
+        "description": "The customer's jobs (the deals they signed and their sales) with what\nthey cost, what the customer paid through payment links and what is\nleft, with each payment and each link still to pay. Needs a verified\nvisitor.",
         "operationId": "list_customer_view_payments",
         "parameters": [
           {
@@ -6387,7 +6387,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The payments and the balance",
+            "description": "The jobs, the payments and the balance",
             "content": {
               "application/json": {
                 "schema": {
@@ -85453,13 +85453,14 @@
           "paid_cents",
           "pending_cents",
           "balance_cents",
+          "projects",
           "payments"
         ],
         "properties": {
           "total_cents": {
             "type": "integer",
             "format": "int64",
-            "description": "What their jobs cost: the prices of their sales that were not\ncancelled, in US cents."
+            "description": "What their jobs cost together (`projects`), in US cents."
           },
           "paid_cents": {
             "type": "integer",
@@ -85475,6 +85476,13 @@
             "type": "integer",
             "format": "int64",
             "description": "`total_cents` minus `paid_cents`, never below zero. Money paid\nanother way (a check, cash) is not counted."
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ViewJob"
+            },
+            "description": "Their jobs, oldest first: each deal that is won or has a sale, then\neach sale that is not part of such a deal. Cancelled sales are left\nout."
           },
           "payments": {
             "type": "array",
@@ -119404,6 +119412,32 @@
           }
         }
       },
+      "ViewJob": {
+        "type": "object",
+        "description": "One job of the customer: a deal they signed, or a sale that is not part\nof such a deal. The same jobs the CRM lists on the customer's Projects\ntab (`GET /v1/customers/{id}/projects`).",
+        "required": [
+          "project_key",
+          "price_cents"
+        ],
+        "properties": {
+          "project_key": {
+            "type": "string",
+            "description": "`deal-<deal id>` or `sale-<sale id>`."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The deal's title, else the address of the work; null without either."
+          },
+          "price_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What it costs, in US cents: the deal's amount, else its sales' prices."
+          }
+        }
+      },
       "ViewPayment": {
         "type": "object",
         "description": "A payment as the customer sees it: the company's side of the fee is left\nout.",
@@ -119424,7 +119458,14 @@
           },
           "project_key": {
             "type": "string",
-            "description": "The job it is for: `deal-<deal id>` or `sale-<sale id>`."
+            "description": "The job it is for: `deal-<deal id>` or `sale-<sale id>`, one of\n`projects`."
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The job's name: the deal's title, else the sale's address; null\nwithout either."
           },
           "sale_id": {
             "type": [

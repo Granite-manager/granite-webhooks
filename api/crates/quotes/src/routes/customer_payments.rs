@@ -1660,8 +1660,12 @@ pub async fn stripe_connect_webhook(
 pub struct ViewPayment {
     /// The payment's id (`pay_...`).
     pub id: String,
-    /// The job it is for: `deal-<deal id>` or `sale-<sale id>`.
+    /// The job it is for: `deal-<deal id>` or `sale-<sale id>`, one of
+    /// `projects`.
     pub project_key: String,
+    /// The job's name: the deal's title, else the sale's address; null
+    /// without either.
+    pub project_name: Option<String>,
     /// The sale it was made for, when it was made for a sale.
     pub sale_id: Option<i32>,
     /// How it is paid.
@@ -1680,11 +1684,23 @@ pub struct ViewPayment {
     pub created_at: String,
 }
 
+/// One job of the customer: a deal they signed, or a sale that is not part
+/// of such a deal. The same jobs the CRM lists on the customer's Projects
+/// tab (`GET /v1/customers/{id}/projects`).
+#[derive(Debug, Serialize, ToSchema, PartialEq, Eq)]
+pub struct ViewJob {
+    /// `deal-<deal id>` or `sale-<sale id>`.
+    pub project_key: String,
+    /// The deal's title, else the address of the work; null without either.
+    pub name: Option<String>,
+    /// What it costs, in US cents: the deal's amount, else its sales' prices.
+    pub price_cents: i64,
+}
+
 /// What the customer paid and still owes.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CustomerViewPayments {
-    /// What their jobs cost: the prices of their sales that were not
-    /// cancelled, in US cents.
+    /// What their jobs cost together (`projects`), in US cents.
     pub total_cents: i64,
     /// What they paid through payment links.
     pub paid_cents: i64,
@@ -1693,15 +1709,73 @@ pub struct CustomerViewPayments {
     /// `total_cents` minus `paid_cents`, never below zero. Money paid
     /// another way (a check, cash) is not counted.
     pub balance_cents: i64,
+    /// Their jobs, oldest first: each deal that is won or has a sale, then
+    /// each sale that is not part of such a deal. Cancelled sales are left
+    /// out.
+    pub projects: Vec<ViewJob>,
     /// Their payments and open payment links, newest first.
     pub payments: Vec<ViewPayment>,
 }
 
+#[derive(sqlx::FromRow)]
+struct JobDeal {
+    id: i64,
+    title: Option<String>,
+    amount_cents: Option<i64>,
+}
+
+#[derive(sqlx::FromRow)]
+struct JobSale {
+    id: i32,
+    deal_id: Option<i64>,
+    price_cents: i64,
+    address: Option<String>,
+    cancelled: bool,
+}
+
+/// The customer's jobs, as `projects_of` lists them for the CRM: each deal
+/// with the sales made for it, then the open sales of no listed deal.
+fn jobs_of(deals: &[JobDeal], sales: &[JobSale]) -> Vec<ViewJob> {
+    let mut jobs: Vec<ViewJob> = deals
+        .iter()
+        .map(|deal| {
+            let own = || sales.iter().filter(|sale| sale.deal_id == Some(deal.id));
+            ViewJob {
+                project_key: format!("deal-{}", deal.id),
+                name: deal
+                    .title
+                    .clone()
+                    .or_else(|| own().find_map(|sale| sale.address.clone())),
+                price_cents: deal.amount_cents.unwrap_or_else(|| {
+                    own()
+                        .filter(|sale| !sale.cancelled)
+                        .map(|sale| sale.price_cents)
+                        .sum()
+                }),
+            }
+        })
+        .collect();
+    for sale in sales.iter().filter(|sale| !sale.cancelled) {
+        let listed = sale
+            .deal_id
+            .is_some_and(|id| deals.iter().any(|deal| deal.id == id));
+        if !listed {
+            jobs.push(ViewJob {
+                project_key: format!("sale-{}", sale.id),
+                name: sale.address.clone(),
+                price_cents: sale.price_cents,
+            });
+        }
+    }
+    jobs
+}
+
 /// List the customer's payments
 ///
-/// What the customer's jobs cost, what they paid through payment links and
-/// what is left, with each payment and each link still to pay. Needs a
-/// verified visitor.
+/// The customer's jobs (the deals they signed and their sales) with what
+/// they cost, what the customer paid through payment links and what is
+/// left, with each payment and each link still to pay. Needs a verified
+/// visitor.
 #[crate::openapi::path(
     get,
     path = "/v1/public/customer-view/{company_id}/{view_id}/payments",
@@ -1712,7 +1786,7 @@ pub struct CustomerViewPayments {
         ("view_id" = String, Path, description = "The customer's page id (a UUID)"),
     ),
     responses(
-        (status = 200, description = "The payments and the balance", body = CustomerViewPayments),
+        (status = 200, description = "The jobs, the payments and the balance", body = CustomerViewPayments),
         (status = 401, description = "No code entered for this page", body = ErrorBody),
         (status = 404, description = "No such page", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
@@ -1724,13 +1798,29 @@ pub async fn view_payments(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let customer = verified_customer(&state, &headers, company_id, &view_id).await?;
-    let total_cents: i64 = sqlx::query_scalar(
-        "SELECT CAST(COALESCE(SUM(ROUND(s.price * 100)), 0) AS SIGNED)
-           FROM sales s WHERE s.customer_id = ? AND s.cancelled_date IS NULL",
+    let deals: Vec<JobDeal> = sqlx::query_as(
+        "SELECT CAST(d.id AS SIGNED) AS id, NULLIF(TRIM(d.title), '') AS title,
+                CAST(ROUND(d.amount * 100) AS SIGNED) AS amount_cents
+           FROM deals d
+          WHERE d.customer_id = ? AND d.deleted_at IS NULL
+            AND (d.is_won = 1 OR EXISTS (SELECT 1 FROM sales s WHERE s.deal_id = d.id))
+          ORDER BY d.created_at, d.id",
     )
     .bind(customer.id)
-    .fetch_one(&state.pool)
+    .fetch_all(&state.pool)
     .await?;
+    let sales: Vec<JobSale> = sqlx::query_as(
+        "SELECT s.id, CAST(s.deal_id AS SIGNED) AS deal_id,
+                CAST(ROUND(COALESCE(s.price, 0) * 100) AS SIGNED) AS price_cents,
+                NULLIF(TRIM(s.project_address), '') AS address,
+                s.cancelled_date IS NOT NULL AS cancelled
+           FROM sales s WHERE s.customer_id = ? ORDER BY s.sale_date, s.id",
+    )
+    .bind(customer.id)
+    .fetch_all(&state.pool)
+    .await?;
+    let projects = jobs_of(&deals, &sales);
+    let total_cents: i64 = projects.iter().map(|job| job.price_cents).sum();
     let rows: Vec<PaymentRow> = sqlx::query_as(AssertSqlSafe(format!(
         "{PAYMENT_SELECT}
           WHERE p.company_id = ? AND p.customer_id = ? AND p.status <> 'canceled'
@@ -1758,6 +1848,7 @@ pub async fn view_payments(
             url: row.url(&origin),
             created_at: row.created_at(),
             id: row.public_id,
+            project_name: row.project_name,
             sale_id: row.sale_id,
             amount_cents: row.amount_cents,
             customer_fee_cents: row.customer_fee_cents,
@@ -1769,6 +1860,7 @@ pub async fn view_payments(
         paid_cents,
         pending_cents,
         balance_cents: (total_cents - paid_cents).max(0),
+        projects,
         payments,
     })))
 }
@@ -1849,6 +1941,50 @@ mod tests {
         ] {
             assert!(parse_project_key(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_jobs_of_a_customer_are_their_deals_and_the_sales_outside_them() {
+        let deal = |id, title: Option<&str>, amount_cents| JobDeal {
+            id,
+            title: title.map(str::to_string),
+            amount_cents,
+        };
+        let sale = |id, deal_id, price_cents, address: Option<&str>, cancelled| JobSale {
+            id,
+            deal_id,
+            price_cents,
+            address: address.map(str::to_string),
+            cancelled,
+        };
+        let job = |key: &str, name: Option<&str>, price_cents| ViewJob {
+            project_key: key.into(),
+            name: name.map(str::to_string),
+            price_cents,
+        };
+        let deals = [deal(1, Some("Kitchen"), Some(500_000)), deal(2, None, None)];
+        let sales = [
+            // Part of a deal with its own amount: the deal's amount counts.
+            sale(10, Some(1), 480_000, Some("1 Main St"), false),
+            // A deal without an amount costs its open sales, and is named
+            // by their address.
+            sale(11, Some(2), 100_000, Some("2 Elm St"), false),
+            sale(12, Some(2), 70_000, None, true),
+            // On their own; a deal that is not listed does not hide a sale.
+            sale(13, None, 30_000, None, false),
+            sale(14, Some(9), 20_000, Some("9 Oak Ave"), false),
+            sale(15, None, 99_000, Some("gone"), true),
+        ];
+        assert_eq!(
+            jobs_of(&deals, &sales),
+            vec![
+                job("deal-1", Some("Kitchen"), 500_000),
+                job("deal-2", Some("2 Elm St"), 100_000),
+                job("sale-13", None, 30_000),
+                job("sale-14", Some("9 Oak Ave"), 20_000),
+            ]
+        );
+        assert_eq!(jobs_of(&[], &[]), vec![]);
     }
 
     #[test]
