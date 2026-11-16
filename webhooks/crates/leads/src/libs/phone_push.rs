@@ -129,7 +129,7 @@ async fn send(push: LeadPush) {
         tracing::warn!(customer_id, "API_URL or LAMBDA_KEY not set; no lead push");
         return;
     };
-    match push_request(&common::http::client(), &api_url, &key, &push)
+    match push_request(&crate::http::client(), &api_url, &key, &push)
         .send()
         .await
     {
@@ -164,7 +164,7 @@ mod tests {
             except_user_ids: Vec::new(),
         };
         let request = push_request(
-            &common::http::client(),
+            &crate::http::client(),
             "https://api.test/",
             "lambda-key",
             &push,

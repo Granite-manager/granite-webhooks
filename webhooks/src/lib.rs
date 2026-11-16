@@ -26,7 +26,7 @@ pub mod axum_helpers;
 /// main.rs polls compiles with the binary, whose link-time optimization waits
 /// for every crate.
 pub fn run(
-    pool: sqlx::MySqlPool,
+    app: axum::Router,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), lambda_http::Error>>>> {
-    Box::pin(lambda_http::run(axum_helpers::axum_app::new_main_app(pool)))
+    Box::pin(lambda_http::run(app))
 }

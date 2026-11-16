@@ -184,9 +184,14 @@ pub async fn process_reply_email<C: S3Bucket + Send + Sync + 'static>(
     };
     maybe_move_deal_on_inbound_email(pool, &send_email).await;
     maybe_cancel_flow_on_inbound_email(pool, &send_email).await;
-    maybe_send_inbound_email_telegram(pool, &send_email).await;
-    // Only a row stored just now: a redelivery or a duplicate insert stops above.
-    push_inbound_email(stored.last_insert_id()).await;
+    // At once: the Telegram message (~300 ms, Telegram is in Europe) and the
+    // phone push through the api (~130 ms) wait on different servers.
+    // Only a row stored just now is pushed: a redelivery or a duplicate
+    // insert stops above.
+    tokio::join!(
+        maybe_send_inbound_email_telegram(pool, &send_email),
+        push_inbound_email(stored.last_insert_id()),
+    );
     OK_RESPONSE
 }
 
@@ -273,9 +278,14 @@ pub async fn process_first_email<C: S3Bucket + Send + Sync + 'static>(
     };
     maybe_move_deal_on_inbound_email(pool, &send_email).await;
     maybe_cancel_flow_on_inbound_email(pool, &send_email).await;
-    maybe_send_inbound_email_telegram(pool, &send_email).await;
-    // Only a row stored just now: a redelivery or a duplicate insert stops above.
-    push_inbound_email(stored.last_insert_id()).await;
+    // At once: the Telegram message (~300 ms, Telegram is in Europe) and the
+    // phone push through the api (~130 ms) wait on different servers.
+    // Only a row stored just now is pushed: a redelivery or a duplicate
+    // insert stops above.
+    tokio::join!(
+        maybe_send_inbound_email_telegram(pool, &send_email),
+        push_inbound_email(stored.last_insert_id()),
+    );
     OK_RESPONSE
 }
 

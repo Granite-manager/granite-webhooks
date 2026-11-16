@@ -1,11 +1,15 @@
 //! Texts through `CloudTalk`. Port of the CRM's `cloudtalkSendSms.server.ts`
 //! and `cloudtalkRequest`.
+//!
+//! `CloudTalk` is switched off: the code stays for a return, but nothing
+//! calls its API unless `CLOUDTALK_ENABLED` is `true` (see [`enabled`]).
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use reqwest::{Client, Method, StatusCode};
 use serde_json::{Value, json};
 use sqlx::MySqlPool;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const SERVER_RETRIES: usize = 3;
@@ -36,6 +40,45 @@ fn rate_limit_wait(reset: Option<u64>) -> u64 {
         .filter(|reset| *reset > 0)
         .map_or(5, |reset| reset.saturating_sub(now) + 1)
         .min(MAX_RATE_LIMIT_WAIT_SECS)
+}
+
+/// The environment variable that switches `CloudTalk` on (`true` or `1`).
+pub const ENABLED_VAR: &str = "CLOUDTALK_ENABLED";
+
+/// Set by [`set_enabled`]: 0 unset (the environment decides), 1 on, 2 off.
+static ENABLED_OVERRIDE: AtomicU8 = AtomicU8::new(0);
+
+/// Whether `CloudTalk` is in use. Off unless `CLOUDTALK_ENABLED` is `true`
+/// or `1`: the companies stopped using it, so its API is never called, its
+/// webhooks are answered without being stored, and the jobs, the bell and
+/// the contact sync skip it. The code and the stored data stay.
+pub fn enabled() -> bool {
+    match ENABLED_OVERRIDE.load(Ordering::Relaxed) {
+        1 => true,
+        2 => false,
+        _ => switched_on(std::env::var(ENABLED_VAR).ok().as_deref()),
+    }
+}
+
+/// `CLOUDTALK_ENABLED`'s value read as on: `true` or `1`.
+fn switched_on(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+/// Overrides `CLOUDTALK_ENABLED` for this process: for the tests of the
+/// `CloudTalk` code, which run with it on.
+pub fn set_enabled(on: bool) {
+    ENABLED_OVERRIDE.store(if on { 1 } else { 2 }, Ordering::Relaxed);
+}
+
+/// What a call answers while `CloudTalk` is off: nothing is sent.
+pub fn disabled_error() -> ApiError {
+    ApiError {
+        status: 503,
+        message: Some("cloudtalk_disabled".into()),
+    }
 }
 
 /// The production API.
@@ -138,6 +181,9 @@ fn is_cloudtalk_link(base_url: &str, link: &str) -> bool {
 /// with the company's key. Links that are not `CloudTalk`'s are refused
 /// (400) without being fetched.
 pub async fn get_link(api: Api<'_>, link: &str) -> Result<Raw, ApiError> {
+    if !enabled() {
+        return Err(disabled_error());
+    }
     if !is_cloudtalk_link(api.base_url, link) {
         return Err(ApiError {
             status: 400,
@@ -184,6 +230,9 @@ async fn call(
     body: Option<&Value>,
     idempotency_key: Option<&str>,
 ) -> Result<reqwest::Response, ApiError> {
+    if !enabled() {
+        return Err(disabled_error());
+    }
     let Api {
         pool,
         client,
@@ -347,7 +396,9 @@ pub async fn send(
 /// The token the CRM shows for a failed send.
 pub fn error_token(error: &ApiError) -> String {
     let message = error.message.as_deref().unwrap_or_default().to_lowercase();
-    let token = if message.contains("insufficient funds") {
+    let token = if message == "cloudtalk_disabled" {
+        "cloudtalk_disabled"
+    } else if message.contains("insufficient funds") {
         "cloudtalk_insufficient_funds"
     } else if message.contains("limit exceeded") {
         "cloudtalk_limit_exceeded"
@@ -368,6 +419,16 @@ pub fn error_token(error: &ApiError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloudtalk_is_off_unless_switched_on() {
+        for off in [None, Some(""), Some("false"), Some("0"), Some("no")] {
+            assert!(!switched_on(off), "{off:?}");
+        }
+        for on in [Some("true"), Some("TRUE"), Some(" 1 ")] {
+            assert!(switched_on(on), "{on:?}");
+        }
+    }
 
     #[test]
     fn only_cloudtalk_links_are_fetched() {

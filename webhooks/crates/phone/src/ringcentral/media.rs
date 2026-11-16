@@ -46,7 +46,7 @@ async fn post(body: &InboundMedia<'_>) -> Result<(), String> {
         "{}/v1/sms/ringcentral/inbound-media",
         api_url.trim_end_matches('/')
     );
-    let response = common::http::client()
+    let response = crate::http::client()
         .post(url)
         .header("Authorization", lambda_key)
         .json(body)

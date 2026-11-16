@@ -304,7 +304,7 @@ async fn store_recent_outbound(
     let since = (now - chrono::Duration::hours(REJECTED_LOOKBACK_HOURS))
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string();
-    let client = common::http::client();
+    let client = crate::http::client();
     for page in 1..=MAX_PAGES {
         let (records, more) = match common::telephony::ringcentral::sent_texts_page(
             pool, &client, company_id, extension, &since, None, page,
@@ -395,7 +395,7 @@ pub async fn sync_ringcentral(
     State(pool): State<MySqlPool>,
     Path((_company_id, customer_id)): Path<(i32, i32)>,
 ) -> BasicResponse {
-    let client = common::http::client();
+    let client = crate::http::client();
     sync_customer_to_ring_central(&pool, &client, customer_id).await
 }
 
@@ -406,7 +406,7 @@ pub async fn unsync_ringcentral(
     State(pool): State<MySqlPool>,
     Path((_company_id, customer_id)): Path<(i32, i32)>,
 ) -> BasicResponse {
-    let client = common::http::client();
+    let client = crate::http::client();
     crate::ringcentral::api::delete_customer_from_ring_central(&pool, &client, customer_id).await
 }
 

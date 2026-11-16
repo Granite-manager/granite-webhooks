@@ -139,7 +139,8 @@ pub async fn company_features(
             leaderboard: row.leaderboard,
             e_signature: row.e_signature,
             inbound_email: mail_domain(row.domain.as_deref()).is_some(),
-            cloudtalk: row.cloudtalk,
+            // CloudTalk is switched off unless CLOUDTALK_ENABLED (its keys stay).
+            cloudtalk: row.cloudtalk && common::telephony::cloudtalk::enabled(),
             ringcentral: row.ringcentral,
             telnyx: row.telnyx,
             telnyx_sms: row.telnyx_sms,
