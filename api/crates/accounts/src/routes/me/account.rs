@@ -14,7 +14,7 @@ use crate::phone::company as phone_company;
 use crate::phone::lines;
 use crate::routes::company::queries::company_features;
 use crate::routes::onboarding::{self, Credit, CreditOutcome, store};
-use crate::routes::users::manage::resolve_ringcentral_extension;
+use crate::routes::users::manage::{free_deleted_email, resolve_ringcentral_extension};
 use crate::routes::users::texting_history;
 use crate::state::AppState;
 use axum::Json;
@@ -691,14 +691,7 @@ pub async fn update_account(
     let actor = home_actor(pool, user.id).await?;
     let before = stored(pool, actor).await?;
     if before.email.as_deref().map(str::to_lowercase).as_deref() != Some(input.email.as_str()) {
-        let taken: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(email) = ? AND id <> ? AND is_deleted = 0)",
-        )
-        .bind(&input.email)
-        .bind(actor.user_id)
-        .fetch_one(pool)
-        .await?;
-        if taken {
+        if free_deleted_email(pool, &input.email, Some(actor.user_id)).await? {
             return Err(ApiError::Conflict(
                 "This email belongs to another account".into(),
             ));

@@ -665,7 +665,7 @@
             }
           },
           "400": {
-            "description": "Gmail connect is not set up",
+            "description": "Gmail connect is not set up, or the company sends through its own Amazon domain",
             "content": {
               "application/json": {
                 "schema": {
@@ -7252,7 +7252,7 @@
           "users"
         ],
         "summary": "Add a user",
-        "description": "Creates a user with their email and positions in the caller's company\n(superusers: in `company_id`) and emails them an invite link (7 days) to\nset their own name, phone and password; they cannot sign in before. The\nemail must be unused, even by a deleted user. When the email fails the\nuser is still added: share the returned link instead.",
+        "description": "Creates a user with their email and positions in the caller's company\n(superusers: in `company_id`) and emails them an invite link (7 days) to\nset their own name, phone and password; they cannot sign in before. The\nemail must not belong to a live user; a deleted user's email is freed for\nit (the deleted row keeps its deals and emails under a renamed address,\nsee `free_deleted_email`). When the email fails the\nuser is still added: share the returned link instead.",
         "operationId": "create_managed_user",
         "requestBody": {
           "content": {
@@ -7416,7 +7416,7 @@
           "users"
         ],
         "summary": "Save a user",
-        "description": "Saves the user's details and positions. Positions that stay keep their\nrows (Telegram lead buttons point at them). Non-superusers keep the\nuser's company, Super Admin and check-in positions and Super Admin\ncompanies as they are, and may only grant marketing for the user's own\ncompany (or remove companies a superuser granted). Super Admins are\nalways admins. The `RingCentral` extension follows the number. A user\nwho is no longer an employee or admin of their company (or moved to\nanother one) is signed out of Granite Manager.",
+        "description": "Saves the user's details and positions. Positions that stay keep their\nrows (Telegram lead buttons point at them). Super Admins may move the\nuser between companies they are Super Admin of; other non-superusers keep\nthe user's company. Non-superusers keep the Super Admin and check-in positions and Super Admin\ncompanies as they are, and may only grant marketing for the user's own\ncompany (or remove companies a superuser granted). Super Admins are\nalways admins. The `RingCentral` extension follows the number. A user\nwho is no longer an employee or admin of their company (or moved to\nanother one) is signed out of Granite Manager.",
         "operationId": "update_managed_user",
         "parameters": [
           {
@@ -23933,7 +23933,7 @@
           "projects"
         ],
         "summary": "Tick a step's to-do list item off, or open it again",
-        "description": "Anyone who can see the project, while it is not archived or cancelled.\nTicking the step's last open item checks the step off.",
+        "description": "Anyone who can see the project, while it is not archived or cancelled.\nTicking the step's last open item checks the step off; opening one again\nopens the step again.",
         "operationId": "set_project_step_item_done",
         "parameters": [
           {
@@ -99113,7 +99113,7 @@
         "properties": {
           "available": {
             "type": "boolean",
-            "description": "Granite Manager's Google app is set up, so Connect Gmail works."
+            "description": "Granite Manager's Google app is set up and the company does not send\nthrough its own Amazon SES domain, so Connect Gmail works. Stays true\nwhile the caller is connected, so they can disconnect."
           },
           "email": {
             "type": [
@@ -123112,7 +123112,7 @@
           "company_id": {
             "type": "integer",
             "format": "int32",
-            "description": "Superusers: move them to this company."
+            "description": "Move them to this company: superusers any, Super Admins one they are\nSuper Admin of (from one of those); others keep the user's company."
           },
           "positions": {
             "type": "array",
@@ -123176,6 +123176,7 @@
           "superadmin_company_ids",
           "companies",
           "logged_in_is_superuser",
+          "move_companies",
           "has_cloudtalk_api",
           "has_ringcentral_api",
           "other_scheduling_managers"
@@ -123219,6 +123220,13 @@
           "logged_in_is_superuser": {
             "type": "boolean",
             "description": "The caller is a superuser."
+          },
+          "move_companies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompanyName"
+            },
+            "description": "Companies the caller may move the user to (superusers: every one;\nSuper Admins: the ones they are Super Admin of, when the user is in\none of them); empty when they can't move them."
           },
           "has_cloudtalk_api": {
             "type": "boolean",
