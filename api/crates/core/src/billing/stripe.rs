@@ -16,6 +16,8 @@ use std::time::Duration;
 const API_BASE: &str = "https://api.stripe.com";
 /// `stripe` npm 22's `ApiVersion`.
 pub const API_VERSION: &str = "2026-08-26.dahlia";
+/// The version sent to Stripe's `/v2` routes (Accounts v2).
+const API_V2_VERSION: &str = "2026-10-28.endive";
 /// How old a webhook signature may be (the SDK's default).
 const SIGNATURE_TOLERANCE_SECS: i64 = 300;
 
@@ -561,23 +563,70 @@ pub struct PaymentCheckout<'a> {
 /// connected account (direct charges), and the platform takes an application
 /// fee. Requests about a connected account's objects carry `Stripe-Account`.
 impl Stripe {
-    /// A Standard connected account for the company: Stripe charges its fees
-    /// to the company and handles its disputes.
+    /// A connected account for the company, of the kind Accounts v1 called
+    /// Standard: the company has Stripe's full dashboard, Stripe charges its
+    /// fees to the company and handles its disputes. It may take card and ACH
+    /// payments once Stripe has its details. Made with Accounts v2, which
+    /// Stripe requires of new platforms (`POST /v1/accounts` is refused); the
+    /// `/v1` routes read and charge the account all the same.
     pub async fn create_connected_account(
         &self,
         name: &str,
         company_id: i32,
     ) -> Result<Value, StripeError> {
-        self.post(
-            "/v1/accounts",
-            &[
-                ("type", "standard".into()),
-                ("country", "US".into()),
-                ("business_profile[name]", name.into()),
-                ("metadata[company_id]", company_id.to_string()),
-            ],
+        self.post_v2(
+            "/v2/core/accounts",
+            &serde_json::json!({
+                "display_name": name,
+                "identity": { "country": "us" },
+                "dashboard": "full",
+                "defaults": {
+                    "responsibilities": {
+                        "fees_collector": "stripe",
+                        "losses_collector": "stripe",
+                    },
+                },
+                "configuration": {
+                    "merchant": {
+                        "capabilities": {
+                            "card_payments": { "requested": true },
+                            "ach_debit_payments": { "requested": true },
+                        },
+                    },
+                },
+                "metadata": { "company_id": company_id.to_string() },
+            }),
         )
         .await
+    }
+
+    /// A request to Stripe's `/v2` API, which takes JSON and its own version.
+    async fn post_v2(&self, path: &str, body: &Value) -> Result<Value, StripeError> {
+        let key = self.key.as_ref().ok_or(StripeError::NotConfigured)?;
+        let response = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .bearer_auth(&**key)
+            .header("Stripe-Version", API_V2_VERSION)
+            .timeout(Duration::from_secs(30))
+            .json(body)
+            .send()
+            .await
+            .map_err(|err| StripeError::Request(err.without_url().to_string()))?;
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|err| StripeError::Request(err.without_url().to_string()))?;
+        if status.is_success() {
+            Ok(body)
+        } else {
+            let message = body["error"]["message"]
+                .as_str()
+                .unwrap_or("Stripe request failed")
+                .to_string();
+            Err(StripeError::Api(message))
+        }
     }
 
     /// A connected account: `charges_enabled` says whether it can be paid.
@@ -626,6 +675,12 @@ impl Stripe {
         let mut form: Vec<(&str, String)> = vec![
             ("mode", "payment".into()),
             ("payment_method_types[0]", checkout.payment_method.into()),
+            // Link would add its own ways to pay (a bank, Klarna) to a card
+            // page, and the fee was worked out for the method chosen here.
+            ("wallet_options[link][display]", "never".into()),
+            // The price is in dollars: no offer to pay in the card's own
+            // currency, which costs the customer a conversion markup.
+            ("adaptive_pricing[enabled]", "false".into()),
             ("client_reference_id", checkout.payment_id.into()),
             ("metadata[granite_payment]", checkout.payment_id.into()),
             (

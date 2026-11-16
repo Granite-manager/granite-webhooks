@@ -81,11 +81,11 @@ fn account_header(headers: &HeaderMap) -> Option<String> {
 async fn fake_stripe(state: Shared) -> String {
     let router = Router::new()
         .route(
-            "/v1/accounts",
+            "/v2/core/accounts",
             post(|State(s): State<Shared>, body: String| async move {
                 let mut s = s.lock().unwrap();
                 s.requests
-                    .push(("POST".into(), "/v1/accounts".into(), None, body));
+                    .push(("POST".into(), "/v2/core/accounts".into(), None, body));
                 let id = format!("acct_{}", s.accounts.len() + 1);
                 let account = json!({ "id": id, "object": "account", "charges_enabled": false });
                 s.accounts.insert(id, account.clone());
@@ -407,10 +407,25 @@ async fn connecting_a_bank_account_goes_through_stripe(pool: MySqlPool) {
     );
     {
         let stripe = stripe.lock().unwrap();
-        let (_, account) = stripe.last("POST", "/v1/accounts");
-        assert_eq!(account["type"], "standard");
-        assert_eq!(account["business_profile[name]"], "Acme Stone");
-        assert_eq!(account["metadata[company_id]"], "100");
+        // Accounts v2 takes JSON, not a form.
+        let (_, _, _, body) = stripe
+            .requests
+            .iter()
+            .find(|(_, path, _, _)| path == "/v2/core/accounts")
+            .expect("no account made");
+        let account: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(account["display_name"], "Acme Stone");
+        assert_eq!(account["dashboard"], "full");
+        assert_eq!(
+            account["defaults"]["responsibilities"],
+            json!({ "fees_collector": "stripe", "losses_collector": "stripe" })
+        );
+        assert_eq!(
+            account["configuration"]["merchant"]["capabilities"],
+            json!({ "card_payments": { "requested": true },
+                    "ach_debit_payments": { "requested": true } })
+        );
+        assert_eq!(account["metadata"]["company_id"], "100");
         let (_, link) = stripe.last("POST", "/v1/account_links");
         assert_eq!(link["account"], ACCOUNT);
         assert_eq!(link["type"], "account_onboarding");
@@ -455,7 +470,7 @@ async fn connecting_a_bank_account_goes_through_stripe(pool: MySqlPool) {
         .with_session(sessions::ADMIN)
         .await
         .assert_status_ok();
-    assert_eq!(stripe.lock().unwrap().count("POST", "/v1/accounts"), 1);
+    assert_eq!(stripe.lock().unwrap().count("POST", "/v2/core/accounts"), 1);
 }
 
 #[test_db::test(seed)]
@@ -552,6 +567,56 @@ async fn a_link_is_for_an_amount_of_one_job(pool: MySqlPool) {
         .await
         .json();
     assert_eq!(listed, json!([ach, card]));
+}
+
+/// Deal 8000 costs $1,000: links cannot ask for more than is left of it.
+#[test_db::test(seed)]
+async fn a_link_cannot_ask_for_more_than_is_left_to_pay(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let refused = |cents: i64| {
+        server
+            .post("/v1/customers/1000/payments")
+            .with_session(sessions::REP)
+            .json(&json!({ "project_key": "deal-8000", "method": "card", "amount_cents": cents }))
+    };
+
+    let response = refused(100_001).await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.json::<Value>()["error"],
+        "The open balance is $1,000"
+    );
+
+    // An unpaid link takes its part of the balance.
+    let first = link(&server, 1000, "deal-8000", "card", 60_000).await;
+    let response = refused(40_001).await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(
+        response.json::<Value>()["error"],
+        "Unpaid links already ask for $600: this one can be for up to $400"
+    );
+
+    // Paid, it still does; refunded, it gives the balance back.
+    let id = first["id"].as_str().unwrap();
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "paid", "pi_1"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, id).await, "paid");
+    let response = refused(40_001).await;
+    response.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(response.json::<Value>()["error"], "The open balance is $400");
+    link(&server, 1000, "deal-8000", "card", 40_000).await;
+
+    // A withdrawn link asks for nothing.
+    sqlx::query("UPDATE customer_payments SET status = 'canceled' WHERE status = 'created'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    link(&server, 1000, "deal-8000", "ach", 40_000).await;
 }
 
 #[test_db::test(seed)]
@@ -701,6 +766,8 @@ async fn the_page_sends_the_customer_to_stripe_checkout(pool: MySqlPool) {
         assert_eq!(account.as_deref(), Some(ACCOUNT));
         assert_eq!(form["mode"], "payment");
         assert_eq!(form["payment_method_types[0]"], "us_bank_account");
+        assert_eq!(form["wallet_options[link][display]"], "never");
+        assert_eq!(form["adaptive_pricing[enabled]"], "false");
         assert_eq!(form["metadata[granite_payment]"], id);
         assert_eq!(form["payment_intent_data[metadata][granite_payment]"], id);
         // Who and what it is for, on the session and on the payment.
@@ -861,7 +928,7 @@ async fn the_webhook_needs_stripe_s_signature(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn a_card_payment_is_paid_at_once_and_the_company_hears(pool: MySqlPool) {
     let (server, _) = connected_server(&pool).await;
-    let payment = link(&server, 1000, "deal-8000", "card", 150_050).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_050).await;
     let id = payment["id"].as_str().unwrap();
 
     // Another account naming this payment changes nothing.
@@ -886,7 +953,7 @@ async fn a_card_payment_is_paid_at_once_and_the_company_hears(pool: MySqlPool) {
     }
     assert_eq!(status_of(&pool, id).await, "paid");
     // Once each: the Manager (Ada, 102) and whoever made the link (Rita, 100).
-    let text = "Alice Lead paid $1,500.50 by card for Alice kitchen.";
+    let text = "Alice Lead paid $500.50 by card for Alice kitchen.";
     assert_eq!(
         bell(&pool).await,
         vec![

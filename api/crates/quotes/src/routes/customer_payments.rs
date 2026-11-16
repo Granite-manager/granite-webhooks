@@ -988,7 +988,9 @@ fn new_public_id() -> ApiResult<String> {
 /// A link the customer pays `amount_cents` of one job on, by card or ACH.
 /// The fee split in effect now is saved on the payment. Send `url` to the
 /// customer: it never expires, and the payment stays `created` until they
-/// pay. 409 until the company's bank account is connected (`GET
+/// pay. The amount cannot be more than is left to pay on the job: its price
+/// less what was paid, what is on its way and the links not paid yet (400
+/// says how much that is). 409 until the company's bank account is connected (`GET
 /// /v1/company/payment-settings`). Withdraw an unpaid link with `DELETE
 /// /v1/customers/{id}/payments/{payment_id}`.
 #[crate::openapi::path(
@@ -1000,7 +1002,7 @@ fn new_public_id() -> ApiResult<String> {
     request_body = NewPayment,
     responses(
         (status = 201, description = "The payment link", body = CustomerPayment),
-        (status = 400, description = "Unknown job, or the amount is out of range", body = ErrorBody),
+        (status = 400, description = "Unknown job, the amount is out of range, or it is more than is left to pay on the job", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
         (status = 404, description = "No such customer in the company", body = ErrorBody),
@@ -1058,6 +1060,22 @@ pub async fn create_payment(
             "A card payment must be at least $10. Use ACH for a smaller amount".into(),
         ));
     }
+    // No link for more than is left to pay on the job: a typo must not make
+    // the customer overpay.
+    let (price_cents, taken) = job_balance(pool, user.company_id, &job).await?;
+    let open_cents = (price_cents - taken.paid - taken.pending).max(0);
+    let free_cents = (open_cents - taken.unpaid_links).max(0);
+    if input.amount_cents > free_cents {
+        return Err(ApiError::BadRequest(if taken.unpaid_links > 0 {
+            format!(
+                "Unpaid links already ask for {}: this one can be for up to {}",
+                dollars(taken.unpaid_links),
+                dollars(free_cents)
+            )
+        } else {
+            format!("The open balance is {}", dollars(free_cents))
+        }));
+    }
     let settings = settings_row(pool, user.company_id).await?;
     if settings.status(config.demo) != BankAccountStatus::Connected {
         return Err(ApiError::Conflict(
@@ -1102,6 +1120,62 @@ pub async fn create_payment(
         .ok_or_else(|| ApiError::Internal("the payment was not saved".into()))?;
     let origin = company_origin(&state, user.company_id).await?;
     Ok((StatusCode::CREATED, Json(row.into_payment(&origin))))
+}
+
+/// What the payments of one job already cover, in cents.
+#[derive(sqlx::FromRow)]
+struct JobTaken {
+    /// Paid, less what was refunded.
+    paid: i64,
+    /// ACH transfers on their way.
+    pending: i64,
+    /// Links nobody paid yet.
+    unpaid_links: i64,
+}
+
+/// A job's price (a deal's amount, else its open sales' prices; a sale's
+/// price) and what its payments already cover, the way the CRM's Projects
+/// tab works out the open balance.
+async fn job_balance(
+    pool: &MySqlPool,
+    company_id: i32,
+    job: &Job,
+) -> sqlx::Result<(i64, JobTaken)> {
+    let (price_sql, column, id) = match job {
+        Job::Deal(deal) => (
+            "SELECT CAST(ROUND(COALESCE(d.amount,
+                         (SELECT SUM(COALESCE(s.price, 0)) FROM sales s
+                           WHERE s.deal_id = d.id AND s.cancelled_date IS NULL), 0) * 100)
+                         AS SIGNED)
+               FROM deals d WHERE d.id = ?",
+            "deal_id",
+            *deal,
+        ),
+        Job::Sale(sale) => (
+            "SELECT CAST(ROUND(COALESCE(s.price, 0) * 100) AS SIGNED) FROM sales s WHERE s.id = ?",
+            "sale_id",
+            i64::from(*sale),
+        ),
+    };
+    let price_cents: Option<i64> = sqlx::query_scalar(price_sql)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    let taken: JobTaken = sqlx::query_as(AssertSqlSafe(format!(
+        "SELECT CAST(COALESCE(SUM(IF(status = 'paid',
+                         amount_cents - LEAST(refunded_cents, amount_cents), 0)), 0) AS SIGNED)
+                    AS paid,
+                CAST(COALESCE(SUM(IF(status = 'pending', amount_cents, 0)), 0) AS SIGNED)
+                    AS pending,
+                CAST(COALESCE(SUM(IF(status = 'created', amount_cents, 0)), 0) AS SIGNED)
+                    AS unpaid_links
+           FROM customer_payments WHERE company_id = ? AND {column} = ?"
+    )))
+    .bind(company_id)
+    .bind(id)
+    .fetch_one(pool)
+    .await?;
+    Ok((price_cents.unwrap_or(0), taken))
 }
 
 /// Withdraw a payment link
@@ -1359,6 +1433,10 @@ pub async fn pay_checkout(
     if account.starts_with(DEMO_ACCOUNT_PREFIX) || !state.stripe.is_enabled() {
         return Err(ApiError::Unavailable("Payments are not set up".into()));
     }
+    // Read before the row is locked: the pool has one connection, and the
+    // transaction below keeps it until the Checkout page is saved.
+    let link = payment.url(&company_origin(&state, payment.company_id).await?);
+    let metadata = checkout_metadata(&state.pool, &payment).await?;
     // One Checkout page per payment at a time: the payment's row stays
     // locked until its page is saved, so a second tab (or a second click)
     // waits here and then reuses that page instead of opening another one
@@ -1393,8 +1471,6 @@ pub async fn pay_checkout(
             _ => {}
         }
     }
-    let link = payment.url(&company_origin(&state, payment.company_id).await?);
-    let metadata = checkout_metadata(&state.pool, &payment).await?;
     let fee_name = fee_line_name(payment.customer_fee_bps);
     let description = payment
         .project_name
@@ -1890,9 +1966,12 @@ fn id_of(value: &Value) -> Option<&str> {
 }
 
 /// The payment a charge or dispute belongs to: by the charge's metadata,
-/// else by its payment intent.
+/// else by its payment intent. Stripe keeps no order: a refund or a dispute
+/// can come before the event that says the payment was made, when the
+/// intent is not kept with the payment yet. Then the intent's own metadata
+/// says which payment it is, read from Stripe.
 async fn payment_of_charge(
-    pool: &MySqlPool,
+    state: &AppState,
     account: &str,
     object: &Value,
 ) -> sqlx::Result<Option<String>> {
@@ -1902,14 +1981,24 @@ async fn payment_of_charge(
     let Some(intent) = id_of(&object["payment_intent"]) else {
         return Ok(None);
     };
-    sqlx::query_scalar(
+    let kept: Option<String> = sqlx::query_scalar(
         "SELECT public_id FROM customer_payments
           WHERE stripe_payment_intent_id = ? AND stripe_account_id = ?",
     )
     .bind(intent)
     .bind(account)
-    .fetch_optional(pool)
-    .await
+    .fetch_optional(&state.pool)
+    .await?;
+    if kept.is_some() || !state.stripe.is_enabled() {
+        return Ok(kept);
+    }
+    match state.stripe.payment_intent(account, intent).await {
+        Ok(found) => Ok(payment_of(&found).map(str::to_string)),
+        Err(error) => {
+            tracing::warn!(%error, intent, "payment intent of a charge not read");
+            Ok(None)
+        }
+    }
 }
 
 /// Why an ACH transfer failed, in Stripe's words.
@@ -1933,7 +2022,8 @@ async fn failure_reason(state: &AppState, account: &str, intent: Option<&str>) -
 
 /// Why a payment failed, from a payment intent's `last_payment_error`: a
 /// card's decline code in plain words (a lost or stolen card reads as
-/// declined), else Stripe's message.
+/// declined), else Stripe's message. A bank transfer keeps Stripe's message
+/// unless the account was short of money.
 fn decline_reason(method: PaymentMethod, error: &Value) -> String {
     let code = error["decline_code"]
         .as_str()
@@ -1941,6 +2031,9 @@ fn decline_reason(method: PaymentMethod, error: &Value) -> String {
         .unwrap_or_default();
     let words = match code {
         "insufficient_funds" => Some("insufficient funds"),
+        // The rest are a card's codes. A bank transfer that bounced carries
+        // "generic_decline" too, and Stripe's message says what happened.
+        _ if method == PaymentMethod::Ach => None,
         "expired_card" => Some("the card has expired"),
         "incorrect_cvc" | "invalid_cvc" => Some("wrong security code"),
         "incorrect_number" | "invalid_number" => Some("wrong card number"),
@@ -2071,7 +2164,7 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
             intent_failed(pool, account, event["id"].as_str(), object).await?;
         }
         "charge.refunded" => {
-            if let Some(payment) = payment_of_charge(pool, account, object).await? {
+            if let Some(payment) = payment_of_charge(state, account, object).await? {
                 let full = object["refunded"].as_bool() == Some(true);
                 let total = object["amount_refunded"].as_i64();
                 refund(pool, &payment, account, total, full).await?;
@@ -2081,9 +2174,14 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
         // dispute again after it was won must not dispute the payment anew.
         "charge.dispute.created" => {
             if let (Some(payment), Some(dispute)) = (
-                payment_of_charge(pool, account, object).await?,
+                payment_of_charge(state, account, object).await?,
                 object["id"].as_str(),
             ) {
+                // Only a payment that was made can be disputed: when this
+                // came first, the payment is marked paid here, and the
+                // event that says so changes nothing later.
+                let intent = id_of(&object["payment_intent"]);
+                settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
                 settle_once(
                     pool,
                     &format!("dispute_created:{dispute}"),
@@ -2097,7 +2195,7 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
         }
         "charge.dispute.closed" => {
             if let (Some(payment), Some(dispute)) = (
-                payment_of_charge(pool, account, object).await?,
+                payment_of_charge(state, account, object).await?,
                 object["id"].as_str(),
             ) {
                 let won = (object["status"] == "won").then_some(Outcome::DisputeWon);
@@ -2481,6 +2579,15 @@ mod tests {
         assert_eq!(
             decline_reason(PaymentMethod::Ach, &Value::Null),
             "the bank declined the transfer"
+        );
+        // What Stripe sends when a bank transfer bounces.
+        assert_eq!(
+            decline_reason(
+                PaymentMethod::Ach,
+                &serde_json::json!({ "code": "no_account", "decline_code": "generic_decline",
+                    "message": "The customer's bank account could not be located." })
+            ),
+            "The customer's bank account could not be located."
         );
     }
 

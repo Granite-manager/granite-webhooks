@@ -6230,7 +6230,7 @@
           "customer-payments"
         ],
         "summary": "Make a payment link",
-        "description": "A link the customer pays `amount_cents` of one job on, by card or ACH.\nThe fee split in effect now is saved on the payment. Send `url` to the\ncustomer: it never expires, and the payment stays `created` until they\npay. 409 until the company's bank account is connected (`GET\n/v1/company/payment-settings`). Withdraw an unpaid link with `DELETE\n/v1/customers/{id}/payments/{payment_id}`.",
+        "description": "A link the customer pays `amount_cents` of one job on, by card or ACH.\nThe fee split in effect now is saved on the payment. Send `url` to the\ncustomer: it never expires, and the payment stays `created` until they\npay. The amount cannot be more than is left to pay on the job: its price\nless what was paid, what is on its way and the links not paid yet (400\nsays how much that is). 409 until the company's bank account is connected (`GET\n/v1/company/payment-settings`). Withdraw an unpaid link with `DELETE\n/v1/customers/{id}/payments/{payment_id}`.",
         "operationId": "create_customer_payment",
         "parameters": [
           {
@@ -6266,7 +6266,7 @@
             }
           },
           "400": {
-            "description": "Unknown job, or the amount is out of range",
+            "description": "Unknown job, the amount is out of range, or it is more than is left to pay on the job",
             "content": {
               "application/json": {
                 "schema": {
