@@ -615,3 +615,75 @@ async fn five_wrong_reset_codes_end_the_code(pool: MySqlPool) {
         .await
         .assert_status_bad_request();
 }
+
+/// The code of `secret` (base32) now.
+fn authenticator_code(secret: &str) -> String {
+    let key = api_accounts::mfa::base32_decode(secret).unwrap();
+    let step = chrono::Utc::now().timestamp().div_euclid(30);
+    format!("{:06}", api_accounts::mfa::code_at(&key, step))
+}
+
+#[test_db::test(seed)]
+async fn a_reset_code_needs_the_authenticator_when_two_step_is_on(pool: MySqlPool) {
+    let (server, sent) = setup(pool.clone(), None).await;
+    let started: Value = server
+        .post("/v1/me/mfa/setup")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    let secret = started["secret"].as_str().unwrap().to_string();
+    server
+        .post("/v1/me/mfa/confirm")
+        .with_session(sessions::REP)
+        .json(&json!({ "code": authenticator_code(&secret) }))
+        .await
+        .assert_status_ok();
+    // The next 30-second step, so the confirm's code is not reused.
+    sqlx::query("UPDATE user_mfa SET last_step = NULL WHERE user_id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    server
+        .post("/v1/auth/password-reset-code")
+        .json(&json!({ "email": "rep@acme.test" }))
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    let code: String = sent.lock().unwrap()[0].subject.chars().take(6).collect();
+    // The email code alone is not enough.
+    let res = server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": code, "password": "a-new-password" }))
+        .await;
+    res.assert_status(StatusCode::CONFLICT);
+    assert_eq!(res.json::<Value>()["error"], "authenticator_code_required");
+    let right = authenticator_code(&secret);
+    let wrong = if right == "000000" {
+        "111111"
+    } else {
+        "000000"
+    };
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({
+            "email": "rep@acme.test", "code": code, "password": "a-new-password",
+            "authenticator_code": wrong,
+        }))
+        .await
+        .assert_status_bad_request();
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({
+            "email": "rep@acme.test", "code": code, "password": "a-new-password",
+            "authenticator_code": right,
+        }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Signing in still asks for the authenticator code.
+    let login = server
+        .post("/v1/auth/login")
+        .json(&json!({ "email": "rep@acme.test", "password": "a-new-password" }))
+        .await;
+    login.assert_status(StatusCode::ACCEPTED);
+    assert_eq!(login.json::<Value>()["step"], "code");
+}

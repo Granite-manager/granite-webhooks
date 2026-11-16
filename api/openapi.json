@@ -53403,7 +53403,7 @@
           "auth"
         ],
         "summary": "Set a new password with an emailed code",
-        "description": "Uses a code once: sets the password (bcrypt), spends the code and ends\nevery session of the user. Then the app signs in with the new password.",
+        "description": "Uses a code once: sets the password (bcrypt), spends the code and ends\nevery session of the user. Then the app signs in with the new password\n(and its two-step sign-in, when on, asks for a code again). When the user\nhas two-step sign-in on, `authenticator_code` must be a current code of\ntheir authenticator app: without one a right email code answers 409\n`authenticator_code_required` (the email code stays good); a wrong one\ncounts as a failure.",
         "operationId": "confirm_password_reset_code",
         "requestBody": {
           "content": {
@@ -53420,7 +53420,17 @@
             "description": "Password set; sign in with it"
           },
           "400": {
-            "description": "Wrong or expired code, or password too short",
+            "description": "Wrong or expired code, wrong authenticator code, or password too short",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`authenticator_code_required`: the email code is right; two-step sign-in is on, so send `authenticator_code` too",
             "content": {
               "application/json": {
                 "schema": {
@@ -109599,6 +109609,13 @@
           "password": {
             "type": "string",
             "description": "The new password, at least 8 characters."
+          },
+          "authenticator_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The 6-digit code of the authenticator app; needed only when the\nuser has two-step sign-in on (else ignored). Leave it out at first:\na 409 `authenticator_code_required` says it is needed."
           }
         }
       },

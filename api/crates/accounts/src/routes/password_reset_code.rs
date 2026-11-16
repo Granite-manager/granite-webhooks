@@ -9,13 +9,18 @@
 //! invite link). It is kept in `password_reset_tokens` as SHA-256 of the user
 //! id and the code, so it only matches that user. Wrong codes count with
 //! wrong passwords (`login_attempts`, the same 429 limits as sign-in), and
-//! the fifth failure since the code was sent ends it. Asking for a code says
+//! the fifth failure since the code was sent ends it. When the user has
+//! two-step sign-in on, the reset also needs a code from their authenticator
+//! app: the email alone never changes the password (a right email code
+//! without one answers 409 `authenticator_code_required`, and the app asks
+//! for it). Asking for a code says
 //! the same whether or not the email exists. Setting the password ends every
 //! session of the user, as the reset link does.
 
 use crate::auth::sha256_hex;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
+use crate::mfa;
 use crate::openapi::ToSchema;
 use crate::openapi::{OpenApiRouter, routes};
 use crate::routes::auth::{
@@ -43,6 +48,8 @@ const CODE_INTERVAL_SECONDS: i64 = 60;
 const MAX_WRONG_CODES: i64 = 5;
 const WRONG_CODE: &str =
     "That code is wrong or has expired. Check the email or ask for a new code.";
+const WRONG_AUTHENTICATOR_CODE: &str =
+    "That authenticator code is not right. Check the code in your authenticator app and try again.";
 
 /// Body of `POST /v1/auth/password-reset-code`.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -60,6 +67,11 @@ pub struct ResetCodeConfirm {
     pub code: String,
     /// The new password, at least 8 characters.
     pub password: String,
+    /// The 6-digit code of the authenticator app; needed only when the
+    /// user has two-step sign-in on (else ignored). Leave it out at first:
+    /// a 409 `authenticator_code_required` says it is needed.
+    #[serde(default)]
+    pub authenticator_code: Option<String>,
 }
 
 impl std::fmt::Debug for ResetCodeConfirm {
@@ -207,7 +219,12 @@ fn code_email_html(code: &str) -> String {
 /// Set a new password with an emailed code
 ///
 /// Uses a code once: sets the password (bcrypt), spends the code and ends
-/// every session of the user. Then the app signs in with the new password.
+/// every session of the user. Then the app signs in with the new password
+/// (and its two-step sign-in, when on, asks for a code again). When the user
+/// has two-step sign-in on, `authenticator_code` must be a current code of
+/// their authenticator app: without one a right email code answers 409
+/// `authenticator_code_required` (the email code stays good); a wrong one
+/// counts as a failure.
 #[crate::openapi::path(
     post,
     path = "/v1/auth/password-reset-code/confirm",
@@ -216,7 +233,8 @@ fn code_email_html(code: &str) -> String {
     request_body = ResetCodeConfirm,
     responses(
         (status = 204, description = "Password set; sign in with it"),
-        (status = 400, description = "Wrong or expired code, or password too short", body = ErrorBody),
+        (status = 400, description = "Wrong or expired code, wrong authenticator code, or password too short", body = ErrorBody),
+        (status = 409, description = "`authenticator_code_required`: the email code is right; two-step sign-in is on, so send `authenticator_code` too", body = ErrorBody),
         (status = 429, description = "Too many failed attempts", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     )
@@ -264,6 +282,21 @@ pub async fn confirm_code(
         record_failed_login(pool, &email_hash, &ip_hash).await?;
         end_after_too_many(pool, user_id, &email_hash).await?;
         return Err(ApiError::BadRequest(WRONG_CODE.into()));
+    }
+    if mfa::state_of(pool, user_id).await?.enabled {
+        let Some(authenticator_code) = input
+            .authenticator_code
+            .as_deref()
+            .map(str::trim)
+            .filter(|code| !code.is_empty())
+        else {
+            return Err(ApiError::Conflict("authenticator_code_required".into()));
+        };
+        if !mfa::use_code(&state, user_id, authenticator_code).await? {
+            record_failed_login(pool, &email_hash, &ip_hash).await?;
+            end_after_too_many(pool, user_id, &email_hash).await?;
+            return Err(ApiError::BadRequest(WRONG_AUTHENTICATOR_CODE.into()));
+        }
     }
     let new_hash = tokio::task::spawn_blocking(move || bcrypt::hash(password, BCRYPT_COST))
         .await
