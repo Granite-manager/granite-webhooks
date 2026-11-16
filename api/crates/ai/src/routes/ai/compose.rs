@@ -1246,12 +1246,12 @@ mod tests {
         };
         let context = ComposeContext {
             profile: String::new(),
-            // The customer texted this morning; the rep now starts an email.
-            timeline: vec![message(
-                "2026-10-13 13:30",
-                FollowupChannel::Sms,
-                Direction::Inbound,
-            )],
+            // The customer texted and the rep answered this morning; the rep
+            // now starts an email.
+            timeline: vec![
+                message("2026-10-13 13:00", FollowupChannel::Sms, Direction::Inbound),
+                message("2026-10-13 13:30", FollowupChannel::Sms, Direction::Outbound),
+            ],
             rep_phone: None,
             company_name: None,
             company_address: None,

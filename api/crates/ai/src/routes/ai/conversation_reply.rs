@@ -50,10 +50,11 @@ PRIMARY TASK — write the next message this conversation itself calls for:
 4. Move it forward with ONE natural question or one concrete next step.
 
 ## Greeting and the customer's name: obey the GREETING line in the request
-- GREETING: NONE → the conversation is ongoing (an SMS or email with them earlier today). No greeting ("Hi", "Hey", "Hello", "Good morning", "Dear") and no customer name anywhere in the message, on SMS and email alike. Start straight with the content, like the next text in a running thread.
-- GREETING: BY NAME → a brand-new conversation, or the last message was on an earlier day: open with a short greeting and their first name ("Hi Ann,"). Never "Hello <Full Name>" or "Dear".
+- GREETING: NONE → the conversation is ongoing (the rep already sent them an SMS or email earlier today). No greeting ("Hi", "Hey", "Hello", "Good morning", "Dear") and no customer name anywhere in the message, on SMS and email alike. Start straight with the content, like the next text in a running thread.
+- GREETING: BY NAME → the rep has not written to them yet today (even if the customer wrote today): open with a short greeting and their first name ("Hi Ann,"). Never "Hello <Full Name>" or "Dear".
 - The customer's name appears at most once in a message.
 - Never add a greeting just because the channel is email.
+- The examples below show the message after any greeting. The GREETING line, not the examples, decides whether it opens with "Hi <first name>,".
 
 ## Be specific — use the facts you have
 - Build the message on concrete facts from QUOTES, CUSTOMER / PROJECT INFO and the thread: the stone/color they picked or are choosing between, the area (kitchen, island, vanity), the edge, the quote and whether they opened it, a measurement or install date, the open next step.
@@ -117,8 +118,8 @@ For this exact situation, prefer wording very close to the GOOD example.
 Promised later text — ONLY when they asked you to wait and you agreed:
 Customer: "10-12 days would be best"
 Rep: "Great, will do"
-GOOD next message, two weeks later (GREETING: NONE, the thread is only weeks old):
-"Reaching out as we agreed. How is the project going?"
+GOOD next message, two weeks later (GREETING: BY NAME, the rep has not written today):
+"Hi Lenora, reaching out as we agreed. How is the project going?"
 BAD next message:
 "Hi Lenora, you reached out about new countertops. Is there a good time for a call?"
 
@@ -940,19 +941,26 @@ mod tests {
     }
 
     #[test]
-    fn a_message_from_today_on_any_channel_skips_the_greeting() {
-        // Earlier today (5:00 AM in Indianapolis): no greeting.
-        for at in ["2026-10-13 09:00"] {
-            let timeline = vec![message(
-                at,
-                Direction::Inbound,
-                "Can you send the price for the island top please?",
-            )];
-            let text = prompt(&timeline, ReplyMode::FastReply, &CustomDraft::default());
-            assert!(text.contains("GREETING: NONE"), "{at}");
-            assert!(text.contains("Do NOT open with a greeting"));
-            assert!(text.contains("do NOT use the customer's name"));
-        }
+    fn only_our_message_from_today_skips_the_greeting() {
+        // The customer wrote at 5:00 AM in Indianapolis: the first reply greets.
+        let asked = vec![message(
+            "2026-10-13 09:00",
+            Direction::Inbound,
+            "Can you send the price for the island top please?",
+        )];
+        let text = prompt(&asked, ReplyMode::FastReply, &CustomDraft::default());
+        assert!(text.contains("GREETING: BY NAME") && !text.contains("GREETING: NONE"));
+        // The rep answered at 6:00 AM: the next draft has no greeting.
+        let mut answered = asked.clone();
+        answered.push(message(
+            "2026-10-13 10:00",
+            Direction::Outbound,
+            "It is $1,200 installed.",
+        ));
+        let text = prompt(&answered, ReplyMode::FastReply, &CustomDraft::default());
+        assert!(text.contains("GREETING: NONE"));
+        assert!(text.contains("Do NOT open with a greeting"));
+        assert!(text.contains("do NOT use the customer's name"));
         // The rep just texted; an email draft still continues without "Hi".
         let mut texted = lenora();
         texted.push(message(
@@ -1139,8 +1147,8 @@ mod tests {
             1
         );
         assert!(goods.iter().all(|l| !l.contains('—')));
-        assert!(p.contains("two weeks later (GREETING: NONE"));
-        assert!(p.contains("\"Reaching out as we agreed. How is the project going?\""));
+        assert!(p.contains("two weeks later (GREETING: BY NAME"));
+        assert!(p.contains("\"Hi Lenora, reaching out as we agreed. How is the project going?\""));
         assert!(p.contains("\"Here's the island quote in Calacatta Karmelo"));
         assert!(reply_body(r#"{"body":"  Sounds good  "}"#) == "Sounds good");
         assert_eq!(reply_body("not json"), "");

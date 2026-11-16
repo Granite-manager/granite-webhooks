@@ -1,17 +1,19 @@
 //! Whether the next message greets the customer by name.
 //!
 //! One rule for every AI-written SMS and email (the AI Reply button, inline
-//! autocomplete, follow-ups): greet by name only when we have never written
-//! with this customer, or the newest message with them — SMS or email,
-//! theirs or ours — is from an earlier store-local (Indianapolis) day.
-//! Otherwise the conversation is still going today: no greeting and no
-//! name, the message starts with its content. Either way the name appears
-//! at most once.
+//! autocomplete, follow-ups): greet by name unless the rep's side already
+//! wrote to this customer (SMS or email) earlier the same store-local
+//! (Indianapolis) day. The customer writing first today does not count: the
+//! first reply of the day still opens with "Hi <name>," (owner, 2026-11-16).
+//! Once we have written today the conversation is still going: no greeting
+//! and no name, the message starts with its content. Either way the name
+//! appears at most once.
 
 use super::crm_hold::parse_followup_timeline_at;
 use super::dates::Instant;
 use super::prompt::FollowupTimelineMessage;
 use super::store_time::store_zoned_parts;
+use super::timeline::Direction;
 use chrono::Duration;
 
 /// How recent the conversation with this customer is.
@@ -19,12 +21,12 @@ use chrono::Duration;
 pub enum ConversationRecency {
     /// No dated SMS or email with them yet: greet by name.
     NoHistory,
-    /// Still going today: no greeting, no name.
+    /// We already wrote to them today: no greeting, no name.
     Continuing {
         /// Since the newest message, either way, on any channel.
         minutes_since_last: i64,
     },
-    /// Newest message is from an earlier store day: greet by name.
+    /// We have not written to them yet today: greet by name.
     Reopening {
         /// Since the newest message, either way, on any channel.
         minutes_since_last: i64,
@@ -43,26 +45,27 @@ pub fn conversation_recency(
     timeline: &[FollowupTimelineMessage],
     now: Instant,
 ) -> ConversationRecency {
-    let Some(last) = timeline
+    let dated: Vec<(Instant, Direction)> = timeline
         .iter()
-        .filter_map(|m| parse_followup_timeline_at(&m.at))
-        .max()
-    else {
+        .filter_map(|m| parse_followup_timeline_at(&m.at).map(|at| (at, m.direction)))
+        .collect();
+    let Some(last) = dated.iter().map(|(at, _)| *at).max() else {
         return ConversationRecency::NoHistory;
     };
+    let today = store_zoned_parts(now);
     // A message stamped a little ahead of the server clock is "just now".
-    let since = (now - last).max(Duration::zero());
-    let (last_day, today) = (store_zoned_parts(last), store_zoned_parts(now));
-    let same_day =
-        (last_day.year, last_day.month, last_day.day) == (today.year, today.month, today.day);
-    if last < now && !same_day {
-        ConversationRecency::Reopening {
-            minutes_since_last: since.num_minutes(),
-        }
+    let is_today = |at: Instant| {
+        let day = store_zoned_parts(at);
+        at >= now || (day.year, day.month, day.day) == (today.year, today.month, today.day)
+    };
+    let minutes_since_last = (now - last).max(Duration::zero()).num_minutes();
+    let we_wrote_today = dated
+        .iter()
+        .any(|(at, dir)| *dir == Direction::Outbound && is_today(*at));
+    if we_wrote_today {
+        ConversationRecency::Continuing { minutes_since_last }
     } else {
-        ConversationRecency::Continuing {
-            minutes_since_last: since.num_minutes(),
-        }
+        ConversationRecency::Reopening { minutes_since_last }
     }
 }
 
@@ -81,11 +84,11 @@ pub fn describe_ago(minutes: i64) -> String {
 pub fn greeting_instruction(recency: ConversationRecency) -> String {
     match recency {
         ConversationRecency::Continuing { minutes_since_last } => format!(
-            "GREETING: NONE. This conversation is ongoing today: the last message with this customer (SMS or email, either side) was {}. Do NOT open with a greeting (\"Hi\", \"Hey\", \"Hello\", \"Good morning\", \"Dear\") and do NOT use the customer's name anywhere in the message. Start straight with the content, like the next text in a running thread. This applies to email too, even when the earlier messages were texts.",
+            "GREETING: NONE. This conversation is ongoing today: the rep already wrote to this customer today, and the last message with them (SMS or email, either side) was {}. Do NOT open with a greeting (\"Hi\", \"Hey\", \"Hello\", \"Good morning\", \"Dear\") and do NOT use the customer's name anywhere in the message. Start straight with the content, like the next text in a running thread. This applies to email too, even when the earlier messages were texts.",
             describe_ago(minutes_since_last)
         ),
         ConversationRecency::Reopening { minutes_since_last } => format!(
-            "GREETING: BY NAME. The last message with this customer was {}, on an earlier day, so open with a short greeting and their first name (\"Hi Ann,\"), then get straight to the point. Use their name only that once. Never \"Hello <Full Name>\" or \"Dear\".",
+            "GREETING: BY NAME. The last message with this customer was {}, and the rep has not written to them yet today, so open with a short greeting and their first name (\"Hi Ann,\"), then get straight to the point. This holds even when the customer wrote earlier today. Use their name only that once. Never \"Hello <Full Name>\" or \"Dear\".",
             describe_ago(minutes_since_last)
         ),
         ConversationRecency::NoHistory => "GREETING: BY NAME. No earlier SMS or email with this customer, so open with a short greeting and their first name (\"Hi Ann,\"). Use their name only that once.".into(),
@@ -157,11 +160,31 @@ mod tests {
     }
 
     #[test]
-    fn only_a_message_from_today_continues() {
-        // Either side and either channel counts; the newest message decides.
-        // The store day is Indianapolis (UTC-4 in October).
+    fn the_customer_writing_first_today_still_gets_a_greeting() {
+        // Carolyn emailed at 7:43 AM; the rep's first reply of the day greets.
+        let timeline = [
+            message("2026-11-10 15:00", E, O),
+            message("2026-11-16 12:43", E, I),
+        ];
+        let recency = conversation_recency(&timeline, at("2026-11-16T14:00:00Z"));
+        assert_eq!(
+            recency,
+            ConversationRecency::Reopening {
+                minutes_since_last: 77
+            }
+        );
+        assert!(greeting_instruction(recency).starts_with("GREETING: BY NAME"));
+        // Our text to her earlier today: the email continues without "Hi".
+        let mut replied = timeline.to_vec();
+        replied.push(message("2026-11-16 13:00", S, O));
+        assert!(conversation_recency(&replied, at("2026-11-16T14:00:00Z")).is_continuing());
+    }
+
+    #[test]
+    fn only_our_message_from_today_continues() {
+        // Either channel counts; the store day is Indianapolis (UTC-4 in October).
         for last in [
-            message("2026-10-14 13:00", S, I),
+            message("2026-10-14 13:00", S, O),
             message("2026-10-14 13:00", E, O),
         ] {
             let timeline = [message("2026-01-02 10:00", S, O), last];
@@ -206,7 +229,7 @@ mod tests {
 
     #[test]
     fn a_message_stamped_ahead_of_the_clock_is_just_now() {
-        let timeline = [message("2026-10-14 15:05", S, I)];
+        let timeline = [message("2026-10-14 15:05", S, O)];
         assert_eq!(
             conversation_recency(&timeline, at("2026-10-14T15:00:00Z")),
             ConversationRecency::Continuing {
