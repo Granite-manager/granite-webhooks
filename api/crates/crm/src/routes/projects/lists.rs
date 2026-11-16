@@ -623,7 +623,8 @@ pub async fn set_step_owner(
 /// Tick a step's to-do list item off, or open it again
 ///
 /// Anyone who can see the project, while it is not archived or cancelled.
-/// Ticking the step's last open item checks the step off.
+/// Ticking the step's last open item checks the step off; opening one again
+/// opens the step again.
 #[crate::openapi::path(
     put,
     path = "/v1/projects/{id}/step-items/{item_id}",
@@ -682,6 +683,16 @@ pub async fn set_step_item_done(
         )
         .bind(id)
         .bind(item_id)
+        .bind(part)
+        .execute(&mut *conn)
+        .await?;
+        // A step with a list is done only while every item is: one open opens it again.
+        sqlx::query(
+            "DELETE FROM project_process_steps_done
+              WHERE project_id = ? AND step_id = ? AND part_id = ?",
+        )
+        .bind(id)
+        .bind(step_id)
         .bind(part)
         .execute(&mut *conn)
         .await?;
