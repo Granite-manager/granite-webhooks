@@ -458,6 +458,34 @@ struct Sender {
     signature: Option<String>,
 }
 
+/// The sender's connected Gmail with a fresh access token, or `None` (their
+/// emails go through SES). A connection Google ended is an error the user
+/// can act on, never a silent switch to another From address.
+async fn sending_gmail(
+    state: &AppState,
+    user: &SessionUser,
+) -> ApiResult<Option<crate::gmail_connect::SendingGmail>> {
+    let Some(app) = &state.gmail_app else {
+        return Ok(None);
+    };
+    match app
+        .sending(&state.pool, &state.telephony_http, user.id)
+        .await
+    {
+        Ok(gmail) => Ok(gmail),
+        Err(crate::gmail_connect::GmailError::Database(err)) => Err(ApiError::Database(err)),
+        Err(crate::gmail_connect::GmailError::Revoked) => Err(ApiError::BadRequest(
+            "Your Gmail connection stopped working. Connect Gmail again on My Account.".into(),
+        )),
+        Err(error) => {
+            tracing::error!(%error, user_id = user.id, "Gmail token refresh failed");
+            Err(ApiError::Upstream(
+                "Could not reach Gmail. Try again in a minute.".into(),
+            ))
+        }
+    }
+}
+
 async fn sender(pool: &MySqlPool, user: &SessionUser) -> Result<Sender, sqlx::Error> {
     let domain: Option<Option<String>> =
         sqlx::query_scalar("SELECT domain FROM company WHERE id = ?")
@@ -632,7 +660,7 @@ pub async fn deliver(
             signatures::create(state, user, email, &files, &matched, signature_customer).await?,
         );
     }
-    let envelope = match Envelope::new(pool, user, email).await {
+    let mut envelope = match Envelope::new(pool, user, email).await {
         Ok(envelope) => envelope,
         Err(err) => {
             if let Some(created) = &created {
@@ -641,6 +669,21 @@ pub async fn deliver(
             return Err(err);
         }
     };
+    // The sender connected their Gmail (My Account): send through it, From
+    // that address.
+    let gmail = match sending_gmail(state, user).await {
+        Ok(gmail) => gmail,
+        Err(err) => {
+            if let Some(created) = &created {
+                created.rollback(state).await;
+            }
+            return Err(err);
+        }
+    };
+    if let Some(gmail) = &gmail {
+        envelope.sender.address.clone_from(&gmail.email);
+    }
+    let gmail_token = gmail.as_ref().map(|gmail| gmail.access_token.as_str());
     let sender = &envelope.sender;
     let branding = match &created {
         Some(_) => Some(signatures::branding(state, user).await?),
@@ -696,7 +739,7 @@ pub async fn deliver(
                     receipt.message_id
                 }
                 Ok(native_delivery::Claim::Started(claim)) => {
-                    match state.webhooks.send_email(&outgoing).await {
+                    match state.webhooks.send_email_as(&outgoing, gmail_token).await {
                         Ok(id) => {
                             let id = unwrap_brackets(&id);
                             let receipt = crate::native_signing::MailReceipt {
@@ -731,7 +774,7 @@ pub async fn deliver(
                 }
             }
         } else {
-            match state.webhooks.send_email(&outgoing).await {
+            match state.webhooks.send_email_as(&outgoing, gmail_token).await {
                 Ok(id) => unwrap_brackets(&id),
                 Err(failure) if sent.is_empty() => {
                     if let Some(created) = &created {

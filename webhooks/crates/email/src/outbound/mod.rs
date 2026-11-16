@@ -51,6 +51,11 @@ pub struct OutgoingEmail {
     /// HTML sent as is, without the signature block or the opt-out line.
     #[serde(default)]
     pub transactional: bool,
+    /// The sender connected their Gmail (My Account > Connect Gmail): an
+    /// access token with Google's send-only permission. The message goes out
+    /// through their Gmail instead of SES, and `from_address` is that Gmail.
+    #[serde(default, skip_serializing)]
+    pub gmail_access_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -70,6 +75,10 @@ pub struct SentEmail {
 pub enum SendError {
     Attachment(String),
     InvalidAddress,
+    /// Google no longer accepts the sender's Gmail connection.
+    GmailDisconnected,
+    /// Gmail refused the message; the reason is Google's.
+    GmailRefused(String),
     Transport(String),
 }
 
@@ -81,6 +90,15 @@ impl IntoResponse for SendError {
                 format!("Could not load attachment: {name}"),
             ),
             Self::InvalidAddress => (StatusCode::BAD_REQUEST, "Invalid email address".to_string()),
+            Self::GmailDisconnected => (
+                StatusCode::BAD_REQUEST,
+                "Your Gmail connection stopped working. Connect Gmail again on My Account."
+                    .to_string(),
+            ),
+            Self::GmailRefused(reason) => (
+                StatusCode::BAD_REQUEST,
+                format!("Gmail did not send the email: {reason}"),
+            ),
             Self::Transport(_) => (StatusCode::BAD_GATEWAY, "Email failed to send".to_string()),
         };
         (status, Json(serde_json::json!({ "error": error }))).into_response()
@@ -106,11 +124,67 @@ impl EmailTransport for Ses {
     }
 }
 
+/// Sends through the sender's own Gmail (Gmail API `messages.send`, which
+/// needs only the `gmail.send` permission). Gmail reads the recipients from
+/// the To, Cc and Bcc headers and removes Bcc before delivery.
+pub struct Gmail {
+    pub access_token: String,
+}
+
+/// Gmail's send endpoint.
+const GMAIL_SEND_URL: &str = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send";
+/// Marks a refused Gmail login in `send_raw`'s error.
+const GMAIL_AUTH: &str = "gmail-auth:";
+/// Marks a message Gmail refused (bad recipient, too large).
+const GMAIL_REFUSED: &str = "gmail-refused:";
+
+impl EmailTransport for Gmail {
+    async fn send_raw(&self, raw: Vec<u8>, _destinations: Vec<String>) -> Result<String, String> {
+        use base64::Engine;
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
+        let response = common::http::client()
+            .post(GMAIL_SEND_URL)
+            .bearer_auth(&self.access_token)
+            .timeout(std::time::Duration::from_secs(60))
+            .json(&serde_json::json!({ "raw": encoded }))
+            .send()
+            .await
+            .map_err(|err| err.without_url().to_string())?;
+        let status = response.status();
+        let reply: serde_json::Value = response.json().await.unwrap_or_default();
+        if status.is_success() {
+            return Ok(reply["id"].as_str().unwrap_or_default().to_string());
+        }
+        let message = reply["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        Err(match status.as_u16() {
+            401 | 403 => format!("{GMAIL_AUTH} {status} {message}"),
+            400 | 413 => format!("{GMAIL_REFUSED}{message}"),
+            _ => format!("Gmail {status} {message}"),
+        })
+    }
+}
+
 pub async fn send_handler(
     _: AccessToken<RemixBackend>,
     Json(email): Json<OutgoingEmail>,
 ) -> Result<Json<SentEmail>, SendError> {
-    deliver(&CustomClient {}, &Ses, email).await.map(Json)
+    match email.gmail_access_token.clone() {
+        Some(access_token) => deliver(&CustomClient {}, &Gmail { access_token }, email).await,
+        None => deliver(&CustomClient {}, &Ses, email).await,
+    }
+    .map(Json)
+}
+
+/// A `Message-ID` for a message sent through Gmail, at the sender's domain
+/// (Gmail keeps the one the message carries, so replies thread on it).
+fn gmail_message_id(from_address: &str) -> String {
+    let domain = from_address
+        .rsplit_once('@')
+        .map_or("gmail.com", |(_, domain)| domain.trim());
+    format!("{}@{domain}", uuid::Uuid::new_v4().simple())
 }
 
 /// Reads the attachments, builds the message and sends it.
@@ -141,7 +215,11 @@ pub async fn deliver(
         };
         files.push(bytes);
     }
-    let raw = build_message(&email, files);
+    let gmail_id = email
+        .gmail_access_token
+        .as_ref()
+        .map(|_| gmail_message_id(&email.from_address));
+    let raw = build(&email, files, gmail_id.as_deref());
     let destinations: Vec<String> = email
         .to
         .iter()
@@ -150,7 +228,16 @@ pub async fn deliver(
         .cloned()
         .collect();
     match transport.send_raw(raw, destinations).await {
-        Ok(message_id) => Ok(SentEmail { message_id }),
+        Ok(message_id) => Ok(SentEmail {
+            message_id: gmail_id.unwrap_or(message_id),
+        }),
+        Err(err) if err.starts_with(GMAIL_AUTH) => {
+            tracing::warn!(error = %err, "Gmail refused the sender's connection");
+            Err(SendError::GmailDisconnected)
+        }
+        Err(err) if err.starts_with(GMAIL_REFUSED) => Err(SendError::GmailRefused(
+            err.trim_start_matches(GMAIL_REFUSED).trim().to_string(),
+        )),
         Err(err) if err.contains("Email address is not verified") => Err(SendError::InvalidAddress),
         Err(err) => {
             tracing::error!(error = %err, "SES send failed");
@@ -173,6 +260,13 @@ fn bare_message_id(id: &str) -> String {
 /// whole team) is addressed to `undisclosed-recipients:;`, since SES refuses an
 /// empty To header.
 pub fn build_message(email: &OutgoingEmail, files: Vec<Vec<u8>>) -> Vec<u8> {
+    build(email, files, None)
+}
+
+/// [`build_message`]; for Gmail (`gmail_message_id`) the message also
+/// carries that `Message-ID` and a Bcc header, which Gmail removes before
+/// delivery (it has no separate envelope).
+fn build(email: &OutgoingEmail, files: Vec<Vec<u8>>, gmail_message_id: Option<&str>) -> Vec<u8> {
     let bodies = if email.transactional {
         body::transactional_bodies(&email.body)
     } else {
@@ -203,6 +297,12 @@ pub fn build_message(email: &OutgoingEmail, files: Vec<Vec<u8>>) -> Vec<u8> {
     };
     if !email.cc.is_empty() {
         message = message.cc(email.cc.clone());
+    }
+    if let Some(id) = gmail_message_id {
+        message = message.message_id(id.to_string());
+        if !email.bcc.is_empty() {
+            message = message.bcc(email.bcc.clone());
+        }
     }
     if !email.reply_to.is_empty() {
         message = message.reply_to(email.reply_to.clone());
@@ -354,6 +454,7 @@ mod tests {
                 url: "https://bucket.s3.us-east-2.amazonaws.com/emails/a%20b.pdf".into(),
             }],
             transactional: false,
+            gmail_access_token: None,
         }
     }
 
@@ -460,6 +561,69 @@ mod tests {
             deliver(&Files, &down, email()).await.unwrap_err(),
             SendError::Transport(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn gmail_message_carries_its_message_id_and_bcc() {
+        let transport = Recorder::default();
+        let email = OutgoingEmail {
+            gmail_access_token: Some("token".into()),
+            ..email()
+        };
+        let sent = deliver(&Files, &transport, email).await.unwrap();
+        assert!(
+            sent.message_id.ends_with("@granite.test"),
+            "{}",
+            sent.message_id
+        );
+        assert!(!sent.message_id.contains("amazonses"));
+        let (raw, _) = transport.sent.lock().unwrap()[0].clone();
+        assert!(
+            raw.contains(&format!("Message-ID: <{}>", sent.message_id)),
+            "{raw}"
+        );
+        assert!(raw.contains("Bcc: <hidden@example.com>"), "{raw}");
+    }
+
+    #[tokio::test]
+    async fn ses_message_keeps_bcc_out_of_the_headers() {
+        let transport = Recorder::default();
+        deliver(&Files, &transport, email()).await.unwrap();
+        let (raw, _) = transport.sent.lock().unwrap()[0].clone();
+        assert!(!raw.contains("hidden@example.com"), "{raw}");
+    }
+
+    #[tokio::test]
+    async fn gmail_errors_are_mapped() {
+        let gmail = |error: &str| {
+            OutgoingEmail {
+                gmail_access_token: Some("token".into()),
+                ..email()
+            }
+            .clone_with_fail(error)
+        };
+        let (email, revoked) = gmail("gmail-auth: 401 Invalid Credentials");
+        assert_eq!(
+            deliver(&Files, &revoked, email).await.unwrap_err(),
+            SendError::GmailDisconnected
+        );
+        let (email, refused) = gmail("gmail-refused:Invalid To header");
+        assert_eq!(
+            deliver(&Files, &refused, email).await.unwrap_err(),
+            SendError::GmailRefused("Invalid To header".into())
+        );
+    }
+
+    impl OutgoingEmail {
+        fn clone_with_fail(self, error: &str) -> (Self, Recorder) {
+            (
+                self,
+                Recorder {
+                    fail_with: Some(error.into()),
+                    ..Recorder::default()
+                },
+            )
+        }
     }
 
     #[test]
