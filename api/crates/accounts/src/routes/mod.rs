@@ -10,6 +10,7 @@ pub mod leaderboard;
 pub mod login_steps;
 pub mod me;
 pub mod onboarding;
+pub mod password_reset_code;
 pub mod teach_mode;
 pub mod users;
 pub mod web_link;
