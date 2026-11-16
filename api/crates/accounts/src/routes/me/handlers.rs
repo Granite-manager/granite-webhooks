@@ -151,19 +151,6 @@ pub async fn telegram_status(
     state: &AppState,
     user_id: i32,
 ) -> Result<TelegramStatus, sqlx::Error> {
-    telegram_status_within(state, user_id, None).await
-}
-
-/// [`telegram_status`], waiting at most `wait` for Telegram.
-///
-/// Past it the saved links are reported unchecked (and kept), so a slow
-/// Telegram does not hold up a page that shows them among other things
-/// (`GET /v1/me/account`).
-pub async fn telegram_status_within(
-    state: &AppState,
-    user_id: i32,
-    wait: Option<std::time::Duration>,
-) -> Result<TelegramStatus, sqlx::Error> {
     let ids = telegram_ids(&state.pool, user_id).await?;
     let bots = &state.telegram;
     let check = async |bot, chat_id: &Option<String>| match chat_id {
@@ -171,19 +158,10 @@ pub async fn telegram_status_within(
         None => None,
     };
     // The two bots are independent: ask Telegram about both at once.
-    let checks = async {
-        tokio::join!(
-            check(Bot::Leads, &ids.telegram_id),
-            check(Bot::Notifications, &ids.notifications_telegram_id),
-        )
-    };
-    let (leads_ok, notifications_ok) = match wait {
-        None => checks.await,
-        Some(wait) => tokio::time::timeout(wait, checks).await.unwrap_or_else(|_| {
-            lambda_http::tracing::warn!(user_id, "Telegram link check timed out; saved links kept");
-            (None, None)
-        }),
-    };
+    let (leads_ok, notifications_ok) = tokio::join!(
+        check(Bot::Leads, &ids.telegram_id),
+        check(Bot::Notifications, &ids.notifications_telegram_id),
+    );
     let mut status = TelegramStatus {
         leads_linked: ids.telegram_id.is_some(),
         notifications_linked: ids.notifications_telegram_id.is_some(),
