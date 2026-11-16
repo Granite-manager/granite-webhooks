@@ -36,7 +36,8 @@ use crate::openapi::{IntoParams, ToSchema};
 use crate::routes::company::queries::company_features;
 use crate::routes::events::history::{AUTOMATED, History, record, record_customer_message};
 use crate::routes::events::notify::{
-    OfficeManager, customer_email, customer_phone, escape_html, office_manager, sender_for,
+    OfficeManager, company_noreply, customer_email, customer_phone, escape_html, office_manager,
+    sender_for,
 };
 use crate::routes::events::writes::{company_event, parse_event_time};
 use crate::routes::sms::provider::{SmsProvider, phone10};
@@ -2735,7 +2736,10 @@ async fn deliver_sent(
     if to.is_empty() {
         return Ok(Err("no_email"));
     }
-    let (from_name, from_address) = sender_for(pool, company_id, customer_id, user_id).await?;
+    // Schedule notification emails go from noreply@<company domain> (owner,
+    // 2026-11-16), under the sales rep's name.
+    let (from_name, _) = sender_for(pool, company_id, customer_id, user_id).await?;
+    let from_address = company_noreply(pool, company_id).await?;
     let subject = subject.unwrap_or_default();
     let content = crate::routes::events::notify::email_record(&subject, &body);
     let email = OutgoingEmail {
