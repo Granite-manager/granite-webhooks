@@ -29419,6 +29419,63 @@
         ]
       }
     },
+    "/v1/me/lead-automation/items": {
+      "get": {
+        "tags": [
+          "templates"
+        ],
+        "summary": "List the automations of the caller's deals",
+        "description": "Every automated email and text (a template with a deal list) that can go\nout for the caller's deals, on both sides: `company`, the company's ones\nthat reach the caller (Admin › Automations, naming no sales reps or naming\nthe caller), and `own`, the caller's personal ones. Which side is in use is\n`GET /v1/me/lead-automation`. Texts are left out until the company has a\ntexting provider. Deleted templates and templates without a list are\nhidden. Edit or delete one with the email or SMS template routes named by\n`channel` and `template_id`.",
+        "operationId": "list_lead_automation_items",
+        "responses": {
+          "200": {
+            "description": "The caller's automations on each side",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeadAutomationItems"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/sms/all/threads": {
       "get": {
         "tags": [
@@ -81490,6 +81547,64 @@
         ],
         "description": "`POST /v1/ai/compose/autocomplete`."
       },
+      "AutomationChannel": {
+        "type": "string",
+        "description": "Which kind of template an automation sends.",
+        "enum": [
+          "email",
+          "sms"
+        ]
+      },
+      "AutomationItem": {
+        "type": "object",
+        "description": "One automated email or text: it goes out by itself when a deal lands on\nits list.",
+        "required": [
+          "channel",
+          "template_id",
+          "name",
+          "list_id",
+          "delay_minutes"
+        ],
+        "properties": {
+          "channel": {
+            "$ref": "#/components/schemas/AutomationChannel",
+            "description": "Email or text."
+          },
+          "template_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The template's id: edit or delete it with `/v1/email-templates/{id}`\nor `/v1/sms-templates/{id}` by `channel`."
+          },
+          "name": {
+            "type": "string",
+            "description": "The template's name."
+          },
+          "list_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The deal list that starts it."
+          },
+          "list_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That list's name; null when the list was deleted."
+          },
+          "group_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name of the list's group (pipeline); null when the list or the\ngroup was deleted."
+          },
+          "delay_minutes": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How long after the deal lands on the list it goes out, in minutes."
+          }
+        }
+      },
       "Autosave": {
         "type": "object",
         "description": "The caller's unsaved drawing.",
@@ -91832,6 +91947,10 @@
                   "null"
                 ],
                 "description": "Where to email the confirmation when it cannot be texted (default the\ncustomer's primary email)."
+              },
+              "showroom": {
+                "type": "boolean",
+                "description": "A showroom appointment instead of an in-home estimate: the customer's\nmessages say \"showroom appointment\" (default false)."
               }
             }
           }
@@ -97132,6 +97251,30 @@
           }
         },
         "additionalProperties": false
+      },
+      "LeadAutomationItems": {
+        "type": "object",
+        "description": "`GET /v1/me/lead-automation/items`: the caller's automations on each side.",
+        "required": [
+          "company",
+          "own"
+        ],
+        "properties": {
+          "company": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AutomationItem"
+            },
+            "description": "The company's automations that go to the caller's deals while they\nuse the company's (mode `company`): those naming no sales reps, or\nnaming the caller."
+          },
+          "own": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AutomationItem"
+            },
+            "description": "The caller's own automations, used while their mode is `own`."
+          }
+        }
       },
       "LeadAutomationMode": {
         "type": "string",

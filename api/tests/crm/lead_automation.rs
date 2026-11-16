@@ -255,3 +255,123 @@ async fn own_drips_are_checked_per_owner(pool: MySqlPool) {
         .assert_status_ok();
     assert_eq!(pending(&pool, "scheduled_emails", deal, own).await, 0);
 }
+
+/// `(channel, template_id)` of one side of `GET /v1/me/lead-automation/items`.
+fn ids(items: &Value, side: &str) -> Vec<(String, i64)> {
+    let mut ids: Vec<(String, i64)> = items[side]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| {
+            (
+                item["channel"].as_str().unwrap().to_string(),
+                item["template_id"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test_db::test(seed)]
+async fn the_items_list_what_goes_to_my_deals_on_each_side(pool: MySqlPool) {
+    // Seed: company drips 8670 (email, list 101, 2 h) and 8671 (text, 1 h).
+    sqlx::raw_sql(
+        "INSERT INTO email_templates (id, template_name, template_subject, template_body, company_id,
+                                      user_id, lead_list_id, hour_delay, sales_rep_ids, deleted_at) VALUES
+           (9100, 'For Rita',        's', 'b', 100, NULL, 100, NULL, '[100]', NULL),
+           (9101, 'For someone else','s', 'b', 100, NULL, 100, 1,    '[101]', NULL),
+           (9102, 'Dina own',        's', 'b', 100, 107,  101, 3,    NULL,    NULL),
+           (9103, 'Rita own',        's', 'b', 100, 100,  101, 1,    NULL,    NULL),
+           (9104, 'No list',         's', 'b', 100, NULL, NULL, 1,   NULL,    NULL),
+           (9105, 'Deleted',         's', 'b', 100, NULL, 100, 1,    NULL,    '2026-01-01 00:00:00'),
+           (9106, 'On a gone list',  's', 'b', 100, 107,  102, 0,    NULL,    NULL);
+         INSERT INTO cloudtalk_sms_templates (id, company_id, user_id, name, body, lead_list_id,
+                                              hour_delay, minute_delay, position) VALUES
+           (9110, 100, 107, 'Dina own text', 'Hi', 100, 1, 30, 1);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let server = server(pool.clone());
+
+    // No texting provider yet: texts are left out.
+    let items: Value = server
+        .get("/v1/me/lead-automation/items")
+        .with_session(DINA)
+        .await
+        .json();
+    assert_eq!(ids(&items, "company"), vec![("email".into(), 8670)]);
+    assert_eq!(
+        ids(&items, "own"),
+        vec![("email".into(), 9102), ("email".into(), 9106)]
+    );
+
+    with_cloudtalk(&pool).await;
+    let items: Value = server
+        .get("/v1/me/lead-automation/items")
+        .with_session(DINA)
+        .await
+        .json();
+    assert_eq!(
+        ids(&items, "company"),
+        vec![("email".into(), 8670), ("sms".into(), 8671)]
+    );
+    assert_eq!(
+        ids(&items, "own"),
+        vec![
+            ("email".into(), 9102),
+            ("email".into(), 9106),
+            ("sms".into(), 9110)
+        ]
+    );
+    let own_text = items["own"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["template_id"] == 9110)
+        .unwrap();
+    assert_eq!(
+        own_text,
+        &json!({
+            "channel": "sms", "template_id": 9110, "name": "Dina own text",
+            "list_id": 100, "list_name": "New", "group_name": "Sales", "delay_minutes": 90,
+        })
+    );
+    let gone = items["own"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["template_id"] == 9106)
+        .unwrap();
+    assert!(gone["list_name"].is_null() && gone["group_name"].is_null());
+
+    // Rita also gets the company template naming her, and only her own.
+    let items: Value = server
+        .get("/v1/me/lead-automation/items")
+        .with_session(RITA)
+        .await
+        .json();
+    assert_eq!(
+        ids(&items, "company"),
+        vec![
+            ("email".into(), 8670),
+            ("email".into(), 9100),
+            ("sms".into(), 8671)
+        ]
+    );
+    assert_eq!(ids(&items, "own"), vec![("email".into(), 9103)]);
+    let quoted = items["company"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["template_id"] == 8670)
+        .unwrap();
+    assert_eq!(quoted["delay_minutes"], 120);
+    assert_eq!(quoted["list_name"], "Quoted");
+
+    server
+        .get("/v1/me/lead-automation/items")
+        .await
+        .assert_status_unauthorized();
+}
