@@ -358,6 +358,77 @@ pub async fn set_company_goal(
     }))
 }
 
+/// One sales rep's share of the company's sales this month.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct RepAmount {
+    /// `users.id`; null for the classes no rep's name matches.
+    pub user_id: Option<i32>,
+    /// The rep's name, or `Other` for unmatched classes.
+    pub name: String,
+    /// Sales this month.
+    pub amount: f64,
+    /// The row is the caller's own.
+    pub is_you: bool,
+}
+
+/// The report's rows split by rep. A row goes to the rep whose full name it
+/// matches, else to the first rep whose first name it matches, else to
+/// `Other`. Reps with no sales are left out; highest first, `Other` last.
+pub fn split_by_rep(rows: &[ReportRow], reps: &[(i32, String)]) -> Vec<RepAmount> {
+    let mut totals: Vec<f64> = vec![0.0; reps.len()];
+    let mut other = 0.0;
+    for row in rows {
+        let Some(amount) = row.amount else { continue };
+        let name = row.name.trim().to_lowercase();
+        let full = reps.iter().position(|(_, rep)| {
+            let rep = rep.trim().to_lowercase();
+            !rep.is_empty() && (name == rep || name.starts_with(&format!("{rep}/")))
+        });
+        match full.or_else(|| reps.iter().position(|(_, rep)| matches_rep(&row.name, rep))) {
+            Some(at) => totals[at] += amount,
+            None => other += amount,
+        }
+    }
+    let mut split: Vec<RepAmount> = reps
+        .iter()
+        .zip(totals)
+        .filter(|(_, amount)| amount.abs() >= 0.005)
+        .map(|((id, name), amount)| RepAmount {
+            user_id: Some(*id),
+            name: name.trim().to_string(),
+            amount,
+            is_you: false,
+        })
+        .collect();
+    split.sort_by(|a, b| b.amount.total_cmp(&a.amount));
+    if other.abs() >= 0.005 {
+        split.push(RepAmount {
+            user_id: None,
+            name: "Other".into(),
+            amount: other,
+            is_you: false,
+        });
+    }
+    split
+}
+
+/// The company's employees with a name, oldest account first.
+async fn company_reps(
+    state: &AppState,
+    company_id: i32,
+) -> Result<Vec<(i32, String)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT u.id, TRIM(u.name) FROM users u
+          WHERE u.company_id = ? AND u.is_deleted = 0 AND TRIM(COALESCE(u.name, '')) <> ''
+            AND EXISTS(SELECT 1 FROM users_positions up
+                        WHERE up.user_id = u.id AND up.company_id = u.company_id)
+          ORDER BY u.id",
+    )
+    .bind(company_id)
+    .fetch_all(&state.pool)
+    .await
+}
+
 async fn rep_name(state: &AppState, user_id: i32) -> Result<String, sqlx::Error> {
     let name: Option<Option<String>> =
         sqlx::query_scalar("SELECT name FROM users WHERE id = ? AND is_deleted = 0")
@@ -389,6 +460,8 @@ pub struct RepSales {
     pub company_goal: Option<f64>,
     /// The caller may set the company goal (a Manager or Sales Manager).
     pub can_set_company_goal: bool,
+    /// The company's sales this month by sales rep, highest first.
+    pub reps: Vec<RepAmount>,
     /// Currency code.
     pub currency: Option<String>,
     /// First day of the report.
@@ -413,6 +486,7 @@ impl RepSales {
             company_amount: None,
             company_goal: None,
             can_set_company_goal: false,
+            reps: Vec::new(),
             currency: None,
             start_period: None,
             end_period: None,
@@ -492,6 +566,13 @@ pub async fn my_sales(
         company_goal: company_goal(&state, user.company_id).await?,
         can_set_company_goal: user.is_superuser
             || sets_company_goal(&state, user.id, user.company_id).await?,
+        reps: split_by_rep(&report.rows, &company_reps(&state, user.company_id).await?)
+            .into_iter()
+            .map(|rep| RepAmount {
+                is_you: rep.user_id == Some(user.id),
+                ..rep
+            })
+            .collect(),
         currency: Some(currency(&report)),
         start_period: Some(
             report
@@ -788,6 +869,41 @@ mod tests {
             .sum();
         assert!((sum - 1500.5).abs() < 1e-9);
         assert!(!matches_rep("Ri", "Ri Lo"));
+    }
+
+    #[test]
+    fn sales_split_by_rep() {
+        let row = |name: &str, amount: f64| ReportRow {
+            name: name.into(),
+            amount: Some(amount),
+            entity_id: None,
+        };
+        let rows = [
+            row("Rita Rep", 100.0),
+            row("Rita/Remodel", 50.0),
+            row("Rita Lane", 30.0),
+            row("Mark", 200.0),
+            row("Not Specified", 9.5),
+        ];
+        let reps = [
+            (1, "Rita Rep".to_string()),
+            (2, "Rita Lane".to_string()),
+            (3, "Mark Stone".to_string()),
+            (4, "Nobody Sold".to_string()),
+        ];
+        let split = split_by_rep(&rows, &reps);
+        let pairs: Vec<(Option<i32>, f64)> =
+            split.iter().map(|rep| (rep.user_id, rep.amount)).collect();
+        assert_eq!(
+            pairs,
+            vec![
+                (Some(3), 200.0),
+                (Some(1), 150.0),
+                (Some(2), 30.0),
+                (None, 9.5)
+            ]
+        );
+        assert_eq!(split[3].name, "Other");
     }
 
     #[test]
