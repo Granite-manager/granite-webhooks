@@ -14,7 +14,7 @@ use crate::openapi::ToSchema;
 use crate::phone::crm_push::push_notification_logged;
 use crate::routes::events::history::record_customer_message;
 use crate::routes::events::notify::{
-    Booking, Channel, NotifyKind, appointment_when, notify_booking,
+    Booking, Channel, NotifyKind, Visit, appointment_when, notify_booking,
 };
 use crate::routes::schedule::notifications;
 use crate::state::AppState;
@@ -72,6 +72,7 @@ struct CustomerReminder {
     start_date: NaiveDateTime,
     end_date: NaiveDateTime,
     location: Option<String>,
+    title: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -136,7 +137,7 @@ async fn customer_reminders(state: &AppState, run: &mut ReminderRun) -> Result<(
                 NULLIF(TRIM(e.contact_phone_2), '') AS customer_phone_2,
                 NULLIF(TRIM(e.contact_email_2), '') AS customer_email_2,
                 creator.name AS user_name, e.created_user_id AS user_id,
-                e.start_date, e.end_date, e.location
+                e.start_date, e.end_date, e.location, e.title
            FROM appointment_reminders r
            JOIN events e ON e.id = r.event_id
            JOIN users creator ON creator.id = e.created_user_id
@@ -169,6 +170,7 @@ async fn customer_reminders(state: &AppState, run: &mut ReminderRun) -> Result<(
             } else {
                 NotifyKind::Hour
             },
+            visit: Visit::from_title(reminder.title.as_deref().unwrap_or_default()),
             company_id: reminder.company_id,
             customer_id: reminder.customer_id,
             customer_name: customer_or_default(reminder.customer_name.as_deref()),
