@@ -19,7 +19,7 @@ pub struct UpdateSalesGoal {
 }
 
 /// Whether the signed-in user's Telegram is linked to each of the two bots.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TelegramStatus {
     /// Linked to the lead alerts bot.
     pub leads_linked: bool,

@@ -329,7 +329,7 @@
           "me"
         ],
         "summary": "My account",
-        "description": "Everything the My Account page shows, in one call: the user's details in\ntheir home company, the texting providers, the signature, the guided tours\nrating, and the settings that `GET /v1/me/mfa`, `/v1/me/telegram`,\n`/v1/me/gmail`, `/v1/me/undo-send` and `/v1/me/lead-automation` answer one\nby one (the employee-only ones are null for a shop manager or worker who is\nnot an employee). Save with `PUT /v1/me/account`; the other settings keep\ntheir own routes for changes.",
+        "description": "What the My Account page shows from the database, in one call: the user's\ndetails in their home company, the texting providers, the signature, the\nguided tours rating, and the settings that `GET /v1/me/mfa`,\n`/v1/me/undo-send` and `/v1/me/lead-automation` answer one by one (the\nemployee-only ones are null for a shop manager or worker who is not an\nemployee). The parts that ask other services stay their own calls: `GET\n/v1/me/telegram` (asks Telegram) and `GET /v1/me/gmail` (asks Amazon).\nSave with `PUT /v1/me/account`; the other settings keep their own routes\nfor changes.",
         "operationId": "get_my_account",
         "responses": {
           "200": {
@@ -78730,8 +78730,7 @@
           "feedback_dismissed",
           "has_granite_phone",
           "granite_phone_numbers",
-          "mfa",
-          "telegram"
+          "mfa"
         ],
         "properties": {
           "user_id": {
@@ -78847,21 +78846,6 @@
           "mfa": {
             "$ref": "#/components/schemas/MfaStatus",
             "description": "My two-step sign-in, as `GET /v1/me/mfa` answers it."
-          },
-          "telegram": {
-            "$ref": "#/components/schemas/TelegramStatus",
-            "description": "My Telegram links, as `GET /v1/me/telegram` answers them."
-          },
-          "gmail": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/MyGmail",
-                "description": "My Gmail for sending, as `GET /v1/me/gmail` answers it; null for a\nshop manager or worker who is not an employee (that route refuses them)."
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "undo_send": {
             "oneOf": [

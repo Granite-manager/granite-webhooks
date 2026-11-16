@@ -201,8 +201,6 @@ async fn the_account_carries_the_page_settings(pool: MySqlPool) {
     // Each part answers as its own route does.
     for (part, route) in [
         ("mfa", "/v1/me/mfa"),
-        ("telegram", "/v1/me/telegram"),
-        ("gmail", "/v1/me/gmail"),
         ("undo_send", "/v1/me/undo-send"),
         ("lead_automation", "/v1/me/lead-automation"),
     ] {
@@ -238,7 +236,6 @@ async fn the_shop_gets_the_settings_its_routes_give(pool: MySqlPool) {
     assert_eq!(account["shows_email_signature"], false);
     // An employee-only part is there exactly when its own route answers.
     for (part, route) in [
-        ("gmail", "/v1/me/gmail"),
         ("undo_send", "/v1/me/undo-send"),
         ("lead_automation", "/v1/me/lead-automation"),
     ] {
@@ -256,5 +253,4 @@ async fn the_shop_gets_the_settings_its_routes_give(pool: MySqlPool) {
         }
     }
     assert_eq!(account["mfa"]["enabled"], false);
-    assert_eq!(account["telegram"]["leads_linked"], false);
 }

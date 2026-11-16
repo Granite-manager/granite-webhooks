@@ -4,10 +4,7 @@
 //! the texting line. Replaces the Remix `employee.user` and `shop.user`
 //! loaders and actions.
 
-use super::gmail::{MyGmail, my_gmail};
-use super::handlers::telegram_status;
 use super::mfa::{MfaStatus, status as mfa_status};
-use super::schemas::TelegramStatus;
 use super::undo_send::{UndoSend, undo_send_of};
 use crate::auth::{ShopOrEmployeeAccess, ShopOrEmployeeUser};
 use crate::auth::cookie::request_session_id;
@@ -81,11 +78,6 @@ pub struct Account {
     pub photo_url: Option<String>,
     /// My two-step sign-in, as `GET /v1/me/mfa` answers it.
     pub mfa: MfaStatus,
-    /// My Telegram links, as `GET /v1/me/telegram` answers them.
-    pub telegram: TelegramStatus,
-    /// My Gmail for sending, as `GET /v1/me/gmail` answers it; null for a
-    /// shop manager or worker who is not an employee (that route refuses them).
-    pub gmail: Option<MyGmail>,
     /// My Undo send, as `GET /v1/me/undo-send` answers it; null for a shop
     /// manager or worker who is not an employee.
     pub undo_send: Option<UndoSend>,
@@ -187,13 +179,15 @@ pub(super) async fn home_actor(pool: &MySqlPool, user_id: i32) -> ApiResult<stor
 
 /// My account
 ///
-/// Everything the My Account page shows, in one call: the user's details in
-/// their home company, the texting providers, the signature, the guided tours
-/// rating, and the settings that `GET /v1/me/mfa`, `/v1/me/telegram`,
-/// `/v1/me/gmail`, `/v1/me/undo-send` and `/v1/me/lead-automation` answer one
-/// by one (the employee-only ones are null for a shop manager or worker who is
-/// not an employee). Save with `PUT /v1/me/account`; the other settings keep
-/// their own routes for changes.
+/// What the My Account page shows from the database, in one call: the user's
+/// details in their home company, the texting providers, the signature, the
+/// guided tours rating, and the settings that `GET /v1/me/mfa`,
+/// `/v1/me/undo-send` and `/v1/me/lead-automation` answer one by one (the
+/// employee-only ones are null for a shop manager or worker who is not an
+/// employee). The parts that ask other services stay their own calls: `GET
+/// /v1/me/telegram` (asks Telegram) and `GET /v1/me/gmail` (asks Amazon).
+/// Save with `PUT /v1/me/account`; the other settings keep their own routes
+/// for changes.
 #[crate::openapi::path(
     get,
     path = "/v1/me/account",
@@ -213,33 +207,6 @@ pub async fn account(
 ) -> ApiResult<Json<Account>> {
     let pool = &state.pool;
     let actor = home_actor(pool, user.id).await?;
-    // Telegram and Gmail may ask Telegram and Amazon: they run alongside the
-    // database reads instead of after them.
-    let (details, telegram, gmail) = tokio::join!(
-        details(&state, actor, user.id, employee),
-        telegram_status(&state, user.id),
-        async {
-            if employee {
-                my_gmail(&state, actor).await.map(Some)
-            } else {
-                Ok(None)
-            }
-        },
-    );
-    let mut account = details?;
-    account.telegram = telegram?;
-    account.gmail = gmail?;
-    Ok(Json(account))
-}
-
-/// The account without the parts that may wait on other services.
-async fn details(
-    state: &AppState,
-    actor: store::Actor,
-    user_id: i32,
-    employee: bool,
-) -> ApiResult<Account> {
-    let pool = &state.pool;
     let row = stored(pool, actor).await?;
     let features = company_features(pool, actor.company_id).await?;
     let shop: bool = sqlx::query_scalar(
@@ -277,16 +244,16 @@ async fn details(
             .await?;
     let ringcentral_signed_in = features.ringcentral
         && crate::ringcentral_connect::texts_as_user(pool, actor.company_id, actor.user_id).await?;
-    let mfa = mfa_status(state, user_id).await?;
+    let mfa = mfa_status(&state, user.id).await?;
     let (undo_send, lead_automation) = if employee {
         (
-            Some(undo_send_of(pool, user_id).await?),
-            Some(mode_of(pool, user_id).await?),
+            Some(undo_send_of(pool, user.id).await?),
+            Some(mode_of(pool, user.id).await?),
         )
     } else {
         (None, None)
     };
-    Ok(Account {
+    Ok(Json(Account {
         user_id: actor.user_id,
         name: row.name,
         email: row.email,
@@ -307,11 +274,9 @@ async fn details(
         granite_phone_numbers,
         photo_url,
         mfa,
-        telegram: TelegramStatus::default(),
-        gmail: None,
         undo_send,
         lead_automation,
-    })
+    }))
 }
 
 /// A submitted field: left out (the stored value stays), or set (empty
