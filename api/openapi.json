@@ -46663,7 +46663,7 @@
           "schedule"
         ],
         "summary": "Add an event",
-        "description": "Puts an event on one of the company's calendars, optionally copying\ncomments and attachments from another event.",
+        "description": "Puts an event on one of the company's calendars, optionally copying\ncomments and attachments from another event. Whoever creates it is in\nit: with `people_ids` left out, the caller is saved as its one person\n(when they are one of the company's people, see `GET /v1/schedule/team`).",
         "operationId": "create_event",
         "requestBody": {
           "content": {
@@ -92255,7 +92255,7 @@
               "type": "integer",
               "format": "int32"
             },
-            "description": "People of the company added to it (user ids from\n`GET /v1/schedule/team`, at most 50): it shows on each one's own\nschedule. Exactly these are saved; `[]` removes everyone, leave out\nto keep the saved ones."
+            "description": "People of the company added to it (user ids from\n`GET /v1/schedule/team`, at most 50): it shows on each one's own\nschedule. Exactly these are saved; `[]` removes everyone. Left out:\nan edit keeps the saved ones, a new event gets its creator."
           },
           "sale_id": {
             "type": [

@@ -115,6 +115,14 @@ pub async fn check(pool: &MySqlPool, company_id: i32, ids: &[i32]) -> ApiResult<
     Ok(ids.into_iter().collect())
 }
 
+/// Whether `user_id` is one of the company's people (can be added to an event).
+pub async fn is_team_member(pool: &MySqlPool, company_id: i32, user_id: i32) -> ApiResult<bool> {
+    Ok(company_team(pool, company_id)
+        .await?
+        .iter()
+        .any(|person| person.id == user_id))
+}
+
 /// The ids of the people on an event.
 async fn saved_ids(pool: &MySqlPool, event_id: i32) -> sqlx::Result<Vec<i32>> {
     sqlx::query_scalar("SELECT user_id FROM event_people WHERE event_id = ? ORDER BY user_id")

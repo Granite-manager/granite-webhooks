@@ -76,8 +76,8 @@ pub struct EventInput {
     pub assigned_user_id: Option<i32>,
     /// People of the company added to it (user ids from
     /// `GET /v1/schedule/team`, at most 50): it shows on each one's own
-    /// schedule. Exactly these are saved; `[]` removes everyone, leave out
-    /// to keep the saved ones.
+    /// schedule. Exactly these are saved; `[]` removes everyone. Left out:
+    /// an edit keeps the saved ones, a new event gets its creator.
     #[serde(default)]
     pub people_ids: Option<Vec<i32>>,
     /// The sale it is for.
@@ -505,7 +505,9 @@ const fn not_found() -> ApiError {
 /// Add an event
 ///
 /// Puts an event on one of the company's calendars, optionally copying
-/// comments and attachments from another event.
+/// comments and attachments from another event. Whoever creates it is in
+/// it: with `people_ids` left out, the caller is saved as its one person
+/// (when they are one of the company's people, see `GET /v1/schedule/team`).
 #[crate::openapi::path(
     post,
     path = "/v1/events",
@@ -554,8 +556,12 @@ pub async fn create(
         }
         _ => None,
     };
+    // Whoever creates an event is in it (owner, 2026-11-16).
     let people_ids = match &input.people_ids {
         Some(ids) => Some(people::check(pool, user.company_id, ids).await?),
+        None if people::is_team_member(pool, user.company_id, user.id).await? => {
+            Some(vec![user.id])
+        }
         None => None,
     };
     let assignee = match input.assigned_user_id.filter(|id| *id > 0) {
