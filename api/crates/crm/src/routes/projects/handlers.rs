@@ -342,11 +342,12 @@ pub async fn get(
         "{TASK_SELECT} WHERE t.project_id = ? AND t.company_id = ? AND t.deleted_at IS NULL
           ORDER BY t.completed_at IS NOT NULL, t.deadline IS NULL, t.deadline, t.id"
     );
-    let tasks: Vec<ProjectTask> = sqlx::query_as(sqlx::AssertSqlSafe(task_sql))
+    let mut tasks: Vec<ProjectTask> = sqlx::query_as(sqlx::AssertSqlSafe(task_sql))
         .bind(id)
         .bind(company)
         .fetch_all(&mut *conn)
         .await?;
+    super::tasks::load_photos(&mut conn, &mut tasks).await?;
     let notes: Vec<ProjectNote> = sqlx::query_as(
         "SELECT n.id, n.content, n.created_by, u.name AS author,
                 DATE_FORMAT(n.created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at

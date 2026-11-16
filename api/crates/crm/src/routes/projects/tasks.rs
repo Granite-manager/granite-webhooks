@@ -31,6 +31,9 @@ pub const TASK_DUE: &str = "project_task_reminder";
 /// The bell: someone finished a task you gave.
 pub const TASK_DONE: &str = "project_task_done";
 
+/// The most pictures on one task (as on an issue).
+const MAX_TASK_PHOTOS: usize = 20;
+
 /// Date-only deadlines are reminded at this store time on the day.
 const DATE_ONLY_REMINDER: &str = "09:00:00";
 
@@ -231,12 +234,20 @@ pub async fn create_task(
         .transpose()?
         .flatten();
     let priority = priority(input.priority.as_deref())?;
+    if input.urls.len() > MAX_TASK_PHOTOS {
+        return Err(ApiError::BadRequest("At most 20 pictures".into()));
+    }
     let viewer = Viewer::load(&state.pool, &user).await?;
     let mut conn = state.pool.acquire().await?;
     visible_project(&mut conn, &viewer, id).await?;
     if let Some(assignee) = input.assigned_user_id {
         require_colleague(&mut conn, viewer.company_id, assignee).await?;
     }
+    drop(conn);
+    for url in &input.urls {
+        attach(&state.storage, url, UploadFolder::Events, viewer.company_id).await?;
+    }
+    let mut conn = state.pool.begin().await?;
     let task = sqlx::query(
         "INSERT INTO project_activities
             (project_id, company_id, name, assigned_user_id, deadline, priority, created_by)
@@ -253,7 +264,14 @@ pub async fn create_task(
     .await?
     .last_insert_id();
     let task_id = i32::try_from(task).map_err(|_| ApiError::Internal("task id".into()))?;
-    drop(conn);
+    for url in &input.urls {
+        sqlx::query("INSERT INTO project_task_photos (task_id, url) VALUES (?, ?)")
+            .bind(task_id)
+            .bind(url)
+            .execute(&mut *conn)
+            .await?;
+    }
+    conn.commit().await?;
     notify(
         &state,
         &user,
@@ -311,6 +329,29 @@ fn average_times(uses: Vec<(String, DateTime<Utc>, NaiveDateTime)>) -> Vec<TaskT
             has_time,
         })
         .collect()
+}
+
+/// Fills each task's pictures, oldest first.
+pub(super) async fn load_photos(
+    conn: &mut MySqlConnection,
+    tasks: &mut [super::schemas::ProjectTask],
+) -> sqlx::Result<()> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<i32> = tasks.iter().map(|task| task.id).collect();
+    let mut query = sqlx::QueryBuilder::<sqlx::MySql>::new(
+        "SELECT task_id, url FROM project_task_photos WHERE 1 = 1",
+    );
+    crate::sql::push_in(&mut query, "task_id", &ids);
+    query.push(" ORDER BY id");
+    let rows: Vec<(i32, String)> = query.build_query_as().fetch_all(&mut *conn).await?;
+    for (task_id, url) in rows {
+        if let Some(task) = tasks.iter_mut().find(|task| task.id == task_id) {
+            task.photos.push(url);
+        }
+    }
+    Ok(())
 }
 
 /// The company's remembered task times.

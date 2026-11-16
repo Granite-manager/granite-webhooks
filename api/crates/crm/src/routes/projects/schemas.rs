@@ -87,6 +87,9 @@ pub struct ProjectTask {
     pub created_by_name: Option<String>,
     /// When it was made, UTC ISO.
     pub created_at: String,
+    /// Its pictures' URLs, oldest first; empty with none (and on board cards).
+    #[sqlx(skip)]
+    pub photos: Vec<String>,
 }
 
 /// The next template or installation appointment.
@@ -730,6 +733,10 @@ pub struct TaskInput {
     /// `low`, `medium` (default) or `high`.
     #[serde(default)]
     pub priority: Option<String>,
+    /// Pictures: `url`s that `POST /v1/uploads` (folder `events`) returned.
+    /// At most 20; may be left out.
+    #[serde(default)]
+    pub urls: Vec<String>,
 }
 
 /// Body of `PATCH /v1/projects/{id}/tasks/{task_id}`.
