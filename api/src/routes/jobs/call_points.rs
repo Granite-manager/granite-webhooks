@@ -330,6 +330,10 @@ pub async fn sync(state: &AppState) -> Result<usize, sqlx::Error> {
     let counts_from = counts_from.map_or(DateTime::UNIX_EPOCH, |from| from.and_utc());
     let mut processed = 0;
     for provider in [Provider::CloudTalk, Provider::RingCentral] {
+        // CloudTalk is switched off unless CLOUDTALK_ENABLED.
+        if matches!(provider, Provider::CloudTalk) && !common::telephony::cloudtalk::enabled() {
+            continue;
+        }
         let column = provider.agent_column();
         let companies: Vec<i32> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
             "SELECT DISTINCT company_id FROM users WHERE is_deleted = 0 AND TRIM(COALESCE({column}, '')) <> ''"

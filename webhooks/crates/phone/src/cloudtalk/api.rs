@@ -30,6 +30,9 @@ pub async fn cloudtalk_request<T: Serialize + Sync, R: DeserializeOwned + Send>(
     method: Method,
     body: Option<&T>,
 ) -> Result<R, Box<dyn std::error::Error + Send + Sync>> {
+    if !common::telephony::cloudtalk::enabled() {
+        return Err("CloudTalk is disabled (CLOUDTALK_ENABLED)".into());
+    }
     let auth = get_auth_string(pool, company_id).await?;
     let url = format!("{}/{path}", base_url());
 
@@ -113,6 +116,10 @@ pub async fn sync_customer_to_cloud_talk(
     client: &Client,
     customer_id: i32,
 ) -> BasicResponse {
+    // Switched off: nothing to sync, and the callers carry on as after a sync.
+    if !common::telephony::cloudtalk::enabled() {
+        return OK_RESPONSE;
+    }
     let mapping = match load_customer_with_mapping(pool, customer_id).await {
         Ok(Some(mapping)) => mapping,
         Ok(None) => return NOT_FOUND_RESPONSE,
@@ -264,6 +271,9 @@ pub async fn delete_customer_from_cloud_talk(
     client: &Client,
     customer_id: i32,
 ) -> BasicResponse {
+    if !common::telephony::cloudtalk::enabled() {
+        return OK_RESPONSE;
+    }
     let mapping: Result<Option<(i32, i64, Option<i32>)>, sqlx::Error> = sqlx::query_as(
         "SELECT cc.id, cc.cloudtalk_id, c.company_id FROM cloudtalk_contacts cc
      JOIN customers c ON c.id = cc.customer_id WHERE cc.customer_id = ? LIMIT 1",
@@ -327,7 +337,7 @@ mod local_tests {
     // Adjust this instantiation based on your actual `Client` type
     // (e.g., reqwest::Client or a custom application HTTP client wrapper)
     fn setup_mock_client() -> Client {
-        common::http::client()
+        crate::http::client()
     }
 
     async fn create_company(

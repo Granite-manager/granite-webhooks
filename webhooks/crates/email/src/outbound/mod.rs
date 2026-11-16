@@ -247,7 +247,7 @@ fn presigned(url: &str) -> bool {
 /// Downloads a presigned S3 URL.
 async fn fetch_presigned(url: &str) -> Result<Vec<u8>, String> {
     let response = common::http::send_retrying(
-        common::http::client()
+        crate::http::client()
             .get(url)
             .timeout(std::time::Duration::from_secs(30)),
     )

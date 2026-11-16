@@ -96,6 +96,10 @@ impl WebhooksClient {
         company_id: i32,
         customer_id: i32,
     ) {
+        // CloudTalk is switched off (CLOUDTALK_ENABLED): no call at all.
+        if provider == "cloudtalk" && !common::telephony::cloudtalk::enabled() {
+            return;
+        }
         let Some(target) = &self.target else {
             return;
         };

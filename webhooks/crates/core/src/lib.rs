@@ -19,6 +19,7 @@ pub mod amazonses;
 pub mod axum_helpers;
 pub mod cloudtalk;
 pub mod crud;
+pub mod http;
 pub mod libs;
 pub mod middleware;
 pub mod openai;

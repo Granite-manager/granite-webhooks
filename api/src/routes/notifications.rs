@@ -883,6 +883,10 @@ async fn missed_calls(state: &AppState, user: &SessionUser) -> Vec<NotificationI
     };
     let since = chrono::Utc::now() - chrono::Duration::days(3);
     let cloudtalk = async {
+        // CloudTalk is switched off unless CLOUDTALK_ENABLED.
+        if !common::telephony::cloudtalk::enabled() {
+            return Vec::new();
+        }
         let Some(agent) = present(&user.cloudtalk_agent_id) else {
             return Vec::new();
         };

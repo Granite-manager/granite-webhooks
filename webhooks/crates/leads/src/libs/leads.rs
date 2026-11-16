@@ -328,15 +328,18 @@ where
     };
     let message = format!("You received a REPEATED lead with no {missing} \n{form}");
     let customer = i64::from(existing.id);
-    push_lead(
-        company_id,
-        customer,
-        None,
-        LeadKind::Repeat,
-        Audience::Managers,
-    )
-    .await;
-    match send_telegram_manager_assign(pool, company_id, message, clean_id, false, bot).await {
+    // The phone push and the Telegram message at once (different servers).
+    let (_, sent) = tokio::join!(
+        push_lead(
+            company_id,
+            customer,
+            None,
+            LeadKind::Repeat,
+            Audience::Managers,
+        ),
+        send_telegram_manager_assign(pool, company_id, message, clean_id, false, bot),
+    );
+    match sent {
         Ok(()) => Ok(None),
         Err(e) => {
             tracing::error!(
@@ -371,43 +374,53 @@ where
         }
     };
     let customer = i64::try_from(result.last_insert_id()).unwrap_or_default();
-    push_lead(
-        company_id,
-        customer,
-        None,
-        LeadKind::New,
-        Audience::Managers,
-    )
-    .await;
-    let tg_result = send_telegram_manager_assign(
-        pool,
-        company_id,
-        &form.to_string(),
-        result.last_insert_id(),
-        true,
-        bot,
-    )
-    .await;
-    if let Err(e) = tg_result {
-        tracing::error!(
-            ?e,
-            company_id = company_id,
-            "Error sending message to Telegram"
-        );
-        let problem = format!(
-            "New lead could not be sent to the managers in Telegram, so nobody was asked to assign it ({}).",
-            e.1
-        );
-        alert_lead_not_notified(company_id, &problem, form).await;
-    }
     let customer_id = i32::try_from(result.last_insert_id()).unwrap_or(0);
-    if customer_id > 0 {
-        let client = common::http::client();
-        let _ = tokio::join!(
-            sync_customer_to_cloud_talk(pool, &client, customer_id),
-            sync_customer_to_ring_central(pool, &client, customer_id),
-        );
-    }
+    let notify_managers = async {
+        let tg_result = send_telegram_manager_assign(
+            pool,
+            company_id,
+            &form.to_string(),
+            result.last_insert_id(),
+            true,
+            bot,
+        )
+        .await;
+        if let Err(e) = tg_result {
+            tracing::error!(
+                ?e,
+                company_id = company_id,
+                "Error sending message to Telegram"
+            );
+            let problem = format!(
+                "New lead could not be sent to the managers in Telegram, so nobody was asked to assign it ({}).",
+                e.1
+            );
+            alert_lead_not_notified(company_id, &problem, form).await;
+        }
+    };
+    let sync_contacts = async {
+        if customer_id > 0 {
+            let client = crate::http::client();
+            let _ = tokio::join!(
+                sync_customer_to_cloud_talk(pool, &client, customer_id),
+                sync_customer_to_ring_central(pool, &client, customer_id),
+            );
+        }
+    };
+    // At once: the phone push (the api), the managers' Telegram message and
+    // the contact sync (RingCentral) wait on different servers, and each
+    // took a few hundred ms one after another.
+    tokio::join!(
+        push_lead(
+            company_id,
+            customer,
+            None,
+            LeadKind::New,
+            Audience::Managers,
+        ),
+        notify_managers,
+        sync_contacts,
+    );
     CREATED_RESPONSE
 }
 

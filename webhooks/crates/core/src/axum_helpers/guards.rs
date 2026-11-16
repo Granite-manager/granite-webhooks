@@ -1,4 +1,5 @@
 use crate::axum_helpers::access_token::{LegacyAuth, LegacyCheck, TokenScope};
+use crate::http::Reused;
 use crate::libs::types::BasicResponse;
 use axum::extract::FromRequestParts;
 use axum::http::{HeaderMap, StatusCode, request::Parts};
@@ -54,10 +55,16 @@ pub struct TelegramBot {
     bot: Bot,
 }
 
+/// The bots' HTTP clients are reused between the requests that follow each
+/// other closely (`crate::http`): a new connection to Telegram costs about
+/// 190 ms more than a reused one.
+static LEAD_BOT: Reused<Bot> = Reused::new(bot_from_env);
+static NOTIFICATIONS_BOT: Reused<Bot> = Reused::new(notifications_bot_from_env);
+
 impl Default for TelegramBot {
     fn default() -> Self {
         Self {
-            bot: bot_from_env(),
+            bot: LEAD_BOT.get(),
         }
     }
 }
@@ -178,18 +185,22 @@ pub struct NotificationsTelegramBot {
     bot: Bot,
 }
 
+fn notifications_bot_from_env() -> Bot {
+    let token = std::env::var("TELOXIDE_NOTIFICATIONS_TOKEN")
+        .or_else(|_| std::env::var("TELEGRAM_NOTIFICATIONS_BOT_TOKEN"));
+    // Tests never load `.env`, so they never get (or use) the real token.
+    #[cfg(any(test, feature = "test-support"))]
+    let token = token.or_else(|_| Ok::<_, std::env::VarError>("test-token".to_string()));
+    let token = token.unwrap_or_else(|error| {
+        panic!("TELOXIDE_NOTIFICATIONS_TOKEN must be set: {error}");
+    });
+    Bot::new(token)
+}
+
 impl Default for NotificationsTelegramBot {
     fn default() -> Self {
-        let token = std::env::var("TELOXIDE_NOTIFICATIONS_TOKEN")
-            .or_else(|_| std::env::var("TELEGRAM_NOTIFICATIONS_BOT_TOKEN"));
-        // Tests never load `.env`, so they never get (or use) the real token.
-        #[cfg(any(test, feature = "test-support"))]
-        let token = token.or_else(|_| Ok::<_, std::env::VarError>("test-token".to_string()));
-        let token = token.unwrap_or_else(|error| {
-            panic!("TELOXIDE_NOTIFICATIONS_TOKEN must be set: {error}");
-        });
         Self {
-            bot: Bot::new(token),
+            bot: NOTIFICATIONS_BOT.get(),
         }
     }
 }

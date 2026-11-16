@@ -397,15 +397,120 @@ async fn sender_number(
                 .map_err(|error| cloudtalk::error_token(&error))
         }
         SmsProvider::Ringcentral => {
-            ringcentral::extension_sender(pool, client, sms.company_id, &sms.agent_id)
+            if let Some(from) = senders::cached(sms.company_id, &sms.agent_id) {
+                return Ok(from);
+            }
+            let found = ringcentral::extension_sender(pool, client, sms.company_id, &sms.agent_id)
                 .await
-                .map_err(|error| ringcentral::sms_error_token(&error))
+                .map_err(|error| ringcentral::sms_error_token(&error));
+            if let Ok(Some(from)) = &found {
+                senders::remember(sms.company_id, &sms.agent_id, from);
+            }
+            found
         }
     };
     match sender {
         Ok(Some(from)) => Ok(from),
         Ok(None) => Err(SendFailure::new(StatusCode::BAD_REQUEST, "agent_no_number")),
         Err(token) => Err(SendFailure::new(StatusCode::BAD_GATEWAY, token)),
+    }
+}
+
+/// The `RingCentral` numbers reps texted from lately, so that a rep's texts
+/// that follow each other skip the lookup (a `RingCentral` call, about as
+/// slow as the send itself, and its API is rate limited). Kept
+/// [`senders::KEEP`] by the wall clock, which is right again after Lambda
+/// froze the instance; dropped when a send fails, in case the number changed.
+mod senders {
+    use std::collections::HashMap;
+    use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    pub const KEEP: Duration = Duration::from_secs(300);
+
+    type Senders = HashMap<(i32, String), (String, u128)>;
+    static SENDERS: LazyLock<Mutex<Senders>> = LazyLock::new(Mutex::default);
+
+    fn now() -> u128 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis())
+    }
+
+    /// The tests look every number up: they change them between texts.
+    const ON: bool = !cfg!(any(test, feature = "test-support"));
+
+    pub fn cached(company_id: i32, extension: &str) -> Option<String> {
+        if !ON {
+            return None;
+        }
+        cached_at(&SENDERS, company_id, extension, now())
+    }
+
+    pub fn remember(company_id: i32, extension: &str, number: &str) {
+        if ON {
+            remember_at(&SENDERS, company_id, extension, number, now());
+        }
+    }
+
+    pub fn forget(company_id: i32, extension: &str) {
+        if let Ok(mut senders) = SENDERS.lock() {
+            senders.remove(&(company_id, extension.to_string()));
+        }
+    }
+
+    pub(super) fn cached_at(
+        senders: &Mutex<Senders>,
+        company_id: i32,
+        extension: &str,
+        now: u128,
+    ) -> Option<String> {
+        let (number, at) = senders
+            .lock()
+            .ok()?
+            .get(&(company_id, extension.to_string()))
+            .cloned()?;
+        (now.saturating_sub(at) < KEEP.as_millis() && now >= at).then_some(number)
+    }
+
+    pub(super) fn remember_at(
+        senders: &Mutex<Senders>,
+        company_id: i32,
+        extension: &str,
+        number: &str,
+        now: u128,
+    ) {
+        if let Ok(mut senders) = senders.lock() {
+            senders.retain(|_, (_, at)| now.saturating_sub(*at) < KEEP.as_millis());
+            senders.insert(
+                (company_id, extension.to_string()),
+                (number.to_string(), now),
+            );
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn a_number_is_kept_five_minutes() {
+            let senders = Mutex::default();
+            remember_at(&senders, 1, "101", "+13175550100", 1_000);
+            assert_eq!(
+                cached_at(&senders, 1, "101", 1_000 + KEEP.as_millis() - 1).as_deref(),
+                Some("+13175550100")
+            );
+            assert_eq!(
+                cached_at(&senders, 1, "101", 1_000 + KEEP.as_millis()),
+                None
+            );
+            // Another rep or company is looked up.
+            assert_eq!(cached_at(&senders, 1, "102", 1_001), None);
+            assert_eq!(cached_at(&senders, 2, "101", 1_001), None);
+            // A clock that went back does not trust the old entry.
+            assert_eq!(cached_at(&senders, 1, "101", 999), None);
+        }
     }
 }
 
@@ -416,6 +521,13 @@ pub async fn deliver(
     sms: &OutgoingSms,
 ) -> Result<SentSms, SendFailure> {
     let provider = match sms.provider.as_str() {
+        // Switched off (CLOUDTALK_ENABLED): refused before anything is stored.
+        "cloudtalk" if !cloudtalk::enabled() => {
+            return Err(SendFailure::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "cloudtalk_disabled",
+            ));
+        }
         "cloudtalk" => SmsProvider::Cloudtalk,
         "ringcentral" => SmsProvider::Ringcentral,
         _ => {
@@ -461,6 +573,10 @@ pub async fn deliver(
             ids.push(id);
             continue;
         };
+        // The number may have changed: the next text looks it up again.
+        if provider == SmsProvider::Ringcentral {
+            senders::forget(sms.company_id, &sms.agent_id);
+        }
         if ids.is_empty() {
             finalize_outbound(pool, provider, id, false, None, Some(&token)).await?;
             return Err(SendFailure::new(StatusCode::BAD_GATEWAY, token));
@@ -485,9 +601,7 @@ pub async fn send_handler(
     State(pool): State<MySqlPool>,
     Json(sms): Json<OutgoingSms>,
 ) -> Result<Json<SentSms>, SendFailure> {
-    deliver(&pool, &common::http::client(), &sms)
-        .await
-        .map(Json)
+    deliver(&pool, &crate::http::client(), &sms).await.map(Json)
 }
 
 #[cfg(test)]
@@ -578,7 +692,7 @@ mod tests {
         use_cloudtalk(&stub.base);
         let sent = deliver(
             &pool,
-            &common::http::client(),
+            &crate::http::client(),
             &sms(
                 "cloudtalk",
                 90,
@@ -621,9 +735,7 @@ mod tests {
         let mut step = sms("cloudtalk", 93, Vec::new());
         step.is_automated = true;
         step.idempotency_key = Some("sms-flow-12-3".into());
-        deliver(&pool, &common::http::client(), &step)
-            .await
-            .unwrap();
+        deliver(&pool, &crate::http::client(), &step).await.unwrap();
         let stored: (Option<String>, bool) =
             sqlx::query_as("SELECT idempotency_key, is_automated <> 0 FROM cloudtalk_sms")
                 .fetch_one(&pool)
@@ -642,7 +754,7 @@ mod tests {
         use_cloudtalk(&stub.base);
         let failure = deliver(
             &pool,
-            &common::http::client(),
+            &crate::http::client(),
             &sms("cloudtalk", 91, Vec::new()),
         )
         .await
@@ -670,7 +782,7 @@ mod tests {
         use_cloudtalk(&stub.base);
         let failure = deliver(
             &pool,
-            &common::http::client(),
+            &crate::http::client(),
             &sms("cloudtalk", 92, Vec::new()),
         )
         .await
@@ -711,7 +823,7 @@ mod tests {
         let url = format!("{}/files/a.jpg", stub.base);
         let sent = deliver(
             &pool,
-            &common::http::client(),
+            &crate::http::client(),
             &sms("ringcentral", 93, vec![photo("a.png", &url)]),
         )
         .await

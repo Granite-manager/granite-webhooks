@@ -148,7 +148,11 @@ impl SmsProvider {
 
     /// Whether the user may text through this provider (has an agent id);
     /// see [`Self::agent_of`] for Telnyx.
+    /// `CloudTalk` never while it is switched off (`CLOUDTALK_ENABLED`).
     pub fn can_send(self, user: &SessionUser) -> bool {
+        if matches!(self, Self::Cloudtalk) && !common::telephony::cloudtalk::enabled() {
+            return false;
+        }
         self.raw_agent(user).is_some_and(|agent| !agent.is_empty())
     }
 

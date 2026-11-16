@@ -9,6 +9,13 @@ async fn health_check() -> impl IntoResponse {
 }
 
 pub fn new_main_app(pool: MySqlPool) -> Router {
+    routes().with_state(pool)
+}
+
+/// Every route, the request logger and CORS, before the pool is given:
+/// `main` builds them while the secrets load. At a cold start the first
+/// build is mostly the binary's pages being read in.
+pub fn routes() -> Router<MySqlPool> {
     Router::new()
         .route("/", get(health_check))
         .merge(webhooks_leads::router())
@@ -23,5 +30,4 @@ pub fn new_main_app(pool: MySqlPool) -> Router {
                 .allow_headers(Any),
         )
         .layer(axum::middleware::from_fn(print_request_body))
-        .with_state(pool)
 }
