@@ -88,6 +88,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(ai_usage::router())
         .merge(auth::router())
         .merge(login_steps::router())
+        .merge(password_reset_code::router())
         .merge(app_shell::router())
         .merge(onboarding::router())
         .merge(ai::router())

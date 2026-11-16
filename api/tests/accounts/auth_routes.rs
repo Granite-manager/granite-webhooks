@@ -534,3 +534,84 @@ async fn an_invited_user_sets_up_their_own_account(pool: MySqlPool) {
         .await
         .assert_status_not_found();
 }
+
+#[test_db::test(seed)]
+async fn the_app_resets_a_forgotten_password_with_an_emailed_code(pool: MySqlPool) {
+    let (server, sent) = setup(pool.clone(), None).await;
+    // Unknown emails get the same answer and no email.
+    server
+        .post("/v1/auth/password-reset-code")
+        .json(&json!({ "email": "nobody@acme.test" }))
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    assert!(sent.lock().unwrap().is_empty());
+    server
+        .post("/v1/auth/password-reset-code")
+        .json(&json!({ "email": " Rep@Acme.test " }))
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    let emails = sent.lock().unwrap().clone();
+    assert_eq!(emails.len(), 1);
+    assert_eq!(emails[0].to, ["rep@acme.test"]);
+    let code: String = emails[0].subject.chars().take(6).collect();
+    assert!(code.bytes().all(|b| b.is_ascii_digit()));
+    assert!(emails[0].body.contains(&code));
+    assert!(!emails[0].body.contains("http"));
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": code, "password": "short" }))
+        .await
+        .assert_status_bad_request();
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": wrong, "password": "a-new-password" }))
+        .await
+        .assert_status_bad_request();
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "Rep@acme.test", "code": code, "password": " a-new-password " }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Every session ended; the code is spent; the new password signs in.
+    server
+        .get("/v1/me")
+        .with_session(sessions::REP)
+        .await
+        .assert_status_unauthorized();
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": code, "password": "another-password" }))
+        .await
+        .assert_status_bad_request();
+    server
+        .post("/v1/auth/login")
+        .json(&json!({ "email": "rep@acme.test", "password": "a-new-password" }))
+        .await
+        .assert_status_ok();
+}
+
+#[test_db::test(seed)]
+async fn five_wrong_reset_codes_end_the_code(pool: MySqlPool) {
+    let (server, sent) = setup(pool.clone(), None).await;
+    server
+        .post("/v1/auth/password-reset-code")
+        .json(&json!({ "email": "rep@acme.test" }))
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    let code: String = sent.lock().unwrap()[0].subject.chars().take(6).collect();
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+    for _ in 0..5 {
+        server
+            .post("/v1/auth/password-reset-code/confirm")
+            .json(&json!({ "email": "rep@acme.test", "code": wrong, "password": "a-new-password" }))
+            .await
+            .assert_status_bad_request();
+    }
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": code, "password": "a-new-password" }))
+        .await
+        .assert_status_bad_request();
+}
