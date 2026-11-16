@@ -16,7 +16,7 @@ use sqlx::{MySql, MySqlConnection, QueryBuilder};
 const PAGE: u32 = 100;
 
 /// `SELECT` of [`ProjectTask`] from `project_activities t`.
-pub const TASK_SELECT: &str = "SELECT t.id, t.project_id, t.name, t.assigned_user_id,
+pub const TASK_SELECT: &str = "SELECT t.id, t.project_id, t.name, t.assigned_user_id, t.kind,
         au.name AS assigned_user_name,
         DATE_FORMAT(t.deadline, '%Y-%m-%dT%H:%i:%s') AS deadline, CAST(t.priority AS CHAR) AS priority,
         DATE_FORMAT(t.completed_at, '%Y-%m-%dT%H:%i:%sZ') AS completed_at,
@@ -348,6 +348,7 @@ pub async fn get(
         .fetch_all(&mut *conn)
         .await?;
     super::tasks::load_photos(&mut conn, &mut tasks).await?;
+    super::tasks::load_items(&mut conn, &mut tasks).await?;
     let notes: Vec<ProjectNote> = sqlx::query_as(
         "SELECT n.id, n.content, n.created_by, u.name AS author,
                 DATE_FORMAT(n.created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at
@@ -512,6 +513,11 @@ pub async fn get(
     let customer_todos =
         crate::routes::customer_todos::project_todos(&mut conn, company, id).await?;
     let part_types = super::parts::part_types(&mut conn, company).await?;
+    let step_owners = super::lists::step_owners(&mut conn, &project, &process_steps).await?;
+    let step_items_done = super::lists::step_items_done(&mut conn, id).await?;
+    let lists = super::lists::company_lists(&mut conn, company).await?;
+    let questions = super::questions::project_questions(&mut conn, id, viewer.user_id).await?;
+    let involved = super::lists::involved(&mut conn, &project, &step_owners).await?;
     Ok(Json(ProjectWorkspace {
         project,
         tasks,
@@ -532,6 +538,11 @@ pub async fn get(
         part_types,
         permissions: viewer.permissions,
         user_id: viewer.user_id,
+        step_owners,
+        step_items_done,
+        lists,
+        questions,
+        involved,
     }))
 }
 

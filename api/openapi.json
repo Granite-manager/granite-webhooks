@@ -23331,6 +23331,1044 @@
         ]
       }
     },
+    "/v1/projects/{id}/tasks/{task_id}/items/{item_id}": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Tick a to-do list item off, or open it again",
+        "description": "Its task's creator, the person it is for, or a project manager. Ticking\nthe last open item finishes the task (its giver is told); opening one\nagain reopens it.",
+        "operationId": "set_project_task_item_done",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "task_id",
+            "in": "path",
+            "description": "Task id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "description": "Item id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemDone"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not the task's creator, its person or a manager",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such item the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/lists": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "The company's lists",
+        "description": "The lists that fill a new to-do list task, in order. Anyone in the company.",
+        "operationId": "list_project_lists",
+        "responses": {
+          "200": {
+            "description": "The lists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectList"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Add a list",
+        "description": "Admins. Returns every list.",
+        "operationId": "create_project_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created; every list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectList"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or long name, or a long item",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/lists/{list_id}": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Change a list",
+        "description": "Admins. Replaces its name and items; to-do lists already made from it\nstay as they are. Returns every list.",
+        "operationId": "update_project_list",
+        "parameters": [
+          {
+            "name": "list_id",
+            "in": "path",
+            "description": "List id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectListInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved; every list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectList"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or long name, or a long item",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such list in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Delete a list",
+        "description": "Admins. To-do lists already made from it stay.",
+        "operationId": "delete_project_list",
+        "parameters": [
+          {
+            "name": "list_id",
+            "in": "path",
+            "description": "List id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such list in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/process-steps/{step_id}/setup": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Set who does a step, when it is due, and its own to-do list",
+        "description": "Admins. `responsible_sales_rep` makes it the project's sales rep's;\notherwise `responsible_user_id` (or nobody). Items keep their ticks when\nsent back with their `id`.",
+        "operationId": "set_project_process_step_setup",
+        "parameters": [
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepSetup"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Someone outside the company, bad days, or a long item",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such step in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/steps/{step_id}/owner": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Pick who does a step on this project",
+        "description": "Anyone who can open the project. `null` goes back to the company's rule.\nThe person gets a bell notification and a phone push (unless it is the caller).",
+        "operationId": "set_project_step_owner",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepOwnerInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Someone outside the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see, or step in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/step-items/{item_id}": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Tick a step's to-do list item off, or open it again",
+        "description": "Anyone who can see the project, while it is not archived or cancelled.\nTicking the step's last open item checks the step off.",
+        "operationId": "set_project_step_item_done",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "description": "Step item id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ItemDone"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see, or item in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/questions": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Ask a question",
+        "description": "Anyone who can open the project. Only the people in `to` (or, with\n`everyone`, everyone involved in the project) are in it and told.",
+        "operationId": "ask_project_question",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Asked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedId"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty or long text, nobody picked, or someone outside the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/questions/{question_id}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "A question and its messages",
+        "description": "Anyone who can open the project. Reading it marks it read for someone in it.",
+        "operationId": "get_project_question",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "question_id",
+            "in": "path",
+            "description": "Question id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The question",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuestionThread"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such question the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Add people to a question, join it, or mark it answered",
+        "description": "Anyone who can open the project. People added are told; joining tells nobody.",
+        "operationId": "change_project_question",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "question_id",
+            "in": "path",
+            "description": "Question id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Someone outside the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such question the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/questions/{question_id}/messages": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Answer in a question",
+        "description": "Anyone who can open the project; someone not in it joins it. The others\nin it are told.",
+        "operationId": "reply_project_question",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "question_id",
+            "in": "path",
+            "description": "Question id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QuestionReply"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Sent"
+          },
+          "400": {
+            "description": "Empty or long text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such question the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/calendars": {
       "get": {
         "tags": [
@@ -82975,6 +84013,36 @@
           }
         }
       },
+      "ChecklistItemInput": {
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "Just the text: the sales rep follows it up."
+          },
+          {
+            "type": "object",
+            "description": "The text and who follows it up (null: the sales rep).",
+            "required": [
+              "label"
+            ],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "1 to 200 characters."
+              },
+              "assigned_user_id": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int32",
+                "description": "Someone in the company; null for the sales rep."
+              }
+            }
+          }
+        ],
+        "description": "One to-do of a list to save: its text, or its text and person."
+      },
       "ChoiceInput": {
         "type": "object",
         "description": "An answer of a question being saved.",
@@ -86389,9 +87457,9 @@
           "items": {
             "type": "array",
             "items": {
-              "type": "string"
+              "$ref": "#/components/schemas/ChecklistItemInput"
             },
-            "description": "The to-dos, in order: each 1 to 200 characters (trimmed; blank ones\nare dropped), at most 60. Saving replaces the list's to-dos; to-dos\nalready sent to customers stay as they are."
+            "description": "The to-dos, in order: each 1 to 200 characters (trimmed; blank ones\nare dropped), at most 60, each a string or `{label, assigned_user_id}`.\nSaving replaces the list's to-dos; to-dos already sent to customers\nstay as they are."
           }
         }
       },
@@ -86411,6 +87479,14 @@
           "label": {
             "type": "string",
             "description": "What the customer must do, e.g. \"Level the cabinets\"."
+          },
+          "assigned_user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Who follows it up; null means the job's sales rep."
           }
         }
       },
@@ -87382,6 +88458,21 @@
               "null"
             ],
             "description": "Who ticked it off."
+          },
+          "assigned_user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Who follows it up; null for nobody."
+          },
+          "assigned_user_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their name."
           }
         }
       },
@@ -87415,6 +88506,14 @@
               "null"
             ],
             "description": "A note for the sales rep: at most 1000 characters; blank means none."
+          },
+          "assigned_user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Who follows it up: someone in the company; null for the job's sales rep."
           }
         }
       },
@@ -90837,7 +91936,8 @@
         "description": "A template appointment's to-dos.",
         "required": [
           "nothing_to_do",
-          "todos"
+          "todos",
+          "people"
         ],
         "properties": {
           "sent_at": {
@@ -90865,6 +91965,21 @@
               "$ref": "#/components/schemas/CustomerTodo"
             },
             "description": "The to-dos sent from this appointment, in the order they were sent."
+          },
+          "sales_rep_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The job's sales rep: a list item with no person goes to them."
+          },
+          "people": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TodoPerson"
+            },
+            "description": "The people involved in the job's project (the sales rep first), to\ngive a to-do to."
           }
         }
       },
@@ -95392,6 +96507,27 @@
           }
         }
       },
+      "ItemDone": {
+        "type": "object",
+        "description": "Body of `PUT /v1/projects/{id}/tasks/{task_id}/items/{item_id}` and\n`PUT /v1/projects/{id}/step-items/{item_id}`.",
+        "required": [
+          "done"
+        ],
+        "properties": {
+          "done": {
+            "type": "boolean",
+            "description": "Ticked off (true) or open again (false)."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part, on a project with parts (step items only)."
+          }
+        }
+      },
       "ItemSlabsInput": {
         "type": "object",
         "description": "The slabs of one color.",
@@ -96750,6 +97886,25 @@
               "null"
             ],
             "description": "When it was paid, UTC ISO."
+          }
+        }
+      },
+      "ListItem": {
+        "type": "object",
+        "description": "One item of a company list or a step's own list.",
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its id."
+          },
+          "label": {
+            "type": "string",
+            "description": "What to do."
           }
         }
       },
@@ -104996,7 +106151,9 @@
           "position",
           "notify",
           "notify_sales_rep",
-          "event_rules"
+          "event_rules",
+          "responsible_sales_rep",
+          "items"
         ],
         "properties": {
           "id": {
@@ -105046,6 +106203,33 @@
               "$ref": "#/components/schemas/StepEventRule"
             },
             "description": "What checking it off does to the project's schedule events."
+          },
+          "responsible_user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The person responsible on every project; null for none."
+          },
+          "responsible_sales_rep": {
+            "type": "boolean",
+            "description": "The project's sales rep is responsible."
+          },
+          "due_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Due this many days after the project reaches the stage; null for no due date."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListItem"
+            },
+            "description": "Its own to-do list, in order."
           }
         }
       },
@@ -105908,6 +107092,53 @@
           }
         }
       },
+      "ProjectList": {
+        "type": "object",
+        "description": "A company's own to-do list, to fill a to-do list task (Admin › Projects).",
+        "required": [
+          "id",
+          "name",
+          "items"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name, e.g. \"After sale\"."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListItem"
+            },
+            "description": "Its items, in order."
+          }
+        }
+      },
+      "ProjectListInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/projects/lists` and `PUT /v1/projects/lists/{list_id}`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "1 to 120 characters."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The items, in order: 1 to 200 characters each (blank ones dropped), at most 60."
+          }
+        }
+      },
       "ProjectNote": {
         "type": "object",
         "description": "A note on a project.",
@@ -106159,7 +107390,10 @@
           "name",
           "priority",
           "created_by",
-          "created_at"
+          "created_at",
+          "photos",
+          "kind",
+          "items"
         ],
         "properties": {
           "id": {
@@ -106224,6 +107458,24 @@
           "created_at": {
             "type": "string",
             "description": "When it was made, UTC ISO."
+          },
+          "photos": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Its pictures' URLs, oldest first; empty with none (and on board cards)."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`text` (a plain task) or `list` (a to-do list of `items`)."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TaskItem"
+            },
+            "description": "A to-do list's items, in order; empty on a plain task (and on board cards)."
           }
         }
       },
@@ -106249,7 +107501,12 @@
           "parts",
           "part_types",
           "permissions",
-          "user_id"
+          "user_id",
+          "step_owners",
+          "step_items_done",
+          "lists",
+          "questions",
+          "involved"
         ],
         "properties": {
           "project": {
@@ -106376,6 +107633,42 @@
             "type": "integer",
             "format": "int32",
             "description": "The caller's user id (to show which tasks and notes are theirs)."
+          },
+          "step_owners": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepOwner"
+            },
+            "description": "Who is responsible for each step on this project, and when it is due."
+          },
+          "step_items_done": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepItemDone"
+            },
+            "description": "Ticks of the steps' own to-do lists on this project."
+          },
+          "lists": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProjectList"
+            },
+            "description": "The company's lists, to fill a new to-do list task."
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuestionSummary"
+            },
+            "description": "Its questions the caller can see: theirs first."
+          },
+          "involved": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "The people involved in the project (sales rep, owner, step and task\npeople, the crew on its appointments), to ask a question or give work."
           }
         }
       },
@@ -107089,6 +108382,31 @@
           }
         }
       },
+      "QuestionChange": {
+        "type": "object",
+        "description": "Body of `PUT /v1/projects/{id}/questions/{question_id}`.",
+        "properties": {
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "People to add (they are told)."
+          },
+          "join": {
+            "type": "boolean",
+            "description": "The caller joins it (no one is told)."
+          },
+          "resolved": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Answered (true) or open again (false); left out keeps it."
+          }
+        }
+      },
       "QuestionCount": {
         "type": "object",
         "description": "How many questions a call published or generated.",
@@ -107106,14 +108424,181 @@
       },
       "QuestionInput": {
         "type": "object",
-        "description": "Body of a question write.",
+        "description": "Body of `POST /v1/projects/{id}/questions`.",
         "required": [
-          "question"
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The question: 1 to 5000 characters."
+          },
+          "to": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Who it is for (user ids in the company); ignored with `everyone`."
+          },
+          "everyone": {
+            "type": "boolean",
+            "description": "Ask everyone involved in the project."
+          }
+        }
+      },
+      "QuestionMessage": {
+        "type": "object",
+        "description": "One message of a question.",
+        "required": [
+          "id",
+          "body",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its id."
+          },
+          "user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Who wrote it; null once that user is gone."
+          },
+          "user_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their name."
+          },
+          "body": {
+            "type": "string",
+            "description": "The text."
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When, UTC ISO."
+          }
+        }
+      },
+      "QuestionReply": {
+        "type": "object",
+        "description": "Body of `POST /v1/projects/{id}/questions/{question_id}/messages`.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "1 to 5000 characters."
+          }
+        }
+      },
+      "QuestionSummary": {
+        "type": "object",
+        "description": "A question on a project, for its list.",
+        "required": [
+          "id",
+          "title",
+          "everyone",
+          "created_at",
+          "last_message_at",
+          "message_count",
+          "unread",
+          "member",
+          "members"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its id."
+          },
+          "title": {
+            "type": "string",
+            "description": "Its first words."
+          },
+          "everyone": {
+            "type": "boolean",
+            "description": "Asked to everyone involved in the project."
+          },
+          "created_by": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Who asked; null once that user is gone."
+          },
+          "created_by_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their name."
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When it was asked, UTC ISO."
+          },
+          "last_message_at": {
+            "type": "string",
+            "description": "When its last message was written, UTC ISO."
+          },
+          "resolved_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it was marked answered, UTC ISO; null while open."
+          },
+          "message_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many messages it has."
+          },
+          "unread": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Messages the caller has not read (always 0 for someone not in it)."
+          },
+          "member": {
+            "type": "boolean",
+            "description": "The caller is in it (asked, or asked to, or joined)."
+          },
+          "members": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "The people in it (user ids), the asker first."
+          }
+        }
+      },
+      "QuestionThread": {
+        "type": "object",
+        "description": "`GET /v1/projects/{id}/questions/{question_id}`: a question and its messages.",
+        "required": [
+          "question",
+          "messages"
         ],
         "properties": {
           "question": {
-            "type": "string",
-            "description": "The question, 1 to 5000 characters."
+            "$ref": "#/components/schemas/QuestionSummary",
+            "description": "The question."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QuestionMessage"
+            },
+            "description": "Its messages, oldest first."
           }
         }
       },
@@ -115498,6 +116983,149 @@
           }
         }
       },
+      "StepItemDone": {
+        "type": "object",
+        "description": "A tick of a step's own to-do list item on a project.",
+        "required": [
+          "item_id",
+          "done_at"
+        ],
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The item."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part; null on a project without parts."
+          },
+          "done_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who ticked it."
+          },
+          "done_at": {
+            "type": "string",
+            "description": "When, UTC ISO."
+          }
+        }
+      },
+      "StepItemInput": {
+        "type": "object",
+        "description": "One item of a step's own to-do list.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The item's id to keep it (and its ticks); null for a new one."
+          },
+          "label": {
+            "type": "string",
+            "description": "1 to 200 characters."
+          }
+        }
+      },
+      "StepOwner": {
+        "type": "object",
+        "description": "Who is responsible for a step on one project, and when it is due.",
+        "required": [
+          "step_id",
+          "picked"
+        ],
+        "properties": {
+          "step_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The step."
+          },
+          "user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The person; null for nobody."
+          },
+          "user_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That person's name."
+          },
+          "picked": {
+            "type": "boolean",
+            "description": "Picked on this project, in place of the company's rule."
+          },
+          "due": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it is due, `YYYY-MM-DD` store date; null for no due date or a\nstage the project has not reached."
+          }
+        }
+      },
+      "StepOwnerInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/projects/{id}/steps/{step_id}/owner`.",
+        "properties": {
+          "user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The person on this project; null goes back to the company's rule."
+          }
+        }
+      },
+      "StepSetup": {
+        "type": "object",
+        "description": "Body of `PUT /v1/projects/process-steps/{step_id}/setup`.",
+        "properties": {
+          "responsible_user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The person responsible on every project; null for none (or the sales rep)."
+          },
+          "responsible_sales_rep": {
+            "type": "boolean",
+            "description": "The project's sales rep is responsible (wins over `responsible_user_id`)."
+          },
+          "due_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Due this many days after the project reaches the step's stage; null for no due date."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepItemInput"
+            },
+            "description": "The step's own to-do list, in order (replaces it; ticks of kept items stay)."
+          }
+        }
+      },
       "StockExchange": {
         "type": "string",
         "description": "A public company's stock exchange.",
@@ -117479,6 +119107,59 @@
               "null"
             ],
             "description": "`low`, `medium` (default) or `high`."
+          },
+          "urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Pictures: `url`s that `POST /v1/uploads` (folder `events`) returned.\nAt most 20; may be left out."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "A to-do list: its items, in order (1 to 200 characters each, blank\nones dropped, at most 60). Empty or left out: a plain task."
+          }
+        }
+      },
+      "TaskItem": {
+        "type": "object",
+        "description": "One item of a to-do list task.",
+        "required": [
+          "id",
+          "task_id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Its id."
+          },
+          "task_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The task it belongs to."
+          },
+          "label": {
+            "type": "string",
+            "description": "What to do."
+          },
+          "done_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When it was ticked off, UTC ISO; null while open."
+          },
+          "done_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who ticked it off."
           }
         }
       },
@@ -120640,6 +122321,25 @@
           "done": {
             "type": "boolean",
             "description": "Ticked off or not."
+          }
+        }
+      },
+      "TodoPerson": {
+        "type": "object",
+        "description": "Someone to give a to-do to.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Their user id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Their name."
           }
         }
       },

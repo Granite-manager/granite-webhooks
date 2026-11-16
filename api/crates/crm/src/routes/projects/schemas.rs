@@ -90,6 +90,131 @@ pub struct ProjectTask {
     /// Its pictures' URLs, oldest first; empty with none (and on board cards).
     #[sqlx(skip)]
     pub photos: Vec<String>,
+    /// `text` (a plain task) or `list` (a to-do list of `items`).
+    pub kind: String,
+    /// A to-do list's items, in order; empty on a plain task (and on board cards).
+    #[sqlx(skip)]
+    pub items: Vec<TaskItem>,
+}
+
+/// One item of a to-do list task.
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct TaskItem {
+    /// Its id.
+    pub id: i32,
+    /// The task it belongs to.
+    pub task_id: i32,
+    /// What to do.
+    pub label: String,
+    /// When it was ticked off, UTC ISO; null while open.
+    pub done_at: Option<String>,
+    /// Who ticked it off.
+    pub done_by: Option<String>,
+}
+
+/// Body of `PUT /v1/projects/{id}/tasks/{task_id}/items/{item_id}` and
+/// `PUT /v1/projects/{id}/step-items/{item_id}`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ItemDone {
+    /// Ticked off (true) or open again (false).
+    pub done: bool,
+    /// The part, on a project with parts (step items only).
+    #[serde(default)]
+    pub part_id: Option<i32>,
+}
+
+/// One item of a company list or a step's own list.
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct ListItem {
+    /// Its id.
+    pub id: i32,
+    /// What to do.
+    pub label: String,
+}
+
+/// A company's own to-do list, to fill a to-do list task (Admin › Projects).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ProjectList {
+    /// Its id.
+    pub id: i32,
+    /// Its name, e.g. "After sale".
+    pub name: String,
+    /// Its items, in order.
+    pub items: Vec<ListItem>,
+}
+
+/// Body of `POST /v1/projects/lists` and `PUT /v1/projects/lists/{list_id}`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ProjectListInput {
+    /// 1 to 120 characters.
+    pub name: String,
+    /// The items, in order: 1 to 200 characters each (blank ones dropped), at most 60.
+    #[serde(default)]
+    pub items: Vec<String>,
+}
+
+/// Body of `PUT /v1/projects/process-steps/{step_id}/setup`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct StepSetup {
+    /// The person responsible on every project; null for none (or the sales rep).
+    #[serde(default)]
+    pub responsible_user_id: Option<i32>,
+    /// The project's sales rep is responsible (wins over `responsible_user_id`).
+    #[serde(default)]
+    pub responsible_sales_rep: bool,
+    /// Due this many days after the project reaches the step's stage; null for no due date.
+    #[serde(default)]
+    pub due_days: Option<i32>,
+    /// The step's own to-do list, in order (replaces it; ticks of kept items stay).
+    #[serde(default)]
+    pub items: Vec<StepItemInput>,
+}
+
+/// One item of a step's own to-do list.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct StepItemInput {
+    /// The item's id to keep it (and its ticks); null for a new one.
+    #[serde(default)]
+    pub id: Option<i32>,
+    /// 1 to 200 characters.
+    pub label: String,
+}
+
+/// Who is responsible for a step on one project, and when it is due.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct StepOwner {
+    /// The step.
+    pub step_id: i32,
+    /// The person; null for nobody.
+    pub user_id: Option<i32>,
+    /// That person's name.
+    pub user_name: Option<String>,
+    /// Picked on this project, in place of the company's rule.
+    pub picked: bool,
+    /// When it is due, `YYYY-MM-DD` store date; null for no due date or a
+    /// stage the project has not reached.
+    pub due: Option<String>,
+}
+
+/// A tick of a step's own to-do list item on a project.
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct StepItemDone {
+    /// The item.
+    pub item_id: i32,
+    /// The part; null on a project without parts.
+    pub part_id: Option<i32>,
+    /// Who ticked it.
+    pub done_by: Option<String>,
+    /// When, UTC ISO.
+    pub done_at: String,
+}
+
+/// Body of `PUT /v1/projects/{id}/steps/{step_id}/owner`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct StepOwnerInput {
+    /// The person on this project; null goes back to the company's rule.
+    #[serde(default)]
+    pub user_id: Option<i32>,
 }
 
 /// The next template or installation appointment.
@@ -274,6 +399,15 @@ pub struct ProcessStep {
     /// What checking it off does to the project's schedule events.
     #[sqlx(skip)]
     pub event_rules: Vec<super::step_events::StepEventRule>,
+    /// The person responsible on every project; null for none.
+    pub responsible_user_id: Option<i32>,
+    /// The project's sales rep is responsible.
+    pub responsible_sales_rep: bool,
+    /// Due this many days after the project reaches the stage; null for no due date.
+    pub due_days: Option<i32>,
+    /// Its own to-do list, in order.
+    #[sqlx(skip)]
+    pub items: Vec<ListItem>,
 }
 
 /// What checks a process step off by itself.
@@ -584,6 +718,17 @@ pub struct ProjectWorkspace {
     pub permissions: Permissions,
     /// The caller's user id (to show which tasks and notes are theirs).
     pub user_id: i32,
+    /// Who is responsible for each step on this project, and when it is due.
+    pub step_owners: Vec<StepOwner>,
+    /// Ticks of the steps' own to-do lists on this project.
+    pub step_items_done: Vec<StepItemDone>,
+    /// The company's lists, to fill a new to-do list task.
+    pub lists: Vec<ProjectList>,
+    /// Its questions the caller can see: theirs first.
+    pub questions: Vec<super::questions::QuestionSummary>,
+    /// The people involved in the project (sales rep, owner, step and task
+    /// people, the crew on its appointments), to ask a question or give work.
+    pub involved: Vec<i32>,
 }
 
 /// Body of `POST /v1/projects/reorder`.
@@ -737,6 +882,10 @@ pub struct TaskInput {
     /// At most 20; may be left out.
     #[serde(default)]
     pub urls: Vec<String>,
+    /// A to-do list: its items, in order (1 to 200 characters each, blank
+    /// ones dropped, at most 60). Empty or left out: a plain task.
+    #[serde(default)]
+    pub items: Vec<String>,
 }
 
 /// Body of `PATCH /v1/projects/{id}/tasks/{task_id}`.
