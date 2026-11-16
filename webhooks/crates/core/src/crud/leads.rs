@@ -518,6 +518,23 @@ pub async fn update_deal_list_id(
     .await
 }
 
+/// Puts a lost deal back in `list_id` as an open deal, so the sales rep sees
+/// it on the board again. An open deal is left alone.
+pub async fn reopen_lost_deal(
+    pool: &MySqlPool,
+    deal_id: u64,
+    list_id: i32,
+) -> Result<MySqlQueryResult, sqlx::Error> {
+    sqlx::query(
+        "UPDATE deals SET list_id = ?, is_won = NULL, lost_reason = NULL \
+         WHERE id = ? AND is_won = 0 AND deleted_at IS NULL",
+    )
+    .bind(list_id)
+    .bind(deal_id)
+    .execute(pool)
+    .await
+}
+
 pub async fn reset_deal_activity_deadlines(
     pool: &MySqlPool,
     deal_id: u64,

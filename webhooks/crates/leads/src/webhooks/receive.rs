@@ -652,6 +652,31 @@ mod local_tests {
     }
 
     #[test_db::test]
+    async fn a_form_without_a_key_reopens_a_lost_deal(pool: MySqlPool) {
+        let bot = MockTelegram::new();
+        let (customer, stranger) = customer_in_a_later_stage(&pool, &bot).await;
+        sqlx::query(
+            "UPDATE deals SET is_won = 0, lost_reason = 'Never responded' WHERE customer_id = ?",
+        )
+        .bind(customer)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let lead: NewLeadForm = serde_json::from_value(stranger).unwrap();
+        let response =
+            new_lead_form_inner(1, pool.clone(), lead, LeadSender::Anonymous, &bot).await;
+        assert_eq!(response.0, StatusCode::CREATED);
+        let row: (i32, Option<i8>, Option<String>) = sqlx::query_as(
+            "SELECT list_id, is_won, lost_reason FROM deals WHERE customer_id = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1",
+        )
+        .bind(customer)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row, (1, None, None));
+    }
+
+    #[test_db::test]
     async fn the_old_shared_bearer_counts_as_no_key(pool: MySqlPool) {
         let bot = MockTelegram::new();
         let (customer, stranger) = customer_in_a_later_stage(&pool, &bot).await;
