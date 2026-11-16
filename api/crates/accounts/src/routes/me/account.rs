@@ -5,7 +5,7 @@
 //! loaders and actions.
 
 use super::gmail::{MyGmail, my_gmail};
-use super::handlers::telegram_status;
+use super::handlers::telegram_status_within;
 use super::mfa::{MfaStatus, status as mfa_status};
 use super::schemas::TelegramStatus;
 use super::undo_send::{UndoSend, undo_send_of};
@@ -31,6 +31,8 @@ use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
 
 const SHOP_MANAGER: i32 = 3;
+/// How long the page waits for Telegram to confirm the saved links.
+const TELEGRAM_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 const SHOP_WORKER: i32 = 4;
 const BCRYPT_COST: u32 = 10;
 const MIN_PASSWORD: usize = 8;
@@ -217,7 +219,7 @@ pub async fn account(
     // database reads instead of after them.
     let (details, telegram, gmail) = tokio::join!(
         details(&state, actor, user.id, employee),
-        telegram_status(&state, user.id),
+        telegram_status_within(&state, user.id, Some(TELEGRAM_WAIT)),
         async {
             if employee {
                 my_gmail(&state, actor).await.map(Some)
