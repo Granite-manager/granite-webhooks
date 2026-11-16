@@ -622,7 +622,9 @@ mod local_tests {
     }
 
     #[test_db::test]
-    async fn a_form_without_a_key_cannot_change_a_customer_or_their_deal(pool: MySqlPool) {
+    async fn a_form_without_a_key_cannot_change_contact_details_but_moves_the_deal(
+        pool: MySqlPool,
+    ) {
         let bot = MockTelegram::new();
         let (customer, stranger) = customer_in_a_later_stage(&pool, &bot).await;
         let before = contact_details(&pool, customer).await;
@@ -636,16 +638,16 @@ mod local_tests {
             .await;
         assert_eq!(response.status_code(), StatusCode::CREATED);
 
-        // No way into their customer page, and the deal stays where it was.
+        // No way into their customer page; the deal still goes back to the first stage (owner rule).
         assert_eq!(contact_details(&pool, customer).await, before);
-        assert_eq!(deal_list(&pool, customer).await, 2);
+        assert_eq!(deal_list(&pool, customer).await, 1);
 
         // The sales rep and the managers still hear about it.
         let lead: NewLeadForm = serde_json::from_value(stranger).unwrap();
         let response =
             new_lead_form_inner(1, pool.clone(), lead, LeadSender::Anonymous, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
-        assert_eq!(deal_list(&pool, customer).await, 2);
+        assert_eq!(deal_list(&pool, customer).await, 1);
         let sent = bot.sent.lock().unwrap();
         assert!(sent[sent_before..].iter().any(|message| message.0 == 123));
         assert!(sent[sent_before..].iter().any(|message| message.0 == 456));
@@ -686,7 +688,7 @@ mod local_tests {
             .json(&stranger)
             .await;
         assert_eq!(response.status_code(), StatusCode::CREATED);
-        assert_eq!(deal_list(&pool, customer).await, 2);
+        assert_eq!(deal_list(&pool, customer).await, 1);
     }
 
     #[test_db::test]
@@ -717,7 +719,7 @@ mod local_tests {
     }
 
     #[test_db::test]
-    async fn a_form_without_a_key_opens_no_new_deal_for_a_past_customer(pool: MySqlPool) {
+    async fn a_form_without_a_key_opens_a_new_deal_for_a_past_customer(pool: MySqlPool) {
         let bot = MockTelegram::new();
         let sales_id = positioned_user(&pool, 1, 1, 123).await;
         positioned_user(&pool, 1, 2, 456).await;
@@ -746,12 +748,9 @@ mod local_tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(deals, 0);
+        assert_eq!(deals, 1);
         let sent = bot.sent.lock().unwrap();
-        assert!(
-            sent.iter()
-                .any(|message| message.1.contains("REPEATED lead with no open deal"))
-        );
+        assert!(sent.iter().any(|message| message.0 == 123));
     }
 
     #[test_db::test]

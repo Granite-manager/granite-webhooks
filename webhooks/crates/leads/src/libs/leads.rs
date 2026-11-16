@@ -3,8 +3,8 @@ use crate::axum_helpers::guards::Telegram;
 use crate::cloudtalk::api::sync_customer_to_cloud_talk;
 use crate::crud::leads::{
     Deal, ExistingCustomer, create_deal_from_lead, find_existing_customer,
-    get_default_list_id_from_company_id, get_existing_deal, reopen_lost_deal,
-    reset_deal_activity_deadlines, update_deal_list_id,
+    get_default_list_id_from_company_id, get_existing_deal, reset_deal_activity_deadlines,
+    update_deal_list_id,
 };
 use crate::crud::users::{UserTgInfo, get_user_tg_info};
 use crate::libs::alerts::alert_lead_not_notified;
@@ -127,19 +127,17 @@ async fn notify_repeat_lead<T, V: LeadPayload>(
 }
 
 /// A repeated lead: the customer's blanks are filled in and the sales rep and
-/// managers hear about it. Only a [`LeadSender::Verified`] one also moves the
-/// deal back to the first stage and restarts its to-dos and emails, so that
-/// a stranger who knows a customer's phone cannot change their deal. A lost
-/// deal is reopened in the first stage for any sender, or the rep gets the
-/// message but cannot find the deal on the board.
-#[allow(clippy::too_many_arguments)]
+/// managers hear about it.
+///
+/// Owner's rule: a repeated lead ALWAYS makes the deal active again and moves
+/// it to the first stage (Not Contacted Yet), restarting its to-dos and
+/// emails, whatever the sender and whether or not the form has a key.
 async fn handle_repeat_lead<T, V: LeadPayload>(
     existing: &ExistingCustomer,
     deal: Deal,
     pool: &MySqlPool,
     company_id: i32,
     form: &V,
-    sender: LeadSender,
     bot: &T,
     new_deal: bool,
 ) -> BasicResponse
@@ -161,33 +159,22 @@ where
             return internal_error(ERR_DB);
         }
     };
-    let verified = sender == LeadSender::Verified;
-    if !verified && let Err(e) = reopen_lost_deal(pool, deal.id, default_list_id).await {
+    if let Err(e) = update_deal_list_id(pool, deal.id, default_list_id).await {
         tracing::error!(
             ?e,
             deal_id = deal.id,
-            "Failed to reopen the lost deal of a repeated lead"
+            list_id = default_list_id,
+            "Failed to move repeated lead to Not Contacted Yet"
         );
         return internal_error(ERR_DB);
     }
-    if verified {
-        if let Err(e) = update_deal_list_id(pool, deal.id, default_list_id).await {
-            tracing::error!(
-                ?e,
-                deal_id = deal.id,
-                list_id = default_list_id,
-                "Failed to move repeated lead to Not Contacted Yet"
-            );
-            return internal_error(ERR_DB);
-        }
-        if let Err(e) = reset_deal_activity_deadlines(pool, deal.id).await {
-            tracing::error!(
-                ?e,
-                deal_id = deal.id,
-                "Failed to reset activity due dates for repeated lead"
-            );
-            return internal_error(ERR_DB);
-        }
+    if let Err(e) = reset_deal_activity_deadlines(pool, deal.id).await {
+        tracing::error!(
+            ?e,
+            deal_id = deal.id,
+            "Failed to reset activity due dates for repeated lead"
+        );
+        return internal_error(ERR_DB);
     }
     let customer_id = u64::try_from(existing.id).unwrap();
     let name = existing.name.as_deref().unwrap_or("Unknown");
@@ -218,17 +205,16 @@ where
         }
         return CREATED_RESPONSE;
     };
-    if verified
-        && let Err(e) = reschedule_templates_for_deal_list(
-            pool,
-            default_list_id,
-            company_id,
-            deal.id,
-            existing.id,
-            user_id,
-            new_deal,
-        )
-        .await
+    if let Err(e) = reschedule_templates_for_deal_list(
+        pool,
+        default_list_id,
+        company_id,
+        deal.id,
+        existing.id,
+        user_id,
+        new_deal,
+    )
+    .await
     {
         tracing::error!(
             ?e,
@@ -292,16 +278,12 @@ async fn create_new_deal_existing_customer<T, V: LeadPayload>(
     existing: &ExistingCustomer,
     company_id: i32,
     form: &V,
-    sender: LeadSender,
     bot: &T,
 ) -> Result<Option<Deal>, BasicResponse>
 where
     T: Telegram + Send + Sync + 'static + Clone,
 {
-    if let Some(rep) = existing
-        .sales_rep
-        .filter(|_| sender == LeadSender::Verified)
-    {
+    if let Some(rep) = existing.sales_rep {
         let default_list_id = match get_default_list_id_from_company_id(pool, company_id).await {
             Ok(id) => id,
             Err(e) => {
@@ -438,7 +420,7 @@ pub async fn process_lead<T, V: LeadPayload>(
     pool: &MySqlPool,
     company_id: i32,
     form: &V,
-    sender: LeadSender,
+    _sender: LeadSender,
     bot: &T,
 ) -> BasicResponse
 where
@@ -455,19 +437,15 @@ where
     };
     match get_existing_deal(pool, existing.id).await {
         Ok(Some(deal)) => {
-            return handle_repeat_lead(&existing, deal, pool, company_id, form, sender, bot, false)
-                .await;
+            return handle_repeat_lead(&existing, deal, pool, company_id, form, bot, false).await;
         }
         Ok(None) => {
             let deal =
-                create_new_deal_existing_customer(pool, &existing, company_id, form, sender, bot)
-                    .await;
+                create_new_deal_existing_customer(pool, &existing, company_id, form, bot).await;
             match deal {
                 Ok(Some(deal)) => {
-                    return handle_repeat_lead(
-                        &existing, deal, pool, company_id, form, sender, bot, true,
-                    )
-                    .await;
+                    return handle_repeat_lead(&existing, deal, pool, company_id, form, bot, true)
+                        .await;
                 }
                 Ok(None) => CREATED_RESPONSE,
                 Err(e) => {

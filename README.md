@@ -88,9 +88,10 @@ The lead forms (`/wordpress-contact-form`, `/facebook-contact-form`,
 (`webhooks/crates/core/src/axum_helpers/access_token.rs`) so that no lead is
 ever lost: everyone still gets in. A new lead is saved either way. For a
 customer already in the CRM, a form only fills in their blank fields and never
-changes their phone or emails; without a working token it also leaves their
-deal alone (no move to the first stage, no restarted to-dos or emails, no new
-deal) and only tells the sales rep and the managers. PostHog shows who sends no
+changes their phone or emails. Owner's rule: a repeated lead, with or without
+a token, ALWAYS makes the deal active again in the first stage (Not Contacted
+Yet), restarts its to-dos and emails, or opens a new deal for a past customer,
+and tells the sales rep and the managers. PostHog shows who sends no
 token yet:
 
 - `webhook_legacy_auth`: a lead let in without a working token, with `route`,
