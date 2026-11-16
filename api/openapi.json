@@ -109508,6 +109508,38 @@
           }
         }
       },
+      "RepAmount": {
+        "type": "object",
+        "description": "One sales rep's share of the company's sales this month.",
+        "required": [
+          "name",
+          "amount",
+          "is_you"
+        ],
+        "properties": {
+          "user_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "`users.id`; null for the classes no rep's name matches."
+          },
+          "name": {
+            "type": "string",
+            "description": "The rep's name, or `Other` for unmatched classes."
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "description": "Sales this month."
+          },
+          "is_you": {
+            "type": "boolean",
+            "description": "The row is the caller's own."
+          }
+        }
+      },
       "RepCustomers": {
         "type": "object",
         "description": "`GET /v1/me/qbo-sales/customers`.",
@@ -109579,7 +109611,8 @@
         "description": "`GET /v1/me/qbo-sales`.",
         "required": [
           "status",
-          "can_set_company_goal"
+          "can_set_company_goal",
+          "reps"
         ],
         "properties": {
           "status": {
@@ -109612,6 +109645,13 @@
           "can_set_company_goal": {
             "type": "boolean",
             "description": "The caller may set the company goal (a Manager or Sales Manager)."
+          },
+          "reps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RepAmount"
+            },
+            "description": "The company's sales this month by sales rep, highest first."
           },
           "currency": {
             "type": [
