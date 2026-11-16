@@ -439,31 +439,62 @@ fn whitespace_normalized(column: &str) -> String {
     )
 }
 
+/// `%term%` for `LIKE ... ESCAPE '\\'`.
+fn like_pattern(term: &str) -> String {
+    let escaped = term
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
 /// ` AND (...)` matching subject, text, html and addresses (`buildEmailListSearch`).
 /// `extra` is an ` OR ...` fragment. Empty when the term is.
+///
+/// The text tests come last and test the raw text for the term's longest
+/// word before joining its lines: a text without that word cannot match, and
+/// the three `REPLACE`s of every message's text were most of a search. The
+/// rows matched are the same.
 pub fn list_search(search: &str, extra: Option<Sql>) -> Sql {
     let term = normalize_search_term(search);
     if term.is_empty() {
         return Sql::default();
     }
-    let escaped = term
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let like = format!("%{escaped}%");
+    let like = like_pattern(&term);
     let esc = " ESCAPE '\\\\'";
-    let conditions = [
+    let mut conditions = vec![
         format!("e.subject LIKE ?{esc}"),
-        format!("{} LIKE ?{esc}", whitespace_normalized("e.body")),
-        format!("{} LIKE ?{esc}", whitespace_normalized("e.html_body")),
         format!("e.sender_email LIKE ?{esc}"),
         format!("e.receiver_email LIKE ?{esc}"),
     ];
-    let mut args: Vec<Arg> = (0..5).map(|_| Arg::from(like.clone())).collect();
+    let mut args: Vec<Arg> = (0..3).map(|_| Arg::from(like.clone())).collect();
     let extra = extra.unwrap_or_default();
     args.extend(extra.args);
+    // Words have no line breaks, so a one-word term needs no joined lines.
+    let word = term
+        .split(' ')
+        .max_by_key(|word| word.len())
+        .unwrap_or(&term);
+    for column in ["e.body", "e.html_body"] {
+        if word == term {
+            conditions.push(format!("{column} LIKE ?{esc}"));
+        } else {
+            conditions.push(format!(
+                "({column} LIKE ?{esc} AND {} LIKE ?{esc})",
+                whitespace_normalized(column)
+            ));
+            args.push(like_pattern(word).into());
+        }
+        args.push(like.clone().into());
+    }
+    let (headers, text) = conditions.split_at(3);
     Sql::new(
-        format!(" AND ({}{})", conditions.join(" OR "), extra.sql),
+        format!(
+            " AND ({}{} OR {})",
+            headers.join(" OR "),
+            extra.sql,
+            text.join(" OR ")
+        ),
         args,
     )
 }
@@ -476,11 +507,7 @@ pub fn header_match(search: &str, extra: Option<Sql>) -> Sql {
     if term.is_empty() {
         return Sql::default();
     }
-    let escaped = term
-        .replace('\\', "\\\\")
-        .replace('%', "\\%")
-        .replace('_', "\\_");
-    let like = format!("%{escaped}%");
+    let like = like_pattern(&term);
     let esc = " ESCAPE '\\\\'";
     let mut args: Vec<Arg> = (0..3).map(|_| Arg::from(like.clone())).collect();
     let extra = extra.unwrap_or_default();

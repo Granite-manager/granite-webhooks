@@ -72,6 +72,87 @@ fn thread_hit(search: &Sql, on: &str) -> Sql {
 const USERS: &str = "LEFT JOIN users s ON e.sender_user_id = s.id
                      LEFT JOIN users r ON e.receiver_email = r.email";
 
+/// The page of threads (`thread_id`, `mt`) and the count of all the
+/// folder's threads, from the folder's messages as `e2` (`inner`) and `e`
+/// (`outer`).
+///
+/// The inbox matches threads with any matching message: it groups the
+/// folder's messages into threads first and searches each thread once (per
+/// message, a thread's text was searched again for every message of it).
+/// The other folders match the messages themselves.
+fn pick_and_total(inbox: bool, inner: Sql, outer: &Sql, search: &Sql, offset: i64) -> (Sql, Sql) {
+    if inbox {
+        let hit = thread_hit(search, "t.thread_id");
+        (
+            joined(
+                Sql::new(
+                    format!(
+                        "SELECT t.thread_id, t.mt FROM (
+                           SELECT e2.thread_id, MAX(e2.sent_at) AS mt FROM emails e2
+                             LEFT JOIN users s2 ON e2.sender_user_id = s2.id
+                             LEFT JOIN users r2 ON e2.receiver_email = r2.email
+                            WHERE {} GROUP BY e2.thread_id) t
+                          WHERE TRUE",
+                        inner.sql
+                    ),
+                    inner.args,
+                ),
+                &Sql::new(
+                    format!(
+                        "{} ORDER BY t.mt DESC LIMIT {PAGE_SIZE} OFFSET {offset}",
+                        hit.sql
+                    ),
+                    hit.args.clone(),
+                ),
+            ),
+            joined(
+                Sql::new(
+                    format!(
+                        "SELECT COUNT(t.thread_id) FROM (
+                           SELECT e.thread_id FROM emails e {USERS}
+                            WHERE {} GROUP BY e.thread_id) t
+                          WHERE TRUE",
+                        outer.sql
+                    ),
+                    outer.args.clone(),
+                ),
+                &hit,
+            ),
+        )
+    } else {
+        let inner_search = Sql::new(
+            search
+                .sql
+                .replace("e.", "e2.")
+                .replace("s.", "s2.")
+                .replace("r.", "r2."),
+            search.args.clone(),
+        );
+        let picked = joined(inner, &inner_search);
+        let matching = joined(outer.clone(), search);
+        (
+            Sql::new(
+                format!(
+                    "SELECT e2.thread_id, MAX(e2.sent_at) AS mt FROM emails e2
+                       LEFT JOIN users s2 ON e2.sender_user_id = s2.id
+                       LEFT JOIN users r2 ON e2.receiver_email = r2.email
+                      WHERE {}
+                      GROUP BY e2.thread_id ORDER BY mt DESC LIMIT {PAGE_SIZE} OFFSET {offset}",
+                    picked.sql
+                ),
+                picked.args,
+            ),
+            Sql::new(
+                format!(
+                    "SELECT COUNT(DISTINCT e.thread_id) FROM emails e {USERS} WHERE {}",
+                    matching.sql
+                ),
+                matching.args,
+            ),
+        )
+    }
+}
+
 /// One page of the folder, newest thread first.
 pub async fn admin_page(
     pool: &MySqlPool,
@@ -84,33 +165,8 @@ pub async fn admin_page(
     let inbox = mailbox.folder == EmailFolder::Inbox;
     let outer = folder_where(mailbox, "e", "s", "r");
     let inner = folder_where(mailbox, "e2", "s2", "r2");
-    // The inbox matches threads with any matching message; the other
-    // folders match the messages themselves.
-    let (matching, picked) = if inbox {
-        (
-            joined(outer.clone(), &thread_hit(&search, "e.thread_id")),
-            joined(inner, &thread_hit(&search, "e2.thread_id")),
-        )
-    } else {
-        let inner_search = Sql::new(
-            search
-                .sql
-                .replace("e.", "e2.")
-                .replace("s.", "s2.")
-                .replace("r.", "r2."),
-            search.args.clone(),
-        );
-        (joined(outer.clone(), &search), joined(inner, &inner_search))
-    };
     let offset = (page - 1) * PAGE_SIZE;
-    let pick = format!(
-        "SELECT e2.thread_id, MAX(e2.sent_at) AS mt FROM emails e2
-           LEFT JOIN users s2 ON e2.sender_user_id = s2.id
-           LEFT JOIN users r2 ON e2.receiver_email = r2.email
-          WHERE {}
-          GROUP BY e2.thread_id ORDER BY mt DESC LIMIT {PAGE_SIZE} OFFSET {offset}",
-        picked.sql
-    );
+    let (pick, total) = pick_and_total(inbox, inner, &outer, &search, offset);
     let name = |column: &str| {
         format!(
             "(SELECT c.name FROM customers c JOIN customers_emails ce ON ce.customer_id = c.id \
@@ -131,45 +187,37 @@ pub async fn admin_page(
         receiver = name("e.receiver_email"),
     );
     let list = if inbox {
-        let mut args = picked.args.clone();
+        let mut args = pick.args.clone();
         args.push(company.into());
         Sql::new(
             format!(
                 "SELECT {columns}, picked.mt AS inbox_sort_at FROM emails e {USERS}
-                 INNER JOIN (SELECT thread_id, mt FROM ({pick}) picked_page) picked
+                 INNER JOIN (SELECT thread_id, mt FROM ({}) picked_page) picked
                    ON picked.thread_id = e.thread_id
                  WHERE e.deleted_at IS NULL AND e.is_draft = 0
                    AND (e.company_id = ? OR e.company_id IS NULL)
-                 ORDER BY picked.mt DESC, e.sent_at DESC, e.id DESC"
+                 ORDER BY picked.mt DESC, e.sent_at DESC, e.id DESC",
+                pick.sql
             ),
             args,
         )
     } else {
         let message_match = joined(outer, &search);
         let mut args = message_match.args;
-        args.extend(picked.args.clone());
+        args.extend(pick.args.clone());
         Sql::new(
             format!(
                 "SELECT {columns}, NULL AS inbox_sort_at FROM emails e {USERS}
-                 WHERE {} AND e.thread_id IN (SELECT thread_id FROM ({pick}) t)
+                 WHERE {} AND e.thread_id IN (SELECT thread_id FROM ({}) t)
                  ORDER BY e.sent_at DESC, e.id DESC",
-                message_match.sql
+                message_match.sql, pick.sql
             ),
             args,
         )
     };
     let mut emails: Vec<MailboxRow> = list.query_as().fetch_all(pool).await?;
     fill_display_names(pool, &mut emails).await?;
-    let total: i64 = Sql::new(
-        format!(
-            "SELECT COUNT(DISTINCT e.thread_id) FROM emails e {USERS} WHERE {}",
-            matching.sql
-        ),
-        matching.args,
-    )
-    .query_scalar()
-    .fetch_one(pool)
-    .await?;
+    let total: i64 = total.query_scalar().fetch_one(pool).await?;
     Ok(MailboxPage {
         emails,
         total_count: total,
