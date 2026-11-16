@@ -78,7 +78,7 @@ pub async fn gate(
         reactivation::billing_gate(&state.stripe, &state.pool, user.company_id, user.id).await;
     let can_manage: bool = user.is_superuser
         || sqlx::query_scalar(
-            "SELECT COUNT(*) > 0 FROM users_positions WHERE user_id = ? AND company_id = ? AND position_id = ?",
+            "SELECT COUNT(*) > 0 FROM users_positions WHERE user_id = ? AND company_id = ? AND position_id IN (?, 9)",
         )
         .bind(user.id)
         .bind(user.company_id)

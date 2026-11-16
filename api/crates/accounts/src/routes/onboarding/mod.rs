@@ -22,7 +22,7 @@ pub mod team;
 pub mod usage;
 
 use crate::auth::ShopOrEmployeeUser;
-use crate::auth::session::SessionUser;
+use crate::auth::session::{SUPER_ADMIN_POSITION, SessionUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
@@ -587,7 +587,7 @@ pub async fn setup(
         profile: OnboardingProfile {
             user_id: user.id,
             is_admin,
-            can_manage_users: user.is_superuser || here(MANAGER),
+            can_manage_users: user.is_superuser || here(MANAGER) || here(SUPER_ADMIN_POSITION),
             has_cloudtalk_api: features.cloudtalk,
             has_ringcentral_api: features.ringcentral,
             has_inbound_email: features.inbound_email,

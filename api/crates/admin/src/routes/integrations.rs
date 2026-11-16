@@ -85,7 +85,7 @@ pub(crate) const fn target(user: &crate::auth::session::SessionUser, query: &Tar
 
 async fn is_manager(state: &AppState, user_id: i32, company_id: i32) -> ApiResult<bool> {
     Ok(sqlx::query_scalar(
-        "SELECT COUNT(*) > 0 FROM users_positions WHERE user_id = ? AND company_id = ? AND position_id = ?",
+        "SELECT COUNT(*) > 0 FROM users_positions WHERE user_id = ? AND company_id = ? AND position_id IN (?, 9)",
     )
     .bind(user_id)
     .bind(company_id)
