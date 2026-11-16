@@ -34,10 +34,35 @@ fn app(state: &AppState) -> ApiResult<&gmail_connect::GmailApp> {
     })
 }
 
+/// The company already sends through its own verified Amazon SES domain, so
+/// Connect Gmail is not offered there.
+async fn company_sends_through_amazon(pool: &sqlx::MySqlPool, company_id: i32) -> ApiResult<bool> {
+    let domain: Option<String> =
+        sqlx::query_scalar("SELECT NULLIF(TRIM(domain), '') FROM company WHERE id = ?")
+            .bind(company_id)
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+    Ok(match domain {
+        Some(domain) => common::amazon::email::domain_verified(&domain)
+            .await
+            .unwrap_or(false),
+        None => false,
+    })
+}
+
+fn amazon_refusal() -> ApiError {
+    ApiError::BadRequest(
+        "Your company already sends email from its own domain, so Gmail can't be connected.".into(),
+    )
+}
+
 /// `GET /v1/me/gmail`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MyGmail {
-    /// Granite Manager's Google app is set up, so Connect Gmail works.
+    /// Granite Manager's Google app is set up and the company does not send
+    /// through its own Amazon SES domain, so Connect Gmail works. Stays true
+    /// while the caller is connected, so they can disconnect.
     pub available: bool,
     /// The connected Gmail address; null when not connected.
     pub email: Option<String>,
@@ -64,10 +89,11 @@ pub async fn status(
     EmployeeUser(user): EmployeeUser,
 ) -> ApiResult<Json<MyGmail>> {
     let actor = home_actor(&state.pool, user.id).await?;
-    Ok(Json(MyGmail {
-        available: state.gmail_app.is_some(),
-        email: gmail_connect::connected_email(&state.pool, actor.user_id).await?,
-    }))
+    let email = gmail_connect::connected_email(&state.pool, actor.user_id).await?;
+    let available = state.gmail_app.is_some()
+        && (email.is_some()
+            || !company_sends_through_amazon(&state.pool, actor.company_id).await?);
+    Ok(Json(MyGmail { available, email }))
 }
 
 /// `POST /v1/me/gmail/start`.
@@ -89,7 +115,7 @@ pub struct GmailSignIn {
     tag = "me",
     responses(
         (status = 200, description = "Google's sign-in page", body = GmailSignIn),
-        (status = 400, description = "Gmail connect is not set up", body = ErrorBody),
+        (status = 400, description = "Gmail connect is not set up, or the company sends through its own Amazon domain", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an employee", body = ErrorBody),
     ),
@@ -101,6 +127,9 @@ pub async fn start(
 ) -> ApiResult<Json<GmailSignIn>> {
     let actor = home_actor(&state.pool, user.id).await?;
     let app = app(&state)?;
+    if company_sends_through_amazon(&state.pool, actor.company_id).await? {
+        return Err(amazon_refusal());
+    }
     let state_token = oauth_state::sign(
         &state.session_secret,
         STATE_KIND,
@@ -213,6 +242,9 @@ async fn connect(
     code: &str,
     redirect_uri: &str,
 ) -> ApiResult<String> {
+    if company_sends_through_amazon(&state.pool, company_id).await? {
+        return Err(amazon_refusal());
+    }
     match app(state)?
         .connect(
             &state.pool,
