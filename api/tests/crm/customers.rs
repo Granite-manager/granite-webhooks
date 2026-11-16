@@ -215,7 +215,8 @@ async fn companies_view_has_totals_and_ignores_invalid_filter(pool: MySqlPool) {
             "company_name": "Erin Builders LLC",
             "customerTemperature": "medium",
             "revenue_generated": "3500.75",
-            "projects_count": 3
+            "projects_count": 3,
+            "company_phones": ["317-555-0105"]
         })
     );
     let hank = row(&rows, 1007);
@@ -475,9 +476,9 @@ async fn page_companies_view_has_totals(pool: MySqlPool) {
 async fn companies_view_shows_one_row_per_company(pool: MySqlPool) {
     // Two more contacts of Erin Builders LLC, one spelled differently; one has a sale.
     sqlx::query(
-        "INSERT INTO customers (id, name, company_name, company_id, source, created_date) VALUES
-           (1102, 'Second Contact', ' erin builders llc', 100, 'other', UTC_TIMESTAMP()),
-           (1103, 'Erin Builders LLC', 'Erin Builders LLC', 100, 'other', UTC_TIMESTAMP())",
+        "INSERT INTO customers (id, name, company_name, phone, phone_2, company_id, source, created_date) VALUES
+           (1102, 'Second Contact', ' erin builders llc', '+1 (317) 555-0105', '317-555-0199', 100, 'other', UTC_TIMESTAMP()),
+           (1103, 'Erin Builders LLC', 'Erin Builders LLC', NULL, '', 100, 'other', UTC_TIMESTAMP())",
     )
     .execute(&pool)
     .await
@@ -497,6 +498,11 @@ async fn companies_view_shows_one_row_per_company(pool: MySqlPool) {
     let erin = row(&companies["rows"], 1103);
     assert_eq!(erin["revenue_generated"], "3600.75");
     assert_eq!(erin["projects_count"], 4);
+    // Every number once: the second contact repeats Erin's main number.
+    assert_eq!(
+        erin["company_phones"],
+        json!(["317-555-0105", "317-555-0199"])
+    );
 
     let rows: Value = server(pool)
         .get("/v1/customers")

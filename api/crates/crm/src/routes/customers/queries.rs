@@ -43,6 +43,14 @@ const COMPANY_TOTALS: &str = concat!(
     (SELECT COUNT(*)",
     company_sales!(),
     ") AS projects_count,
+    (
+      SELECT GROUP_CONCAT(
+        CONCAT_WS('\\n', NULLIF(TRIM(g.phone), ''), NULLIF(TRIM(g.phone_2), ''))
+        ORDER BY g.id = c.id DESC, g.id SEPARATOR '\\n')
+      FROM customers g
+      WHERE g.company_id = c.company_id AND g.deleted_at IS NULL
+        AND LOWER(TRIM(g.company_name)) = LOWER(TRIM(c.company_name))
+    ) AS company_phones_raw,
     ROW_NUMBER() OVER (
       PARTITION BY LOWER(TRIM(c.company_name))
       ORDER BY LOWER(TRIM(c.name)) = LOWER(TRIM(c.company_name)) DESC, c.id
@@ -242,6 +250,7 @@ pub async fn customers_page(
 
     let (rows, ids) = if companies {
         let rows: Vec<CompanyRow> = page_rows(pool, company_id, request, tab, page).await?;
+        let rows: Vec<CompanyRow> = rows.into_iter().map(CompanyRow::with_phones).collect();
         let ids: Vec<i32> = rows.iter().map(|row| row.customer.id).collect();
         (ListResponse::Companies(rows), ids)
     } else {
@@ -293,7 +302,8 @@ pub async fn list_companies(
     filter: ListFilter,
 ) -> Result<Vec<CompanyRow>, sqlx::Error> {
     debug_assert_eq!(filter.view, CustomersView::Companies);
-    fetch_list(pool, company_id, filter).await
+    let rows: Vec<CompanyRow> = fetch_list(pool, company_id, filter).await?;
+    Ok(rows.into_iter().map(CompanyRow::with_phones).collect())
 }
 
 #[derive(FromRow)]
