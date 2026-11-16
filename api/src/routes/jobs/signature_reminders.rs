@@ -14,6 +14,7 @@ use crate::native_signing::{
     sha256_hex,
 };
 use crate::openapi::ToSchema;
+use crate::routes::emails::signature_mail::{Branding, with_signing_links};
 use crate::state::AppState;
 use crate::webhooks_client::{OutgoingAttachment, OutgoingEmail, SendFailure};
 use axum::Json;
@@ -236,6 +237,40 @@ fn sender(from: &str) -> (Option<String>, String) {
     }
 }
 
+/// Who the reminder comes from: the company (or, without a name, the sender).
+fn reminder_branding(
+    company_name: Option<&str>,
+    logo_url: Option<String>,
+    from_name: Option<&str>,
+    from_address: &str,
+) -> Branding {
+    let sender_name = from_name
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or(from_address)
+        .to_string();
+    Branding {
+        company_name: company_name
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map_or_else(|| sender_name.clone(), str::to_string),
+        logo_url,
+        sender_name,
+    }
+}
+
+/// The reminder: the same branded card and button as the invitation.
+fn reminder_html(filename: &str, signing_url: &str, branding: &Branding) -> String {
+    with_signing_links(
+        &format!(
+            "<p>Just a friendly reminder: {} is still waiting for your signature.</p>",
+            escape_html(filename)
+        ),
+        &[(filename.to_string(), Some(signing_url.to_string()))],
+        Some(branding),
+    )
+}
+
 /// The message a job sends; `None` when it cannot be built (the job is
 /// blocked for a person to look at).
 async fn build_message(
@@ -276,10 +311,22 @@ async fn build_message(
     if kind == "reminder" {
         message.to = vec![row.signer_email.clone()];
         message.subject = format!("Signature reminder: {}", row.filename);
-        message.body = format!(
-            "<p>Please review and sign {}.</p><p><a href=\"{}\">Review and sign</a></p>",
-            escape_html(&row.filename),
-            escape_html(&invitation.signing_url)
+        let company: Option<(Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT name, logo_url FROM company WHERE id = ? LIMIT 1")
+                .bind(row.company_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .ok()?;
+        let (company_name, logo_url) = company.unwrap_or_default();
+        message.body = reminder_html(
+            &row.filename,
+            &invitation.signing_url,
+            &reminder_branding(
+                company_name.as_deref(),
+                logo_url,
+                message.from_name.as_deref(),
+                &from_address,
+            ),
         );
         return Some(message);
     }
@@ -626,4 +673,22 @@ pub async fn run(
         failed,
         expired,
     }))
+}
+
+#[cfg(test)]
+mod reminder_tests {
+    use super::*;
+
+    #[test]
+    fn reminder_uses_the_invitation_card() {
+        let branding = reminder_branding(Some("Granite Depot"), None, Some("Tania"), "t@x.test");
+        let html = reminder_html("Contract <A>.pdf", "https://app.test/sign/d1?token=t", &branding);
+        assert!(html.contains("Please Review This Document"));
+        assert!(html.contains("View &amp; Complete Document"));
+        assert!(html.contains("href=\"https://app.test/sign/d1?token=t\""));
+        assert!(html.contains("Contract &lt;A&gt;.pdf is still waiting for your signature"));
+        assert!(html.contains("Sent by Granite Depot"));
+        let unnamed = reminder_branding(Some(" "), None, None, "t@x.test");
+        assert_eq!(unnamed.company_name, "t@x.test");
+    }
 }
