@@ -12,6 +12,7 @@ use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::gmail_connect::{self, GmailError};
 use crate::oauth_state;
+use crate::routes::onboarding::store::Actor;
 use crate::openapi::ToSchema;
 use crate::state::AppState;
 use axum::Json;
@@ -89,11 +90,16 @@ pub async fn status(
     EmployeeUser(user): EmployeeUser,
 ) -> ApiResult<Json<MyGmail>> {
     let actor = home_actor(&state.pool, user.id).await?;
+    Ok(Json(my_gmail(&state, actor).await?))
+}
+
+/// The user's Gmail connection (also part of `GET /v1/me/account`).
+pub(super) async fn my_gmail(state: &AppState, actor: Actor) -> ApiResult<MyGmail> {
     let email = gmail_connect::connected_email(&state.pool, actor.user_id).await?;
     let available = state.gmail_app.is_some()
         && (email.is_some()
             || !company_sends_through_amazon(&state.pool, actor.company_id).await?);
-    Ok(Json(MyGmail { available, email }))
+    Ok(MyGmail { available, email })
 }
 
 /// `POST /v1/me/gmail/start`.

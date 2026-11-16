@@ -329,7 +329,7 @@
           "me"
         ],
         "summary": "My account",
-        "description": "The user's details in their home company, and what the page shows: the\ntexting providers, the signature, and the guided tours rating.",
+        "description": "Everything the My Account page shows, in one call: the user's details in\ntheir home company, the texting providers, the signature, the guided tours\nrating, and the settings that `GET /v1/me/mfa`, `/v1/me/telegram`,\n`/v1/me/gmail`, `/v1/me/undo-send` and `/v1/me/lead-automation` answer one\nby one (the employee-only ones are null for a shop manager or worker who is\nnot an employee). Save with `PUT /v1/me/account`; the other settings keep\ntheir own routes for changes.",
         "operationId": "get_my_account",
         "responses": {
           "200": {
@@ -7416,7 +7416,7 @@
           "users"
         ],
         "summary": "Save a user",
-        "description": "Saves the user's details and positions. Positions that stay keep their\nrows (Telegram lead buttons point at them). Super Admins may move the\nuser between companies they are Super Admin of; other non-superusers keep\nthe user's company. Non-superusers keep the Super Admin and check-in positions and Super Admin\ncompanies as they are, and may only grant marketing for the user's own\ncompany (or remove companies a superuser granted). Super Admins are\nalways admins. The `RingCentral` extension follows the number. A user\nwho is no longer an employee or admin of their company (or moved to\nanother one) is signed out of Granite Manager.",
+        "description": "Saves the user's details and positions. Positions that stay keep their\nrows (Telegram lead buttons point at them). Super Admins may move the\nuser between companies they are Super Admin of; other non-superusers keep\nthe user's company. Non-superusers keep check-in; Super Admins of the\ncompany change Super Admin only in their own companies, others keep it\ncompanies as they are, and may only grant marketing for the user's own\ncompany (or remove companies a superuser granted). Super Admins are\nalways admins. The `RingCentral` extension follows the number. A user\nwho is no longer an employee or admin of their company (or moved to\nanother one) is signed out of Granite Manager.",
         "operationId": "update_managed_user",
         "parameters": [
           {
@@ -78729,7 +78729,9 @@
           "has_onboarding_feedback",
           "feedback_dismissed",
           "has_granite_phone",
-          "granite_phone_numbers"
+          "granite_phone_numbers",
+          "mfa",
+          "telegram"
         ],
         "properties": {
           "user_id": {
@@ -78841,6 +78843,47 @@
               "null"
             ],
             "description": "My picture (`PUT /v1/me/photo`); null when I have none."
+          },
+          "mfa": {
+            "$ref": "#/components/schemas/MfaStatus",
+            "description": "My two-step sign-in, as `GET /v1/me/mfa` answers it."
+          },
+          "telegram": {
+            "$ref": "#/components/schemas/TelegramStatus",
+            "description": "My Telegram links, as `GET /v1/me/telegram` answers them."
+          },
+          "gmail": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MyGmail",
+                "description": "My Gmail for sending, as `GET /v1/me/gmail` answers it; null for a\nshop manager or worker who is not an employee (that route refuses them)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "undo_send": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/UndoSend",
+                "description": "My Undo send, as `GET /v1/me/undo-send` answers it; null for a shop\nmanager or worker who is not an employee."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lead_automation": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LeadAutomationMode",
+                "description": "Whose automations my deals get (`company` or `own`), as `GET\n/v1/me/lead-automation` answers it; null for a shop manager or worker\nwho is not an employee."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -98573,7 +98616,7 @@
           },
           "is_protected": {
             "type": "boolean",
-            "description": "A superuser or Super Admin: only superusers may change them."
+            "description": "The caller may not change them: a superuser, or a Super Admin when the\ncaller is neither a superuser nor a Super Admin of this company."
           },
           "invite_pending": {
             "type": "boolean",
@@ -123136,7 +123179,7 @@
               "type": "integer",
               "format": "int32"
             },
-            "description": "Superusers: the companies they are Super Admin of."
+            "description": "The companies they are Super Admin of (superusers any; Super Admins of\nthe user's company only their own)."
           },
           "is_admin": {
             "type": "boolean",
@@ -123176,6 +123219,7 @@
           "superadmin_company_ids",
           "companies",
           "logged_in_is_superuser",
+          "superadmin_companies",
           "move_companies",
           "has_cloudtalk_api",
           "has_ringcentral_api",
@@ -123220,6 +123264,13 @@
           "logged_in_is_superuser": {
             "type": "boolean",
             "description": "The caller is a superuser."
+          },
+          "superadmin_companies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CompanyName"
+            },
+            "description": "The companies the caller may make the user Super Admin of (superusers:\nevery one; Super Admins of the user's company: the ones they are Super\nAdmin of); empty when they can't."
           },
           "move_companies": {
             "type": "array",
@@ -123312,6 +123363,7 @@
           "users",
           "companies",
           "is_super_user",
+          "can_grant_super_admin",
           "user_limits",
           "has_cloudtalk_api",
           "has_ringcentral_api"
@@ -123342,6 +123394,10 @@
           "is_super_user": {
             "type": "boolean",
             "description": "The caller is a superuser."
+          },
+          "can_grant_super_admin": {
+            "type": "boolean",
+            "description": "The caller may make users Super Admin (superusers, and Super Admins of\nthe company)."
           },
           "user_limits": {
             "type": "array",

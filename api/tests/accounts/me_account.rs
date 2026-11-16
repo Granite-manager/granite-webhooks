@@ -185,3 +185,76 @@ async fn a_cloudtalk_line_needs_its_agent(pool: MySqlPool) {
             .unwrap();
     assert_eq!(line.as_deref(), Some("3175550100"));
 }
+
+#[test_db::test(seed)]
+async fn the_account_carries_the_page_settings(pool: MySqlPool) {
+    sqlx::query("UPDATE users SET undo_send = 0, lead_automation = 'own' WHERE id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let server = server(pool);
+    let account: Value = server
+        .get("/v1/me/account")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    // Each part answers as its own route does.
+    for (part, route) in [
+        ("mfa", "/v1/me/mfa"),
+        ("telegram", "/v1/me/telegram"),
+        ("gmail", "/v1/me/gmail"),
+        ("undo_send", "/v1/me/undo-send"),
+        ("lead_automation", "/v1/me/lead-automation"),
+    ] {
+        let alone: Value = server.get(route).with_session(sessions::REP).await.json();
+        let alone = if part == "lead_automation" {
+            alone["mode"].clone()
+        } else {
+            alone
+        };
+        assert_eq!(account[part], alone, "{part}");
+    }
+    assert_eq!(account["undo_send"], json!({ "on": false }));
+    assert_eq!(account["lead_automation"], "own");
+    assert_eq!(account["mfa"]["enabled"], false);
+}
+
+#[test_db::test(seed)]
+async fn the_shop_gets_the_settings_its_routes_give(pool: MySqlPool) {
+    // A shop worker, not an employee.
+    sqlx::raw_sql(
+        "UPDATE users SET is_employee = 0, is_admin = 0, is_superuser = 0 WHERE id = 104;
+         INSERT INTO users_positions (user_id, position_id, company_id) VALUES (104, 4, 100);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let server = server(pool);
+    let account: Value = server
+        .get("/v1/me/account")
+        .with_session(sessions::VIEWER)
+        .await
+        .json();
+    assert_eq!(account["shows_email_signature"], false);
+    // An employee-only part is there exactly when its own route answers.
+    for (part, route) in [
+        ("gmail", "/v1/me/gmail"),
+        ("undo_send", "/v1/me/undo-send"),
+        ("lead_automation", "/v1/me/lead-automation"),
+    ] {
+        let alone = server.get(route).with_session(sessions::VIEWER).await;
+        if alone.status_code() == StatusCode::FORBIDDEN {
+            assert!(account[part].is_null(), "{part}");
+        } else {
+            let alone: Value = alone.json();
+            let alone = if part == "lead_automation" {
+                alone["mode"].clone()
+            } else {
+                alone
+            };
+            assert_eq!(account[part], alone, "{part}");
+        }
+    }
+    assert_eq!(account["mfa"]["enabled"], false);
+    assert_eq!(account["telegram"]["leads_linked"], false);
+}

@@ -66,7 +66,8 @@ async fn check_limits(state: &AppState, user_id: i32, headers: &HeaderMap) -> Ap
     Ok((key, ip))
 }
 
-async fn status(state: &AppState, user_id: i32) -> ApiResult<MfaStatus> {
+/// The user's two-step sign-in (also part of `GET /v1/me/account`).
+pub(super) async fn status(state: &AppState, user_id: i32) -> ApiResult<MfaStatus> {
     let (enabled_at, required): (Option<DateTime<Utc>>, bool) = sqlx::query_as(
         "SELECT IF(m.secret IS NULL, NULL, m.enabled_at), COALESCE(u.is_superuser, 0) <> 0
            FROM users u LEFT JOIN user_mfa m ON m.user_id = u.id
