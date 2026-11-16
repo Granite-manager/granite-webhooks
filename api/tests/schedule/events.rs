@@ -853,6 +853,22 @@ async fn people_are_added_to_events_and_see_them_on_their_schedule(pool: MySqlPo
         .await
         .json::<Value>();
     assert_eq!(mine["events"].as_array().unwrap().len(), 0);
+
+    // Whoever creates an event is in it when no people are given.
+    let created = server
+        .post("/v1/events")
+        .with_session(sessions::REP)
+        .json(&body(8801, "2026-11-03 15:00:00", "2026-11-03 16:00:00"))
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    let saved: Vec<i32> = sqlx::query_scalar("SELECT user_id FROM event_people WHERE event_id = ?")
+        .bind(created)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(saved, [100]);
 }
 
 #[test_db::test(seed)]
