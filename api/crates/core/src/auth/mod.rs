@@ -80,7 +80,7 @@ use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use cookie::{SESSION_COOKIE_NAME, cookie_values, decode_session};
 use sections::Access;
-use session::{SessionUser, effective_user, find_session_user, user_positions};
+use session::{SUPER_ADMIN_POSITION, SessionUser, effective_user, find_session_user, user_positions};
 
 async fn authenticate(parts: &Parts, state: &AppState) -> Result<SessionUser, ApiError> {
     authenticate_with_access(parts, state)
@@ -784,7 +784,7 @@ impl FromRequestParts<AppState> for UserManager {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
         let manager = positions
             .iter()
-            .any(|row| row.company_id == user.company_id && row.position_id == MANAGER_POSITION);
+            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
         if user.is_superuser || ((user.is_admin) && manager) {
             Ok(Self(user))
         } else {
@@ -804,7 +804,7 @@ impl FromRequestParts<AppState> for BillingManager {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
         let manager = positions
             .iter()
-            .any(|row| row.company_id == user.company_id && row.position_id == MANAGER_POSITION);
+            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
         if user.is_superuser || ((user.is_employee || user.is_admin) && manager) {
             Ok(Self(user))
         } else {
@@ -826,7 +826,7 @@ impl FromRequestParts<AppState> for CompanyManager {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
         let manager = positions
             .iter()
-            .any(|row| row.company_id == user.company_id && row.position_id == MANAGER_POSITION);
+            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
         if manager {
             Ok(Self(user))
         } else {
