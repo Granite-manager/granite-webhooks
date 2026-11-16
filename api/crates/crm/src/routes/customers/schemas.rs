@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListQuery {
-    /// `customers` (default) lists every customer. `companies` lists only
-    /// customers with a company name and adds revenue and project totals.
+    /// `customers` (default) lists every customer. `companies` lists one row
+    /// per company name (its contacts together) with revenue and project totals.
     /// Any other value is treated as `customers`.
     #[param(value_type = Option<CustomersView>, inline)]
     pub view: Option<String>,
@@ -31,7 +31,7 @@ pub struct ListQuery {
 pub enum CustomersView {
     /// Every customer of the company.
     Customers,
-    /// Only customers with a company name, plus revenue/project totals.
+    /// One row per company name (all its contacts), plus revenue/project totals.
     Companies,
 }
 
@@ -107,8 +107,8 @@ pub struct CustomerRow {
     pub customer_temperature: Option<String>,
 }
 
-/// A customer row of the `companies` view, with totals over its own sales
-/// and those of its child customers.
+/// A company of the `companies` view: the contact named like the company,
+/// else its oldest, with totals over every contact of the company and their child customers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, FromRow, ToSchema)]
 pub struct CompanyRow {
     #[sqlx(flatten)]
