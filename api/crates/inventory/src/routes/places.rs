@@ -157,8 +157,9 @@ fn component<'a>(place: &'a Value, kind: &str, text: &str) -> Option<&'a str> {
 
 /// Suggest addresses
 ///
-/// US addresses for typed text (3 characters or more), with their parts.
-/// A suggestion without a ZIP gets one from the place, else from geocoding.
+/// US addresses for typed text (3 characters or more), with their parts,
+/// closest to the company's address first. A suggestion without a ZIP gets
+/// one from the place, else from geocoding.
 #[crate::openapi::path(
     get,
     path = "/v1/places/autocomplete",
@@ -174,16 +175,27 @@ fn component<'a>(place: &'a Value, kind: &str, text: &str) -> Option<&'a str> {
 )]
 pub async fn autocomplete(
     State(state): State<AppState>,
-    _user: CurrentUser,
+    CurrentUser(user): CurrentUser,
     Query(query): Query<AutocompleteQuery>,
 ) -> ApiResult<Json<Vec<Suggestion>>> {
     let q = query.q.trim();
     if q.chars().count() < 3 {
         return Ok(Json(Vec::new()));
     }
+    let company: Option<(Option<f64>, Option<f64>, Option<String>)> = sqlx::query_as(
+        "SELECT latitude, longitude, NULLIF(TRIM(address), '') FROM company WHERE id = ?",
+    )
+    .bind(user.company_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let near = match company {
+        Some((Some(lat), Some(lng), _)) => Some(crate::maps::Point { lat, lng }),
+        Some((_, _, Some(address))) => state.maps.geocode(&address).await,
+        _ => None,
+    };
     let found = state
         .maps
-        .autocomplete(q)
+        .autocomplete(q, near)
         .await
         .map_err(ApiError::Upstream)?;
     let lookups: Vec<_> = found

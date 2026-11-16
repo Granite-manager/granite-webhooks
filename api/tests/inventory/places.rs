@@ -18,9 +18,12 @@ async fn server(pool: MySqlPool) -> TestServer {
             "/places:autocomplete",
             post(|Json(body): Json<Value>| async move {
                 assert_eq!(body["includedRegionCodes"], json!(["us"]));
+                // Near the company, Elm St is closer than Main St.
+                let near = body["origin"] == json!({ "latitude": 39.9, "longitude": -86.0 });
+                let (main, elm) = if near { (json!(30_000), json!(800)) } else { (Value::Null, Value::Null) };
                 Json(json!({ "suggestions": [
-                    { "placePrediction": { "placeId": "p1", "text": { "text": "1 Main St, Carmel, IN 46032, USA" } } },
-                    { "placePrediction": { "placeId": "p2", "text": { "text": "9 Elm St, Fishers, IN, USA" } } },
+                    { "placePrediction": { "placeId": "p1", "distanceMeters": main, "text": { "text": "1 Main St, Carmel, IN 46032, USA" } } },
+                    { "placePrediction": { "placeId": "p2", "distanceMeters": elm, "text": { "text": "9 Elm St, Fishers, IN, USA" } } },
                 ] }))
             }),
         )
@@ -72,6 +75,22 @@ async fn server(pool: MySqlPool) -> TestServer {
     TestServer::new(app(
         AppState::new(pool, SECRET, ALLOWED_ORIGIN).with_maps(maps)
     ))
+}
+
+#[test_db::test(seed)]
+async fn closest_to_the_company_comes_first(pool: MySqlPool) {
+    sqlx::query("UPDATE company SET latitude = 39.9, longitude = -86.0")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let server = server(pool).await;
+    let found: Value = server
+        .get("/v1/places/autocomplete?q=main")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(found[0]["place_id"], "p2");
+    assert_eq!(found[1]["place_id"], "p1");
 }
 
 #[test_db::test(seed)]
