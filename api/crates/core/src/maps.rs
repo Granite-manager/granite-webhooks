@@ -576,9 +576,13 @@ impl Maps {
 }
 
 impl Maps {
-    /// Place predictions for typed text in the US: `(place id, text)`.
-    /// Errs when Google refuses.
-    pub async fn autocomplete(&self, input: &str) -> Result<Vec<(String, String)>, String> {
+    /// Place predictions for typed text in the US: `(place id, text)`,
+    /// closest to `near` first when given. Errs when Google refuses.
+    pub async fn autocomplete(
+        &self,
+        input: &str,
+        near: Option<Point>,
+    ) -> Result<Vec<(String, String)>, String> {
         let Some(key) = self.key.as_ref() else {
             return Ok(Vec::new());
         };
@@ -588,9 +592,19 @@ impl Maps {
             .header("X-Goog-Api-Key", &**key)
             .header(
                 "X-Goog-FieldMask",
-                "suggestions.placePrediction.placeId,suggestions.placePrediction.text",
+                "suggestions.placePrediction.placeId,suggestions.placePrediction.text,\
+                 suggestions.placePrediction.distanceMeters",
             )
-            .json(&json!({ "input": input, "includedRegionCodes": ["us"] }))
+            .json(&{
+                let mut body = json!({ "input": input, "includedRegionCodes": ["us"] });
+                if let Some(point) = near {
+                    let at = json!({ "latitude": point.lat, "longitude": point.lng });
+                    body["origin"] = at.clone();
+                    body["locationBias"] =
+                        json!({ "circle": { "center": at, "radius": 50_000.0 } });
+                }
+                body
+            })
             .send()
             .await
             .map_err(|err| err.without_url().to_string())?;
@@ -601,18 +615,23 @@ impl Maps {
             ));
         }
         let body: Value = response.json().await.unwrap_or(Value::Null);
-        Ok(body["suggestions"]
+        let mut found: Vec<(u64, String, String)> = body["suggestions"]
             .as_array()
             .into_iter()
             .flatten()
             .filter_map(|suggestion| {
                 let prediction = &suggestion["placePrediction"];
                 Some((
+                    prediction["distanceMeters"].as_u64().unwrap_or(u64::MAX),
                     prediction["placeId"].as_str()?.to_string(),
                     prediction["text"]["text"].as_str()?.to_string(),
                 ))
             })
-            .collect())
+            .collect();
+        if near.is_some() {
+            found.sort_by_key(|(meters, _, _)| *meters);
+        }
+        Ok(found.into_iter().map(|(_, id, text)| (id, text)).collect())
     }
 
     /// A place's details (`fields` is the field mask); `None` on any failure.
