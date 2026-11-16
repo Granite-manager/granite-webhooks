@@ -54,7 +54,8 @@ pub struct LeadAutomation {
     pub mode: LeadAutomationMode,
 }
 
-async fn mode_of(pool: &MySqlPool, user_id: i32) -> Result<LeadAutomationMode, sqlx::Error> {
+/// The user's choice (also part of `GET /v1/me/account`).
+pub async fn mode_of(pool: &MySqlPool, user_id: i32) -> Result<LeadAutomationMode, sqlx::Error> {
     let raw: Option<String> =
         sqlx::query_scalar("SELECT CAST(lead_automation AS CHAR) FROM users WHERE id = ?")
             .bind(user_id)

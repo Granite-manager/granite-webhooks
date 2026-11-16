@@ -720,13 +720,35 @@ impl FromRequestParts<AppState> for ShopOrEmployeeUser {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        ShopOrEmployeeAccess::from_request_parts(parts, state)
+            .await
+            .map(|access| Self(access.user))
+    }
+}
+
+/// [`ShopOrEmployeeUser`], and whether [`EmployeeUser`] lets them in too: one
+/// sign-in check for a route that answers both, with the employee-only parts
+/// left out for the shop.
+pub struct ShopOrEmployeeAccess {
+    pub user: SessionUser,
+    /// [`EmployeeUser`] would let them in (false for a shop manager or worker
+    /// who is not also an employee).
+    pub employee: bool,
+}
+
+impl FromRequestParts<AppState> for ShopOrEmployeeAccess {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let (user, positions, access) = authenticate_with_access(parts, state).await?;
         let shop = positions.iter().any(|row| {
             row.company_id == user.company_id && SHOP_POSITIONS.contains(&row.position_id)
         });
         let sectioned = access != Access::Full;
-        if user.is_employee || user.is_admin || user.is_superuser || shop || sectioned {
-            Ok(Self(user))
+        // `EmployeeUser`'s rule.
+        let employee = user.is_employee || user.is_admin || user.is_superuser || sectioned;
+        if employee || shop {
+            Ok(Self { user, employee })
         } else {
             Err(ApiError::Forbidden)
         }
