@@ -237,8 +237,28 @@ pub async fn list(
     }))
 }
 
-/// `positionConflictError`.
+pub const INSTALLER: i32 = 6;
+pub const TEMPLATE_GUY: i32 = 11;
+
+/// `positionsConflict`: Sales Rep and Shop Worker never together; Installer
+/// and Marketing only alone; Template Guy alone or with Scheduling Manager
+/// (owner, 2026-11-16).
 fn position_conflict(positions: &[i32]) -> Option<&'static str> {
+    let others = |position: i32, allowed: &[i32]| {
+        positions.contains(&position)
+            && positions
+                .iter()
+                .any(|id| *id != position && !allowed.contains(id))
+    };
+    if others(INSTALLER, &[]) {
+        return Some("Installer can't be combined with other positions.");
+    }
+    if others(EXTERNAL_MARKETING, &[]) {
+        return Some("Marketing can't be combined with other positions.");
+    }
+    if others(TEMPLATE_GUY, &[SCHEDULING_MANAGER]) {
+        return Some("Template Guy can only be combined with Scheduling Manager.");
+    }
     (positions.contains(&SALES_REP) && positions.contains(&SHOP_WORKER))
         .then_some("A user can't be both Sales Representative and Shop Worker.")
 }
@@ -272,6 +292,32 @@ fn checked_phone(phone: Option<&str>) -> ApiResult<Option<String>> {
             "Phone number must have at least 10 characters".into(),
         )),
     }
+}
+
+/// Lets a new or edited user take `email` from deleted users: their rows keep
+/// their deals, emails and history under a renamed address
+/// (`deleted-<id>-<email>`), so nothing old follows the email to its new user.
+/// Answers whether a live user other than `except` still holds it.
+pub async fn free_deleted_email(
+    pool: &MySqlPool,
+    email: &str,
+    except: Option<i32>,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query(
+        "UPDATE users SET email = LEFT(CONCAT('deleted-', id, '-', email), 255)
+          WHERE LOWER(TRIM(email)) = ? AND is_deleted <> 0 AND id <> ?",
+    )
+    .bind(email)
+    .bind(except.unwrap_or(0))
+    .execute(pool)
+    .await?;
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(TRIM(email)) = ? AND id <> ?)",
+    )
+    .bind(email)
+    .bind(except.unwrap_or(0))
+    .fetch_one(pool)
+    .await
 }
 
 fn checked_email(email: &str) -> ApiResult<String> {
@@ -316,7 +362,9 @@ pub struct CreatedUser {
 /// Creates a user with their email and positions in the caller's company
 /// (superusers: in `company_id`) and emails them an invite link (7 days) to
 /// set their own name, phone and password; they cannot sign in before. The
-/// email must be unused, even by a deleted user. When the email fails the
+/// email must not belong to a live user; a deleted user's email is freed for
+/// it (the deleted row keeps its deals and emails under a renamed address,
+/// see `free_deleted_email`). When the email fails the
 /// user is still added: share the returned link instead.
 #[crate::openapi::path(
     post,
@@ -351,18 +399,10 @@ pub async fn create(
     if let Some(conflict) = position_conflict(&positions) {
         return Err(ApiError::BadRequest(conflict.into()));
     }
-    let existing: Option<bool> = sqlx::query_scalar(
-        "SELECT is_deleted <> 0 FROM users WHERE LOWER(TRIM(email)) = ? LIMIT 1",
-    )
-    .bind(&email)
-    .fetch_optional(&state.pool)
-    .await?;
-    if let Some(deleted) = existing {
-        return Err(ApiError::Conflict(if deleted {
-            "This email belongs to a deleted user. Use a different email.".into()
-        } else {
-            "A user with this email already exists".into()
-        }));
+    if free_deleted_email(&state.pool, &email, None).await? {
+        return Err(ApiError::Conflict(
+            "A user with this email already exists".into(),
+        ));
     }
     let mut tx = state.pool.begin().await?;
     // No password until they set up the account; the name is theirs to fill.
@@ -489,6 +529,10 @@ pub struct UserForm {
     pub companies: Vec<CompanyName>,
     /// The caller is a superuser.
     pub logged_in_is_superuser: bool,
+    /// Companies the caller may move the user to (superusers: every one;
+    /// Super Admins: the ones they are Super Admin of, when the user is in
+    /// one of them); empty when they can't move them.
+    pub move_companies: Vec<CompanyName>,
     /// Their company has `CloudTalk`.
     pub has_cloudtalk_api: bool,
     /// Their company has `RingCentral`.
@@ -496,6 +540,12 @@ pub struct UserForm {
     /// Other live Scheduling Managers of their company: at 0 the form warns
     /// before it takes the position off them (survey texts stop).
     pub other_scheduling_managers: i64,
+}
+
+/// The companies a non-superuser caller may move users between: the ones
+/// they are Super Admin of.
+async fn movable_companies(pool: &MySqlPool, user: &SessionUser) -> Result<Vec<i32>, sqlx::Error> {
+    position_companies(pool, user.id, SUPER_ADMIN).await
 }
 
 async fn position_companies(
@@ -573,6 +623,29 @@ pub async fn get(
         }
         sql.fetch_all(pool).await?
     };
+    let move_companies: Vec<CompanyName> = if user.is_superuser {
+        companies
+            .iter()
+            .map(|c| CompanyName {
+                id: c.id,
+                name: c.name.clone(),
+            })
+            .collect()
+    } else {
+        let ids = movable_companies(pool, &user).await?;
+        if ids.contains(&edited.company_id) && ids.len() > 1 {
+            let marks = vec!["?"; ids.len()].join(",");
+            let mut sql = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+                "SELECT id, name FROM company WHERE deleted_at IS NULL AND id IN ({marks}) ORDER BY id"
+            )));
+            for id in &ids {
+                sql = sql.bind(id);
+            }
+            sql.fetch_all(pool).await?
+        } else {
+            Vec::new()
+        }
+    };
     let features = company_features(pool, edited.company_id).await?;
     let other_scheduling_managers: i64 = sqlx::query_scalar(
         "SELECT COUNT(DISTINCT u.id) FROM users_positions up
@@ -591,6 +664,7 @@ pub async fn get(
         superadmin_company_ids,
         companies,
         logged_in_is_superuser: user.is_superuser,
+        move_companies,
         has_cloudtalk_api: features.cloudtalk,
         has_ringcentral_api: features.ringcentral,
         other_scheduling_managers,
@@ -609,7 +683,8 @@ pub struct UserChanges {
     /// Phone (10+ characters) or empty.
     #[serde(default)]
     pub phone_number: Option<String>,
-    /// Superusers: move them to this company.
+    /// Move them to this company: superusers any, Super Admins one they are
+    /// Super Admin of (from one of those); others keep the user's company.
     pub company_id: i32,
     /// Position ids.
     #[serde(default)]
@@ -748,8 +823,9 @@ struct PositionRow {
 /// Save a user
 ///
 /// Saves the user's details and positions. Positions that stay keep their
-/// rows (Telegram lead buttons point at them). Non-superusers keep the
-/// user's company, Super Admin and check-in positions and Super Admin
+/// rows (Telegram lead buttons point at them). Super Admins may move the
+/// user between companies they are Super Admin of; other non-superusers keep
+/// the user's company. Non-superusers keep the Super Admin and check-in positions and Super Admin
 /// companies as they are, and may only grant marketing for the user's own
 /// company (or remove companies a superuser granted). Super Admins are
 /// always admins. The `RingCentral` extension follows the number. A user
@@ -829,7 +905,10 @@ pub async fn update(
     let mut marketing = input.marketing_company_ids.clone();
     let mut superadmin = input.superadmin_company_ids.clone();
     if !user.is_superuser {
-        company_id = existing_company;
+        let movable = movable_companies(pool, &user).await?;
+        if !(movable.contains(&existing_company) && movable.contains(&company_id)) {
+            company_id = existing_company;
+        }
         superadmin = existing_for(SUPER_ADMIN);
         let mut allowed: HashSet<i32> = existing_for(EXTERNAL_MARKETING).into_iter().collect();
         allowed.insert(existing_company);
@@ -847,14 +926,7 @@ pub async fn update(
         return Err(ApiError::BadRequest(conflict.into()));
     }
     if let Some(email) = &email {
-        let taken: Option<i32> = sqlx::query_scalar(
-            "SELECT id FROM users WHERE LOWER(TRIM(email)) = ? AND id <> ? LIMIT 1",
-        )
-        .bind(email)
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
-        if taken.is_some() {
+        if free_deleted_email(pool, email, Some(id)).await? {
             return Err(ApiError::Conflict(
                 "A user with this email already exists".into(),
             ));
@@ -949,6 +1021,9 @@ pub async fn update(
         .await?;
     }
     crate::phone::lines::sync_position_lines(&mut tx, existing_company).await?;
+    if company_id != existing_company {
+        crate::phone::lines::sync_position_lines(&mut tx, company_id).await?;
+    }
     tx.commit().await?;
     let line10 = |phone: Option<String>| phone.map(|p| phone10(&p)).filter(|p| p.len() == 10);
     let (agent_before, phone_before, extension_before, ringcentral_before) = before;
@@ -1056,6 +1131,11 @@ mod tests {
     fn position_rules() {
         assert!(position_conflict(&[1, 4]).is_some());
         assert!(position_conflict(&[1, 2]).is_none());
+        assert!(position_conflict(&[6]).is_none());
+        assert!(position_conflict(&[6, 5]).is_some());
+        assert!(position_conflict(&[7, 1]).is_some());
+        assert!(position_conflict(&[11, 13]).is_none());
+        assert!(position_conflict(&[11, 1]).is_some());
         assert!(is_employee(&[]));
         assert!(!is_employee(&[4, 7]));
         assert!(is_employee(&[4, 6]));
