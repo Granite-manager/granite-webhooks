@@ -144,8 +144,9 @@ async fn check_sections(
 /// `/v1/me/todos` and `/v1/me/todo-order` are the caller's own to-do list
 /// (the app's To do tab); `/v1/me/undo-send` is the caller's Undo send (Settings ›
 /// General); `/v1/me/photo` is the caller's own picture (the app's Profile);
-/// `/v1/me/mfa` is the caller's two-step sign-in (Settings › Security).
-pub const DEVICE_ROUTES: [&str; 10] = [
+/// `/v1/me/mfa` is the caller's two-step sign-in (Settings › Security);
+/// `/v1/me/gmail` is the caller's own Gmail for sending (Settings › Emails).
+pub const DEVICE_ROUTES: [&str; 11] = [
     "/v1/emails",
     "/v1/schedule",
     "/v1/events",
@@ -156,6 +157,7 @@ pub const DEVICE_ROUTES: [&str; 10] = [
     "/v1/me/undo-send",
     "/v1/me/photo",
     "/v1/me/mfa",
+    "/v1/me/gmail",
 ];
 
 /// CRM routes the app reads with its device token, `GET` only (my texts
@@ -938,6 +940,8 @@ mod tests {
             "/v1/me/photo",
             "/v1/me/mfa",
             "/v1/me/mfa/setup",
+            "/v1/me/gmail",
+            "/v1/me/gmail/app",
         ] {
             assert!(device_route(&Method::GET, path), "{path}");
             assert!(device_route(&Method::POST, path), "{path}");

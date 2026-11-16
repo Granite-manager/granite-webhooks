@@ -191,35 +191,103 @@ pub async fn finish(
             "Invalid data returned from Google.".into(),
         ));
     };
-    let email = match app(&state)?
-        .connect(
-            pool,
-            &state.telephony_http,
-            actor.company_id,
-            actor.user_id,
-            code,
-            &redirect_uri(&state),
-        )
-        .await
-    {
-        Ok(email) => email,
-        Err(GmailError::Database(error)) => return Err(ApiError::Database(error)),
-        Err(GmailError::NoSendPermission) => {
-            return Err(ApiError::BadRequest(
-                "Google didn't give permission to send email. Connect again and tick \"Send email on your behalf\".".into(),
-            ));
-        }
-        Err(error) => {
-            tracing::warn!(%error, user_id = actor.user_id, "Gmail connect failed");
-            return Err(ApiError::BadRequest(
-                "Could not finish the Gmail connection. Try again.".into(),
-            ));
-        }
-    };
+    let email = connect(
+        &state,
+        actor.company_id,
+        actor.user_id,
+        code,
+        &redirect_uri(&state),
+    )
+    .await?;
     Ok(Json(GmailConnected {
         email,
         company_subdomain: company_subdomain(pool, actor.company_id).await?,
     }))
+}
+
+/// Trades a Google code for the user's Gmail tokens and saves them.
+async fn connect(
+    state: &AppState,
+    company_id: i32,
+    user_id: i32,
+    code: &str,
+    redirect_uri: &str,
+) -> ApiResult<String> {
+    match app(state)?
+        .connect(
+            &state.pool,
+            &state.telephony_http,
+            company_id,
+            user_id,
+            code,
+            redirect_uri,
+        )
+        .await
+    {
+        Ok(email) => Ok(email),
+        Err(GmailError::Database(error)) => Err(ApiError::Database(error)),
+        Err(GmailError::NoSendPermission) => Err(ApiError::BadRequest(
+            "Google didn't give permission to send email. Connect again and tick \"Send email on your behalf\".".into(),
+        )),
+        Err(error) => {
+            tracing::warn!(%error, user_id, "Gmail connect failed");
+            Err(ApiError::BadRequest(
+                "Could not finish the Gmail connection. Try again.".into(),
+            ))
+        }
+    }
+}
+
+/// Body of `POST /v1/me/gmail/app`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct GmailAppSignIn {
+    /// The `serverAuthCode` Google's own sign-in in the Granite Manager app
+    /// returned (issued for Granite Manager's web client, with send-only
+    /// Gmail access).
+    pub server_auth_code: String,
+}
+
+/// `POST /v1/me/gmail/app`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct GmailAppConnected {
+    /// The Gmail address the caller's emails go out from now.
+    pub email: String,
+}
+
+/// Connect my Gmail from the app
+///
+/// The Granite Manager app signs in with Google's own sign-in (no web page)
+/// and posts the code it got. Google sent the code to the app itself, so
+/// there is no `state` to check; it is traded with no redirect URI.
+#[crate::openapi::path(
+    post,
+    path = "/v1/me/gmail/app",
+    operation_id = "connect_my_gmail_from_app",
+    tag = "me",
+    request_body = GmailAppSignIn,
+    responses(
+        (status = 200, description = "Connected", body = GmailAppConnected),
+        (status = 400, description = "Gmail connect is not set up, send permission not given, or Google refused the code", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn app_finish(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    JsonBody(input): JsonBody<GmailAppSignIn>,
+) -> ApiResult<Json<GmailAppConnected>> {
+    let code = input.server_auth_code.trim();
+    if code.is_empty() {
+        return Err(ApiError::BadRequest(
+            "Invalid data returned from Google.".into(),
+        ));
+    }
+    let actor = home_actor(&state.pool, user.id).await?;
+    let email = connect(&state, actor.company_id, actor.user_id, code, "").await?;
+    Ok(Json(GmailAppConnected { email }))
 }
 
 /// Disconnect my Gmail

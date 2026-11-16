@@ -42,6 +42,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(account::account, account::update_account))
         .routes(routes!(gmail::status, gmail::finish, gmail::disconnect))
         .routes(routes!(gmail::start))
+        .routes(routes!(gmail::app_finish))
         .routes(routes!(ringcentral::start))
         .routes(routes!(ringcentral::finish, ringcentral::disconnect))
         .routes(routes!(handlers::positions))
