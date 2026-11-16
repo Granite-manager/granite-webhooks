@@ -15,9 +15,9 @@
 
 use crate::auth::{AdminUser, EmployeeUser};
 use crate::commissions::{
-    BasePay, CommissionPart, CommissionRule, GoalRow, PaidRow, PayrollWeek, PositionMember,
-    base_pay_by_person, feature_sales, next_week_payroll, payroll_weeks, pick_invoice,
-    quote_commission, status_of,
+    BasePay, CommissionPart, CommissionRule, GoalRow, JobPaid, PaidRow, PayrollWeek,
+    PositionMember, base_pay_by_person, feature_sales, next_week_payroll, payroll_weeks,
+    pick_invoice, quote_commission, status_of, with_job_pay,
 };
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -26,8 +26,7 @@ use crate::openapi::{OpenApiRouter, routes};
 use crate::quote_pricing::pricing::price_quote;
 use crate::quote_pricing::{load_company_quote, price_list_for_quote};
 use crate::routes::created::CreatedId;
-use crate::routes::quickbooks::invoice::InvoiceSummary;
-use crate::routes::quickbooks::{InvoicesStatus, invoices_of_customer};
+use crate::routes::quickbooks::invoice_batch::invoices_of_customers;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -36,7 +35,7 @@ use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
@@ -67,6 +66,10 @@ struct RuleRow {
     level_max: Option<f64>,
     line_match: String,
     threshold: Option<f64>,
+    discount_min: Option<f64>,
+    discount_max: Option<f64>,
+    made_by: String,
+    paid_only: i8,
     active: i8,
 }
 
@@ -85,7 +88,9 @@ pub async fn load_rules(pool: &MySqlPool, company_id: i32) -> ApiResult<Vec<Comm
         "SELECT id, name, applies, rate_type, CAST(rate AS DOUBLE) AS rate, priority, stop,
                 CAST(materials_json AS CHAR) AS materials_json, CAST(colors_json AS CHAR) AS colors_json,
                 CAST(level_min AS DOUBLE) AS level_min, CAST(level_max AS DOUBLE) AS level_max,
-                line_match, CAST(threshold AS DOUBLE) AS threshold, active
+                line_match, CAST(threshold AS DOUBLE) AS threshold,
+                CAST(discount_min AS DOUBLE) AS discount_min,
+                CAST(discount_max AS DOUBLE) AS discount_max, made_by, paid_only, active
            FROM commission_rules
           WHERE company_id = ? AND deleted_at IS NULL
           ORDER BY priority DESC, id",
@@ -109,6 +114,10 @@ pub async fn load_rules(pool: &MySqlPool, company_id: i32) -> ApiResult<Vec<Comm
             level_max: r.level_max,
             line_match: r.line_match,
             threshold: r.threshold,
+            discount_min: r.discount_min,
+            discount_max: r.discount_max,
+            made_by: r.made_by,
+            paid_only: r.paid_only == 1,
             active: r.active == 1,
         })
         .collect())
@@ -153,6 +162,7 @@ pub struct RuleInput {
     #[serde(default)]
     pub priority: i64,
     /// Material rules: a match keeps lower rules from paying on the area.
+    /// Line rules: their lines are left out of the room's stone percent.
     #[serde(default)]
     pub stop: bool,
     /// Material rules: only these materials.
@@ -173,9 +183,26 @@ pub struct RuleInput {
     /// Monthly goals: the month's paid sales that earn the bonus.
     #[serde(default)]
     pub threshold: Option<f64>,
+    /// Only when the quote's discount is over this percent (0 to 100).
+    #[serde(default)]
+    pub discount_min: Option<f64>,
+    /// Only when the quote's discount is at most this percent (0 to 100).
+    #[serde(default)]
+    pub discount_max: Option<f64>,
+    /// Who made the quote: `any` (default), `rep` (the rep themself) or
+    /// `other` (someone else made it for them).
+    #[serde(default = "any")]
+    pub made_by: String,
+    /// Line rules: only lines the customer pays for.
+    #[serde(default)]
+    pub paid_only: bool,
     /// Off rules pay nothing.
     #[serde(default = "yes")]
     pub active: bool,
+}
+
+fn any() -> String {
+    "any".into()
 }
 
 const fn yes() -> bool {
@@ -202,6 +229,22 @@ fn checked(input: RuleInput) -> ApiResult<RuleInput> {
         return Err(ApiError::BadRequest("Rate cannot be negative".into()));
     }
     if input.threshold.is_some_and(|t| t < 0.0) {
+        return Err(ApiError::BadRequest("Check the rule.".into()));
+    }
+    let percent = |value: Option<f64>| value.is_none_or(|v| (0.0..=100.0).contains(&v));
+    if !percent(input.discount_min) || !percent(input.discount_max) {
+        return Err(ApiError::BadRequest(
+            "A discount is a percent from 0 to 100".into(),
+        ));
+    }
+    if let (Some(min), Some(max)) = (input.discount_min, input.discount_max)
+        && min >= max
+    {
+        return Err(ApiError::BadRequest(
+            "\"Discount over\" must be less than \"up to\"".into(),
+        ));
+    }
+    if !matches!(input.made_by.as_str(), "any" | "rep" | "other") {
         return Err(ApiError::BadRequest("Check the rule.".into()));
     }
     let list = |values: Vec<String>| -> ApiResult<Vec<String>> {
@@ -234,7 +277,8 @@ async fn save_rule(
             "UPDATE commission_rules
                 SET name = ?, applies = ?, rate_type = ?, rate = ?, priority = ?, stop = ?,
                     materials_json = ?, colors_json = ?, level_min = ?, level_max = ?,
-                    line_match = ?, threshold = ?, active = ?
+                    line_match = ?, threshold = ?, discount_min = ?, discount_max = ?,
+                    made_by = ?, paid_only = ?, active = ?
               WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
         )
         .bind(&rule.name)
@@ -249,6 +293,10 @@ async fn save_rule(
         .bind(rule.level_max)
         .bind(&rule.line_match)
         .bind(rule.threshold)
+        .bind(rule.discount_min)
+        .bind(rule.discount_max)
+        .bind(&rule.made_by)
+        .bind(rule.paid_only)
         .bind(rule.active)
         .bind(id)
         .bind(company_id)
@@ -263,8 +311,9 @@ async fn save_rule(
     let id = sqlx::query(
         "INSERT INTO commission_rules
            (name, applies, rate_type, rate, priority, stop, materials_json, colors_json,
-            level_min, level_max, line_match, threshold, active, company_id, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            level_min, level_max, line_match, threshold, discount_min, discount_max, made_by,
+            paid_only, active, company_id, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&rule.name)
     .bind(&rule.applies)
@@ -278,6 +327,10 @@ async fn save_rule(
     .bind(rule.level_max)
     .bind(&rule.line_match)
     .bind(rule.threshold)
+    .bind(rule.discount_min)
+    .bind(rule.discount_max)
+    .bind(&rule.made_by)
+    .bind(rule.paid_only)
     .bind(rule.active)
     .bind(company_id)
     .bind(user_id)
@@ -382,23 +435,46 @@ pub async fn delete_rule(
 }
 
 /// The payroll week (base pay has its own schedules: `/v1/commission-base-pay`).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommissionSettings {
     /// 0 = Sunday … 6 = Saturday: the day payroll goes out.
     pub payroll_weekday: u32,
+    /// When the sync last ran (UTC, `YYYY-MM-DDTHH:MM:SSZ`); never: null.
+    /// Read only: a saved value is ignored.
+    #[serde(default)]
+    pub last_synced_at: Option<String>,
+    /// Template and install pay goes into the first payroll on or after the
+    /// day the job was finished (true), or the payroll of the week after
+    /// (false, the default). Left out of a save: unchanged.
+    #[serde(default)]
+    pub job_pay_same_week: Option<bool>,
+    /// Templates and installs finished from this day on are paid
+    /// (YYYY-MM-DD); null until the company's first pay rule, which sets it
+    /// to that day. Left out of a save: unchanged.
+    #[serde(default)]
+    pub job_pay_from: Option<String>,
 }
 
 /// `loadCommissionSettings` (Friday payroll until saved).
 pub async fn load_settings(pool: &MySqlPool, company_id: i32) -> ApiResult<CommissionSettings> {
-    let weekday: Option<i32> = sqlx::query_scalar(
-        "SELECT CAST(payroll_weekday AS SIGNED) FROM commission_settings WHERE company_id = ?",
+    let row: Option<(i32, Option<String>, i32, Option<String>)> = sqlx::query_as(
+        "SELECT CAST(payroll_weekday AS SIGNED),
+                DATE_FORMAT(CONVERT_TZ(last_synced_at, @@session.time_zone, '+00:00'),
+                            '%Y-%m-%dT%H:%i:%sZ'),
+                CAST(job_pay_same_week AS SIGNED), DATE_FORMAT(job_pay_from, '%Y-%m-%d')
+           FROM commission_settings WHERE company_id = ?",
     )
     .bind(company_id)
     .fetch_optional(pool)
     .await?;
     Ok(CommissionSettings {
-        payroll_weekday: weekday.map_or(5, |w| u32::try_from(w.clamp(0, 6)).unwrap_or(5)),
+        payroll_weekday: row
+            .as_ref()
+            .map_or(5, |(w, ..)| u32::try_from((*w).clamp(0, 6)).unwrap_or(5)),
+        job_pay_same_week: Some(row.as_ref().is_some_and(|(_, _, same, _)| *same == 1)),
+        job_pay_from: row.as_ref().and_then(|(_, _, _, from)| from.clone()),
+        last_synced_at: row.and_then(|(_, synced, ..)| synced),
     })
 }
 
@@ -447,12 +523,29 @@ pub async fn save_settings(
     AdminUser(user): AdminUser,
     JsonBody(input): JsonBody<CommissionSettings>,
 ) -> ApiResult<StatusCode> {
+    let from = match input.job_pay_from.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(text) => Some(
+            ymd(text)
+                .filter(|_| text.len() == 10)
+                .ok_or_else(|| ApiError::BadRequest("Pick the day jobs are paid from.".into()))?
+                .format("%Y-%m-%d")
+                .to_string(),
+        ),
+    };
     sqlx::query(
-        "INSERT INTO commission_settings (company_id, payroll_weekday) VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE payroll_weekday = VALUES(payroll_weekday)",
+        "INSERT INTO commission_settings (company_id, payroll_weekday, job_pay_same_week, job_pay_from)
+         VALUES (?, ?, COALESCE(?, 0), ?)
+         ON DUPLICATE KEY UPDATE payroll_weekday = VALUES(payroll_weekday),
+           job_pay_same_week = COALESCE(?, job_pay_same_week),
+           job_pay_from = COALESCE(?, job_pay_from)",
     )
     .bind(user.company_id)
     .bind(input.payroll_weekday.min(6))
+    .bind(input.job_pay_same_week)
+    .bind(from.as_deref())
+    .bind(input.job_pay_same_week)
+    .bind(from.as_deref())
     .execute(&state.pool)
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -1042,6 +1135,20 @@ pub async fn list_commissions(
         chrono::Utc::now().date_naive(),
         quickbooks,
     );
+    // Template and install pay in the salary, under whoever did the job.
+    let jobs: Vec<JobPaid> = super::job_pay::load_job_pay(&state.pool, user.company_id, only)
+        .await?
+        .into_iter()
+        .filter_map(|job| {
+            Some(JobPaid {
+                payroll_date: job.payroll_date?,
+                user_id: job.user_id,
+                person: job.person,
+                total: job.total,
+            })
+        })
+        .collect();
+    let weeks = with_job_pay(weeks, &jobs);
     Ok(Json(Commissions { rows, weeks }))
 }
 
@@ -1052,11 +1159,30 @@ pub struct SyncResult {
     pub synced: usize,
     /// `ok`, `not_connected` (payments unknown) or `error` (some lookups failed).
     pub qbo: String,
+    /// Finished templates and installs worked out (a row per person on each).
+    pub jobs: usize,
 }
 
 #[derive(sqlx::FromRow)]
 struct SignedQuote {
     id: i32,
+    signed_at: Option<String>,
+}
+
+/// The Sales Representative position: only its holders earn commissions.
+const SALES_REP: i32 = 1;
+
+/// A sold quote worked out by the sync, before its `QuickBooks` invoice.
+struct Worked {
+    quote_id: i32,
+    user_id: Option<i32>,
+    customer_id: i32,
+    option_id: Option<String>,
+    total: f64,
+    commission: f64,
+    parts_json: String,
+    features_json: String,
+    installed: Option<String>,
     signed_at: Option<String>,
 }
 
@@ -1098,10 +1224,12 @@ async fn installed_on(
 
 /// Sync commissions with QuickBooks
 ///
-/// Works out what every sold quote earns, whether its customer paid (the
-/// matching `QuickBooks` invoice) and when it was installed. Commissions
-/// already added to the salary are left alone; ones of quotes no longer sold
-/// go (unless an admin set their amounts).
+/// Works out what every sales rep's sold quote earns, whether its customer
+/// paid (the matching `QuickBooks` invoice) and when it was installed.
+/// `QuickBooks` is asked for all the customers' invoices together, a few
+/// requests in all. Commissions already added to the salary are left alone;
+/// ones of quotes no longer sold, or of someone who is not a Sales
+/// Representative, go (unless an admin set their amounts).
 #[allow(clippy::too_many_lines)]
 #[crate::openapi::path(
     post,
@@ -1122,19 +1250,24 @@ pub async fn sync_commissions(
 ) -> ApiResult<Json<SyncResult>> {
     let company_id = user.company_id;
     let rules = load_rules(&state.pool, company_id).await?;
+    // Rows of quotes no longer sold, or whose rep is not a sales rep, go.
     sqlx::query(
         "DELETE qc FROM quote_commissions qc
            JOIN quotes q ON q.id = qc.quote_id
           WHERE qc.company_id = ? AND qc.payroll_date IS NULL
             AND qc.total_override IS NULL AND qc.commission_override IS NULL
             AND (q.deleted_at IS NOT NULL
-                 OR (q.signed_at IS NULL AND q.status NOT IN ('converted', 'accepted')))",
+                 OR (q.signed_at IS NULL AND q.status NOT IN ('converted', 'accepted'))
+                 OR NOT EXISTS (SELECT 1 FROM users_positions up
+                                 WHERE up.user_id = COALESCE(q.salesperson_id, q.created_by)
+                                   AND up.company_id = q.company_id AND up.position_id = ?))",
     )
     .bind(company_id)
+    .bind(SALES_REP)
     .execute(&state.pool)
     .await?;
     // Sold: signed by the customer, or marked sold (its waiting jobs were
-    // added then).
+    // added then). Only sales reps' quotes earn a commission.
     let quotes: Vec<SignedQuote> = sqlx::query_as(
         "SELECT q.id,
                 DATE_FORMAT(COALESCE(q.signed_at,
@@ -1145,18 +1278,22 @@ pub async fn sync_commissions(
            LEFT JOIN quote_commissions qc ON qc.quote_id = q.id
           WHERE q.company_id = ? AND q.deleted_at IS NULL
             AND (q.signed_at IS NOT NULL OR q.status IN ('converted', 'accepted'))
-            AND (qc.id IS NULL OR qc.payroll_date IS NULL)",
+            AND (qc.id IS NULL OR qc.payroll_date IS NULL)
+            AND EXISTS (SELECT 1 FROM users_positions up
+                         WHERE up.user_id = COALESCE(q.salesperson_id, q.created_by)
+                           AND up.company_id = q.company_id AND up.position_id = ?)",
     )
     .bind(company_id)
+    .bind(SALES_REP)
     .fetch_all(&state.pool)
     .await?;
-    let mut invoices_by_customer: HashMap<i32, Option<Vec<InvoiceSummary>>> = HashMap::new();
-    let mut qbo = "ok";
-    let mut synced = 0;
+    // First what each quote earns (the database only), then every customer's
+    // QuickBooks invoices in a few joint requests, then the rows.
+    let mut worked: Vec<Worked> = Vec::new();
     for signed in quotes {
-        let result: ApiResult<()> = async {
+        let result: ApiResult<Option<Worked>> = async {
             let Some(quote) = load_company_quote(&state.pool, signed.id, company_id).await? else {
-                return Ok(());
+                return Ok(None);
             };
             let doc = quote.doc();
             let price_list = price_list_for_quote(&state.pool, &quote).await?;
@@ -1164,52 +1301,12 @@ pub async fn sync_commissions(
             let accepted = usize::try_from(quote.customer_accepted_option_id.unwrap_or(0).max(0))
                 .unwrap_or_default()
                 .min(prices.len().saturating_sub(1));
-            let total = prices.get(accepted).map_or(0.0, |p| p.total);
-            let commission = quote_commission(&doc, &price_list, &rules, accepted, &prices);
+            let rep = quote.salesperson_id.or(quote.created_by);
+            // Made by the rep themself unless someone else created it.
+            let made_by_rep = quote.created_by.is_none() || quote.created_by == rep;
+            let commission =
+                quote_commission(&doc, &price_list, &rules, accepted, &prices, made_by_rep);
             let features = prices.get(accepted).map(feature_sales).unwrap_or_default();
-            if let std::collections::hash_map::Entry::Vacant(slot) =
-                invoices_by_customer.entry(quote.customer_id)
-            {
-                let found = invoices_of_customer(&state, company_id, quote.customer_id, true).await;
-                let invoices = if let Ok(found) = found {
-                    match found.status {
-                        InvoicesStatus::Ok => Some(found.invoices),
-                        InvoicesStatus::NotConnected => {
-                            qbo = "not_connected";
-                            None
-                        }
-                        InvoicesStatus::Error => {
-                            qbo = "error";
-                            None
-                        }
-                        InvoicesStatus::MissingQboId => None,
-                    }
-                } else {
-                    qbo = "error";
-                    None
-                };
-                slot.insert(invoices);
-            }
-            let invoices = invoices_by_customer
-                .get(&quote.customer_id)
-                .cloned()
-                .flatten();
-            let invoice = invoices
-                .as_deref()
-                .and_then(|list| pick_invoice(list, &[total], signed.signed_at.as_deref()));
-            let status = if invoices.is_none() {
-                "no_invoice"
-            } else {
-                status_of(invoice)
-            };
-            let paid_date = (status == "paid").then(|| {
-                invoice
-                    .and_then(|i| i.last_updated.clone().or_else(|| i.txn_date.clone()))
-                    .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string())
-                    .chars()
-                    .take(10)
-                    .collect::<String>()
-            });
             let installed = installed_on(
                 &state.pool,
                 company_id,
@@ -1218,60 +1315,114 @@ pub async fn sync_commissions(
                 signed.signed_at.as_deref(),
             )
             .await?;
-            // The payroll date stays empty until an admin adds the job to the
-            // salary (POST /v1/commissions/{id}/payroll).
-            sqlx::query(
-                "INSERT INTO quote_commissions
-                   (company_id, quote_id, user_id, customer_id, option_id, quote_total,
-                    commission_amount, parts_json, features_json, qbo_invoice_id, invoice_total,
-                    invoice_balance, status, paid_date, installed_date, signed_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                   user_id = VALUES(user_id), customer_id = VALUES(customer_id),
-                   option_id = VALUES(option_id), quote_total = VALUES(quote_total),
-                   commission_amount = VALUES(commission_amount), parts_json = VALUES(parts_json),
-                   features_json = VALUES(features_json),
-                   qbo_invoice_id = VALUES(qbo_invoice_id), invoice_total = VALUES(invoice_total),
-                   invoice_balance = VALUES(invoice_balance), status = VALUES(status),
-                   paid_date = IF(VALUES(status) = 'paid', COALESCE(paid_date, VALUES(paid_date)), NULL),
-                   installed_date = VALUES(installed_date),
-                   synced_at = NOW()",
-            )
-            .bind(company_id)
-            .bind(quote.id)
-            .bind(quote.salesperson_id.or(quote.created_by))
-            .bind(quote.customer_id)
-            .bind(prices.get(accepted).map(|p| p.option_id.clone()))
-            .bind(total)
-            .bind(commission.total)
-            .bind(serde_json::to_string(&commission.parts).expect("parts serialize"))
-            .bind(serde_json::to_string(&features).expect("features serialize"))
-            .bind(invoice.map(|i| i.id.clone()))
-            .bind(invoice.and_then(|i| i.total_amt))
-            .bind(invoice.and_then(|i| i.balance))
-            .bind(status)
-            .bind(paid_date)
-            .bind(installed)
-            .bind(signed.signed_at.as_deref())
-            .execute(&state.pool)
-            .await?;
-            Ok(())
+            Ok(Some(Worked {
+                quote_id: quote.id,
+                user_id: rep,
+                customer_id: quote.customer_id,
+                option_id: prices.get(accepted).map(|p| p.option_id.clone()),
+                total: prices.get(accepted).map_or(0.0, |p| p.total),
+                commission: commission.total,
+                parts_json: serde_json::to_string(&commission.parts).expect("parts serialize"),
+                features_json: serde_json::to_string(&features).expect("features serialize"),
+                installed,
+                signed_at: signed.signed_at.clone(),
+            }))
         }
         .await;
         match result {
-            Ok(()) => synced += 1,
+            Ok(Some(row)) => worked.push(row),
+            Ok(None) => {}
             Err(error) => {
                 tracing::error!(
                     ?error,
                     quote = signed.id,
+                    "failed to work out a quote commission"
+                );
+            }
+        }
+    }
+    let mut customer_ids: Vec<i32> = worked.iter().map(|w| w.customer_id).collect();
+    customer_ids.sort_unstable();
+    customer_ids.dedup();
+    let found = invoices_of_customers(&state, company_id, &customer_ids).await?;
+    let mut synced = 0;
+    for row in worked {
+        let invoices = found.invoices.get(&row.customer_id);
+        let invoice =
+            invoices.and_then(|list| pick_invoice(list, &[row.total], row.signed_at.as_deref()));
+        let status = if invoices.is_none() {
+            "no_invoice"
+        } else {
+            status_of(invoice)
+        };
+        let paid_date = (status == "paid").then(|| {
+            invoice
+                .and_then(|i| i.last_updated.clone().or_else(|| i.txn_date.clone()))
+                .unwrap_or_else(|| chrono::Utc::now().format("%Y-%m-%d").to_string())
+                .chars()
+                .take(10)
+                .collect::<String>()
+        });
+        // The payroll date stays empty until an admin adds the job to the
+        // salary (POST /v1/commissions/{id}/payroll).
+        let saved = sqlx::query(
+            "INSERT INTO quote_commissions
+               (company_id, quote_id, user_id, customer_id, option_id, quote_total,
+                commission_amount, parts_json, features_json, qbo_invoice_id, invoice_total,
+                invoice_balance, status, paid_date, installed_date, signed_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON DUPLICATE KEY UPDATE
+               user_id = VALUES(user_id), customer_id = VALUES(customer_id),
+               option_id = VALUES(option_id), quote_total = VALUES(quote_total),
+               commission_amount = VALUES(commission_amount), parts_json = VALUES(parts_json),
+               features_json = VALUES(features_json),
+               qbo_invoice_id = VALUES(qbo_invoice_id), invoice_total = VALUES(invoice_total),
+               invoice_balance = VALUES(invoice_balance), status = VALUES(status),
+               paid_date = IF(VALUES(status) = 'paid', COALESCE(paid_date, VALUES(paid_date)), NULL),
+               installed_date = VALUES(installed_date),
+               synced_at = NOW()",
+        )
+        .bind(company_id)
+        .bind(row.quote_id)
+        .bind(row.user_id)
+        .bind(row.customer_id)
+        .bind(&row.option_id)
+        .bind(row.total)
+        .bind(row.commission)
+        .bind(&row.parts_json)
+        .bind(&row.features_json)
+        .bind(invoice.map(|i| i.id.clone()))
+        .bind(invoice.and_then(|i| i.total_amt))
+        .bind(invoice.and_then(|i| i.balance))
+        .bind(status)
+        .bind(paid_date)
+        .bind(&row.installed)
+        .bind(row.signed_at.as_deref())
+        .execute(&state.pool)
+        .await;
+        match saved {
+            Ok(_) => synced += 1,
+            Err(error) => {
+                tracing::error!(
+                    ?error,
+                    quote = row.quote_id,
                     "failed to sync a quote commission"
                 );
             }
         }
     }
+    let jobs = super::job_pay::sync_job_pay(&state, company_id).await?;
+    sqlx::query(
+        "INSERT INTO commission_settings (company_id, last_synced_at) VALUES (?, NOW())
+         ON DUPLICATE KEY UPDATE last_synced_at = NOW()",
+    )
+    .bind(company_id)
+    .execute(&state.pool)
+    .await?;
     Ok(Json(SyncResult {
         synced,
-        qbo: qbo.into(),
+        qbo: found.status.into(),
+        jobs,
     }))
 }
 

@@ -117,6 +117,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "ammonia",
+ "api-accounts",
  "api-admin",
  "api-ai",
  "api-core",
@@ -172,15 +173,21 @@ version = "0.1.0"
 dependencies = [
  "api-crm",
  "axum",
+ "base64",
  "bcrypt",
  "chrono",
  "common",
  "getrandom 0.3.4",
+ "hmac",
+ "image",
  "lambda_http",
  "percent-encoding",
+ "qrcode",
  "reqwest",
  "serde",
  "serde_json",
+ "sha1",
+ "sha2 0.11.0",
  "sqlx",
  "thiserror",
  "tokio",
@@ -3223,6 +3230,12 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
 name = "query_map"

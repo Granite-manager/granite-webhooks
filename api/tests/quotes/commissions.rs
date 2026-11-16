@@ -31,6 +31,40 @@ async fn signed_quote(pool: &MySqlPool) {
     .execute(pool)
     .await
     .unwrap();
+    // Its rep is a Sales Representative: only their quotes earn commissions.
+    sqlx::query(
+        "INSERT INTO users_positions (user_id, position_id, company_id) VALUES (100, 1, 100)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test_db::test(seed)]
+async fn only_sales_reps_quotes_are_synced(pool: MySqlPool) {
+    let server = server(pool.clone());
+    signed_quote(&pool).await;
+    let res = server
+        .post("/v1/commissions/sync")
+        .with_session(sessions::ADMIN)
+        .await;
+    assert_eq!(res.json::<Value>()["synced"], 1);
+    // No longer a Sales Representative: the quote is skipped and its row goes.
+    sqlx::query("DELETE FROM users_positions WHERE user_id = 100 AND position_id = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = server
+        .post("/v1/commissions/sync")
+        .with_session(sessions::ADMIN)
+        .await;
+    assert_eq!(res.json::<Value>()["synced"], 0);
+    let rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM quote_commissions WHERE quote_id = 9701")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, 0);
 }
 
 async fn add_rule(server: &axum_test::TestServer, rule: Value) -> i64 {
@@ -94,7 +128,7 @@ async fn admins_manage_rules_and_settings(pool: MySqlPool) {
             .with_session(sessions::ADMIN)
             .await
             .json::<Value>(),
-        json!({ "payrollWeekday": 5 })
+        json!({ "payrollWeekday": 5, "lastSyncedAt": null, "jobPaySameWeek": false, "jobPayFrom": null })
     );
     server
         .put("/v1/commission-settings")
@@ -108,7 +142,7 @@ async fn admins_manage_rules_and_settings(pool: MySqlPool) {
             .with_session(sessions::ADMIN)
             .await
             .json::<Value>(),
-        json!({ "payrollWeekday": 6 })
+        json!({ "payrollWeekday": 6, "lastSyncedAt": null, "jobPaySameWeek": false, "jobPayFrom": null })
     );
     server
         .get("/v1/commission-rules")
@@ -139,7 +173,7 @@ async fn the_sync_works_out_signed_quotes_and_payroll_pays_them(pool: MySqlPool)
     // The company has no QuickBooks: payments are unknown.
     assert_eq!(
         res.json::<Value>(),
-        json!({ "synced": 1, "qbo": "not_connected" })
+        json!({ "synced": 1, "qbo": "not_connected", "jobs": 0 })
     );
 
     let mine = server
@@ -540,4 +574,79 @@ async fn admins_set_each_reps_base_pay_schedule(pool: MySqlPool) {
             .json::<Value>()["weeks"],
         json!([])
     );
+}
+
+#[test_db::test(seed)]
+async fn rules_follow_the_discount_who_made_the_quote_and_paid_lines(pool: MySqlPool) {
+    let server = server(pool.clone());
+    signed_quote(&pool).await;
+    // The quote is $100 with no discount, made by its own rep.
+    for rule in [
+        json!({ "name": "Up to 5% off", "applies": "quote", "rateType": "percent", "rate": 10, "discountMax": 5 }),
+        json!({ "name": "Over 10% off", "applies": "quote", "rateType": "percent", "rate": 3, "discountMin": 10 }),
+        json!({ "name": "Own quote", "applies": "quote", "rateType": "flat", "rate": 4, "madeBy": "rep" }),
+        json!({ "name": "Someone else's quote", "applies": "quote", "rateType": "flat", "rate": 7, "madeBy": "other" }),
+        json!({ "name": "Sealer", "applies": "lines", "rateType": "flat", "rate": 5, "lineMatch": "sealer", "paidOnly": true }),
+    ] {
+        add_rule(&server, rule).await;
+    }
+    for bad in [
+        json!({ "name": "Bad", "applies": "quote", "rateType": "percent", "rate": 1, "discountMin": 10, "discountMax": 5 }),
+        json!({ "name": "Bad", "applies": "quote", "rateType": "percent", "rate": 1, "discountMax": 101 }),
+        json!({ "name": "Bad", "applies": "quote", "rateType": "percent", "rate": 1, "madeBy": "nobody" }),
+    ] {
+        server
+            .post("/v1/commission-rules")
+            .with_session(sessions::ADMIN)
+            .json(&bad)
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+    }
+    let rules = server
+        .get("/v1/commission-rules")
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<Value>();
+    assert_eq!(rules[0]["discountMax"], 5.0);
+    assert_eq!(rules[0]["madeBy"], "any");
+    assert_eq!(rules[4]["paidOnly"], true);
+
+    let commission = |pool: MySqlPool| async move {
+        sqlx::query_scalar::<_, f64>(
+            "SELECT CAST(commission_amount AS DOUBLE) FROM quote_commissions WHERE quote_id = 9701",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    server
+        .post("/v1/commissions/sync")
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status_ok();
+    // 10% of $100, $4 for an own quote, $5 for each of the 2 sealers.
+    assert_eq!(commission(pool.clone()).await, 24.0);
+    // The sync is remembered.
+    let settings = server
+        .get("/v1/commission-settings")
+        .with_session(sessions::ADMIN)
+        .await
+        .json::<Value>();
+    assert!(
+        settings["lastSyncedAt"]
+            .as_str()
+            .is_some_and(|at| at.ends_with('Z'))
+    );
+
+    // Someone else made the quote for the rep: $7 instead of $4.
+    sqlx::query("UPDATE quotes SET created_by = 101 WHERE id = 9701")
+        .execute(&pool)
+        .await
+        .unwrap();
+    server
+        .post("/v1/commissions/sync")
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status_ok();
+    assert_eq!(commission(pool.clone()).await, 27.0);
 }

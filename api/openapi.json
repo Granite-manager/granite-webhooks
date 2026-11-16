@@ -53,6 +53,276 @@
         ]
       }
     },
+    "/v1/me/mfa": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "My two-step sign-in",
+        "description": "Whether two-step sign-in (an authenticator app code after the password)\nis on for the caller, since when, and whether they must keep it on\n(superusers). Turn it on with `POST /v1/me/mfa/setup` then `POST\n/v1/me/mfa/confirm`; off with `POST /v1/me/mfa/disable`.",
+        "operationId": "get_my_mfa",
+        "responses": {
+          "200": {
+            "description": "My two-step sign-in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/v1/me/mfa/setup": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Start setting up two-step sign-in",
+        "description": "A new secret for an authenticator app (Google Authenticator, Microsoft\nAuthenticator, 1Password...): a QR code to scan, an `otpauth://` link to\nopen on the phone that has the app, and the secret to type in. Asking\nagain within 10 minutes answers the same secret. Nothing changes until\n`POST /v1/me/mfa/confirm` gets a code from it; when it is already on,\nconfirming replaces the old authenticator.",
+        "operationId": "start_my_mfa_setup",
+        "responses": {
+          "200": {
+            "description": "What to add to the authenticator app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticatorSetup"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/v1/me/mfa/confirm": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Turn on two-step sign-in",
+        "description": "The code the authenticator app shows for the secret of `POST\n/v1/me/mfa/setup`: turns two-step sign-in on (from the next sign-in,\nevery sign-in asks for a code; sessions signed in now stay). 400 when\nthe code is wrong or no setup was started in the last hour.",
+        "operationId": "confirm_my_mfa",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaCode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "On",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong code, or no setup started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong codes; try later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
+    "/v1/me/mfa/disable": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Turn off two-step sign-in",
+        "description": "Needs a current code of the authenticator app. Superusers must keep it\non (403). Sign-ins then ask for the password only.",
+        "operationId": "disable_my_mfa",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MfaCode"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MfaStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Superusers must keep two-step sign-in on",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many wrong codes; try later",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          },
+          {
+            "device_token": []
+          }
+        ]
+      }
+    },
     "/v1/me/account": {
       "get": {
         "tags": [
@@ -4078,6 +4348,659 @@
           },
           "403": {
             "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/customer-checklists": {
+      "get": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "List the company's customer checklists",
+        "description": "The lists of to-dos a template maker picks from at a template appointment\n(what the customer must do before install), in order, each with its\nto-dos. Anyone in the company. Send the picked ones with `POST\n/v1/events/{id}/customer-todos`.",
+        "operationId": "list_customer_checklists",
+        "responses": {
+          "200": {
+            "description": "The lists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerChecklist"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Add a customer checklist",
+        "description": "A named list of to-dos the customer may need to do before install. Admins\nonly. It goes last. Returns every list, the new one included.",
+        "operationId": "create_customer_checklist",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerChecklistInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Added; every list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerChecklist"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No name, one over 120 characters, a to-do over 200 characters, or over 60 to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/customer-checklists/{id}": {
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Rename a customer checklist and set its to-dos",
+        "description": "Replaces the name and the to-dos, in the order given. To-dos already sent\nto customers stay as they were. Admins only. Returns every list.",
+        "operationId": "update_customer_checklist",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Checklist id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerChecklistInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved; every list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerChecklist"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No name, one over 120 characters, a to-do over 200 characters, or over 60 to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such list in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Delete a customer checklist",
+        "description": "Template makers no longer see it. To-dos already sent to customers stay.\nAdmins only.",
+        "operationId": "delete_customer_checklist",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Checklist id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such list in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/events/{id}/customer-todos": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Send a template appointment's customer to-dos",
+        "description": "What the customer must do before install, picked at the template\nappointment (from `GET /v1/customer-checklists`, or written in), each\nwith an optional note. Empty `items` means there is nothing to do.\nSending again adds to what was sent. The to-dos go on the appointment's\ncustomer and their open project, and the job's sales rep (the sale's\nseller, else the deal's owner, else the project's sales rep, else the\ncustomer's sales rep, else whoever made the event) gets a bell\nnotification of type `customer_todos` and a phone push, unless they sent\nthem. Returns the appointment's to-dos.",
+        "operationId": "send_event_customer_todos",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendCustomerTodosInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Sent; the appointment's to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventCustomerTodos"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A to-do over 200 characters, a note over 1000, or over 60 to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The appointment has no customer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/customer-todos/{id}": {
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Tick a customer to-do off, or mark it not done again",
+        "description": "Anyone in the company: the sales rep on the deal, the office on the\nproject, the template maker on the appointment. Done keeps who did it\nfirst and when.",
+        "operationId": "set_customer_todo_done",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "To-do id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerTodoDoneInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such to-do in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Delete a customer to-do",
+        "description": "For one sent by mistake. Only whoever sent it, an admin or a superuser.",
+        "operationId": "delete_customer_todo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "To-do id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a to-do the caller may delete",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/customers/{id}/customer-todos": {
+      "get": {
+        "tags": [
+          "customers"
+        ],
+        "summary": "List a customer's to-dos",
+        "description": "What the customer must do before install, from their template\nappointments: open ones first, then done ones, each oldest first. For the\ncustomer's page and their deals. Tick one off with `PUT\n/v1/customer-todos/{id}`.",
+        "operationId": "list_customer_todos",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The to-dos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerTodo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such customer in the company",
             "content": {
               "application/json": {
                 "schema": {
@@ -38639,7 +39562,7 @@
           "commissions"
         ],
         "summary": "Sync commissions with QuickBooks",
-        "description": "Works out what every sold quote earns, whether its customer paid (the\nmatching `QuickBooks` invoice) and when it was installed. Commissions\nalready added to the salary are left alone; ones of quotes no longer sold\ngo (unless an admin set their amounts).",
+        "description": "Works out what every sales rep's sold quote earns, whether its customer\npaid (the matching `QuickBooks` invoice) and when it was installed.\n`QuickBooks` is asked for all the customers' invoices together, a few\nrequests in all. Commissions already added to the salary are left alone;\nones of quotes no longer sold, or of someone who is not a Sales\nRepresentative, go (unless an admin set their amounts).",
         "operationId": "sync_commissions",
         "responses": {
           "200": {
@@ -39097,6 +40020,594 @@
         ]
       }
     },
+    "/v1/job-pay-rules": {
+      "get": {
+        "tags": [
+          "commissions"
+        ],
+        "summary": "List the template and install pay rules",
+        "description": "Templates first, then installs; the per sq ft rules before the extras.",
+        "operationId": "list_job_pay_rules",
+        "responses": {
+          "200": {
+            "description": "The rules",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JobPayRule"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "commissions"
+        ],
+        "summary": "Add a template or install pay rule",
+        "description": "It applies from the next sync. The company's first rule starts the\ncount: jobs finished from that day on are paid (`jobPayFrom` in the\ncommission settings).",
+        "operationId": "create_job_pay_rule",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobPayRuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedId"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Check the rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/job-pay-rules/{id}": {
+      "put": {
+        "tags": [
+          "commissions"
+        ],
+        "summary": "Save a template or install pay rule",
+        "description": "Replaces the whole rule; it applies from the next sync.",
+        "operationId": "update_job_pay_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Rule id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobPayRuleInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Check the rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such rule",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "commissions"
+        ],
+        "summary": "Delete a template or install pay rule",
+        "description": "Jobs already worked out keep what they pay.",
+        "operationId": "delete_job_pay_rule",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Rule id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/job-pay": {
+      "get": {
+        "tags": [
+          "commissions"
+        ],
+        "summary": "List template and install pay",
+        "description": "Every finished template and install since the company's first pay rule,\nper person who did it, newest first, with what it pays.",
+        "operationId": "list_job_pay",
+        "responses": {
+          "200": {
+            "description": "The jobs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JobPayRow"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/job-pay/{id}": {
+      "put": {
+        "tags": [
+          "commissions"
+        ],
+        "summary": "Set a job's sq ft, amount, extras and payroll date",
+        "description": "Null `sqFt` and `amount` go back to the quote's sq ft and to sq ft × rate.\n`extras` replaces the job's extras (a repair, a tear-out). Taking the\npayroll date away also takes \"paid out\" away.",
+        "operationId": "update_job_pay",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job pay row id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobPayEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "A negative number, an extra with no name or a bad date",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/job-pay/{id}/payroll": {
+      "post": {
+        "tags": [
+          "commissions"
+        ],
+        "summary": "Add a job to the salary",
+        "description": "A finished template or install goes into the payroll the company's\ncommission settings say: the payroll day of the week after the one it\nwas finished in, or (`jobPaySameWeek`) the first payroll day on or after\nthe day it was finished. When that payroll has gone by, the next one.",
+        "operationId": "add_job_pay_to_payroll",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Job pay row id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPayAdded"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Already in the salary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/job-pay/payouts": {
+      "post": {
+        "tags": [
+          "commissions"
+        ],
+        "summary": "Mark jobs paid to the person",
+        "description": "Marks them paid out today; one not in the salary yet goes into today's\npaycheck. With `paid: false` they are not paid out any more (and keep\ntheir payroll date).",
+        "operationId": "pay_out_job_pay",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Payout"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Marked"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/public/companies/{company_id}/frame": {
       "get": {
         "tags": [
@@ -39124,6 +40635,50 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CompanyFrame"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/companies/{company_id}/lens-hint": {
+      "post": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Claim the magnifier highlight",
+        "description": "The customer stones page highlights its magnifier (lens) button once per\nvisitor IP address: the first call from an address answers `show: true`,\nevery later one `false`.",
+        "operationId": "claim_lens_hint",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether to highlight",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LensHint"
                 }
               }
             }
@@ -50580,7 +52135,7 @@
           "auth"
         ],
         "summary": "Sign in",
-        "description": "Checks the email and password; on success creates a session (it lasts\nuntil sign-out: never by time),\nsets it as the `__session` cookie (HttpOnly, SameSite=Lax, Secure in\nproduction) and says where the user starts. Too many failed attempts\nfor the email answer 429 until the 15-minute window passes. A wrong\nemail and a wrong password answer the same 401.",
+        "description": "Checks the email and password; on success creates a session (it lasts\nuntil sign-out: never by time),\nsets it as the `__session` cookie (HttpOnly, SameSite=Lax, Secure in\nproduction) and says where the user starts. Too many failed attempts\nfor the email answer 429 until the 15-minute window passes. A wrong\nemail and a wrong password answer the same 401.\n\nWhen the account needs another step first, answers 202 with a\n`LoginChallenge` instead and sets no cookie: `code` (two-step sign-in is\non: `POST /v1/auth/login/code`), `new_password` (the password is 1111:\n`POST /v1/auth/login/password`) or `setup_authenticator` (superusers must\nturn on two-step sign-in: `POST /v1/auth/login/authenticator`). The last\nstep signs in as this route would.",
         "operationId": "sign_in",
         "requestBody": {
           "content": {
@@ -50599,6 +52154,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Right password; another step is needed first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginChallenge"
                 }
               }
             }
@@ -51053,6 +52618,364 @@
           },
           "404": {
             "description": "Invalid or expired link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login/code": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Send the authenticator code of a sign-in",
+        "description": "The `code` step: checks the 6-digit code of the user's authenticator\napp (the current one, or the one just before or after). A code works\nonce. Answers the next step (202 `StepDone`) or signs in: 200\n`AuthSession` with the session cookie for a CRM sign-in, 201\n`DeviceSession` for the app's. A wrong code is 400; the fifth wrong code\nends the sign-in (401), and wrong codes count with wrong passwords for\nthe 429 limits.",
+        "operationId": "submit_sign_in_code",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in (CRM); the session cookie is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Signed in (app); the device token is in the body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Another step is needed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepDone"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The sign-in expired or had too many wrong codes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This step is not the one the sign-in needs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login/password": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Choose a new password at sign-in",
+        "description": "The `new_password` step (the password was 1111): sets the new password\n(8 characters or more, not 1111), then answers the next step (202\n`StepDone`) or signs in: 200 `AuthSession` with the session cookie for a\nCRM sign-in, 201 `DeviceSession` for the app's. Other sessions of the\nuser stay signed in.",
+        "operationId": "set_sign_in_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in (CRM); the session cookie is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Signed in (app); the device token is in the body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Another step is needed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepDone"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Password too short, or 1111",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The sign-in expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This step is not the one the sign-in needs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login/authenticator": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get the authenticator QR code at sign-in",
+        "description": "The `setup_authenticator` step (superusers must use two-step sign-in):\nthe secret to add to an authenticator app, as a QR code to scan, an\n`otpauth://` link to open on the phone that has the app, and the secret\nto type in. Asking again within 10 minutes answers the same secret.\nNext: `POST /v1/auth/login/authenticator/confirm` with the code the app\nthen shows.",
+        "operationId": "start_sign_in_authenticator",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TokenInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What to add to the authenticator app",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthenticatorSetup"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The sign-in expired",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This step is not the one the sign-in needs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login/authenticator/confirm": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Turn on two-step sign-in at sign-in",
+        "description": "The `setup_authenticator` step's end: the first code the authenticator\napp shows for the secret of `POST /v1/auth/login/authenticator`. Turns\ntwo-step sign-in on (every later sign-in asks for a code) and signs in:\n200 `AuthSession` with the session cookie for a CRM sign-in, 201\n`DeviceSession` for the app's. A wrong code is 400; the fifth ends the\nsign-in (401).",
+        "operationId": "confirm_sign_in_authenticator",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in (CRM); the session cookie is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Signed in (app); the device token is in the body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Another step is needed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StepDone"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Wrong code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The sign-in expired or had too many wrong codes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This step is not the one the sign-in needs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many failed attempts",
             "content": {
               "application/json": {
                 "schema": {
@@ -58955,6 +60878,98 @@
         ]
       }
     },
+    "/v1/superuser/companies/{id}/first-payment-date": {
+      "put": {
+        "tags": [
+          "superuser"
+        ],
+        "summary": "Set a company's first payment date",
+        "description": "The day its next new subscription is first charged: it saves its card at\ncheckout, is charged on that day and then every month from it. Null\ncharges at checkout. A running subscription keeps its dates. Superusers\nonly.",
+        "operationId": "set_company_first_payment_date",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FirstPaymentDate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "Date out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a superuser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/company/settings": {
       "get": {
         "tags": [
@@ -62975,7 +64990,7 @@
           "phone"
         ],
         "summary": "Sign a phone in",
-        "description": "Signs the Granite Manager app in with the CRM email and password and\nreturns its device token (send it as the `X-Granite-Device` header) and\nits call key (signs the calls it places), both shown only here. Only\nemployees, admins and superusers of a company that is not deleted may:\nothers get 403 `no_phone_access`.\nFailed attempts count together with `POST /v1/auth/login`'s (10 per\nemail and address, 50 per email in 15 minutes, then 429\n`rate_limited`), and a wrong email and a wrong password both answer 401\n`invalid_credentials`. The sign-in lasts until the phone signs out or is\nrevoked, never ending by time. Next:\n`POST /v1/phone/devices` registers the phone for calling.",
+        "description": "Signs the Granite Manager app in with the CRM email and password and\nreturns its device token (send it as the `X-Granite-Device` header) and\nits call key (signs the calls it places), both shown only here. Only\nemployees, admins and superusers of a company that is not deleted may:\nothers get 403 `no_phone_access`.\nFailed attempts count together with `POST /v1/auth/login`'s (10 per\nemail and address, 50 per email in 15 minutes, then 429\n`rate_limited`), and a wrong email and a wrong password both answer 401\n`invalid_credentials`. The sign-in lasts until the phone signs out or is\nrevoked, never ending by time. Next:\n`POST /v1/phone/devices` registers the phone for calling.\n\nWhen the account needs another step first (two-step sign-in is on, the\npassword is 1111, or a superuser has not set up two-step sign-in), the\nanswer is 202 with a `LoginChallenge` when `steps` is true (see `POST\n/v1/auth/login/code`, `/password`, `/authenticator`: the last step\nanswers this route's 201), else 403 asking to update the app.",
         "operationId": "create_device_session",
         "requestBody": {
           "content": {
@@ -62994,6 +65009,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeviceSession"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Right password; another step is needed first (`steps` true)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginChallenge"
                 }
               }
             }
@@ -63019,7 +65044,7 @@
             }
           },
           "403": {
-            "description": "`no_phone_access`: not an employee, admin or superuser, or the company is deleted",
+            "description": "`no_phone_access`: not an employee, admin or superuser, or the company is deleted; or the account needs a sign-in step this app cannot do (`steps` false)",
             "content": {
               "application/json": {
                 "schema": {
@@ -70227,6 +72252,118 @@
             }
           }
         }
+      }
+    },
+    "/v1/phone/push-settings": {
+      "get": {
+        "tags": [
+          "phone"
+        ],
+        "summary": "List my push switches",
+        "description": "Every kind of push I can turn off, and whether it is on; all are on\nuntil turned off. Device token only.",
+        "operationId": "get_phone_push_settings",
+        "responses": {
+          "200": {
+            "description": "My push switches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid device token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "phone"
+        ],
+        "summary": "Turn a push on or off",
+        "description": "Saved for me, so it holds on every phone I sign in on; the bell still\nlists what a muted push would have said. Returns all my switches.\nDevice token only.",
+        "operationId": "set_phone_push_setting",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PushSettingInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "My push switches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PushSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not one of my switches",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid device token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "device_token": []
+          }
+        ]
       }
     },
     "/v1/phone/pushes/notification": {
@@ -77525,6 +79662,29 @@
           }
         }
       },
+      "AuthenticatorSetup": {
+        "type": "object",
+        "description": "What the user adds to their authenticator app.",
+        "required": [
+          "secret",
+          "uri",
+          "qr"
+        ],
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "The secret as base32 (32 letters and digits), for typing into the\nauthenticator app when the QR code cannot be scanned (setting up on\nthe phone that shows it). Shown grouped by 4 is fine: apps ignore\nspaces."
+          },
+          "uri": {
+            "type": "string",
+            "description": "The `otpauth://totp/...` link: opening it on a phone adds the account\nto the authenticator app installed there."
+          },
+          "qr": {
+            "type": "string",
+            "description": "The QR code of `uri`, as a `data:image/png;base64,...` URL, for\nscanning with the authenticator app on another phone."
+          }
+        }
+      },
       "AuthorizeLink": {
         "type": "object",
         "description": "Where to send the browser.",
@@ -77970,7 +80130,7 @@
             "properties": {
               "can_manage": {
                 "type": "boolean",
-                "description": "The caller is a manager of the company (manages billing)."
+                "description": "The caller is a manager of the company or a superuser (manages billing)."
               }
             }
           }
@@ -80533,6 +82693,24 @@
           "sms"
         ]
       },
+      "CodeInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/auth/login/code` and\n`POST /v1/auth/login/authenticator/confirm`.",
+        "required": [
+          "token",
+          "code"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The sign-in's token (`LoginChallenge.token`)."
+          },
+          "code": {
+            "type": "string",
+            "description": "The 6-digit code the authenticator app shows now (spaces ignored)."
+          }
+        }
+      },
       "CodeRequest": {
         "type": "object",
         "description": "How the visitor wants their code.",
@@ -80846,7 +83024,7 @@
           },
           "stop": {
             "type": "boolean",
-            "description": "Material rules: a match keeps lower rules from paying on the same area."
+            "description": "Material rules: a match keeps lower rules from paying on the same area.\nLine rules: the lines it matches earn only this rule, not the room's\nstone percent too."
           },
           "materials": {
             "type": "array",
@@ -80890,6 +83068,30 @@
             "format": "double",
             "description": "Monthly goals: the month's paid sales that earn the bonus."
           },
+          "discountMin": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Only when the quote's discount is over this percent."
+          },
+          "discountMax": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Only when the quote's discount is at most this percent."
+          },
+          "madeBy": {
+            "type": "string",
+            "description": "Who made the quote: `any`, `rep` (the rep themself) or `other`\n(someone else made it for them)."
+          },
+          "paidOnly": {
+            "type": "boolean",
+            "description": "Line rules: only lines the customer pays for (a free line earns nothing)."
+          },
           "active": {
             "type": "boolean",
             "description": "Off rules pay nothing."
@@ -80908,6 +83110,27 @@
             "format": "int32",
             "description": "0 = Sunday … 6 = Saturday: the day payroll goes out.",
             "minimum": 0
+          },
+          "lastSyncedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When the sync last ran (UTC, `YYYY-MM-DDTHH:MM:SSZ`); never: null.\nRead only: a saved value is ignored."
+          },
+          "jobPaySameWeek": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Template and install pay goes into the first payroll on or after the\nday the job was finished (true), or the payroll of the week after\n(false, the default). Left out of a save: unchanged."
+          },
+          "jobPayFrom": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Templates and installs finished from this day on are paid\n(YYYY-MM-DD); null until the company's first pay rule, which sets it\nto that day. Left out of a save: unchanged."
           }
         },
         "additionalProperties": false
@@ -81567,6 +83790,14 @@
               "null"
             ],
             "description": "Why Stripe could not be read for this company; null when it was."
+          },
+          "first_payment_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The day its first charge is set for (its card is saved at checkout);\nnull to charge at checkout. Read when it subscribes."
           }
         }
       },
@@ -83567,6 +85798,72 @@
           }
         }
       },
+      "CustomerChecklist": {
+        "type": "object",
+        "description": "A list of to-dos the template maker picks from.",
+        "required": [
+          "id",
+          "name",
+          "items"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The list's id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name, e.g. \"Before install\"."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomerChecklistItem"
+            },
+            "description": "Its to-dos, in order."
+          }
+        }
+      },
+      "CustomerChecklistInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/customer-checklists` and `PUT /v1/customer-checklists/{id}`.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name: 1 to 120 characters (trimmed)."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The to-dos, in order: each 1 to 200 characters (trimmed; blank ones\nare dropped), at most 60. Saving replaces the list's to-dos; to-dos\nalready sent to customers stay as they are."
+          }
+        }
+      },
+      "CustomerChecklistItem": {
+        "type": "object",
+        "description": "One to-do on a list.",
+        "required": [
+          "id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The to-do's id."
+          },
+          "label": {
+            "type": "string",
+            "description": "What the customer must do, e.g. \"Level the cabinets\"."
+          }
+        }
+      },
       "CustomerDeal": {
         "type": "object",
         "description": "A deal of a customer, with a preview of its notes and activities.",
@@ -84449,6 +86746,125 @@
           "is_walkin": {
             "type": "boolean",
             "description": "Counts as a walk-in (Walk-in filter, walk-in statistics). The\nbuilt-in walk-in always does, whatever this says."
+          }
+        }
+      },
+      "CustomerTodo": {
+        "type": "object",
+        "description": "One to-do of one customer.",
+        "required": [
+          "id",
+          "customer_id",
+          "label"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The to-do's id."
+          },
+          "customer_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer who must do it."
+          },
+          "event_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The template appointment it came from; null once that is deleted."
+          },
+          "project_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The project it is for; null when the customer had no open project."
+          },
+          "label": {
+            "type": "string",
+            "description": "What the customer must do."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The template maker's note, e.g. \"Island, 2 corbels on the seating side\"."
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was sent (UTC)."
+          },
+          "created_by_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The sender's user id; null once that user is gone."
+          },
+          "created_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The sender's name."
+          },
+          "done_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was ticked off (UTC); null while the customer still has to do it."
+          },
+          "done_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who ticked it off."
+          }
+        }
+      },
+      "CustomerTodoDoneInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/customer-todos/{id}`.",
+        "required": [
+          "done"
+        ],
+        "properties": {
+          "done": {
+            "type": "boolean",
+            "description": "Done, or not done again."
+          }
+        }
+      },
+      "CustomerTodoInput": {
+        "type": "object",
+        "description": "One to-do sent from a template appointment.",
+        "required": [
+          "label"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What the customer must do: 1 to 200 characters (trimmed)."
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A note for the sales rep: at most 1000 characters; blank means none."
           }
         }
       },
@@ -86062,6 +88478,10 @@
           "appVersion": {
             "type": "string",
             "description": "The app's version, e.g. `1.4.0`; cut to 32 characters."
+          },
+          "steps": {
+            "type": "boolean",
+            "description": "The app can do the sign-in steps (an authenticator code, a new\npassword, setting up the authenticator): when the account needs one,\nthe answer is 202 with a `LoginChallenge`. Without it (older apps)\nsuch an account gets 403 asking to update the app."
           }
         }
       },
@@ -87862,6 +90282,42 @@
           }
         }
       },
+      "EventCustomerTodos": {
+        "type": "object",
+        "description": "A template appointment's to-dos.",
+        "required": [
+          "nothing_to_do",
+          "todos"
+        ],
+        "properties": {
+          "sent_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the template maker sent them (UTC); null until then."
+          },
+          "sent_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who sent them."
+          },
+          "nothing_to_do": {
+            "type": "boolean",
+            "description": "True when they said there is nothing to do."
+          },
+          "todos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomerTodo"
+            },
+            "description": "The to-dos sent from this appointment, in the order they were sent."
+          }
+        }
+      },
       "EventDetails": {
         "type": "object",
         "description": "`GET /v1/events/{id}/details`.",
@@ -87870,6 +90326,7 @@
           "photos",
           "attachments",
           "issues",
+          "customer_todos",
           "history",
           "creator",
           "automated"
@@ -87902,6 +90359,10 @@
               "$ref": "#/components/schemas/EventIssue"
             },
             "description": "Problems reported on the job (`POST /v1/events/{id}/issues`), oldest\nfirst, each with its pictures."
+          },
+          "customer_todos": {
+            "$ref": "#/components/schemas/EventCustomerTodos",
+            "description": "What the customer must do before install, sent from this template\nappointment (`POST /v1/events/{id}/customer-todos`)."
           },
           "history": {
             "type": "array",
@@ -89270,6 +91731,20 @@
             ],
             "format": "int32",
             "description": "The lead, when there is no deal."
+          }
+        }
+      },
+      "FirstPaymentDate": {
+        "type": "object",
+        "description": "Body of `PUT /v1/superuser/companies/{id}/first-payment-date`.",
+        "properties": {
+          "first_payment_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The day of the first charge (`YYYY-MM-DD`), 3 to 700 days from today;\nnull to charge at checkout."
           }
         }
       },
@@ -92371,6 +94846,278 @@
           "templates"
         ]
       },
+      "JobPayAdded": {
+        "type": "object",
+        "description": "Where a job went in the salary.",
+        "required": [
+          "payrollDate"
+        ],
+        "properties": {
+          "payrollDate": {
+            "type": "string",
+            "description": "The payroll it is paid with (YYYY-MM-DD)."
+          }
+        }
+      },
+      "JobPayEdit": {
+        "type": "object",
+        "description": "An admin's own numbers for a job.",
+        "properties": {
+          "sqFt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The sq ft paid; null: the quote's."
+          },
+          "amount": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The job's pay before extras; null: sq ft × rate."
+          },
+          "payrollDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The payroll it is paid with (YYYY-MM-DD); null: not in the salary."
+          },
+          "extras": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobPayExtra"
+            },
+            "description": "The extras: replaces the job's list."
+          }
+        },
+        "additionalProperties": false
+      },
+      "JobPayExtra": {
+        "type": "object",
+        "description": "An extra on a job: a repair, a tear-out.",
+        "required": [
+          "label",
+          "amount"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What it is for (1 to 120 characters)."
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "description": "Dollars; not negative."
+          }
+        },
+        "additionalProperties": false
+      },
+      "JobPayRow": {
+        "type": "object",
+        "description": "A finished template or install and what it pays one person.",
+        "required": [
+          "id",
+          "eventId",
+          "work",
+          "userId",
+          "person",
+          "job",
+          "doneDate",
+          "rate",
+          "amount",
+          "adjusted",
+          "extras",
+          "total",
+          "paidOut"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Row id."
+          },
+          "eventId": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The schedule event."
+          },
+          "work": {
+            "type": "string",
+            "description": "`template` or `install`."
+          },
+          "userId": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Who did it."
+          },
+          "person": {
+            "type": "string",
+            "description": "Their name."
+          },
+          "job": {
+            "type": "string",
+            "description": "The customer, or the event's title when it has none."
+          },
+          "doneDate": {
+            "type": "string",
+            "description": "The day it was finished (YYYY-MM-DD)."
+          },
+          "quoteSqFt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The sq ft of stone on the event's quote; null: no quote, or no stone on it."
+          },
+          "sqFt": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The sq ft paid: an admin's own, else the quote's; null: not known yet."
+          },
+          "rate": {
+            "type": "number",
+            "format": "double",
+            "description": "Dollars per sq ft."
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "description": "The job's pay before extras: an admin's own, else sq ft × rate."
+          },
+          "adjusted": {
+            "type": "boolean",
+            "description": "An admin set the sq ft or the amount."
+          },
+          "extras": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/JobPayExtra"
+            },
+            "description": "Extras added by hand."
+          },
+          "total": {
+            "type": "number",
+            "format": "double",
+            "description": "`amount` plus the extras."
+          },
+          "payrollDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The payroll it is paid with (YYYY-MM-DD); null: not in the salary yet."
+          },
+          "paidOut": {
+            "type": "boolean",
+            "description": "Paid out to the person."
+          }
+        }
+      },
+      "JobPayRule": {
+        "type": "object",
+        "description": "A pay rule for templates or installs.",
+        "required": [
+          "id",
+          "name",
+          "work",
+          "kind",
+          "amount",
+          "active"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rule id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name (\"Install\", \"Tear-out\")."
+          },
+          "work": {
+            "type": "string",
+            "description": "`template` or `install`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`sqft` (dollars per sq ft of every finished job, by itself) or `extra`\n(a fixed amount an admin adds to a job by hand)."
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "description": "Dollars per sq ft, or the extra's dollars."
+          },
+          "userId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "`sqft` rules: the one person it pays; null: everyone with the work's\nposition (Template technician, Installer)."
+          },
+          "person": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "That person's name."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Off rules pay nothing."
+          }
+        }
+      },
+      "JobPayRuleInput": {
+        "type": "object",
+        "description": "A pay rule as an admin builds it.",
+        "required": [
+          "name",
+          "work",
+          "kind",
+          "amount"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Name (1 to 120 characters)."
+          },
+          "work": {
+            "type": "string",
+            "description": "`template` or `install`."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`sqft` or `extra`."
+          },
+          "amount": {
+            "type": "number",
+            "format": "double",
+            "description": "Dollars per sq ft, or the extra's dollars; not negative."
+          },
+          "userId": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "`sqft` rules: one person; null: everyone with the work's position."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "Off rules pay nothing."
+          }
+        },
+        "additionalProperties": false
+      },
       "JobTime": {
         "type": "object",
         "description": "`GET /v1/schedule/job-time`.",
@@ -93118,6 +95865,19 @@
           }
         }
       },
+      "LensHint": {
+        "type": "object",
+        "description": "Whether the customer stones page should highlight its magnifier button.",
+        "required": [
+          "show"
+        ],
+        "properties": {
+          "show": {
+            "type": "boolean",
+            "description": "True only the first time this visitor's IP address asks."
+          }
+        }
+      },
       "Letterhead": {
         "type": "object",
         "description": "The company header a form prints (`loadFormCompany`).",
@@ -93619,6 +96379,24 @@
           }
         }
       },
+      "LoginChallenge": {
+        "type": "object",
+        "description": "A sign-in that needs another step (HTTP 202).",
+        "required": [
+          "step",
+          "token"
+        ],
+        "properties": {
+          "step": {
+            "$ref": "#/components/schemas/LoginStep",
+            "description": "The step to do now."
+          },
+          "token": {
+            "type": "string",
+            "description": "Send it as `token` with the step. It works for 10 minutes and stays\nthe same through every step of this sign-in."
+          }
+        }
+      },
       "LoginEmail": {
         "type": "object",
         "description": "An address to sign in with.",
@@ -93650,6 +96428,15 @@
             "description": "Password."
           }
         }
+      },
+      "LoginStep": {
+        "type": "string",
+        "description": "What the sign-in needs next.",
+        "enum": [
+          "code",
+          "new_password",
+          "setup_authenticator"
+        ]
       },
       "LookupInput": {
         "type": "object",
@@ -94405,6 +97192,45 @@
           "sending",
           "failed"
         ]
+      },
+      "MfaCode": {
+        "type": "object",
+        "description": "Body of `POST /v1/me/mfa/confirm` and `POST /v1/me/mfa/disable`.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "The 6-digit code the authenticator app shows now (spaces ignored)."
+          }
+        }
+      },
+      "MfaStatus": {
+        "type": "object",
+        "description": "`GET /v1/me/mfa`.",
+        "required": [
+          "enabled",
+          "required"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Two-step sign-in is on: every sign-in asks for the authenticator\napp's code after the password."
+          },
+          "enabled_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it was turned on (ISO 8601, UTC); null while off."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "The user must keep it on (superusers): it cannot be turned off, and\na sign-in without it set up asks to set it up first."
+          }
+        }
       },
       "MonthCount": {
         "type": "object",
@@ -98030,6 +100856,24 @@
           }
         }
       },
+      "PasswordInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/auth/login/password`.",
+        "required": [
+          "token",
+          "password"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The sign-in's token (`LoginChallenge.token`)."
+          },
+          "password": {
+            "type": "string",
+            "description": "The new password: 8 characters or more (spaces around it are\ndropped, as sign-in drops them)."
+          }
+        }
+      },
       "PaymentPage": {
         "type": "object",
         "description": "What the payments page shows for a company.",
@@ -98046,6 +100890,14 @@
             "type": "integer",
             "format": "int32",
             "description": "The monthly price a new subscription starts at, in US cents."
+          },
+          "first_payment_on": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "The day a new subscription is first charged (the card is saved at\ncheckout); null when it is charged at checkout."
           },
           "subscription": {
             "oneOf": [
@@ -98100,6 +100952,7 @@
           "commission",
           "bonus",
           "base",
+          "jobPay",
           "total"
         ],
         "properties": {
@@ -98129,6 +100982,11 @@
             "type": "number",
             "format": "double",
             "description": "Base pay due that day."
+          },
+          "jobPay": {
+            "type": "number",
+            "format": "double",
+            "description": "Template and install pay (see `routes::job_pay`)."
           },
           "total": {
             "type": "number",
@@ -102723,6 +105581,7 @@
           "notes",
           "files",
           "job_photos",
+          "customer_todos",
           "issues",
           "history",
           "sales",
@@ -102775,6 +105634,13 @@
               "$ref": "#/components/schemas/ProjectJobPhoto"
             },
             "description": "The crew's job photos from its appointments, newest first."
+          },
+          "customer_todos": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomerTodo"
+            },
+            "description": "What the customer must do before install, from its template\nappointments: open ones first. Tick one off with `PUT /v1/customer-todos/{id}`."
           },
           "issues": {
             "type": "array",
@@ -103324,6 +106190,57 @@
             "type": "integer",
             "description": "Phones FCM accepted the push for; 0 when there was nothing to push or\nno signed-in phone.",
             "minimum": 0
+          }
+        }
+      },
+      "PushSetting": {
+        "type": "object",
+        "description": "One push switch.",
+        "required": [
+          "key",
+          "on"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "What the push is (`missed_call`, `text`, `lead_new`, `task_due`...)."
+          },
+          "on": {
+            "type": "boolean",
+            "description": "The push is sent to my phones."
+          }
+        }
+      },
+      "PushSettingInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/phone/push-settings`.",
+        "required": [
+          "key",
+          "on"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "A key from `GET /v1/phone/push-settings`."
+          },
+          "on": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PushSettings": {
+        "type": "object",
+        "description": "`GET /v1/phone/push-settings`.",
+        "required": [
+          "settings"
+        ],
+        "properties": {
+          "settings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PushSetting"
+            },
+            "description": "The switches I get, in order: the lead switches only sales managers\nget are left out for others, as are maintenance (the shop's) and\npromise reminders (only for those who have them). The 911 alert has\nnone: it always goes out."
           }
         }
       },
@@ -106602,7 +109519,7 @@
           },
           "stop": {
             "type": "boolean",
-            "description": "Material rules: a match keeps lower rules from paying on the area."
+            "description": "Material rules: a match keeps lower rules from paying on the area.\nLine rules: their lines are left out of the room's stone percent."
           },
           "materials": {
             "type": "array",
@@ -106645,6 +109562,30 @@
             ],
             "format": "double",
             "description": "Monthly goals: the month's paid sales that earn the bonus."
+          },
+          "discountMin": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Only when the quote's discount is over this percent (0 to 100)."
+          },
+          "discountMax": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Only when the quote's discount is at most this percent (0 to 100)."
+          },
+          "madeBy": {
+            "type": "string",
+            "description": "Who made the quote: `any` (default), `rep` (the rep themself) or\n`other` (someone else made it for them)."
+          },
+          "paidOnly": {
+            "type": "boolean",
+            "description": "Line rules: only lines the customer pays for."
           },
           "active": {
             "type": "boolean",
@@ -108745,6 +111686,27 @@
           }
         },
         "additionalProperties": false
+      },
+      "SendCustomerTodosInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/events/{id}/customer-todos`.",
+        "properties": {
+          "checklist_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The list they were picked from (`GET /v1/customer-checklists`), if any."
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CustomerTodoInput"
+            },
+            "description": "The to-dos that apply to this customer, at most 60. Empty means there\nis nothing to do."
+          }
+        }
       },
       "SendEmailRequest": {
         "type": "object",
@@ -113515,7 +116477,8 @@
         "description": "What a sync did.",
         "required": [
           "synced",
-          "qbo"
+          "qbo",
+          "jobs"
         ],
         "properties": {
           "synced": {
@@ -113526,6 +116489,11 @@
           "qbo": {
             "type": "string",
             "description": "`ok`, `not_connected` (payments unknown) or `error` (some lookups failed)."
+          },
+          "jobs": {
+            "type": "integer",
+            "description": "Finished templates and installs worked out (a row per person on each).",
+            "minimum": 0
           }
         }
       },
@@ -116882,6 +119850,19 @@
           "rich_text": {
             "type": "string",
             "description": "The task, 1 to 255 characters."
+          }
+        }
+      },
+      "TokenInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/auth/login/authenticator`.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "The sign-in's token (`LoginChallenge.token`)."
           }
         }
       },

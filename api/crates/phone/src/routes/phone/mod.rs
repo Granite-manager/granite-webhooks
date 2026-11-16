@@ -11,6 +11,7 @@
 //! - `PUT  /v1/phone/devices/{id}/push-token`  → the phone's FCM token
 //! - `GET  /v1/phone/caller-ids`               → numbers I may call from
 //! - `PUT  /v1/phone/settings`                 → change my phone settings
+//! - `GET|PUT /v1/phone/push-settings`         → which pushes my phones get (on/off per kind)
 //! - `PUT  /v1/phone/availability`             → Available / Do not disturb
 //! - `POST /v1/phone/notices/accept`           → accept the recording or 911 notice
 //! - `GET  /v1/phone/lines`                   → my lines and what their unanswered calls do
@@ -93,6 +94,7 @@ mod directions;
 mod hold;
 mod port_loa;
 mod porting;
+mod push_settings;
 mod pushes;
 mod recording;
 mod ringcentral_calls;
@@ -190,6 +192,10 @@ pub fn router() -> OpenApiRouter<AppState> {
         ))
         .merge(porting::router())
         .merge(port_loa::router())
+        .routes(routes!(
+            push_settings::get_push_settings,
+            push_settings::set_push_setting
+        ))
         .routes(routes!(pushes::push_notification_route))
         .routes(routes!(pushes::push_lead_route))
         .routes(routes!(test_pushes::send_test_push))

@@ -38,6 +38,8 @@ pub struct CommissionRule {
     /// Higher goes first.
     pub priority: i64,
     /// Material rules: a match keeps lower rules from paying on the same area.
+    /// Line rules: the lines it matches earn only this rule, not the room's
+    /// stone percent too.
     pub stop: bool,
     /// Material rules: only these materials (empty: any).
     pub materials: Vec<String>,
@@ -51,8 +53,25 @@ pub struct CommissionRule {
     pub line_match: String,
     /// Monthly goals: the month's paid sales that earn the bonus.
     pub threshold: Option<f64>,
+    /// Only when the quote's discount is over this percent.
+    #[serde(default)]
+    pub discount_min: Option<f64>,
+    /// Only when the quote's discount is at most this percent.
+    #[serde(default)]
+    pub discount_max: Option<f64>,
+    /// Who made the quote: `any`, `rep` (the rep themself) or `other`
+    /// (someone else made it for them).
+    #[serde(default = "any")]
+    pub made_by: String,
+    /// Line rules: only lines the customer pays for (a free line earns nothing).
+    #[serde(default)]
+    pub paid_only: bool,
     /// Off rules pay nothing.
     pub active: bool,
+}
+
+fn any() -> String {
+    "any".into()
 }
 
 /// One rule's share of a quote's commission.
@@ -160,8 +179,75 @@ fn pay(rule: &CommissionRule, base: f64) -> f64 {
     })
 }
 
+/// The sq ft of stone a priced option sells: its material lines (slab,
+/// splash, waterfall and mitered-edge material), times each area's quantity.
+pub fn stone_sq_ft(price: &OptionPrice) -> f64 {
+    price
+        .areas
+        .iter()
+        .map(|area| {
+            area.lines
+                .iter()
+                .filter(|line| is_material_line(line))
+                .fold(0.0, |sum, line| sum + line_quantity(line))
+                * area.quantity
+        })
+        .sum()
+}
+
+/// The quote's discount as a percent of what it would cost without one: the
+/// quote's own discount plus every line with a negative price ("Discount",
+/// "Black Friday -10%").
+pub fn discount_percent(price: &OptionPrice) -> f64 {
+    let mut gross = 0.0;
+    let mut off = price.discount.max(0.0);
+    let groups = price
+        .areas
+        .iter()
+        .map(|area| (area, area.quantity))
+        .chain(std::iter::once((&price.other, 1.0)));
+    for (area, quantity) in groups {
+        for line in &area.lines {
+            if line.total > 0.0 {
+                gross += line.total * quantity;
+            } else {
+                off -= line.total * quantity;
+            }
+        }
+    }
+    if gross > 0.0 {
+        money(off / gross * 100.0)
+    } else {
+        0.0
+    }
+}
+
+/// Whether a rule's conditions on the whole quote hold: its discount (over
+/// `discount_min`, at most `discount_max`) and who made it.
+fn holds(rule: &CommissionRule, discount: f64, made_by_rep: bool) -> bool {
+    if rule.discount_min.is_some_and(|min| discount <= min) {
+        return false;
+    }
+    if rule.discount_max.is_some_and(|max| discount > max) {
+        return false;
+    }
+    match rule.made_by.as_str() {
+        "rep" => made_by_rep,
+        "other" => !made_by_rep,
+        _ => true,
+    }
+}
+
+/// Whether a line rule covers a price line.
+fn line_matches(rule: &CommissionRule, line: &PriceLine) -> bool {
+    !rule.line_match.is_empty()
+        && lower(&format!("{} {}", line.key, line.description)).contains(&lower(&rule.line_match))
+        && !(rule.paid_only && line.total <= 0.0)
+}
+
 /// `quoteCommission`: what a rep earns on one option (the one the customer
-/// took): every active rule applied to the quote's areas and lines. Monthly
+/// took): every active rule whose conditions hold, applied to the quote's
+/// areas and lines. `made_by_rep`: the rep made the quote themself. Monthly
 /// goals are paid by [`payroll_weeks`].
 #[allow(clippy::too_many_lines)]
 pub fn quote_commission(
@@ -170,6 +256,7 @@ pub fn quote_commission(
     rules: &[CommissionRule],
     option_index: usize,
     prices: &[OptionPrice],
+    made_by_rep: bool,
 ) -> QuoteCommission {
     let (Some(option), Some(price)) = (
         doc.color_options.get(option_index),
@@ -180,9 +267,10 @@ pub fn quote_commission(
             parts: Vec::new(),
         };
     };
+    let discount = discount_percent(price);
     let mut ordered: Vec<&CommissionRule> = rules
         .iter()
-        .filter(|r| r.active && r.applies != "monthly_goal")
+        .filter(|r| r.active && r.applies != "monthly_goal" && holds(r, discount, made_by_rep))
         .collect();
     ordered.sort_by(|a, b| b.priority.cmp(&a.priority).then(a.id.cmp(&b.id)));
     let mut parts = Vec::new();
@@ -194,8 +282,18 @@ pub fn quote_commission(
         let level = level_of(price_list, product, color);
         let material: Vec<&PriceLine> = area.lines.iter().filter(|l| is_material_line(l)).collect();
         // A stone rule's percent is of everything in the room: the room's
-        // stone sets the rate for all of its items.
-        let room_dollars = area.lines.iter().fold(0.0, |s, l| s + l.total) * area.quantity;
+        // stone sets the rate for all of its items, except the lines a line
+        // rule keeps to itself (cabinets at their own percent).
+        let kept = area
+            .lines
+            .iter()
+            .filter(|line| {
+                ordered
+                    .iter()
+                    .any(|r| r.applies == "lines" && r.stop && line_matches(r, line))
+            })
+            .fold(0.0, |s, l| s + l.total);
+        let room_dollars = (area.lines.iter().fold(0.0, |s, l| s + l.total) - kept) * area.quantity;
         let sq_ft = material.iter().fold(0.0, |s, l| s + line_quantity(l)) * area.quantity;
         let mut stopped = false;
         for rule in &ordered {
@@ -222,10 +320,9 @@ pub fn quote_commission(
                 if rule.stop {
                     stopped = true;
                 }
-            } else if rule.applies == "lines" && !rule.line_match.is_empty() {
-                let needle = lower(&rule.line_match);
+            } else if rule.applies == "lines" {
                 for line in &area.lines {
-                    if !lower(&format!("{} {}", line.key, line.description)).contains(&needle) {
+                    if !line_matches(rule, line) {
                         continue;
                     }
                     let base = if percent(rule) {
@@ -248,10 +345,9 @@ pub fn quote_commission(
 
     // Lines on the quote itself, outside any area ("Other Items").
     for rule in &ordered {
-        if rule.applies == "lines" && !rule.line_match.is_empty() {
-            let needle = lower(&rule.line_match);
+        if rule.applies == "lines" {
             for line in &price.other.lines {
-                if !lower(&format!("{} {}", line.key, line.description)).contains(&needle) {
+                if !line_matches(rule, line) {
                     continue;
                 }
                 let base = if percent(rule) {
@@ -518,8 +614,58 @@ pub struct PayrollRep {
     pub bonus: f64,
     /// Base pay due that day.
     pub base: f64,
+    /// Template and install pay (see `routes::job_pay`).
+    pub job_pay: f64,
     /// All of it.
     pub total: f64,
+}
+
+/// A finished template or install in the salary.
+#[derive(Debug, Clone)]
+pub struct JobPaid {
+    pub user_id: i32,
+    pub person: String,
+    /// The payroll it is paid with (YYYY-MM-DD).
+    pub payroll_date: String,
+    /// Its pay with the extras.
+    pub total: f64,
+}
+
+/// The paychecks with the template and install pay added: every job on its
+/// payroll date, under the person who did it. Newest payroll first.
+pub fn with_job_pay(mut weeks: Vec<PayrollWeek>, jobs: &[JobPaid]) -> Vec<PayrollWeek> {
+    for job in jobs {
+        let week = weeks
+            .iter()
+            .position(|w| w.payroll_date == job.payroll_date)
+            .unwrap_or_else(|| {
+                weeks.push(PayrollWeek {
+                    payroll_date: job.payroll_date.clone(),
+                    reps: Vec::new(),
+                });
+                weeks.len() - 1
+            });
+        let reps = &mut weeks[week].reps;
+        let rep = reps
+            .iter()
+            .position(|r| r.user_id == Some(job.user_id))
+            .unwrap_or_else(|| {
+                reps.push(PayrollRep {
+                    user_id: Some(job.user_id),
+                    rep: job.person.clone(),
+                    commission: 0.0,
+                    bonus: 0.0,
+                    base: 0.0,
+                    job_pay: 0.0,
+                    total: 0.0,
+                });
+                reps.len() - 1
+            });
+        reps[rep].job_pay = money(reps[rep].job_pay + job.total);
+        reps[rep].total = money(reps[rep].total + job.total);
+    }
+    weeks.sort_by(|a, b| b.payroll_date.cmp(&a.payroll_date));
+    weeks
 }
 
 /// A payroll date's paychecks.
@@ -664,6 +810,7 @@ pub fn payroll_weeks(
             commission: 0.0,
             bonus: 0.0,
             base: 0.0,
+            job_pay: 0.0,
             total: 0.0,
         });
         reps.len() - 1
@@ -932,6 +1079,10 @@ mod tests {
             level_max: None,
             line_match: String::new(),
             threshold: Some(1000.0),
+            discount_min: None,
+            discount_max: None,
+            made_by: "any".into(),
+            paid_only: false,
             active: true,
         };
         let row = |sold: &str, payroll: &str, total: f64| PaidRow {
@@ -1182,5 +1333,129 @@ mod tests {
             )),
             ["2026-12-04"]
         );
+    }
+
+    #[test]
+    fn rules_follow_the_discount_who_made_the_quote_and_paid_lines() {
+        use crate::quote_pricing::pricing::{AreaPrice, Flags};
+        let line = |key: &str, description: &str, total: f64| PriceLine {
+            key: key.into(),
+            description: description.into(),
+            unit: key.ends_with("|material").then_some("sq ft"),
+            unit_price: None,
+            total,
+            flags: Flags {
+                hidden: false,
+                allow_discount: true,
+                editable: true,
+                taxable: false,
+            },
+            missing: false,
+            note: None,
+            flat_each: None,
+            typed: false,
+        };
+        let doc: QuoteDoc = serde_json::from_value(serde_json::json!({
+            "version": 2,
+            "areas": [{ "id": "a", "name": "Kitchen", "quantity": 1 }],
+            "colorOptions": [{ "id": "o", "byArea": { "a": { "product": "Quartz", "color": "White" } } }],
+        }))
+        .unwrap();
+        let list = serde_json::json!({
+            "arrProducts": [{ "name": "Quartz", "arrVariants": [{ "name": "White", "level": 3 }] }],
+        });
+        let area = |area_id: Option<&str>, lines: Vec<PriceLine>| AreaPrice {
+            area_id: area_id.map(Into::into),
+            name: "Kitchen".into(),
+            quantity: 1.0,
+            lines,
+            subtotal: 0.0,
+            missing: false,
+        };
+        // A $2,000 stone, $1,000 of cabinets, a free sealer and a discount line.
+        let price = |discount: f64| OptionPrice {
+            option_id: "o".into(),
+            areas: vec![area(
+                Some("a"),
+                vec![
+                    line("a|material", "40 sq ft Quartz White", 2000.0),
+                    line("a|item:1", "1 - Cabinets", 1000.0),
+                    line("a|item:2", "40 sq ft - 10 year Sealer", 0.0),
+                    line("a|item:3", "1 - Discount", discount),
+                ],
+            )],
+            other: area(None, Vec::new()),
+            discount: 0.0,
+            tax: 0.0,
+            total: 0.0,
+            missing: false,
+        };
+        let rule = |id: i64, applies: &str, rate_type: &str, rate: f64| CommissionRule {
+            id,
+            name: format!("Rule {id}"),
+            applies: applies.into(),
+            rate_type: rate_type.into(),
+            rate,
+            priority: 0,
+            stop: false,
+            materials: vec![],
+            colors: vec![],
+            level_min: None,
+            level_max: None,
+            line_match: String::new(),
+            threshold: None,
+            discount_min: None,
+            discount_max: None,
+            made_by: "any".into(),
+            paid_only: false,
+            active: true,
+        };
+        let rules = vec![
+            // The stone: 5% up to a 5% discount, 3% over 10%.
+            CommissionRule {
+                discount_max: Some(5.0),
+                ..rule(1, "material", "percent", 5.0)
+            },
+            CommissionRule {
+                discount_min: Some(10.0),
+                ..rule(2, "material", "percent", 3.0)
+            },
+            // Cabinets at their own percent, by who made the quote.
+            CommissionRule {
+                line_match: "cabinets".into(),
+                stop: true,
+                made_by: "rep".into(),
+                ..rule(3, "lines", "percent", 6.5)
+            },
+            CommissionRule {
+                line_match: "cabinets".into(),
+                stop: true,
+                made_by: "other".into(),
+                ..rule(4, "lines", "percent", 3.5)
+            },
+            // The sealer only when the customer pays for it.
+            CommissionRule {
+                line_match: "sealer".into(),
+                paid_only: true,
+                ..rule(5, "lines", "flat", 1.0)
+            },
+        ];
+        let earned = |discount: f64, made_by_rep: bool| {
+            quote_commission(&doc, &list, &rules, 0, &[price(discount)], made_by_rep)
+        };
+        // No discount, the rep's own quote: 5% of the room without its
+        // cabinets, 6.5% of the cabinets; the free sealer earns nothing.
+        let own = earned(0.0, true);
+        assert_eq!(own.total, 165.0);
+        assert_eq!(
+            own.parts.iter().map(|p| p.rule_id).collect::<Vec<_>>(),
+            [1, 3]
+        );
+        // $450 off $3,000 is 15%: 3% of the room ($2,000 - $450), and 3.5% of
+        // the cabinets on a quote someone else made.
+        assert!((discount_percent(&price(-450.0)) - 15.0).abs() < 1e-9);
+        assert_eq!(earned(-450.0, false).total, 81.5);
+        // 8% is between the two stone rules: only the cabinets earn.
+        assert_eq!(earned(-240.0, true).total, 65.0);
     }
 }

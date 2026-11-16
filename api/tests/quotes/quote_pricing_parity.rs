@@ -133,7 +133,14 @@ fn pricing_and_commissions_match_the_crm() {
                 }
             }
         }
-        let commission = quote_commission(&doc, &case.pl, &case.rules, case.option_index, &prices);
+        let commission = quote_commission(
+            &doc,
+            &case.pl,
+            &case.rules,
+            case.option_index,
+            &prices,
+            true,
+        );
         if !close(commission.total, case.commission.total)
             || commission.parts.len() != case.commission.parts.len()
             || commission
