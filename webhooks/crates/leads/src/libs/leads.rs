@@ -3,8 +3,8 @@ use crate::axum_helpers::guards::Telegram;
 use crate::cloudtalk::api::sync_customer_to_cloud_talk;
 use crate::crud::leads::{
     Deal, ExistingCustomer, create_deal_from_lead, find_existing_customer,
-    get_default_list_id_from_company_id, get_existing_deal, reset_deal_activity_deadlines,
-    update_deal_list_id,
+    get_default_list_id_from_company_id, get_existing_deal, reopen_lost_deal,
+    reset_deal_activity_deadlines, update_deal_list_id,
 };
 use crate::crud::users::{UserTgInfo, get_user_tg_info};
 use crate::libs::alerts::alert_lead_not_notified;
@@ -129,7 +129,9 @@ async fn notify_repeat_lead<T, V: LeadPayload>(
 /// A repeated lead: the customer's blanks are filled in and the sales rep and
 /// managers hear about it. Only a [`LeadSender::Verified`] one also moves the
 /// deal back to the first stage and restarts its to-dos and emails, so that
-/// a stranger who knows a customer's phone cannot change their deal.
+/// a stranger who knows a customer's phone cannot change their deal. A lost
+/// deal is reopened in the first stage for any sender, or the rep gets the
+/// message but cannot find the deal on the board.
 #[allow(clippy::too_many_arguments)]
 async fn handle_repeat_lead<T, V: LeadPayload>(
     existing: &ExistingCustomer,
@@ -160,6 +162,14 @@ where
         }
     };
     let verified = sender == LeadSender::Verified;
+    if !verified && let Err(e) = reopen_lost_deal(pool, deal.id, default_list_id).await {
+        tracing::error!(
+            ?e,
+            deal_id = deal.id,
+            "Failed to reopen the lost deal of a repeated lead"
+        );
+        return internal_error(ERR_DB);
+    }
     if verified {
         if let Err(e) = update_deal_list_id(pool, deal.id, default_list_id).await {
             tracing::error!(
