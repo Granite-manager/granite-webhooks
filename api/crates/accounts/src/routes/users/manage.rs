@@ -9,7 +9,8 @@
 //! - `POST   /v1/admin/users/{id}/invite`  → email them a new invite link
 //!
 //! Superusers manage every company; a Manager admin their own. Superusers
-//! and Super Admins can only be changed by a superuser. A new user sets their
+//! can only be changed by a superuser; Super Admins by a superuser or a Super
+//! Admin of their company, who may also make others Super Admin there. A new user sets their
 //! own name, phone and password from the invite link (`auth.rs`). Replaces
 //! the Remix `admin.users*` loaders and actions.
 
@@ -71,7 +72,8 @@ pub struct ManagedUser {
     pub ringcentral_extension_id: Option<String>,
     /// `RingCentral` outbound number.
     pub ringcentral_phone_number: Option<String>,
-    /// A superuser or Super Admin: only superusers may change them.
+    /// The caller may not change them: a superuser, or a Super Admin when the
+    /// caller is neither a superuser nor a Super Admin of this company.
     pub is_protected: bool,
     /// Has not set up their account from the invite yet (no password).
     pub invite_pending: bool,
@@ -108,6 +110,9 @@ pub struct UsersPage {
     pub company_id: Option<i32>,
     /// The caller is a superuser.
     pub is_super_user: bool,
+    /// The caller may make users Super Admin (superusers, and Super Admins of
+    /// the company).
+    pub can_grant_super_admin: bool,
     /// Each pickable company's user count and limit.
     pub user_limits: Vec<UserLimit>,
     /// The listed company has `CloudTalk`.
@@ -118,6 +123,29 @@ pub struct UsersPage {
 
 const PROTECTED: &str = "(u.is_superuser = 1 OR EXISTS (SELECT 1 FROM users_positions up \
      WHERE up.user_id = u.id AND up.position_id = 9))";
+
+/// What protects a user from a Super Admin of the company: being a superuser.
+const PROTECTED_FROM_SUPER_ADMIN: &str = "(u.is_superuser = 1)";
+
+/// The protection that applies to the caller (see [`super_admin_here`]).
+const fn protected(super_admin_here: bool) -> &'static str {
+    if super_admin_here {
+        PROTECTED_FROM_SUPER_ADMIN
+    } else {
+        PROTECTED
+    }
+}
+
+/// The caller is not a superuser and holds Super Admin in the company they act
+/// in: they manage its Super Admins and may make others Super Admin.
+async fn super_admin_here(pool: &MySqlPool, user: &SessionUser) -> Result<bool, sqlx::Error> {
+    if user.is_superuser {
+        return Ok(false);
+    }
+    Ok(position_companies(pool, user.id, SUPER_ADMIN)
+        .await?
+        .contains(&user.company_id))
+}
 
 /// No password yet: invited, not set up.
 const PENDING: &str = "(u.password IS NULL OR u.password = '')";
@@ -192,10 +220,12 @@ pub async fn list(
     } else {
         Some(user.company_id)
     };
+    let super_admin_here = super_admin_here(pool, &user).await?;
     let columns = format!(
         "u.id, u.name, u.email, u.phone_number, u.cloudtalk_agent_id, u.cloudtalk_phone_number,
-         u.ringcentral_extension_id, u.ringcentral_phone_number, {PROTECTED} AS is_protected,
-         {PENDING} AS invite_pending"
+         u.ringcentral_extension_id, u.ringcentral_phone_number, {} AS is_protected,
+         {PENDING} AS invite_pending",
+        protected(super_admin_here)
     );
     let users: Vec<ManagedUser> = match company_id {
         Some(company) => {
@@ -231,6 +261,7 @@ pub async fn list(
         companies,
         company_id,
         is_super_user: user.is_superuser,
+        can_grant_super_admin: user.is_superuser || super_admin_here,
         user_limits,
         has_cloudtalk_api,
         has_ringcentral_api,
@@ -272,14 +303,19 @@ fn is_employee(positions: &[i32]) -> bool {
             .any(|id| *id != EXTERNAL_MARKETING && *id != SHOP_WORKER)
 }
 
-/// Only superusers grant Super Admin and check-in.
-fn grantable(user: &SessionUser, positions: &[i32]) -> Vec<i32> {
+/// Only superusers grant check-in; superusers and Super Admins of the company
+/// (`super_admin_here`) grant Super Admin.
+fn grantable(user: &SessionUser, super_admin_here: bool, positions: &[i32]) -> Vec<i32> {
     let mut seen = HashSet::new();
     positions
         .iter()
         .copied()
         .filter(|id| POSITIONS.contains(id))
-        .filter(|id| user.is_superuser || (*id != SUPER_ADMIN && *id != CHECK_IN))
+        .filter(|id| match *id {
+            SUPER_ADMIN => user.is_superuser || super_admin_here,
+            CHECK_IN => user.is_superuser,
+            _ => true,
+        })
         .filter(|id| seen.insert(*id))
         .collect()
 }
@@ -395,10 +431,12 @@ pub async fn create(
     } else {
         user.company_id
     };
-    let positions = grantable(&user, &input.positions);
+    let super_admin_here = super_admin_here(&state.pool, &user).await?;
+    let positions = grantable(&user, super_admin_here, &input.positions);
     if let Some(conflict) = position_conflict(&positions) {
         return Err(ApiError::BadRequest(conflict.into()));
     }
+    let is_admin = input.is_admin || positions.contains(&SUPER_ADMIN);
     if free_deleted_email(&state.pool, &email, None).await? {
         return Err(ApiError::Conflict(
             "A user with this email already exists".into(),
@@ -413,7 +451,7 @@ pub async fn create(
     .bind(&email)
     .bind(company_id)
     .bind(is_employee(&positions))
-    .bind(input.is_admin)
+    .bind(is_admin)
     .execute(&mut *tx)
     .await;
     let id = match inserted {
@@ -465,10 +503,11 @@ async fn invite_pending(pool: &MySqlPool, id: i32) -> Result<bool, sqlx::Error> 
 }
 
 /// The user the caller may change: live, of their company (superusers: any),
-/// and not protected unless the caller is a superuser.
+/// and not protected from them (see [`protected`]).
 async fn target(pool: &MySqlPool, user: &SessionUser, id: i32) -> ApiResult<i32> {
     let row: Option<TargetRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT u.company_id, {PROTECTED} AS is_protected FROM users u WHERE u.id = ? AND u.is_deleted = 0"
+        "SELECT u.company_id, {} AS is_protected FROM users u WHERE u.id = ? AND u.is_deleted = 0",
+        protected(super_admin_here(pool, user).await?)
     )))
     .bind(id)
     .fetch_optional(pool)
@@ -529,6 +568,10 @@ pub struct UserForm {
     pub companies: Vec<CompanyName>,
     /// The caller is a superuser.
     pub logged_in_is_superuser: bool,
+    /// The companies the caller may make the user Super Admin of (superusers:
+    /// every one; Super Admins of the user's company: the ones they are Super
+    /// Admin of); empty when they can't.
+    pub superadmin_companies: Vec<CompanyName>,
     /// Companies the caller may move the user to (superusers: every one;
     /// Super Admins: the ones they are Super Admin of, when the user is in
     /// one of them); empty when they can't move them.
@@ -623,7 +666,7 @@ pub async fn get(
         }
         sql.fetch_all(pool).await?
     };
-    let move_companies: Vec<CompanyName> = if user.is_superuser {
+    let all_companies = || -> Vec<CompanyName> {
         companies
             .iter()
             .map(|c| CompanyName {
@@ -631,9 +674,12 @@ pub async fn get(
                 name: c.name.clone(),
             })
             .collect()
+    };
+    let (move_companies, superadmin_companies) = if user.is_superuser {
+        (all_companies(), all_companies())
     } else {
         let ids = movable_companies(pool, &user).await?;
-        if ids.contains(&edited.company_id) && ids.len() > 1 {
+        if ids.contains(&edited.company_id) {
             let marks = vec!["?"; ids.len()].join(",");
             let mut sql = sqlx::query_as(sqlx::AssertSqlSafe(format!(
                 "SELECT id, name FROM company WHERE deleted_at IS NULL AND id IN ({marks}) ORDER BY id"
@@ -641,9 +687,20 @@ pub async fn get(
             for id in &ids {
                 sql = sql.bind(id);
             }
-            sql.fetch_all(pool).await?
+            let mine: Vec<CompanyName> = sql.fetch_all(pool).await?;
+            let movable = if mine.len() > 1 {
+                mine.iter()
+                    .map(|c| CompanyName {
+                        id: c.id,
+                        name: c.name.clone(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            (movable, mine)
         } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         }
     };
     let features = company_features(pool, edited.company_id).await?;
@@ -664,6 +721,7 @@ pub async fn get(
         superadmin_company_ids,
         companies,
         logged_in_is_superuser: user.is_superuser,
+        superadmin_companies,
         move_companies,
         has_cloudtalk_api: features.cloudtalk,
         has_ringcentral_api: features.ringcentral,
@@ -692,7 +750,8 @@ pub struct UserChanges {
     /// External marketing: the companies they market for.
     #[serde(default)]
     pub marketing_company_ids: Vec<i32>,
-    /// Superusers: the companies they are Super Admin of.
+    /// The companies they are Super Admin of (superusers any; Super Admins of
+    /// the user's company only their own).
     #[serde(default)]
     pub superadmin_company_ids: Vec<i32>,
     /// Admin access (always on for Super Admins).
@@ -825,7 +884,8 @@ struct PositionRow {
 /// Saves the user's details and positions. Positions that stay keep their
 /// rows (Telegram lead buttons point at them). Super Admins may move the
 /// user between companies they are Super Admin of; other non-superusers keep
-/// the user's company. Non-superusers keep the Super Admin and check-in positions and Super Admin
+/// the user's company. Non-superusers keep check-in; Super Admins of the
+/// company change Super Admin only in their own companies, others keep it
 /// companies as they are, and may only grant marketing for the user's own
 /// company (or remove companies a superuser granted). Super Admins are
 /// always admins. The `RingCentral` extension follows the number. A user
@@ -900,7 +960,8 @@ pub async fn update(
             .map(|row| row.company_id)
             .collect()
     };
-    let mut positions = grantable(&user, &input.positions);
+    let super_admin_here = super_admin_here(pool, &user).await?;
+    let mut positions = grantable(&user, super_admin_here, &input.positions);
     let mut company_id = input.company_id;
     let mut marketing = input.marketing_company_ids.clone();
     let mut superadmin = input.superadmin_company_ids.clone();
@@ -909,12 +970,37 @@ pub async fn update(
         if !(movable.contains(&existing_company) && movable.contains(&company_id)) {
             company_id = existing_company;
         }
-        superadmin = existing_for(SUPER_ADMIN);
+        let existing_superadmin = existing_for(SUPER_ADMIN);
+        if super_admin_here {
+            // They change Super Admin only in the companies they are Super
+            // Admin of; the user keeps the others.
+            let outside: Vec<i32> = existing_superadmin
+                .into_iter()
+                .filter(|company| !movable.contains(company))
+                .collect();
+            superadmin.retain(|company| movable.contains(company));
+            if positions.contains(&SUPER_ADMIN) {
+                if superadmin.is_empty() && movable.contains(&company_id) {
+                    superadmin.push(company_id);
+                }
+                superadmin.extend(&outside);
+            } else {
+                superadmin = outside;
+            }
+            if superadmin.is_empty() {
+                positions.retain(|position| *position != SUPER_ADMIN);
+            } else if !positions.contains(&SUPER_ADMIN) {
+                positions.push(SUPER_ADMIN);
+            }
+        } else {
+            superadmin = existing_superadmin;
+        }
         let mut allowed: HashSet<i32> = existing_for(EXTERNAL_MARKETING).into_iter().collect();
         allowed.insert(existing_company);
         marketing.retain(|company| allowed.contains(company));
         for row in &existing_rows {
-            if (row.position_id == SUPER_ADMIN || row.position_id == CHECK_IN)
+            if (row.position_id == CHECK_IN
+                || (row.position_id == SUPER_ADMIN && !super_admin_here))
                 && !positions.contains(&row.position_id)
             {
                 positions.push(row.position_id);
