@@ -24,10 +24,12 @@ async fn lists_displayed_stones_with_a_whole_slab_or_regular_stock(pool: MySqlPo
         absolute,
         &json!({
             "id": 3000, "name": "Absolute Black", "type": "granite",
-            "url": "https://img.example/absolute-black.jpg", "length": 126.5, "width": 63.0,
+            "url": "https://img.example/absolute-black.jpg", "material_id": null,
+            "length": 126.5, "width": 63.0,
             "on_sale": true, "regular_stock": false, "retail_price": 75,
             "slab_price_per_sqft": null, "level": 2, "finishing": "polished",
-            "bundle_number": "B-12", "created_date": "2026-01-10T08:00:00.000Z",
+            "bundle_number": "B-12", "block_number": null,
+            "created_date": "2026-01-10T08:00:00.000Z",
             "slabs": { "total": 4, "available": 3, "whole_total": 4, "whole_available": 3 }
         })
     );
@@ -119,6 +121,58 @@ async fn stone_slabs_and_photos(pool: MySqlPool) {
         "/v1/public/companies/100/stones/4000/slabs",
         "/v1/public/companies/101/stones/3000/images",
         "/v1/public/companies/100/stones/3005",
+    ] {
+        server.get(path).await.assert_status(StatusCode::NOT_FOUND);
+    }
+}
+
+#[test_db::test(seed)]
+async fn the_showroom_follows_the_stone_view_and_shows_materials_without_prices(pool: MySqlPool) {
+    let view = "/v1/public/companies/100/stone-view";
+    assert_eq!(
+        get(pool.clone(), view).await,
+        json!({ "stone_view": "stones" })
+    );
+    for sql in [
+        "UPDATE company SET stone_view = 'materials' WHERE id = 100",
+        "INSERT INTO stone_materials (id, company_id, name) VALUES
+           (900, 100, 'Absolute Black'), (901, 100, 'Sold Out Marble'), (902, 101, 'Other')",
+        // Absolute Black (in stock) and the hidden 3004 in one material.
+        "UPDATE stones SET material_id = 900 WHERE id IN (3000, 3004)",
+        "UPDATE stones SET material_id = 901 WHERE id = 3002",
+        "UPDATE stones SET material_id = 902 WHERE id = 4000",
+    ] {
+        sqlx::query(sql).execute(&pool).await.unwrap();
+    }
+    assert_eq!(
+        get(pool.clone(), view).await,
+        json!({ "stone_view": "materials" })
+    );
+
+    let rows = get(pool.clone(), "/v1/public/companies/100/stones").await;
+    assert_eq!(rows[0]["id"], 3000);
+    assert_eq!(rows[0]["material_id"], 900);
+
+    let material = get(pool.clone(), "/v1/public/companies/100/materials/900").await;
+    assert_eq!(material["name"], "Absolute Black");
+    assert_eq!(material["type"], "granite");
+    assert_eq!(material["url"], "https://img.example/absolute-black.jpg");
+    // Only displayed stones in stock; never a price or a cost.
+    assert_eq!(ids(&material["stones"]), vec![3000]);
+    let stone = &material["stones"][0];
+    assert_eq!(stone["retail_price"], Value::Null);
+    assert_eq!(stone["slab_price_per_sqft"], Value::Null);
+    assert!(stone.get("cost_per_sqft").is_none());
+    assert_eq!(ids(&material["images"]), vec![101, 100]);
+
+    let server = server(pool);
+    for path in [
+        // Only sold out stones: nothing to show.
+        "/v1/public/companies/100/materials/901",
+        // Another company's material.
+        "/v1/public/companies/100/materials/902",
+        "/v1/public/companies/101/materials/900",
+        "/v1/public/companies/100/materials/999",
     ] {
         server.get(path).await.assert_status(StatusCode::NOT_FOUND);
     }

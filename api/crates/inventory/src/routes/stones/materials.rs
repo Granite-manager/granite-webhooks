@@ -157,7 +157,9 @@ pub async fn link_materials(
     Ok(())
 }
 
-async fn stone_view(conn: &mut MySqlConnection, company_id: i32) -> Result<StoneView, sqlx::Error> {
+/// The company's stone view; `stones` when unset. The public showroom shows
+/// the same view.
+pub async fn stone_view(conn: &mut MySqlConnection, company_id: i32) -> Result<StoneView, sqlx::Error> {
     let value: Option<String> = sqlx::query_scalar("SELECT stone_view FROM company WHERE id = ?")
         .bind(company_id)
         .fetch_optional(&mut *conn)

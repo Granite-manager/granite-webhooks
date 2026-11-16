@@ -2133,7 +2133,7 @@
           {
             "name": "view",
             "in": "query",
-            "description": "`customers` (default) lists every customer. `companies` lists only\ncustomers with a company name and adds revenue and project totals.\nAny other value is treated as `customers`.",
+            "description": "`customers` (default) lists every customer. `companies` lists one row\nper company name (its contacts together) with revenue and project totals.\nAny other value is treated as `customers`.",
             "required": false,
             "schema": {
               "type": "string",
@@ -14414,6 +14414,114 @@
           },
           "404": {
             "description": "Not a displayed stone of this company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/companies/{company_id}/stone-view": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Get a company's stone view",
+        "description": "What the company's Stones pages show first, set in Admin › Stones ›\nSettings: `stones` (one card per stone, the default) or `materials` (one\ncard per material, then its stones). The showroom follows it. No session\nneeded.",
+        "operationId": "get_public_stone_view",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The stone view",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoneSettings"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/companies/{company_id}/materials/{material_id}": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Get one showroom material",
+        "description": "A material of the company (the stones of one name) with its displayed\nstones in stock, by bundle number, and the installed photos of its\ndisplayed stones. No prices: the stones' `retail_price` and\n`slab_price_per_sqft` are null. A material without a stone in the\nshowroom is 404. No session needed.",
+        "operationId": "get_public_material",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "material_id",
+            "in": "path",
+            "description": "Material id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The material",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicMaterial"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No material of this company with a stone in the showroom",
             "content": {
               "application/json": {
                 "schema": {
@@ -83847,7 +83955,7 @@
             }
           }
         ],
-        "description": "A customer row of the `companies` view, with totals over its own sales\nand those of its child customers."
+        "description": "A company of the `companies` view: the contact named like the company,\nelse its oldest, with totals over every contact of the company and their child customers."
       },
       "CompanySettings": {
         "type": "object",
@@ -105990,6 +106098,55 @@
           }
         }
       },
+      "PublicMaterial": {
+        "type": "object",
+        "description": "A material of the showroom (the stones of one name, e.g. \"Fantasy\nBrown\"): its stones in stock, each one bundle, and the installed photos\nof its stones. Prices are never sent: `retail_price` and\n`slab_price_per_sqft` of its stones are always null.",
+        "required": [
+          "id",
+          "name",
+          "stones",
+          "images"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Material id."
+          },
+          "name": {
+            "type": "string",
+            "description": "Name, e.g. \"Fantasy Brown\"."
+          },
+          "type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stone type, e.g. `granite`."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Photo: the material's own, else the first stone photo."
+          },
+          "stones": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicStone"
+            },
+            "description": "Its displayed stones in stock, by bundle number."
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicPhoto"
+            },
+            "description": "Installed project photos of its displayed stones, newest first."
+          }
+        }
+      },
       "PublicPhoto": {
         "type": "object",
         "description": "A photo of a stone installed in a project.",
@@ -106089,6 +106246,14 @@
             ],
             "description": "Image URL; null when none. Thumbnails are at `<name>-icon.<ext>`."
           },
+          "material_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Material (the stones of one name) it belongs to; null until linked."
+          },
           "length": {
             "type": [
               "number",
@@ -106150,6 +106315,13 @@
               "null"
             ],
             "description": "Supplier bundle number."
+          },
+          "block_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Quarry block number; a block gives several bundles."
           },
           "created_date": {
             "type": [

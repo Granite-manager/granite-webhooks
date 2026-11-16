@@ -77,6 +77,8 @@ pub struct PublicStone {
     pub kind: Option<String>,
     /// Image URL; null when none. Thumbnails are at `<name>-icon.<ext>`.
     pub url: Option<String>,
+    /// Material (the stones of one name) it belongs to; null until linked.
+    pub material_id: Option<i32>,
     /// Typical slab length in inches.
     pub length: Option<f32>,
     /// Typical slab width in inches.
@@ -97,6 +99,8 @@ pub struct PublicStone {
     pub finishing: Option<String>,
     /// Supplier bundle number.
     pub bundle_number: Option<String>,
+    /// Quarry block number; a block gives several bundles.
+    pub block_number: Option<String>,
     /// When the stone was added.
     #[serde(serialize_with = "js_date")]
     pub created_date: Option<DateTime<Utc>>,
@@ -127,6 +131,27 @@ pub struct PublicPhoto {
     pub id: i32,
     /// Photo URL.
     pub url: Option<String>,
+}
+
+/// A material of the showroom (the stones of one name, e.g. "Fantasy
+/// Brown"): its stones in stock, each one bundle, and the installed photos
+/// of its stones. Prices are never sent: `retail_price` and
+/// `slab_price_per_sqft` of its stones are always null.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct PublicMaterial {
+    /// Material id.
+    pub id: i32,
+    /// Name, e.g. "Fantasy Brown".
+    pub name: String,
+    /// Stone type, e.g. `granite`.
+    #[serde(rename = "type")]
+    pub kind: Option<String>,
+    /// Photo: the material's own, else the first stone photo.
+    pub url: Option<String>,
+    /// Its displayed stones in stock, by bundle number.
+    pub stones: Vec<PublicStone>,
+    /// Installed project photos of its displayed stones, newest first.
+    pub images: Vec<PublicPhoto>,
 }
 
 /// Filter of the public sink and faucet lists.

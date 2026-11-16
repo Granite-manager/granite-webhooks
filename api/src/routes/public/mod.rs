@@ -4,6 +4,9 @@
 //! - `GET /v1/public/companies/by-subdomain/{subdomain}` → the company id
 //! - `GET /v1/public/companies/{company_id}/stones` (+ `/search`, `/{id}`,
 //!   `/{id}/slabs`, `/{id}/images`) → displayed stones in stock
+//! - `GET /v1/public/companies/{company_id}/stone-view` → stones or materials first
+//! - `GET /v1/public/companies/{company_id}/materials/{id}` → a material's stones
+//!   in stock and installed photos, no prices
 //! - `GET /v1/public/companies/{company_id}/sinks|faucets` → displayed models in stock
 //! - `GET /v1/public/colors` → stone colors
 //! - `GET /v1/public/vcard` → a contact card file
@@ -38,6 +41,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::stone))
         .routes(routes!(handlers::stone_slabs_handler))
         .routes(routes!(handlers::stone_images))
+        .routes(routes!(handlers::stone_view))
+        .routes(routes!(handlers::material))
         .routes(routes!(handlers::sinks))
         .routes(routes!(handlers::faucets))
         .routes(routes!(handlers::colors))

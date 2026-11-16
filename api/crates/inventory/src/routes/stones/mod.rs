@@ -12,7 +12,7 @@
 //! (`stoneQueryBuilder` in `app/utils/queries.server.ts`).
 
 mod handlers;
-mod materials;
+pub mod materials;
 mod media;
 pub mod queries;
 pub mod schemas;

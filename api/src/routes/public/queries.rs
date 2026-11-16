@@ -13,13 +13,15 @@ use sqlx::{MySql, MySqlPool, QueryBuilder};
 fn showroom_stones(company_id: i32) -> QueryBuilder<MySql> {
     let mut query = QueryBuilder::<MySql>::new(
         "SELECT
-            stones.id, stones.name, stones.type, stones.url, stones.length, stones.width,
+            stones.id, stones.name, stones.type, stones.url, stones.material_id,
+            stones.length, stones.width,
             COALESCE(stones.on_sale, 0) AS on_sale,
             COALESCE(stones.regular_stock, 0) AS regular_stock,
             stones.retail_price,
             CASE WHEN COALESCE(stones.retail_price, 0) = 0 THEN stones.cost_per_sqft END
               AS slab_price_per_sqft,
-            stones.level, stones.finishing, stones.bundle_number, stones.created_date,
+            stones.level, stones.finishing, stones.bundle_number, stones.block_number,
+            stones.created_date,
             COUNT(slab.id) AS slabs_total,
             COUNT(CASE WHEN slab.sale_id IS NULL THEN slab.id END) AS slabs_available,
             COUNT(CASE WHEN slab.parent_id IS NULL THEN slab.id END) AS slabs_whole_total,
@@ -112,6 +114,57 @@ pub async fn find_stone(
     query.push(" AND stones.id = ").push_bind(stone_id);
     query.push(" GROUP BY stones.id");
     query.build_query_as().fetch_optional(pool).await
+}
+
+/// Id, name, type and photo of a material of the company.
+pub async fn find_material(
+    pool: &MySqlPool,
+    company_id: i32,
+    material_id: i32,
+) -> Result<Option<(i32, String, Option<String>, Option<String>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT id, name, type, url FROM stone_materials WHERE id = ? AND company_id = ?",
+    )
+    .bind(material_id)
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await
+}
+
+/// The material's displayed stones in stock, by bundle number.
+pub async fn material_stones(
+    pool: &MySqlPool,
+    company_id: i32,
+    material_id: i32,
+) -> Result<Vec<PublicStone>, sqlx::Error> {
+    let mut query = showroom_stones(company_id);
+    query
+        .push(" AND stones.material_id = ")
+        .push_bind(material_id);
+    query.push(" GROUP BY stones.id");
+    query.push(SHOWROOM_STOCK);
+    query.push(" ORDER BY stones.bundle_number IS NULL, stones.bundle_number, stones.id");
+    query.build_query_as().fetch_all(pool).await
+}
+
+/// Installed photos of the material's displayed stones, newest first.
+pub async fn material_photos(
+    pool: &MySqlPool,
+    company_id: i32,
+    material_id: i32,
+) -> Result<Vec<PublicPhoto>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT image.id, image.url
+         FROM installed_stones image
+         JOIN stones ON stones.id = image.stone_id
+         WHERE stones.company_id = ? AND stones.material_id = ?
+           AND stones.deleted_at IS NULL AND stones.is_display = 1
+         ORDER BY image.id DESC",
+    )
+    .bind(company_id)
+    .bind(material_id)
+    .fetch_all(pool)
+    .await
 }
 
 /// Remix: the loader of `customer.$company.stones.slabs.$stone.tsx`. Free
