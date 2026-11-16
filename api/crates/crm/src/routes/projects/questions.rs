@@ -377,6 +377,8 @@ pub async fn ask(
         colleagues(&mut conn, viewer.company_id, &to).await?
     };
     let title = clip(body.lines().next().unwrap_or_default(), 200);
+    // The pool may hold one connection: give it back before the transaction.
+    drop(conn);
     let mut tx = state.pool.begin().await?;
     let question = sqlx::query(
         "INSERT INTO project_questions (company_id, project_id, title, everyone, created_by)
@@ -397,7 +399,6 @@ pub async fn ask(
     add_members(&mut tx, question_id, &members).await?;
     add_message(&mut tx, question_id, &user, &body).await?;
     tx.commit().await?;
-    drop(conn);
     tell(&state, &user, &project, QUESTION_ASKED, &title, &people).await;
     Ok((
         StatusCode::CREATED,
@@ -485,11 +486,11 @@ pub async fn reply(
     let mut conn = state.pool.acquire().await?;
     let project = visible_project(&mut conn, &viewer, id).await?;
     let question = one_question(&mut conn, id, question_id, user.id).await?;
+    drop(conn);
     let mut tx = state.pool.begin().await?;
     add_members(&mut tx, question_id, &[user.id]).await?;
     add_message(&mut tx, question_id, &user, &body).await?;
     tx.commit().await?;
-    drop(conn);
     tell(
         &state,
         &user,
