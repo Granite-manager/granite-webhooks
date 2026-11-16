@@ -702,6 +702,83 @@
         ]
       }
     },
+    "/v1/me/gmail/app": {
+      "post": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Connect my Gmail from the app",
+        "description": "The Granite Manager app signs in with Google's own sign-in (no web page)\nand posts the code it got. Google sent the code to the app itself, so\nthere is no `state` to check; it is traded with no redirect URI.",
+        "operationId": "connect_my_gmail_from_app",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GmailAppSignIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GmailAppConnected"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Gmail connect is not set up, send permission not given, or Google refused the code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/me/ringcentral/start": {
       "post": {
         "tags": [
@@ -93067,6 +93144,32 @@
               ]
             },
             "description": "Where each address is, in the order asked; null where Google cannot\nfind it or Google Maps is not set up."
+          }
+        }
+      },
+      "GmailAppConnected": {
+        "type": "object",
+        "description": "`POST /v1/me/gmail/app`.",
+        "required": [
+          "email"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "description": "The Gmail address the caller's emails go out from now."
+          }
+        }
+      },
+      "GmailAppSignIn": {
+        "type": "object",
+        "description": "Body of `POST /v1/me/gmail/app`.",
+        "required": [
+          "server_auth_code"
+        ],
+        "properties": {
+          "server_auth_code": {
+            "type": "string",
+            "description": "The `serverAuthCode` Google's own sign-in in the Granite Manager app\nreturned (issued for Granite Manager's web client, with send-only\nGmail access)."
           }
         }
       },
