@@ -42,4 +42,5 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(sms::list, sms::create))
         .routes(routes!(sms::update, sms::delete))
         .routes(routes!(lead_automation::get, lead_automation::set))
+        .routes(routes!(lead_automation::items))
 }
