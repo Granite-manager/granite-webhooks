@@ -3,7 +3,10 @@
 //! Put in overhang supports, level the cabinets, bring the sink to the shop.
 //! Admins keep the
 //! lists in Admin > Schedule; the template maker ticks what applies at the
-//! template appointment and sends it; the job's sales rep is told, and the
+//! template appointment and sends it. Each to-do is someone's to follow up:
+//! the person set on the list's item, else the job's sales rep; the template
+//! maker can give a to-do of their own to anyone involved in the project.
+//! Each person is told, and the
 //! to-dos show on the customer, the deal, the project and the appointment,
 //! where anyone in the company ticks them off as the customer does them.
 //!
@@ -61,6 +64,45 @@ pub struct CustomerChecklistItem {
     pub id: i32,
     /// What the customer must do, e.g. "Level the cabinets".
     pub label: String,
+    /// Who follows it up; null means the job's sales rep.
+    pub assigned_user_id: Option<i32>,
+}
+
+/// One to-do of a list to save: its text, or its text and person.
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum ChecklistItemInput {
+    /// Just the text: the sales rep follows it up.
+    Label(String),
+    /// The text and who follows it up (null: the sales rep).
+    Item {
+        /// 1 to 200 characters.
+        label: String,
+        /// Someone in the company; null for the sales rep.
+        #[serde(default)]
+        assigned_user_id: Option<i32>,
+    },
+}
+
+impl ChecklistItemInput {
+    fn parts(&self) -> (&str, Option<i32>) {
+        match self {
+            Self::Label(label) => (label, None),
+            Self::Item {
+                label,
+                assigned_user_id,
+            } => (label, *assigned_user_id),
+        }
+    }
+}
+
+/// Someone to give a to-do to.
+#[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
+pub struct TodoPerson {
+    /// Their user id.
+    pub id: i32,
+    /// Their name.
+    pub name: String,
 }
 
 /// A list of to-dos the template maker picks from.
@@ -80,10 +122,11 @@ pub struct CustomerChecklistInput {
     /// The name: 1 to 120 characters (trimmed).
     pub name: String,
     /// The to-dos, in order: each 1 to 200 characters (trimmed; blank ones
-    /// are dropped), at most 60. Saving replaces the list's to-dos; to-dos
-    /// already sent to customers stay as they are.
+    /// are dropped), at most 60, each a string or `{label, assigned_user_id}`.
+    /// Saving replaces the list's to-dos; to-dos already sent to customers
+    /// stay as they are.
     #[serde(default)]
-    pub items: Vec<String>,
+    pub items: Vec<ChecklistItemInput>,
 }
 
 /// One to-do of one customer.
@@ -111,6 +154,10 @@ pub struct CustomerTodo {
     pub done_at: Option<DateTime<Utc>>,
     /// Who ticked it off.
     pub done_by: Option<String>,
+    /// Who follows it up; null for nobody.
+    pub assigned_user_id: Option<i32>,
+    /// Their name.
+    pub assigned_user_name: Option<String>,
 }
 
 /// A template appointment's to-dos.
@@ -124,6 +171,11 @@ pub struct EventCustomerTodos {
     pub nothing_to_do: bool,
     /// The to-dos sent from this appointment, in the order they were sent.
     pub todos: Vec<CustomerTodo>,
+    /// The job's sales rep: a list item with no person goes to them.
+    pub sales_rep_id: Option<i32>,
+    /// The people involved in the job's project (the sales rep first), to
+    /// give a to-do to.
+    pub people: Vec<TodoPerson>,
 }
 
 /// One to-do sent from a template appointment.
@@ -134,6 +186,9 @@ pub struct CustomerTodoInput {
     /// A note for the sales rep: at most 1000 characters; blank means none.
     #[serde(default)]
     pub note: Option<String>,
+    /// Who follows it up: someone in the company; null for the job's sales rep.
+    #[serde(default)]
+    pub assigned_user_id: Option<i32>,
 }
 
 /// Body of `POST /v1/events/{id}/customer-todos`.
@@ -157,8 +212,10 @@ pub struct CustomerTodoDoneInput {
 
 const TODO_SELECT: &str = "SELECT t.id, t.customer_id, t.event_id, t.project_id, t.label, t.note,
         t.created_at, t.created_by AS created_by_id, t.created_by_name AS created_by,
-        t.done_at, t.done_by_name AS done_by
-   FROM customer_todos t";
+        t.done_at, t.done_by_name AS done_by, t.assigned_user_id,
+        COALESCE(NULLIF(TRIM(au.name), ''), au.email) AS assigned_user_name
+   FROM customer_todos t
+   LEFT JOIN users au ON au.id = t.assigned_user_id";
 
 fn trimmed_name(name: &str) -> ApiResult<String> {
     let name = name.trim();
@@ -186,11 +243,12 @@ fn trimmed_label(label: &str) -> ApiResult<Option<String>> {
     Ok(Some(label.to_string()))
 }
 
-fn trimmed_items(items: &[String]) -> ApiResult<Vec<String>> {
+fn trimmed_items(items: &[ChecklistItemInput]) -> ApiResult<Vec<(String, Option<i32>)>> {
     let mut out = Vec::new();
     for item in items {
-        if let Some(label) = trimmed_label(item)? {
-            out.push(label);
+        let (label, person) = item.parts();
+        if let Some(label) = trimmed_label(label)? {
+            out.push((label, person));
         }
     }
     if out.len() > MAX_ITEMS {
@@ -207,8 +265,8 @@ async fn checklists(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<Custo
     .bind(company_id)
     .fetch_all(pool)
     .await?;
-    let items: Vec<(i32, i32, String)> = sqlx::query_as(
-        "SELECT i.id, i.checklist_id, i.label FROM customer_checklist_items i
+    let items: Vec<(i32, i32, String, Option<i32>)> = sqlx::query_as(
+        "SELECT i.id, i.checklist_id, i.label, i.assigned_user_id FROM customer_checklist_items i
            JOIN customer_checklists l ON l.id = i.checklist_id
           WHERE l.company_id = ? AND l.deleted_at IS NULL ORDER BY i.sort_order, i.id",
     )
@@ -220,10 +278,11 @@ async fn checklists(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<Custo
         .map(|(id, name)| CustomerChecklist {
             items: items
                 .iter()
-                .filter(|(_, list, _)| *list == id)
-                .map(|(item_id, _, label)| CustomerChecklistItem {
+                .filter(|(_, list, _, _)| *list == id)
+                .map(|(item_id, _, label, person)| CustomerChecklistItem {
                     id: *item_id,
                     label: label.clone(),
+                    assigned_user_id: *person,
                 })
                 .collect(),
             id,
@@ -235,19 +294,23 @@ async fn checklists(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<Custo
 async fn write_items(
     conn: &mut MySqlConnection,
     checklist_id: i32,
-    items: &[String],
+    items: &[(String, Option<i32>)],
 ) -> sqlx::Result<()> {
     sqlx::query("DELETE FROM customer_checklist_items WHERE checklist_id = ?")
         .bind(checklist_id)
         .execute(&mut *conn)
         .await?;
-    for (index, label) in items.iter().enumerate() {
+    for (index, (label, person)) in items.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO customer_checklist_items (checklist_id, label, sort_order) VALUES (?, ?, ?)",
+            "INSERT INTO customer_checklist_items (checklist_id, label, sort_order, assigned_user_id)
+             SELECT ?, ?, ?, (SELECT u.id FROM users u JOIN customer_checklists l ON l.id = ?
+                               WHERE u.id = ? AND u.company_id = l.company_id AND u.is_deleted = 0)",
         )
         .bind(checklist_id)
         .bind(label)
         .bind(i32::try_from(index).unwrap_or(i32::MAX))
+        .bind(checklist_id)
+        .bind(person)
         .execute(&mut *conn)
         .await?;
     }
@@ -493,20 +556,71 @@ pub async fn event_todos(
     .bind(company_id)
     .fetch_all(pool)
     .await?;
+    let job = todo_job(pool, company_id, event_id).await.ok();
+    let sales_rep_id = job.as_ref().and_then(|job| job.rep_id);
+    let people = match &job {
+        Some(job) => job_people(pool, company_id, job).await?,
+        None => Vec::new(),
+    };
     Ok(match report {
         Some((sent_at, sent_by, _)) => EventCustomerTodos {
             sent_at,
             sent_by,
             nothing_to_do: todos.is_empty(),
             todos,
+            sales_rep_id,
+            people,
         },
         None => EventCustomerTodos {
             sent_at: None,
             sent_by: None,
             nothing_to_do: false,
             todos,
+            sales_rep_id,
+            people,
         },
     })
+}
+
+/// The people involved in the job's project, the sales rep first: its sales
+/// rep and owner, the people on its steps and tasks, the crew on its
+/// appointments and its questions' people.
+async fn job_people(
+    pool: &MySqlPool,
+    company_id: i32,
+    job: &TodoJob,
+) -> sqlx::Result<Vec<TodoPerson>> {
+    let project = job.project_id.unwrap_or(0);
+    sqlx::query_as(
+        "SELECT u.id, COALESCE(NULLIF(TRIM(u.name), ''), u.email) AS name FROM users u
+          WHERE u.company_id = ? AND u.is_deleted = 0 AND (u.id = ? OR u.id IN (
+                SELECT sales_rep_id FROM projects WHERE id = ?
+                UNION SELECT owner_id FROM projects WHERE id = ?
+                UNION SELECT user_id FROM project_step_owners WHERE project_id = ?
+                UNION SELECT s.responsible_user_id FROM project_process_steps s WHERE s.company_id = ?
+                UNION SELECT assigned_user_id FROM project_activities
+                       WHERE project_id = ? AND deleted_at IS NULL
+                UNION SELECT created_by FROM project_activities
+                       WHERE project_id = ? AND deleted_at IS NULL
+                UNION SELECT assigned_user_id FROM events
+                       WHERE project_id = ? AND deleted_date IS NULL
+                UNION SELECT m.user_id FROM project_question_members m
+                       JOIN project_questions q ON q.id = m.question_id WHERE q.project_id = ?))
+          ORDER BY u.id = ? DESC, name",
+    )
+    .bind(company_id)
+    .bind(job.rep_id.unwrap_or(0))
+    .bind(project)
+    .bind(project)
+    .bind(project)
+    .bind(company_id)
+    .bind(project)
+    .bind(project)
+    .bind(project)
+    .bind(project)
+    .bind(job.rep_id.unwrap_or(0))
+    .fetch_all(pool)
+    .await
 }
 
 /// The to-dos of a project, for `GET /v1/projects/{id}`: the ones sent for
@@ -585,7 +699,7 @@ pub async fn send_event_todos(
                 "Each note must be 1000 characters or less".into(),
             ));
         }
-        items.push((label, note.map(str::to_string)));
+        items.push((label, note.map(str::to_string), item.assigned_user_id));
     }
     let job = todo_job(pool, user.company_id, id).await?;
     let Some(customer_id) = job.customer_id else {
@@ -603,13 +717,31 @@ pub async fn send_event_todos(
         }
         None => None,
     };
+    // Each to-do's person: someone in the company, else the job's sales rep.
+    let mut people: Vec<Option<i32>> = Vec::new();
+    for (_, _, person) in &items {
+        let person = match person {
+            Some(id) => Some(
+                sqlx::query_scalar::<_, i32>(
+                    "SELECT id FROM users WHERE id = ? AND company_id = ? AND is_deleted = 0",
+                )
+                .bind(id)
+                .bind(user.company_id)
+                .fetch_optional(pool)
+                .await?
+                .ok_or_else(|| ApiError::BadRequest("Pick someone in your company".into()))?,
+            ),
+            None => job.rep_id,
+        };
+        people.push(person);
+    }
     let mut tx = pool.begin().await?;
-    for (label, note) in &items {
+    for ((label, note, _), person) in items.iter().zip(&people) {
         sqlx::query(
             "INSERT INTO customer_todos
                     (company_id, customer_id, event_id, project_id, checklist_id, label, note,
-                     created_by, created_by_name)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     created_by, created_by_name, assigned_user_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(user.company_id)
         .bind(customer_id)
@@ -620,6 +752,7 @@ pub async fn send_event_todos(
         .bind(note)
         .bind(user.id)
         .bind(&user.name)
+        .bind(person)
         .execute(&mut *tx)
         .await?;
     }
@@ -639,11 +772,19 @@ pub async fn send_event_todos(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    if !items.is_empty()
-        && let Err(error) = tell_rep(&state, id, &job, customer_id, items.len(), &user).await
-    {
-        // The to-dos are saved either way: the rep still sees them on the deal.
-        tracing::error!(event_id = id, "customer to-dos: could not tell the rep: {error}");
+    // Each person hears how many are theirs.
+    let mut told: Vec<i32> = people.iter().flatten().copied().collect();
+    told.sort_unstable();
+    told.dedup();
+    for person in told {
+        let count = people.iter().filter(|p| **p == Some(person)).count();
+        if let Err(error) = tell_rep(&state, id, &job, customer_id, count, &user, person).await {
+            // The to-dos are saved either way: they still show on the deal.
+            tracing::error!(
+                event_id = id,
+                "customer to-dos: could not tell {person}: {error}"
+            );
+        }
     }
     Ok((
         StatusCode::CREATED,
@@ -651,8 +792,8 @@ pub async fn send_event_todos(
     ))
 }
 
-/// The to-dos were just sent: the job's sales rep gets a bell notification
-/// and a phone push, unless they sent them.
+/// The to-dos were just sent: each person they are for gets a bell
+/// notification and a phone push, unless they sent them.
 async fn tell_rep(
     state: &AppState,
     event_id: i32,
@@ -660,10 +801,12 @@ async fn tell_rep(
     customer_id: i32,
     count: usize,
     by: &SessionUser,
+    person: i32,
 ) -> Result<(), sqlx::Error> {
-    let Some(rep_id) = job.rep_id.filter(|rep| *rep != by.id) else {
+    if person == by.id {
         return Ok(());
-    };
+    }
+    let rep_id = person;
     let about = job.customer_name.as_deref().unwrap_or("A customer");
     let message: String = if count == 1 {
         format!("{about} has 1 to-do from the template")

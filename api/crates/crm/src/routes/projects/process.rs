@@ -46,7 +46,9 @@ pub async fn company_steps(
     company_id: i32,
 ) -> sqlx::Result<Vec<ProcessStep>> {
     let mut steps: Vec<ProcessStep> = sqlx::query_as(
-        "SELECT id, stage_code, name, position, notify_sales_rep FROM project_process_steps
+        "SELECT id, stage_code, name, position, notify_sales_rep, responsible_user_id,
+                responsible_sales_rep, due_days
+           FROM project_process_steps
           WHERE company_id = ?
           ORDER BY FIELD(stage_code, 'new', 'templated', 'fabrication', 'installed'), position, id",
     )
@@ -101,6 +103,19 @@ pub async fn company_steps(
         }
     }
     super::step_events::load(&mut *conn, &mut steps).await?;
+    let items: Vec<(i32, i32, String)> = sqlx::query_as(
+        "SELECT i.step_id, i.id, i.label FROM project_step_items i
+           JOIN project_process_steps s ON s.id = i.step_id AND s.company_id = ?
+          ORDER BY i.position, i.id",
+    )
+    .bind(company_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    for (step_id, id, label) in items {
+        if let Some(step) = steps.iter_mut().find(|step| step.id == step_id) {
+            step.items.push(super::schemas::ListItem { id, label });
+        }
+    }
     Ok(steps)
 }
 
