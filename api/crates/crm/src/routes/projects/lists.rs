@@ -22,7 +22,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use chrono::{Duration, NaiveDateTime};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use chrono_tz::America::Indiana::Indianapolis;
 use lambda_http::tracing;
 use sqlx::MySqlConnection;
@@ -383,27 +383,32 @@ async fn stages_reached(
     conn: &mut MySqlConnection,
     project: &Project,
 ) -> sqlx::Result<Vec<(Stage, NaiveDateTime)>> {
-    let rows: Vec<(String, NaiveDateTime)> = sqlx::query_as(
+    // Both columns are TIMESTAMP (UTC).
+    let rows: Vec<(String, DateTime<Utc>)> = sqlx::query_as(
         "SELECT to_stage, MAX(created_at) FROM project_stage_history
           WHERE project_id = ? GROUP BY to_stage",
     )
     .bind(project.id)
     .fetch_all(&mut *conn)
     .await?;
-    let created: Option<NaiveDateTime> =
+    let created: Option<DateTime<Utc>> =
         sqlx::query_scalar("SELECT created_at FROM projects WHERE id = ?")
             .bind(project.id)
             .fetch_optional(&mut *conn)
             .await?;
     let mut reached: Vec<(Stage, NaiveDateTime)> = rows
         .into_iter()
-        .filter_map(|(stage, at)| Stage::try_from(stage).ok().map(|stage| (stage, at)))
+        .filter_map(|(stage, at)| {
+            Stage::try_from(stage)
+                .ok()
+                .map(|stage| (stage, at.naive_utc()))
+        })
         .filter(|(stage, _)| *stage <= project.stage_code)
         .collect();
     if let Some(created) = created
         && !reached.iter().any(|(stage, _)| *stage == Stage::New)
     {
-        reached.push((Stage::New, created));
+        reached.push((Stage::New, created.naive_utc()));
     }
     // A stage passed over (moved two at once) counts from the next one reached.
     for stage in Stage::ALL {
