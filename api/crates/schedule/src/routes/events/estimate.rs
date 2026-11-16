@@ -3,7 +3,9 @@
 //! Remix: `api.schedule-estimate.ts`.
 
 use super::history::{History, record, record_customer_message};
-use super::notify::{Booking, Channel, NotifyKind, customer_email, customer_phone, notify_booking};
+use super::notify::{
+    Booking, Channel, NotifyKind, Visit, customer_email, customer_phone, notify_booking,
+};
 use super::reminders::{self, Appointment};
 use super::writes::{EventInput, check};
 use crate::auth::ShopOrEmployeeUser;
@@ -34,6 +36,10 @@ pub struct EstimateInput {
     /// customer's primary email).
     #[serde(default)]
     pub customer_email: Option<String>,
+    /// A showroom appointment instead of an in-home estimate: the customer's
+    /// messages say "showroom appointment" (default false).
+    #[serde(default)]
+    pub showroom: bool,
     /// The event; `calendar_id` must be the company's estimates calendar
     /// (`GET /v1/schedule/settings`).
     #[serde(flatten)]
@@ -192,6 +198,11 @@ pub async fn book(
         &state,
         &Booking {
             kind: NotifyKind::Scheduled,
+            visit: if input.showroom {
+                Visit::Showroom
+            } else {
+                Visit::InHomeEstimate
+            },
             company_id: user.company_id,
             customer_id: input.customer_id,
             customer_name: if customer_name.is_empty() {
