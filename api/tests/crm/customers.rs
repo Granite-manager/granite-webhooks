@@ -472,6 +472,42 @@ async fn page_companies_view_has_totals(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn companies_view_shows_one_row_per_company(pool: MySqlPool) {
+    // Two more contacts of Erin Builders LLC, one spelled differently; one has a sale.
+    sqlx::query(
+        "INSERT INTO customers (id, name, company_name, company_id, source, created_date) VALUES
+           (1102, 'Second Contact', ' erin builders llc', 100, 'other', UTC_TIMESTAMP()),
+           (1103, 'Erin Builders LLC', 'Erin Builders LLC', 100, 'other', UTC_TIMESTAMP())",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO sales (customer_id, company_id, price, status, project_address, sale_date)
+           VALUES (1102, 100, 100, 'pending', '1 Elm St', UTC_TIMESTAMP())",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let companies = page(pool.clone(), &[("view", "companies"), ("tab", "all")]).await;
+    // The contact named like the company stands for it.
+    assert_eq!(sorted(ids(&companies["rows"])), vec![1007, 1103]);
+    assert_eq!(companies["total"], 2);
+    let erin = row(&companies["rows"], 1103);
+    assert_eq!(erin["revenue_generated"], "3600.75");
+    assert_eq!(erin["projects_count"], 4);
+
+    let rows: Value = server(pool)
+        .get("/v1/customers")
+        .add_query_param("view", "companies")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(sorted(ids(&rows)), vec![1007, 1103]);
+}
+
+#[test_db::test(seed)]
 async fn page_month_rows_are_this_months_customers_of_the_tab(pool: MySqlPool) {
     sqlx::query(
         "INSERT INTO customers (id, name, company_id, source, sales_rep, created_date) VALUES
