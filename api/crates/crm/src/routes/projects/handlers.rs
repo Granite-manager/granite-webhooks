@@ -127,8 +127,29 @@ pub async fn board(
             .push(" OR q.quote_name LIKE ")
             .push_bind(like.clone())
             .push(" OR p.project_address LIKE ")
-            .push_bind(like)
-            .push(")");
+            .push_bind(like.clone())
+            // As the Deals search: the customer's company, email and phone too.
+            .push(" OR c.company_name LIKE ")
+            .push_bind(like.clone())
+            .push(" OR ce.email LIKE ")
+            .push_bind(like.clone())
+            .push(" OR q.email LIKE ")
+            .push_bind(like);
+        let digits: String = term.chars().filter(char::is_ascii_digit).collect();
+        if digits.len() >= 4
+            && term
+                .chars()
+                .all(|ch| ch.is_ascii_digit() || " ()+.-".contains(ch))
+        {
+            let digits = format!("%{digits}%");
+            for column in ["c.phone", "c.phone_2", "q.phone"] {
+                sql.push(format!(
+                    " OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({column},'-',''),' ',''),'(',''),')',''),'+',''),'.','') LIKE "
+                ))
+                .push_bind(digits.clone());
+            }
+        }
+        sql.push(")");
     }
     if query.hold {
         sql.push(" AND p.is_on_hold <> 0");
