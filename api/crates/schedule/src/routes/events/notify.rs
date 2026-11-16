@@ -399,6 +399,19 @@ async fn email_sender(
     .await
 }
 
+/// `noreply@` at the company's own domain (the shared noreply address when
+/// the company has none).
+pub async fn company_noreply(pool: &MySqlPool, company_id: i32) -> Result<String, sqlx::Error> {
+    let domain: Option<Option<String>> =
+        sqlx::query_scalar("SELECT domain FROM company WHERE id = ?")
+            .bind(company_id)
+            .fetch_optional(pool)
+            .await?;
+    let domain = domain.flatten().unwrap_or_default();
+    let domain = domain.trim().trim_start_matches('@');
+    Ok(from_email(Some(domain), &format!("noreply@{domain}")))
+}
+
 /// The customer's sales rep's (else `user_id`'s) name and sending address.
 pub async fn sender_for(
     pool: &MySqlPool,
