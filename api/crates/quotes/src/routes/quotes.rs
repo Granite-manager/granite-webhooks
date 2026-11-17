@@ -283,8 +283,18 @@ pub async fn quote_square_feet(
             "at most {MAX_SQUARE_FEET_QUOTES} quotes at once"
         )));
     }
+    Ok(Json(quotes_square_feet(&state.pool, user.company_id, &ids).await?))
+}
+
+/// Each of these quotes' countertop sq ft, as `GET /v1/quotes/square-feet`
+/// returns it: the company's live quotes only, ordered by id.
+pub async fn quotes_square_feet(
+    pool: &sqlx::MySqlPool,
+    company_id: i32,
+    ids: &[i32],
+) -> Result<Vec<QuoteSquareFeet>, sqlx::Error> {
     if ids.is_empty() {
-        return Ok(Json(Vec::new()));
+        return Ok(Vec::new());
     }
     // The quote's prices are its snapshot, else its price list revision
     // (`pricing_with_stock`); only the rounding is read from them.
@@ -298,11 +308,11 @@ pub async fn quote_square_feet(
         snapshot = rounding_info_sql("q.price_snapshot_json"),
         revision = rounding_info_sql("r.info_json"),
     ));
-    sql.push_bind(user.company_id);
-    crate::sql::push_in(&mut sql, "q.id", &ids);
+    sql.push_bind(company_id);
+    crate::sql::push_in(&mut sql, "q.id", ids);
     sql.push(" ORDER BY q.id");
-    let rows: Vec<SquareFeetRow> = sql.build_query_as().fetch_all(&state.pool).await?;
-    let quotes = rows
+    let rows: Vec<SquareFeetRow> = sql.build_query_as().fetch_all(pool).await?;
+    Ok(rows
         .into_iter()
         .map(|(id, drawing, snapshot, revision)| {
             let drawing = drawing
@@ -326,8 +336,7 @@ pub async fn quote_square_feet(
                 .sum();
             QuoteSquareFeet { id, square_feet }
         })
-        .collect();
-    Ok(Json(quotes))
+        .collect())
 }
 
 /// Query of `GET /v1/quotes/inventory-slabs`.

@@ -53215,6 +53215,91 @@
         ]
       }
     },
+    "/v1/schedule/job-chips": {
+      "get": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "List schedule jobs' stones and sq ft",
+        "description": "For each of these events of the company, what its card on \"My schedule\"\nshows: the stones of its project's sales and its sq ft. The project is the\nevent's sales as `GET /v1/events/{id}/sale` finds them. The sq ft is that\nof the customer's sold quotes at the event's address (a customer whose\nsold quotes are all one job lends them when there is no street to\ncompare), else the rooms of the project's sales. Events of other\ncompanies, deleted ones and unknown ids are left out. Open one job's\nwhole project with `GET /v1/events/{id}/sale` and `GET /v1/sales/{id}`.",
+        "operationId": "list_schedule_job_chips",
+        "parameters": [
+          {
+            "name": "ids",
+            "in": "query",
+            "description": "Event ids (`ids=1&ids=2`), at most 100.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Each found event's stones and sq ft, in id order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/JobChips"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "More than 100 events asked for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/delayed/sms": {
       "get": {
         "tags": [
@@ -97279,6 +97364,34 @@
               "null"
             ],
             "description": "When the latest quote using it was last changed (UTC, ISO 8601); null if unknown."
+          }
+        }
+      },
+      "JobChips": {
+        "type": "object",
+        "description": "One job's stones and sq ft.",
+        "required": [
+          "event_id",
+          "stones",
+          "square_feet"
+        ],
+        "properties": {
+          "event_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The event."
+          },
+          "stones": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Stone names of the project's sales (newest sale first, each sale's\nslabs in the order they were added), each once. Empty when the event\nhas no sale, or one of its sales can't be read."
+          },
+          "square_feet": {
+            "type": "number",
+            "format": "double",
+            "description": "The project's countertop sq ft: its sold quotes' (as\n`GET /v1/quotes/square-feet` counts them), else its sales' rooms'.\n0 when unknown. Not rounded."
           }
         }
       },

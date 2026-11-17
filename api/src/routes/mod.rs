@@ -86,6 +86,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(places::router())
         .merge(calls::router())
         .merge(quotes::router())
+        .merge(job_chips::router())
         .merge(delayed::router())
         .merge(ai_usage::router())
         .merge(auth::router())
