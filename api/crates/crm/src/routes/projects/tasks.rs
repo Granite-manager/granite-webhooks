@@ -31,6 +31,9 @@ pub const TASK_DUE: &str = "project_task_reminder";
 /// The bell: someone finished a task you gave.
 pub const TASK_DONE: &str = "project_task_done";
 
+/// The most pictures on one task (as on an issue).
+const MAX_TASK_PHOTOS: usize = 20;
+
 /// Date-only deadlines are reminded at this store time on the day.
 const DATE_ONLY_REMINDER: &str = "09:00:00";
 
@@ -231,16 +234,25 @@ pub async fn create_task(
         .transpose()?
         .flatten();
     let priority = priority(input.priority.as_deref())?;
+    if input.urls.len() > MAX_TASK_PHOTOS {
+        return Err(ApiError::BadRequest("At most 20 pictures".into()));
+    }
+    let items = list_items(&input.items)?;
     let viewer = Viewer::load(&state.pool, &user).await?;
     let mut conn = state.pool.acquire().await?;
     visible_project(&mut conn, &viewer, id).await?;
     if let Some(assignee) = input.assigned_user_id {
         require_colleague(&mut conn, viewer.company_id, assignee).await?;
     }
+    drop(conn);
+    for url in &input.urls {
+        attach(&state.storage, url, UploadFolder::Events, viewer.company_id).await?;
+    }
+    let mut conn = state.pool.begin().await?;
     let task = sqlx::query(
         "INSERT INTO project_activities
-            (project_id, company_id, name, assigned_user_id, deadline, priority, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (project_id, company_id, name, assigned_user_id, deadline, priority, created_by, kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(id)
     .bind(viewer.company_id)
@@ -249,11 +261,27 @@ pub async fn create_task(
     .bind(deadline.as_deref())
     .bind(priority)
     .bind(user.id)
+    .bind(if items.is_empty() { "text" } else { "list" })
     .execute(&mut *conn)
     .await?
     .last_insert_id();
     let task_id = i32::try_from(task).map_err(|_| ApiError::Internal("task id".into()))?;
-    drop(conn);
+    for url in &input.urls {
+        sqlx::query("INSERT INTO project_task_photos (task_id, url) VALUES (?, ?)")
+            .bind(task_id)
+            .bind(url)
+            .execute(&mut *conn)
+            .await?;
+    }
+    for (position, label) in items.iter().enumerate() {
+        sqlx::query("INSERT INTO project_task_items (task_id, label, position) VALUES (?, ?, ?)")
+            .bind(task_id)
+            .bind(label)
+            .bind(i32::try_from(position).unwrap_or(i32::MAX))
+            .execute(&mut *conn)
+            .await?;
+    }
+    conn.commit().await?;
     notify(
         &state,
         &user,
@@ -311,6 +339,80 @@ fn average_times(uses: Vec<(String, DateTime<Utc>, NaiveDateTime)>) -> Vec<TaskT
             has_time,
         })
         .collect()
+}
+
+/// The most items on one list.
+pub(super) const MAX_LIST_ITEMS: usize = 60;
+
+/// A list's items: trimmed, blank ones dropped, each at most 200 characters.
+pub(super) fn list_items(items: &[String]) -> ApiResult<Vec<String>> {
+    let items: Vec<String> = items
+        .iter()
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .collect();
+    if items.len() > MAX_LIST_ITEMS {
+        return Err(ApiError::BadRequest("At most 60 items".into()));
+    }
+    if items.iter().any(|item| item.chars().count() > 200) {
+        return Err(ApiError::BadRequest(
+            "Each item must be 200 characters or less".into(),
+        ));
+    }
+    Ok(items)
+}
+
+/// Fills each to-do list task's items, in order.
+pub(super) async fn load_items(
+    conn: &mut MySqlConnection,
+    tasks: &mut [super::schemas::ProjectTask],
+) -> sqlx::Result<()> {
+    let ids: Vec<i32> = tasks
+        .iter()
+        .filter(|task| task.kind == "list")
+        .map(|task| task.id)
+        .collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let mut query = sqlx::QueryBuilder::<sqlx::MySql>::new(
+        "SELECT i.id, i.task_id, i.label,
+                DATE_FORMAT(i.done_at, '%Y-%m-%dT%H:%i:%sZ') AS done_at, u.name AS done_by
+           FROM project_task_items i LEFT JOIN users u ON u.id = i.done_by WHERE 1 = 1",
+    );
+    crate::sql::push_in(&mut query, "i.task_id", &ids);
+    query.push(" ORDER BY i.position, i.id");
+    let rows: Vec<super::schemas::TaskItem> = query.build_query_as().fetch_all(&mut *conn).await?;
+    for item in rows {
+        if let Some(task) = tasks.iter_mut().find(|task| task.id == item.task_id) {
+            task.items.push(item);
+        }
+    }
+    Ok(())
+}
+
+/// Fills each task's pictures, oldest first.
+pub(super) async fn load_photos(
+    conn: &mut MySqlConnection,
+    tasks: &mut [super::schemas::ProjectTask],
+) -> sqlx::Result<()> {
+    if tasks.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<i32> = tasks.iter().map(|task| task.id).collect();
+    let mut query = sqlx::QueryBuilder::<sqlx::MySql>::new(
+        "SELECT task_id, url FROM project_task_photos WHERE 1 = 1",
+    );
+    crate::sql::push_in(&mut query, "task_id", &ids);
+    query.push(" ORDER BY id");
+    let rows: Vec<(i32, String)> = query.build_query_as().fetch_all(&mut *conn).await?;
+    for (task_id, url) in rows {
+        if let Some(task) = tasks.iter_mut().find(|task| task.id == task_id) {
+            task.photos.push(url);
+        }
+    }
+    Ok(())
 }
 
 /// The company's remembered task times.
@@ -777,4 +879,92 @@ mod tests {
         assert_eq!(priority(Some("high")).unwrap(), "high");
         assert!(priority(Some("urgent")).is_err());
     }
+}
+
+/// Tick a to-do list item off, or open it again
+///
+/// Its task's creator, the person it is for, or a project manager. Ticking
+/// the last open item finishes the task (its giver is told); opening one
+/// again reopens it.
+#[crate::openapi::path(
+    put,
+    path = "/v1/projects/{id}/tasks/{task_id}/items/{item_id}",
+    operation_id = "set_project_task_item_done",
+    tag = "projects",
+    params(
+        ("id" = i32, Path, description = "Project id"),
+        ("task_id" = i32, Path, description = "Task id"),
+        ("item_id" = i32, Path, description = "Item id"),
+    ),
+    request_body = super::schemas::ItemDone,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Not the task's creator, its person or a manager", body = ErrorBody),
+        (status = 404, description = "No such item the caller may see", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_item_done(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    Path((id, task_id, item_id)): Path<(i32, i32, i32)>,
+    JsonBody(input): JsonBody<super::schemas::ItemDone>,
+) -> ApiResult<StatusCode> {
+    let viewer = Viewer::load(&state.pool, &user).await?;
+    let mut conn = state.pool.acquire().await?;
+    let (creator, assignee) = task_people(&mut conn, &viewer, id, task_id).await?;
+    Viewer::require(viewer.permissions.manage || creator == user.id || assignee == Some(user.id))?;
+    let changed = sqlx::query(
+        "UPDATE project_task_items
+            SET done_at = IF(?, UTC_TIMESTAMP(3), NULL), done_by = IF(?, ?, NULL)
+          WHERE id = ? AND task_id = ? AND (done_at IS NULL) = ?",
+    )
+    .bind(input.done)
+    .bind(input.done)
+    .bind(user.id)
+    .bind(item_id)
+    .bind(task_id)
+    .bind(input.done)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected();
+    if changed == 0 {
+        let found: Option<i32> =
+            sqlx::query_scalar("SELECT id FROM project_task_items WHERE id = ? AND task_id = ?")
+                .bind(item_id)
+                .bind(task_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        return found
+            .map(|_| StatusCode::NO_CONTENT)
+            .ok_or(ApiError::NotFound);
+    }
+    let open: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM project_task_items WHERE task_id = ? AND done_at IS NULL",
+    )
+    .bind(task_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    let complete = open == 0;
+    // The task follows its items: all ticked is done, one open is open.
+    let finished = sqlx::query(
+        "UPDATE project_activities SET completed_at = IF(?, UTC_TIMESTAMP(), NULL)
+          WHERE id = ? AND company_id = ? AND (completed_at IS NULL) = ?",
+    )
+    .bind(complete)
+    .bind(task_id)
+    .bind(viewer.company_id)
+    .bind(complete)
+    .execute(&mut *conn)
+    .await?
+    .rows_affected()
+        == 1
+        && complete;
+    drop(conn);
+    if finished && creator != user.id {
+        tell_giver(&state, &user, id, task_id, creator).await;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }

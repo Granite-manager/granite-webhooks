@@ -20,6 +20,12 @@
 //! - `/v1/projects/{id}/parts[/{part_id}]`         → a project's parts (POST, PATCH, DELETE)
 //! - `PUT    /v1/projects/{id}/appointments/{event_id}/part` → which part a job is for
 //! - `/v1/projects/{id}/issues[/{issue_id}]`       → report an issue, mark one solved, delete one (POST, PUT, DELETE)
+//! - `PUT    /v1/projects/{id}/tasks/{task_id}/items/{item_id}` → tick a to-do list item
+//! - `/v1/projects/lists[/{list_id}]`              → the company's lists (GET; POST, PUT, DELETE for admins)
+//! - `PUT    /v1/projects/process-steps/{step_id}/setup` → who does a step, its due days and own list (admins)
+//! - `PUT    /v1/projects/{id}/steps/{step_id}/owner` → pick who does a step on one project
+//! - `PUT    /v1/projects/{id}/step-items/{item_id}` → tick a step's list item
+//! - `/v1/projects/{id}/questions[/{question_id}[/messages]]` → questions to chosen people (POST, GET, PUT)
 //!
 //! Who sees what is in [`access`].
 
@@ -28,10 +34,14 @@ mod auto;
 pub use auto::log_sent_template;
 mod handlers;
 mod issues;
+mod lists;
 pub use issues::mark_issue_solved;
+pub use lists::STEP_ASSIGNED;
 pub mod parts;
 mod payments;
 mod process;
+mod questions;
+pub use questions::{QUESTION_ASKED, QUESTION_REPLY};
 pub mod schemas;
 pub mod service;
 mod step_events;
@@ -76,4 +86,13 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(parts::set_appointment_part))
         .routes(routes!(issues::report))
         .routes(routes!(issues::solve, issues::delete))
+        .routes(routes!(tasks::set_item_done))
+        .routes(routes!(lists::list_lists, lists::create_list))
+        .routes(routes!(lists::update_list, lists::delete_list))
+        .routes(routes!(lists::set_step_setup))
+        .routes(routes!(lists::set_step_owner))
+        .routes(routes!(lists::set_step_item_done))
+        .routes(routes!(questions::ask))
+        .routes(routes!(questions::get, questions::change))
+        .routes(routes!(questions::reply))
 }

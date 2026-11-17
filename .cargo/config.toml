@@ -5,3 +5,6 @@
 # `make api-db-up` (and `make api-db-reset` for a migrated schema).
 [env]
 DATABASE_URL = { value = "mysql://root:granite@127.0.0.1:3307/granite_local", force = true }
+# CloudTalk is switched off on the Lambdas (CLOUDTALK_ENABLED unset there);
+# the tests and local runs keep running its code.
+CLOUDTALK_ENABLED = "true"

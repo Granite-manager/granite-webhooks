@@ -27,21 +27,39 @@ const ADDRESSES: &str = "('sales@granitemanager.com', 'sales@granite-manager.com
 /// The address the page shows.
 pub const DISPLAY_ADDRESS: &str = "sales@granitemanager.com";
 
+/// `{alias}` has a `types` header row naming the mailbox. Listing the
+/// mailbox scans every email, so `whole_mailbox` reads the mailbox's header
+/// rows once (a per-message `EXISTS` there looked up the rows of every email
+/// of every company); one thread's check looks up its own messages' rows.
+fn mailbox_header(alias: &str, types: &str, whole_mailbox: bool) -> String {
+    if whole_mailbox {
+        format!(
+            "{alias}.id IN (SELECT /*+ SUBQUERY(MATERIALIZATION) */ ep.email_id FROM email_participants ep
+            WHERE ep.type IN {types} AND ep.email IN {ADDRESSES})"
+        )
+    } else {
+        format!(
+            "EXISTS (SELECT 1 FROM email_participants ep
+            WHERE ep.email_id = {alias}.id AND ep.type IN {types} AND ep.email IN {ADDRESSES})"
+        )
+    }
+}
+
 /// `e` was sent from the mailbox (its sender or a `from` header).
-fn sent_from(alias: &str) -> String {
+fn sent_from(alias: &str, whole_mailbox: bool) -> String {
     format!(
-        "({} IN {ADDRESSES} OR EXISTS (SELECT 1 FROM email_participants ep_from
-            WHERE ep_from.email_id = {alias}.id AND ep_from.type = 'from' AND ep_from.email IN {ADDRESSES}))",
-        normalized(&format!("{alias}.sender_email"))
+        "({} IN {ADDRESSES} OR {})",
+        normalized(&format!("{alias}.sender_email")),
+        mailbox_header(alias, "('from')", whole_mailbox)
     )
 }
 
 /// `e` was sent to the mailbox (its receiver or a `to`/`cc` header).
-fn sent_to(alias: &str) -> String {
+fn sent_to(alias: &str, whole_mailbox: bool) -> String {
     format!(
-        "({} IN {ADDRESSES} OR EXISTS (SELECT 1 FROM email_participants ep_to
-            WHERE ep_to.email_id = {alias}.id AND ep_to.type IN ('to', 'cc') AND ep_to.email IN {ADDRESSES}))",
-        normalized(&format!("{alias}.receiver_email"))
+        "({} IN {ADDRESSES} OR {})",
+        normalized(&format!("{alias}.receiver_email")),
+        mailbox_header(alias, "('to', 'cc')", whole_mailbox)
     )
 }
 
@@ -150,8 +168,8 @@ pub async fn list(
     super_only(&user)?;
     let pool = &state.pool;
     let folder = match query.folder {
-        SalesFolder::Inbox => format!("({} AND NOT {})", sent_to("e"), sent_from("e")),
-        SalesFolder::Sent => sent_from("e"),
+        SalesFolder::Inbox => format!("({} AND NOT {})", sent_to("e", true), sent_from("e", true)),
+        SalesFolder::Sent => sent_from("e", true),
     };
     let search = list_search(&query.search, None);
     let matching = format!(
@@ -188,13 +206,14 @@ pub async fn list(
             mailbox: DISPLAY_ADDRESS.into(),
         }));
     }
-    let customer_email = normalized("ce.email");
-    let name_of = |column: &str, users: &str| {
+    // By the stored addresses (`emails.sender_address`/`receiver_address`, the
+    // indexed `customers_emails.email` and `users.email`): normalizing both
+    // sides read every customer once per message (~0.1 s each).
+    let name_of = |address: &str, users: &str| {
         format!(
             "COALESCE((SELECT u.name FROM users u WHERE {users} LIMIT 1),
                       (SELECT c.name FROM customers c JOIN customers_emails ce ON ce.customer_id = c.id
-                        WHERE c.deleted_at IS NULL AND {customer_email} = {} LIMIT 1))",
-            normalized(column)
+                        WHERE c.deleted_at IS NULL AND ce.email = {address} LIMIT 1))"
         )
     };
     let placeholders = vec!["?"; threads.len()].join(", ");
@@ -212,14 +231,10 @@ pub async fn list(
                FROM emails e
               WHERE {matching} AND e.thread_id IN ({placeholders})
               ORDER BY e.sent_at DESC, e.id DESC",
-            name_of("e.sender_email", "u.id = e.sender_user_id"),
+            name_of("e.sender_address", "u.id = e.sender_user_id"),
             name_of(
-                "e.receiver_email",
-                &format!(
-                    "u.is_deleted = 0 AND {} = {}",
-                    normalized("u.email"),
-                    normalized("e.receiver_email")
-                )
+                "e.receiver_address",
+                "u.is_deleted = 0 AND u.email = e.receiver_address"
             ),
         ),
         args,
@@ -273,8 +288,8 @@ pub async fn thread(
         "SELECT 1 FROM emails e
           WHERE e.thread_id = ? AND e.deleted_at IS NULL AND e.is_draft = 0
             AND ({} OR {}) LIMIT 1",
-        sent_from("e"),
-        sent_to("e")
+        sent_from("e", false),
+        sent_to("e", false)
     )))
     .bind(&thread_id)
     .fetch_optional(pool)

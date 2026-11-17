@@ -16,6 +16,7 @@ test-support = ["webhooks-core/test-support"]
 webhooks-core = { path = "../core" }
 common = { path = "../../../common", features = ["images"] }
 axum = "0.8"
+base64 = "0.22"
 bytes = "1.11"
 email_reply_parser = "0.1"
 lambda_http = "1.1"

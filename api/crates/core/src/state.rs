@@ -16,7 +16,7 @@ use sqlx::MySqlPool;
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 /// Origins allowed when `API_ALLOWED_ORIGINS` is unset: the production tenant
@@ -94,6 +94,8 @@ pub struct AppState {
     pub signature_app_origin: Arc<str>,
     /// Granite Manager's `RingCentral` app, for companies that press Connect.
     pub ringcentral_app: Option<crate::ringcentral_connect::RingCentralApp>,
+    /// Granite Manager's Google app, for users who press Connect Gmail.
+    pub gmail_app: Option<crate::gmail_connect::GmailApp>,
     /// Where `RingCentral` pushes texts and the token it sends back
     /// (`LAMBDA_URL`, `WEBHOOKS_KEY`); `None` turns SMS subscriptions off.
     pub ringcentral_subscriptions: Option<common::telephony::ringcentral::SubscriptionTarget>,
@@ -234,6 +236,7 @@ impl AppState {
             signwell_webhook: SignWellWebhookKeys::default(),
             signature_app_origin: Arc::from(""),
             ringcentral_app: None,
+            gmail_app: None,
             ringcentral_subscriptions: None,
             dns: crate::deliverability::AppDns::Fixed(Arc::default()),
             ses: SesIdentities::Fixed(None),
@@ -360,6 +363,12 @@ impl AppState {
     #[must_use]
     pub fn with_ses(mut self, ses: SesIdentities) -> Self {
         self.ses = ses;
+        self
+    }
+
+    #[must_use]
+    pub fn with_gmail_app(mut self, app: Option<crate::gmail_connect::GmailApp>) -> Self {
+        self.gmail_app = app;
         self
     }
 
@@ -497,6 +506,7 @@ impl AppState {
                 &std::env::var("APP_URL").unwrap_or_else(|_| "https://granite-manager.com".into()),
             )
             .with_ringcentral_app(crate::ringcentral_connect::RingCentralApp::from_env())
+            .with_gmail_app(crate::gmail_connect::GmailApp::from_env())
             .with_ringcentral_subscriptions(
                 common::telephony::ringcentral::SubscriptionTarget::from_env(),
             )
@@ -535,6 +545,11 @@ impl AppState {
                 Method::DELETE,
             ])
             .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+            // Browsers re-ask with an OPTIONS preflight before every
+            // cross-origin call unless told to remember the answer (Chrome
+            // keeps it 5 s by default). One hour cuts the repeated preflights
+            // of the 60 s pollers; each one is a Lambda invocation.
+            .max_age(Duration::from_secs(3600))
     }
 }
 

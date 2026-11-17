@@ -29,6 +29,7 @@ pub mod extract;
 pub mod html;
 pub mod maps;
 pub mod native_signing;
+pub mod gmail_connect;
 pub mod oauth_state;
 pub mod openapi;
 pub mod period;

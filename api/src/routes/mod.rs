@@ -11,6 +11,7 @@ pub use api_admin::routes::*;
 pub use api_ai::routes::*;
 pub use api_phone::routes::*;
 
+pub mod badges;
 pub mod jobs;
 pub mod notifications;
 pub mod public;
@@ -21,7 +22,9 @@ use crate::state::AppState;
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .merge(me::router())
+        .merge(badges::router())
         .merge(customers::router())
+        .merge(customer_todos::router())
         .merge(customer_sources::router())
         .merge(customer_view::router())
         .merge(customer_payments::router())
@@ -65,6 +68,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(online_quotes::router())
         .merge(commissions::router())
         .merge(feature_sales::router())
+        .merge(job_pay::router())
         .merge(company_frame::router())
         .merge(quote_forms::router())
         .merge(quote_price_lists::router())
@@ -83,10 +87,12 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(places::router())
         .merge(calls::router())
         .merge(quotes::router())
+        .merge(job_chips::router())
         .merge(delayed::router())
         .merge(ai_usage::router())
         .merge(auth::router())
         .merge(login_steps::router())
+        .merge(password_reset_code::router())
         .merge(app_shell::router())
         .merge(onboarding::router())
         .merge(ai::router())

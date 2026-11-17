@@ -129,7 +129,13 @@ pub const QUOTE_ROW_SELECT: &str = "SELECT q.id, q.company_id, q.customer_id, c.
        CAST(COALESCE(q.discount_amount, 0) AS DOUBLE) AS discount_amount,
        CAST(q.payment_terms_json AS CHAR) AS payment_terms_json, q.address, q.phone,
        c.phone AS customer_phone, c.phone_2 AS customer_phone_2, q.email, q.address_notes,
-       sp.phone_number AS salesperson_phone, CAST(q.draft_drawing_json AS CHAR) AS draft_drawing_json,
+       COALESCE((SELECT CONCAT(SUBSTRING(n.last10, 1, 3), '-', SUBSTRING(n.last10, 4, 3), '-', SUBSTRING(n.last10, 7, 4))
+                   FROM telnyx_numbers n
+                   JOIN telnyx_number_users nu ON nu.number_id = n.id AND nu.user_id = sp.id AND nu.can_call_from <> 0
+                  WHERE n.company_id = q.company_id AND n.active <> 0
+                  ORDER BY FIELD(n.kind, 'direct', 'shared', 'main'), n.id LIMIT 1),
+                sp.phone_number) AS salesperson_phone,
+       CAST(q.draft_drawing_json AS CHAR) AS draft_drawing_json,
        q.current_step, q.current_revision, q.portal_token,
        DATE_FORMAT(q.signed_at, '%Y-%m-%dT%H:%i:%sZ') AS signed_at, q.signature_data,
        q.customer_accepted_option_id, q.qbo_invoice_id
@@ -1880,9 +1886,24 @@ pub struct Sale {
     #[serde(default)]
     pub new_deal: bool,
     /// Status of the template job it adds to Unscheduled: `ready` (default) or
-    /// `not_ready`. The installation job is always `not_ready`.
+    /// `not_ready`.
     #[serde(default)]
     pub job_status: Option<String>,
+    /// Status of the installation job: `ready` or `not_ready` (default).
+    #[serde(default)]
+    pub installation_status: Option<String>,
+    /// Status of the FH Backsplash template job: `ready` or `not_ready` (default).
+    #[serde(default)]
+    pub fh_backsplash_template_status: Option<String>,
+    /// Status of the FH Backsplash installation job: `ready` or `not_ready` (default).
+    #[serde(default)]
+    pub fh_backsplash_installation_status: Option<String>,
+    /// Notes on the FH Backsplash template job; left out: the template job's notes.
+    #[serde(default)]
+    pub fh_backsplash_template_notes: Option<String>,
+    /// Notes on the FH Backsplash installation job; left out: the installation job's notes.
+    #[serde(default)]
+    pub fh_backsplash_installation_notes: Option<String>,
     /// Notes on the template job it adds to Unscheduled.
     #[serde(default)]
     pub template_notes: Option<String>,
@@ -1939,11 +1960,26 @@ pub struct SaleExtraEvent {
     /// Red flag: the event must be scheduled fast.
     #[serde(default)]
     pub urgent: bool,
+    /// Its status: `ready` or `not_ready` (default).
+    #[serde(default)]
+    pub status: Option<String>,
     /// The event template (`GET /v1/quote-sale-events`).
     pub template_id: i32,
     /// Notes on the event (trimmed; blank: none).
     #[serde(default)]
     pub notes: Option<String>,
+}
+
+/// A Mark as Sold status: `ready` or `not_ready`; left out, `default`.
+fn sale_ready(status: Option<&str>, default: bool, what: &str) -> ApiResult<bool> {
+    match status {
+        None => Ok(default),
+        Some("ready") => Ok(true),
+        Some("not_ready") => Ok(false),
+        Some(_) => Err(ApiError::BadRequest(format!(
+            "Pick Ready or Not ready for {what}."
+        ))),
+    }
 }
 
 /// What selling did.
@@ -1988,15 +2024,31 @@ pub async fn mark_sold(
             "Pick the option that was sold.".into(),
         ));
     }
-    let template_ready = match input.job_status.as_deref() {
-        None | Some("ready") => true,
-        Some("not_ready") => false,
-        Some(_) => {
-            return Err(ApiError::BadRequest(
-                "Pick Ready or Not ready for the template.".into(),
-            ));
-        }
-    };
+    let template_ready = sale_ready(input.job_status.as_deref(), true, "the template")?;
+    let installation_ready =
+        sale_ready(input.installation_status.as_deref(), false, "the installation")?;
+    let fh_backsplash_template_ready = sale_ready(
+        input.fh_backsplash_template_status.as_deref(),
+        false,
+        "the FH Backsplash template",
+    )?;
+    let fh_backsplash_installation_ready = sale_ready(
+        input.fh_backsplash_installation_status.as_deref(),
+        false,
+        "the FH Backsplash installation",
+    )?;
+    let extra_events = input
+        .extra_events
+        .into_iter()
+        .map(|extra| -> ApiResult<ExtraEventPick> {
+            Ok(ExtraEventPick {
+                ready: sale_ready(extra.status.as_deref(), false, "the extra event")?,
+                template_id: extra.template_id,
+                notes: extra.notes,
+                urgent: extra.urgent,
+            })
+        })
+        .collect::<ApiResult<Vec<_>>>()?;
     let sold = mark_quote_sold(
         &state.pool,
         id,
@@ -2010,6 +2062,11 @@ pub async fn mark_sold(
         },
         &SaleJobs {
             template_ready,
+            installation_ready,
+            fh_backsplash_template_ready,
+            fh_backsplash_installation_ready,
+            fh_backsplash_template_notes: input.fh_backsplash_template_notes,
+            fh_backsplash_installation_notes: input.fh_backsplash_installation_notes,
             template_notes: input.template_notes,
             install_notes: input.install_notes,
             project_notes: input.project_notes,
@@ -2022,15 +2079,7 @@ pub async fn mark_sold(
             installation_urgent: input.installation_urgent,
             fh_backsplash_template_urgent: input.fh_backsplash_template_urgent,
             fh_backsplash_installation_urgent: input.fh_backsplash_installation_urgent,
-            extra_events: input
-                .extra_events
-                .into_iter()
-                .map(|extra| ExtraEventPick {
-                    template_id: extra.template_id,
-                    notes: extra.notes,
-                    urgent: extra.urgent,
-                })
-                .collect(),
+            extra_events,
         },
     )
     .await?
@@ -2339,7 +2388,7 @@ async fn move_deal_to_got_a_quote(pool: &MySqlPool, quote: &QuoteRow) -> ApiResu
     let lists: Vec<(i32, String, i32)> = sqlx::query_as(
         "SELECT dl.id, dl.name, dl.group_id FROM deals_list dl
            JOIN groups_list g ON g.id = dl.group_id AND g.deleted_at IS NULL
-          WHERE dl.deleted_at IS NULL AND (g.company_id = ? OR g.id = 1)",
+          WHERE dl.deleted_at IS NULL AND g.company_id = ?",
     )
     .bind(quote.company_id)
     .fetch_all(pool)

@@ -37,6 +37,23 @@ webhooks/
 in its `lib.rs` (`router()`). New code goes in the crate of its area; code
 two crates need moves down into `core`.
 
+## CloudTalk is switched off
+
+The companies stopped using CloudTalk. The code stays, but nothing calls its
+API unless `CLOUDTALK_ENABLED` is `true` (`common::telephony::cloudtalk::enabled`),
+in webhooks and in the api: the `/cloudtalk/*` routes answer 200 and do
+nothing, `POST /sms/send` refuses CloudTalk texts (503 `cloudtalk_disabled`),
+and the api's company features, contact sync, call jobs and bell skip it. The
+Lambdas do not set it. `.cargo/config.toml` sets it for the tests and local
+runs, which keep running the CloudTalk code.
+
+## Outside calls
+
+Use `crate::http::client()` for calls to other services: it hands out the
+same client to the requests that follow each other within 15 s, so they reuse
+its connections (a new one to Telegram costs ~190 ms). The Telegram bots in
+`axum_helpers::guards` are reused the same way.
+
 ## Checks and tests while you work
 
 - `cargo clippy -p webhooks-<crate> --all-targets` for the crate you edited.

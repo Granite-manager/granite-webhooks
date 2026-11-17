@@ -48,11 +48,50 @@ pub enum NotifyKind {
 }
 
 impl NotifyKind {
-    fn subject(self, company_name: &str) -> String {
+    fn subject(self, company_name: &str, visit: Visit) -> String {
+        let what = visit.title();
         match self {
-            Self::Scheduled => format!("{company_name} - In-Home Estimate Scheduled"),
-            Self::Day => format!("{company_name} - In-Home Estimate Reminder"),
-            Self::Hour => format!("{company_name} - In-Home Estimate Starting Soon"),
+            Self::Scheduled => format!("{company_name} - {what} Scheduled"),
+            Self::Day => format!("{company_name} - {what} Reminder"),
+            Self::Hour => format!("{company_name} - {what} Starting Soon"),
+        }
+    }
+}
+
+/// What was booked: an estimate at the customer's address, or a visit to
+/// the showroom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Visit {
+    #[default]
+    InHomeEstimate,
+    Showroom,
+}
+
+impl Visit {
+    /// From an event's title: showroom appointments end in ` - Showroom`.
+    pub fn from_title(title: &str) -> Self {
+        if title
+            .trim_end()
+            .to_ascii_lowercase()
+            .ends_with(" - showroom")
+        {
+            Self::Showroom
+        } else {
+            Self::InHomeEstimate
+        }
+    }
+
+    const fn words(self) -> &'static str {
+        match self {
+            Self::InHomeEstimate => "in-home estimate",
+            Self::Showroom => "showroom appointment",
+        }
+    }
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::InHomeEstimate => "In-Home Estimate",
+            Self::Showroom => "Showroom Appointment",
         }
     }
 }
@@ -60,6 +99,7 @@ impl NotifyKind {
 /// The booking to tell the customer about.
 pub struct Booking<'a> {
     pub kind: NotifyKind,
+    pub visit: Visit,
     pub company_id: i32,
     pub customer_id: i32,
     pub customer_name: &'a str,
@@ -97,6 +137,7 @@ fn first_name(full: &str) -> &str {
 /// The confirmation (or reminder) text.
 pub fn booking_message(
     kind: NotifyKind,
+    visit: Visit,
     user_name: &str,
     user_phone: Option<&str>,
     customer_name: &str,
@@ -105,17 +146,16 @@ pub fn booking_message(
 ) -> String {
     let customer = first_name(customer_name);
     let user = first_name(user_name);
+    let what = visit.words();
     let mut message = match kind {
         NotifyKind::Scheduled => {
-            format!("Hi {customer}, your in-home estimate with {user} is scheduled for {when}.")
+            format!("Hi {customer}, your {what} with {user} is scheduled for {when}.")
         }
         NotifyKind::Day => format!(
-            "Hi {customer}, this is a reminder that your in-home estimate with {user} is scheduled for {when}."
+            "Hi {customer}, this is a reminder that your {what} with {user} is scheduled for {when}."
         ),
         NotifyKind::Hour => {
-            format!(
-                "Hi {customer}, your in-home estimate with {user} starts in about 1 hour ({when})."
-            )
+            format!("Hi {customer}, your {what} with {user} starts in about 1 hour ({when}).")
         }
     };
     if let Some(phone) = user_phone.map(str::trim).filter(|phone| !phone.is_empty()) {
@@ -359,6 +399,19 @@ async fn email_sender(
     .await
 }
 
+/// `noreply@` at the company's own domain (the shared noreply address when
+/// the company has none).
+pub async fn company_noreply(pool: &MySqlPool, company_id: i32) -> Result<String, sqlx::Error> {
+    let domain: Option<Option<String>> =
+        sqlx::query_scalar("SELECT domain FROM company WHERE id = ?")
+            .bind(company_id)
+            .fetch_optional(pool)
+            .await?;
+    let domain = domain.flatten().unwrap_or_default();
+    let domain = domain.trim().trim_start_matches('@');
+    Ok(from_email(Some(domain), &format!("noreply@{domain}")))
+}
+
 /// The customer's sales rep's (else `user_id`'s) name and sending address.
 pub async fn sender_for(
     pool: &MySqlPool,
@@ -435,6 +488,7 @@ pub async fn notify_booking(
     let phone = contact_phone(pool, booking).await?;
     let text = booking_message(
         booking.kind,
+        booking.visit,
         &user_name,
         phone.as_deref(),
         booking.customer_name,
@@ -505,7 +559,7 @@ pub async fn notify_booking(
         return Ok(None);
     }
     let (from_name, from_address) = email_sender(pool, booking).await?;
-    let subject = booking.kind.subject(&company_name);
+    let subject = booking.kind.subject(&company_name, booking.visit);
     let message = OutgoingEmail {
         from_name,
         from_address,
@@ -554,6 +608,7 @@ mod tests {
         assert_eq!(
             booking_message(
                 NotifyKind::Scheduled,
+                Visit::InHomeEstimate,
                 "Rita Rep",
                 Some("317-555-0100"),
                 "Alice Lead",
@@ -563,12 +618,21 @@ mod tests {
             "Hi Alice, your in-home estimate with Rita is scheduled for Tuesday, January 15 at 10:00 AM – 11:00 AM. Contact Rita at 317-555-0100. Address: 1 Main St."
         );
         assert_eq!(
-            booking_message(NotifyKind::Scheduled, "Rita", None, "", &when, None),
+            booking_message(
+                NotifyKind::Scheduled,
+                Visit::InHomeEstimate,
+                "Rita",
+                None,
+                "",
+                &when,
+                None
+            ),
             "Hi there, your in-home estimate with Rita is scheduled for Tuesday, January 15 at 10:00 AM – 11:00 AM."
         );
         assert_eq!(
             booking_message(
                 NotifyKind::Hour,
+                Visit::InHomeEstimate,
                 "Rita",
                 None,
                 "Alice",
@@ -577,6 +641,32 @@ mod tests {
             ),
             "Hi Alice, your in-home estimate with Rita starts in about 1 hour (Tuesday, January 15 at 10:00 AM – 11:00 AM)."
         );
+    }
+
+    #[test]
+    fn a_showroom_booking_says_showroom_appointment() {
+        let start = "2030-01-15T15:00:00Z".parse().unwrap();
+        let end = "2030-01-15T16:00:00Z".parse().unwrap();
+        let when = appointment_when(start, end);
+        assert_eq!(
+            booking_message(
+                NotifyKind::Scheduled,
+                Visit::Showroom,
+                "Rita",
+                None,
+                "Alice",
+                &when,
+                None
+            ),
+            "Hi Alice, your showroom appointment with Rita is scheduled for Tuesday, January 15 at 10:00 AM – 11:00 AM."
+        );
+        assert_eq!(
+            NotifyKind::Day.subject("Acme", Visit::Showroom),
+            "Acme - Showroom Appointment Reminder"
+        );
+        assert_eq!(Visit::from_title("Alice Lead - Showroom"), Visit::Showroom);
+        assert_eq!(Visit::from_title("Alice Lead - showroom "), Visit::Showroom);
+        assert_eq!(Visit::from_title("Alice Lead"), Visit::InHomeEstimate);
     }
 
     #[test]

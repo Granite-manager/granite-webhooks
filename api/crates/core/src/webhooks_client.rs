@@ -96,6 +96,10 @@ impl WebhooksClient {
         company_id: i32,
         customer_id: i32,
     ) {
+        // CloudTalk is switched off (CLOUDTALK_ENABLED): no call at all.
+        if provider == "cloudtalk" && !common::telephony::cloudtalk::enabled() {
+            return;
+        }
         let Some(target) = &self.target else {
             return;
         };
@@ -122,18 +126,33 @@ impl WebhooksClient {
 
     /// Sends one email (`POST /email/send`); returns its `Message-ID`.
     pub async fn send_email(&self, email: &OutgoingEmail) -> Result<String, SendFailure> {
+        self.send_email_as(email, None).await
+    }
+
+    /// [`Self::send_email`]; with `gmail_access_token` the message goes out
+    /// through the sender's own Gmail instead of SES.
+    pub async fn send_email_as(
+        &self,
+        email: &OutgoingEmail,
+        gmail_access_token: Option<&str>,
+    ) -> Result<String, SendFailure> {
         let Some(target) = &self.target else {
             return Err(SendFailure::Failed(
                 "email sending is not configured".to_string(),
             ));
         };
         let (url, key) = target.as_ref();
+        let mut body =
+            serde_json::to_value(email).map_err(|err| SendFailure::Failed(err.to_string()))?;
+        if let (Some(token), Some(fields)) = (gmail_access_token, body.as_object_mut()) {
+            fields.insert("gmail_access_token".into(), token.into());
+        }
         let response = self
             .http
             .post(format!("{url}/email/send"))
             .header("Authorization", key)
             .timeout(Duration::from_secs(90))
-            .json(email)
+            .json(&body)
             .send()
             .await
             .map_err(|err| SendFailure::Failed(err.without_url().to_string()))?;

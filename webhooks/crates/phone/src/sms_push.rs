@@ -46,7 +46,7 @@ pub async fn push_inbound_text(company_id: i32, provider: &'static str, sms_id: 
         provider,
         sms_id,
     };
-    let result = common::http::client()
+    let result = crate::http::client()
         .post(format!(
             "{}/v1/sms/inbound-push",
             api_url.trim_end_matches('/')

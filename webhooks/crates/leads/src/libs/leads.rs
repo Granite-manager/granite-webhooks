@@ -127,17 +127,17 @@ async fn notify_repeat_lead<T, V: LeadPayload>(
 }
 
 /// A repeated lead: the customer's blanks are filled in and the sales rep and
-/// managers hear about it. Only a [`LeadSender::Verified`] one also moves the
-/// deal back to the first stage and restarts its to-dos and emails, so that
-/// a stranger who knows a customer's phone cannot change their deal.
-#[allow(clippy::too_many_arguments)]
+/// managers hear about it.
+///
+/// Owner's rule: a repeated lead ALWAYS makes the deal active again and moves
+/// it to the first stage (Not Contacted Yet), restarting its to-dos and
+/// emails, whatever the sender and whether or not the form has a key.
 async fn handle_repeat_lead<T, V: LeadPayload>(
     existing: &ExistingCustomer,
     deal: Deal,
     pool: &MySqlPool,
     company_id: i32,
     form: &V,
-    sender: LeadSender,
     bot: &T,
     new_deal: bool,
 ) -> BasicResponse
@@ -159,25 +159,22 @@ where
             return internal_error(ERR_DB);
         }
     };
-    let verified = sender == LeadSender::Verified;
-    if verified {
-        if let Err(e) = update_deal_list_id(pool, deal.id, default_list_id).await {
-            tracing::error!(
-                ?e,
-                deal_id = deal.id,
-                list_id = default_list_id,
-                "Failed to move repeated lead to Not Contacted Yet"
-            );
-            return internal_error(ERR_DB);
-        }
-        if let Err(e) = reset_deal_activity_deadlines(pool, deal.id).await {
-            tracing::error!(
-                ?e,
-                deal_id = deal.id,
-                "Failed to reset activity due dates for repeated lead"
-            );
-            return internal_error(ERR_DB);
-        }
+    if let Err(e) = update_deal_list_id(pool, deal.id, default_list_id).await {
+        tracing::error!(
+            ?e,
+            deal_id = deal.id,
+            list_id = default_list_id,
+            "Failed to move repeated lead to Not Contacted Yet"
+        );
+        return internal_error(ERR_DB);
+    }
+    if let Err(e) = reset_deal_activity_deadlines(pool, deal.id).await {
+        tracing::error!(
+            ?e,
+            deal_id = deal.id,
+            "Failed to reset activity due dates for repeated lead"
+        );
+        return internal_error(ERR_DB);
     }
     let customer_id = u64::try_from(existing.id).unwrap();
     let name = existing.name.as_deref().unwrap_or("Unknown");
@@ -208,17 +205,16 @@ where
         }
         return CREATED_RESPONSE;
     };
-    if verified
-        && let Err(e) = reschedule_templates_for_deal_list(
-            pool,
-            default_list_id,
-            company_id,
-            deal.id,
-            existing.id,
-            user_id,
-            new_deal,
-        )
-        .await
+    if let Err(e) = reschedule_templates_for_deal_list(
+        pool,
+        default_list_id,
+        company_id,
+        deal.id,
+        existing.id,
+        user_id,
+        new_deal,
+    )
+    .await
     {
         tracing::error!(
             ?e,
@@ -282,16 +278,12 @@ async fn create_new_deal_existing_customer<T, V: LeadPayload>(
     existing: &ExistingCustomer,
     company_id: i32,
     form: &V,
-    sender: LeadSender,
     bot: &T,
 ) -> Result<Option<Deal>, BasicResponse>
 where
     T: Telegram + Send + Sync + 'static + Clone,
 {
-    if let Some(rep) = existing
-        .sales_rep
-        .filter(|_| sender == LeadSender::Verified)
-    {
+    if let Some(rep) = existing.sales_rep {
         let default_list_id = match get_default_list_id_from_company_id(pool, company_id).await {
             Ok(id) => id,
             Err(e) => {
@@ -328,15 +320,18 @@ where
     };
     let message = format!("You received a REPEATED lead with no {missing} \n{form}");
     let customer = i64::from(existing.id);
-    push_lead(
-        company_id,
-        customer,
-        None,
-        LeadKind::Repeat,
-        Audience::Managers,
-    )
-    .await;
-    match send_telegram_manager_assign(pool, company_id, message, clean_id, false, bot).await {
+    // The phone push and the Telegram message at once (different servers).
+    let (_, sent) = tokio::join!(
+        push_lead(
+            company_id,
+            customer,
+            None,
+            LeadKind::Repeat,
+            Audience::Managers,
+        ),
+        send_telegram_manager_assign(pool, company_id, message, clean_id, false, bot),
+    );
+    match sent {
         Ok(()) => Ok(None),
         Err(e) => {
             tracing::error!(
@@ -371,43 +366,53 @@ where
         }
     };
     let customer = i64::try_from(result.last_insert_id()).unwrap_or_default();
-    push_lead(
-        company_id,
-        customer,
-        None,
-        LeadKind::New,
-        Audience::Managers,
-    )
-    .await;
-    let tg_result = send_telegram_manager_assign(
-        pool,
-        company_id,
-        &form.to_string(),
-        result.last_insert_id(),
-        true,
-        bot,
-    )
-    .await;
-    if let Err(e) = tg_result {
-        tracing::error!(
-            ?e,
-            company_id = company_id,
-            "Error sending message to Telegram"
-        );
-        let problem = format!(
-            "New lead could not be sent to the managers in Telegram, so nobody was asked to assign it ({}).",
-            e.1
-        );
-        alert_lead_not_notified(company_id, &problem, form).await;
-    }
     let customer_id = i32::try_from(result.last_insert_id()).unwrap_or(0);
-    if customer_id > 0 {
-        let client = common::http::client();
-        let _ = tokio::join!(
-            sync_customer_to_cloud_talk(pool, &client, customer_id),
-            sync_customer_to_ring_central(pool, &client, customer_id),
-        );
-    }
+    let notify_managers = async {
+        let tg_result = send_telegram_manager_assign(
+            pool,
+            company_id,
+            &form.to_string(),
+            result.last_insert_id(),
+            true,
+            bot,
+        )
+        .await;
+        if let Err(e) = tg_result {
+            tracing::error!(
+                ?e,
+                company_id = company_id,
+                "Error sending message to Telegram"
+            );
+            let problem = format!(
+                "New lead could not be sent to the managers in Telegram, so nobody was asked to assign it ({}).",
+                e.1
+            );
+            alert_lead_not_notified(company_id, &problem, form).await;
+        }
+    };
+    let sync_contacts = async {
+        if customer_id > 0 {
+            let client = crate::http::client();
+            let _ = tokio::join!(
+                sync_customer_to_cloud_talk(pool, &client, customer_id),
+                sync_customer_to_ring_central(pool, &client, customer_id),
+            );
+        }
+    };
+    // At once: the phone push (the api), the managers' Telegram message and
+    // the contact sync (RingCentral) wait on different servers, and each
+    // took a few hundred ms one after another.
+    tokio::join!(
+        push_lead(
+            company_id,
+            customer,
+            None,
+            LeadKind::New,
+            Audience::Managers,
+        ),
+        notify_managers,
+        sync_contacts,
+    );
     CREATED_RESPONSE
 }
 
@@ -415,7 +420,7 @@ pub async fn process_lead<T, V: LeadPayload>(
     pool: &MySqlPool,
     company_id: i32,
     form: &V,
-    sender: LeadSender,
+    _sender: LeadSender,
     bot: &T,
 ) -> BasicResponse
 where
@@ -432,19 +437,15 @@ where
     };
     match get_existing_deal(pool, existing.id).await {
         Ok(Some(deal)) => {
-            return handle_repeat_lead(&existing, deal, pool, company_id, form, sender, bot, false)
-                .await;
+            return handle_repeat_lead(&existing, deal, pool, company_id, form, bot, false).await;
         }
         Ok(None) => {
             let deal =
-                create_new_deal_existing_customer(pool, &existing, company_id, form, sender, bot)
-                    .await;
+                create_new_deal_existing_customer(pool, &existing, company_id, form, bot).await;
             match deal {
                 Ok(Some(deal)) => {
-                    return handle_repeat_lead(
-                        &existing, deal, pool, company_id, form, sender, bot, true,
-                    )
-                    .await;
+                    return handle_repeat_lead(&existing, deal, pool, company_id, form, bot, true)
+                        .await;
                 }
                 Ok(None) => CREATED_RESPONSE,
                 Err(e) => {

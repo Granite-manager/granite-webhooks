@@ -32,7 +32,7 @@ where
     T: serde::Serialize + Send + Sync,
     V: serde::de::DeserializeOwned + Send,
 {
-    let client = common::http::client();
+    let client = crate::http::client();
     let api_key = places_endpoint().1;
     let response = client
         .post(url)
@@ -56,7 +56,7 @@ async fn generic_get_request<V>(url: &str, field_mask: &str) -> Result<V, reqwes
 where
     V: serde::de::DeserializeOwned,
 {
-    let client = common::http::client();
+    let client = crate::http::client();
     let api_key = places_endpoint().1;
     client
         .get(url)

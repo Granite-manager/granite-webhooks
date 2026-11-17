@@ -454,11 +454,15 @@ fn type_title(kind: &str) -> Option<&'static str> {
         "project_task_reminder" => "Task Due",
         "project_task_done" => "Finished Your Task",
         "project_step_done" => "Finished a Step",
+        "project_step_assigned" => "Gave You a Step",
+        "project_question" => "Asked You a Question",
+        "project_question_reply" => "Answered a Question",
         "estimate_appointment_reminder" => "In-Home Estimate Reminder",
         "installation_appointment_reminder" => "Installation Reminder",
         "template_appointment_reminder" => "Template Appointment Reminder",
         "installation_completed" => "Installation Completed",
         "event_issue" => "Reported an Issue",
+        "customer_todos" => "Customer To-dos",
         SALES_ORDER => "Sales Order",
         // Customer payments (`routes::customer_payments`).
         "payment_paid" | "payment_pending" | "payment_failed" | "payment_refunded"
@@ -896,6 +900,10 @@ async fn missed_calls(state: &AppState, user: &SessionUser) -> Vec<NotificationI
     };
     let since = chrono::Utc::now() - chrono::Duration::days(3);
     let cloudtalk = async {
+        // CloudTalk is switched off unless CLOUDTALK_ENABLED.
+        if !common::telephony::cloudtalk::enabled() {
+            return Vec::new();
+        }
         let Some(agent) = present(&user.cloudtalk_agent_id) else {
             return Vec::new();
         };

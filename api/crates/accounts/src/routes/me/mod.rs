@@ -3,6 +3,7 @@
 //! - `GET /v1/me`           → effective session user (no extra query beyond auth)
 //! - `GET`/`PUT /v1/me/account` → My Account (see [`account`])
 //! - `/v1/me/ringcentral` → my own RingCentral sign-in (see [`ringcentral`])
+//! - `/v1/me/gmail` → my own Gmail for sending (see [`gmail`])
 //! - `GET /v1/me/positions` → position ids in the company the request acts in
 //! - `GET /v1/me/sales-goal` → monthly sales goal; `PUT` sets it
 //! - `POST /v1/me/telegram/leads|notifications` → link a bot (Telegram login widget)
@@ -18,6 +19,7 @@
 //! - `/v1/me/mfa` → my two-step sign-in (see [`mfa`])
 
 pub mod account;
+pub mod gmail;
 pub mod handlers;
 pub mod mfa;
 pub mod photo;
@@ -38,6 +40,9 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(mfa::confirm))
         .routes(routes!(mfa::disable))
         .routes(routes!(account::account, account::update_account))
+        .routes(routes!(gmail::status, gmail::finish, gmail::disconnect))
+        .routes(routes!(gmail::start))
+        .routes(routes!(gmail::app_finish))
         .routes(routes!(ringcentral::start))
         .routes(routes!(ringcentral::finish, ringcentral::disconnect))
         .routes(routes!(handlers::positions))

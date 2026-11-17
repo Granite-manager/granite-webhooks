@@ -10,6 +10,7 @@ mod commissions;
 mod customer_payments;
 mod customer_view;
 mod feature_sales;
+mod job_pay;
 mod invoice_queue;
 mod invoices;
 mod online_quotes;

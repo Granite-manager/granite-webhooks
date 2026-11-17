@@ -179,6 +179,22 @@ fn pay(rule: &CommissionRule, base: f64) -> f64 {
     })
 }
 
+/// The sq ft of stone a priced option sells: its material lines (slab,
+/// splash, waterfall and mitered-edge material), times each area's quantity.
+pub fn stone_sq_ft(price: &OptionPrice) -> f64 {
+    price
+        .areas
+        .iter()
+        .map(|area| {
+            area.lines
+                .iter()
+                .filter(|line| is_material_line(line))
+                .fold(0.0, |sum, line| sum + line_quantity(line))
+                * area.quantity
+        })
+        .sum()
+}
+
 /// The quote's discount as a percent of what it would cost without one: the
 /// quote's own discount plus every line with a negative price ("Discount",
 /// "Black Friday -10%").
@@ -598,8 +614,58 @@ pub struct PayrollRep {
     pub bonus: f64,
     /// Base pay due that day.
     pub base: f64,
+    /// Template and install pay (see `routes::job_pay`).
+    pub job_pay: f64,
     /// All of it.
     pub total: f64,
+}
+
+/// A finished template or install in the salary.
+#[derive(Debug, Clone)]
+pub struct JobPaid {
+    pub user_id: i32,
+    pub person: String,
+    /// The payroll it is paid with (YYYY-MM-DD).
+    pub payroll_date: String,
+    /// Its pay with the extras.
+    pub total: f64,
+}
+
+/// The paychecks with the template and install pay added: every job on its
+/// payroll date, under the person who did it. Newest payroll first.
+pub fn with_job_pay(mut weeks: Vec<PayrollWeek>, jobs: &[JobPaid]) -> Vec<PayrollWeek> {
+    for job in jobs {
+        let week = weeks
+            .iter()
+            .position(|w| w.payroll_date == job.payroll_date)
+            .unwrap_or_else(|| {
+                weeks.push(PayrollWeek {
+                    payroll_date: job.payroll_date.clone(),
+                    reps: Vec::new(),
+                });
+                weeks.len() - 1
+            });
+        let reps = &mut weeks[week].reps;
+        let rep = reps
+            .iter()
+            .position(|r| r.user_id == Some(job.user_id))
+            .unwrap_or_else(|| {
+                reps.push(PayrollRep {
+                    user_id: Some(job.user_id),
+                    rep: job.person.clone(),
+                    commission: 0.0,
+                    bonus: 0.0,
+                    base: 0.0,
+                    job_pay: 0.0,
+                    total: 0.0,
+                });
+                reps.len() - 1
+            });
+        reps[rep].job_pay = money(reps[rep].job_pay + job.total);
+        reps[rep].total = money(reps[rep].total + job.total);
+    }
+    weeks.sort_by(|a, b| b.payroll_date.cmp(&a.payroll_date));
+    weeks
 }
 
 /// A payroll date's paychecks.
@@ -744,6 +810,7 @@ pub fn payroll_weeks(
             commission: 0.0,
             bonus: 0.0,
             base: 0.0,
+            job_pay: 0.0,
             total: 0.0,
         });
         reps.len() - 1

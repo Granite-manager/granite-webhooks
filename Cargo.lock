@@ -1072,7 +1072,6 @@ dependencies = [
  "regex",
  "reqwest",
  "rustls",
- "rustls-platform-verifier",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -1084,6 +1083,7 @@ dependencies = [
  "tracing",
  "urlencoding",
  "uuid",
+ "webpki-roots",
  "zune-heic",
 ]
 
@@ -3844,8 +3844,6 @@ dependencies = [
 [[package]]
 name = "sqlx-core"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05b44e85bf579a8eeb4ceaa77a3a523baf2bf0e9bac7e40f405d537b5d2d5ccb"
 dependencies = [
  "base64",
  "bytes",
@@ -4857,6 +4855,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "axum-test",
+ "base64",
  "bytes",
  "common",
  "email_reply_parser",

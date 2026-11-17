@@ -170,6 +170,19 @@ async fn creating_a_company_seeds_it(pool: MySqlPool) {
         count("SELECT COUNT(*) FROM customer_sources WHERE company_id = ? AND is_system = 1").await,
         4
     );
+    // Its own starter pipeline, the default, with four stages.
+    assert_eq!(
+        count("SELECT COUNT(*) FROM groups_list WHERE company_id = ? AND is_default = 1").await,
+        1
+    );
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM deals_list dl JOIN groups_list g ON g.id = dl.group_id
+              WHERE g.company_id = ? AND dl.deleted_at IS NULL"
+        )
+        .await,
+        4
+    );
     let walk_in: (String, String) =
         sqlx::query_as("SELECT name, email FROM users WHERE company_id = ? AND is_employee = 1")
             .bind(id)
@@ -365,6 +378,66 @@ async fn ses_inbound_needs_the_identity_and_the_mx(pool: MySqlPool) {
         json!({ "domain": "pending.example", "ses_verified": false, "ses_pending": true,
                 "mx_inbound": false, "inbound_ready": false })
     );
+}
+
+#[test_db::test(seed)]
+async fn statuses_answer_every_company_like_the_single_checks(pool: MySqlPool) {
+    sqlx::raw_sql(
+        "UPDATE company SET domain = 'acme.example' WHERE id = 100;
+         UPDATE company SET domain = 'pending.example' WHERE id = 101;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let server = server(&pool).await;
+    server
+        .get("/v1/superuser/companies/statuses")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    let statuses: Value = server
+        .get("/v1/superuser/companies/statuses")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    let companies: Value = server
+        .get("/v1/superuser/companies")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    let statuses = statuses.as_array().unwrap();
+    assert_eq!(statuses.len(), companies.as_array().unwrap().len());
+    for status in statuses {
+        let id = &status["id"];
+        let single = |check: &str| {
+            let server = &server;
+            let path = format!("/v1/superuser/companies/{id}/{check}");
+            async move {
+                server
+                    .get(&path)
+                    .with_session(sessions::ADMIN)
+                    .await
+                    .json::<Value>()
+            }
+        };
+        assert_eq!(status["ses_inbound"], single("ses-inbound").await, "company {id}");
+        assert_eq!(
+            status["setup_checklist"],
+            single("setup-checklist").await,
+            "company {id}"
+        );
+        let trust = single("domain-trust").await;
+        assert_eq!(status["domain_trust"]["domain"], trust["domain"], "company {id}");
+        assert_eq!(
+            status["domain_trust"]["risk_level"], trust["risk_level"],
+            "company {id}"
+        );
+    }
+    let acme = statuses.iter().find(|s| s["id"] == 100).unwrap();
+    assert_eq!(acme["ses_inbound"]["inbound_ready"], true);
+    assert_eq!(acme["domain_trust"]["domain"], "acme.example");
+    let other = statuses.iter().find(|s| s["id"] == 101).unwrap();
+    assert_eq!(other["ses_inbound"]["ses_pending"], true);
 }
 
 #[test_db::test(seed)]

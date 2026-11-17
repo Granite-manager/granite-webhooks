@@ -22,8 +22,8 @@ uuid = { version = "1", features = ["v4"] }
 # rustls without aws-lc-rs (a C build); `http::client` installs ring instead.
 reqwest = { version = "0.13", default-features = false, features = ["json", "multipart", "rustls-no-provider", "charset", "http2", "system-proxy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-# The verifier reqwest builds per client; `http` builds it once (see there).
-rustls-platform-verifier = "0.7"
+# The root certificates `http` gives every client (see there).
+webpki-roots = "1"
 aes-gcm = "0.10"
 base64 = "0.22"
 rand = "0.10"

@@ -176,7 +176,7 @@ async fn automation(
     let group: Option<i32> = sqlx::query_scalar(
         "SELECT dl.group_id FROM deals_list dl
            JOIN groups_list gl ON gl.id = dl.group_id AND gl.deleted_at IS NULL
-          WHERE dl.id = ? AND dl.deleted_at IS NULL AND (gl.company_id = ? OR gl.id = 1)",
+          WHERE dl.id = ? AND dl.deleted_at IS NULL AND gl.company_id = ?",
     )
     .bind(list)
     .bind(company_id)

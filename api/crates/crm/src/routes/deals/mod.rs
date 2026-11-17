@@ -9,6 +9,7 @@
 //! - `GET    /v1/deals/by-customer`               → a customer's deals with previews
 //! - `GET    /v1/deals/{id}`, `PATCH`, `DELETE`   → one deal
 //! - `PUT    /v1/deals/{id}/outcome`              → won / lost / reopen
+//! - `GET    /v1/deals/{id}/page`                 → everything the deal page shows, in one read
 //! - `GET    /v1/deals/{id}/stage-history`        → stage visits
 //! - `/v1/deals/{id}/activities[/{activity_id}]`  → to-dos (GET, POST, PATCH, DELETE)
 //! - `/v1/deals/{id}/files`, `/documents/{id}`, `/files/{source}/{id}` → photos and documents
@@ -25,6 +26,7 @@ mod activity_rules;
 mod documents;
 pub mod files;
 mod handlers;
+mod page;
 mod pipelines;
 pub mod queries;
 pub mod schemas;
@@ -43,6 +45,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::by_customer))
         .routes(routes!(handlers::get, handlers::update, handlers::delete))
         .routes(routes!(handlers::set_outcome))
+        .routes(routes!(page::get))
         .routes(routes!(handlers::stage_history))
         .routes(routes!(
             handlers::list_activities,

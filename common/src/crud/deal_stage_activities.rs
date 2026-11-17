@@ -41,7 +41,7 @@ pub async fn add_for_move(
         return Ok(());
     }
     let rules: Vec<(i32, i32, String, i32, String, Option<i32>)> = sqlx::query_as(
-        "SELECT r.id, d.company_id, r.activity_name, r.due_amount, CAST(r.due_unit AS CHAR), d.user_id
+        "SELECT r.id, c.company_id, r.activity_name, r.due_amount, CAST(r.due_unit AS CHAR), d.user_id
            FROM deals d
            JOIN customers c ON c.id = d.customer_id
            JOIN deal_stage_activity_rules r

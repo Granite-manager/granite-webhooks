@@ -244,6 +244,26 @@ pub async fn push_to_users(
     user_ids: &[i32],
     data: &BTreeMap<String, String>,
 ) -> sqlx::Result<usize> {
+    push_to_users_unless_muted(
+        state,
+        company_id,
+        user_ids,
+        data,
+        super::push_mutes::setting_of(data),
+    )
+    .await
+}
+
+/// [`push_to_users`], but users who turned off push `setting` (a
+/// [`super::push_mutes::SETTINGS`] key) in the app are left out; `None`
+/// tells them all.
+pub async fn push_to_users_unless_muted(
+    state: &AppState,
+    company_id: i32,
+    user_ids: &[i32],
+    data: &BTreeMap<String, String>,
+    setting: Option<&str>,
+) -> sqlx::Result<usize> {
     if user_ids.is_empty() || !state.push.is_enabled() {
         return Ok(0);
     }
@@ -255,6 +275,14 @@ pub async fn push_to_users(
     ));
     query.push_bind(company_id);
     crate::sql::push_in(&mut query, "pd.user_id", user_ids);
+    if let Some(setting) = setting {
+        query.push(
+            " AND NOT EXISTS (SELECT 1 FROM phone_push_mutes m
+                               WHERE m.user_id = pd.user_id AND m.push_key = ",
+        );
+        query.push_bind(setting.to_string());
+        query.push(")");
+    }
     query.push(" ORDER BY pd.id");
     let targets: Vec<PushTarget> = query.build_query_as().fetch_all(&state.pool).await?;
     Ok(push_targets(state, &targets, data, true).await)

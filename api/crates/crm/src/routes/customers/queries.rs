@@ -13,19 +13,49 @@ const CUSTOMER_COLUMNS: &str = "
     c.created_date, c.assigned_date, u.name AS sales_rep_name, c.company_id, c.source,
     c.invalid_lead, c.company_name, c.customer_temperature AS customerTemperature";
 
-const COMPANY_TOTALS: &str = ",
-    CAST((
-      SELECT SUM(s.price)
+/// A company's key: its name without case or outer spaces, so all contacts
+/// of one business make one company.
+const COMPANY_KEY: &str = "LOWER(TRIM(c.company_name))";
+
+/// Sales of the company of `c`: of any live contact with its company name,
+/// or of their child customers (and of `c` and its children, as before).
+macro_rules! company_sales {
+    () => {
+        "
       FROM sales s
-      LEFT JOIN customers sub ON sub.id = s.customer_id
-      WHERE s.customer_id = c.id OR sub.parent_id = c.id
-    ) AS CHAR) AS revenue_generated,
+      JOIN customers sc ON sc.id = s.customer_id
+      LEFT JOIN customers sp ON sp.id = sc.parent_id
+      WHERE sc.company_id = c.company_id AND (
+        sc.id = c.id OR sp.id = c.id
+        OR (sc.deleted_at IS NULL AND LOWER(TRIM(sc.company_name)) = LOWER(TRIM(c.company_name)))
+        OR (sp.deleted_at IS NULL AND LOWER(TRIM(sp.company_name)) = LOWER(TRIM(c.company_name))))"
+    };
+}
+
+/// The companies view's totals over the whole company, and `company_rank`:
+/// 1 marks the row that stands for the company, the contact named like the
+/// company, else the oldest one.
+const COMPANY_TOTALS: &str = concat!(
+    ",
+    CAST((SELECT SUM(s.price)",
+    company_sales!(),
+    ") AS CHAR) AS revenue_generated,
+    (SELECT COUNT(*)",
+    company_sales!(),
+    ") AS projects_count,
     (
-      SELECT COUNT(*)
-      FROM sales s
-      LEFT JOIN customers sub ON sub.id = s.customer_id
-      WHERE s.customer_id = c.id OR sub.parent_id = c.id
-    ) AS projects_count";
+      SELECT GROUP_CONCAT(
+        CONCAT_WS('\\n', NULLIF(TRIM(g.phone), ''), NULLIF(TRIM(g.phone_2), ''))
+        ORDER BY g.id = c.id DESC, g.id SEPARATOR '\\n')
+      FROM customers g
+      WHERE g.company_id = c.company_id AND g.deleted_at IS NULL
+        AND LOWER(TRIM(g.company_name)) = LOWER(TRIM(c.company_name))
+    ) AS company_phones_raw,
+    ROW_NUMBER() OVER (
+      PARTITION BY LOWER(TRIM(c.company_name))
+      ORDER BY LOWER(TRIM(c.name)) = LOWER(TRIM(c.company_name)) DESC, c.id
+    ) AS company_rank"
+);
 
 const CUSTOMER_JOINS: &str = "
     FROM customers c
@@ -35,12 +65,21 @@ const CUSTOMER_JOINS: &str = "
     WHERE c.deleted_at IS NULL AND c.company_id = ";
 
 fn list_query(company_id: i32, filter: ListFilter) -> QueryBuilder<MySql> {
-    let mut query = QueryBuilder::new("SELECT");
+    let companies = filter.view == CustomersView::Companies;
+    let mut query = QueryBuilder::new(if companies {
+        "SELECT * FROM (SELECT"
+    } else {
+        "SELECT"
+    });
     query.push(CUSTOMER_COLUMNS);
-    if filter.view == CustomersView::Companies {
+    if companies {
         query.push(COMPANY_TOTALS);
     }
     push_list_filter(&mut query, company_id, filter);
+    if companies {
+        // One row per company, not one per contact.
+        query.push(") grouped WHERE company_rank = 1");
+    }
     query
 }
 
@@ -128,8 +167,12 @@ where
     }
     query.push(", ").push(tab_date(tab)).push(" AS tab_date");
     push_page_filter(&mut query, company_id, request.filter, tab);
+    query.push(") page");
+    if request.filter.view == CustomersView::Companies {
+        query.push(" WHERE company_rank = 1");
+    }
     query
-        .push(") page ORDER BY ")
+        .push(" ORDER BY ")
         .push(page_order(request.sort, request.descending))
         .push(" LIMIT ")
         .push_bind(i64::from(request.page_size))
@@ -192,7 +235,11 @@ pub async fn customers_page(
         });
     };
 
-    let mut count = QueryBuilder::<MySql>::new("SELECT COUNT(*)");
+    let mut count = QueryBuilder::<MySql>::new(if companies {
+        format!("SELECT COUNT(DISTINCT {COMPANY_KEY})")
+    } else {
+        "SELECT COUNT(*)".to_owned()
+    });
     push_page_filter(&mut count, company_id, request.filter, tab);
     let total: i64 = count.build_query_scalar().fetch_one(pool).await?;
     let last_page =
@@ -203,6 +250,7 @@ pub async fn customers_page(
 
     let (rows, ids) = if companies {
         let rows: Vec<CompanyRow> = page_rows(pool, company_id, request, tab, page).await?;
+        let rows: Vec<CompanyRow> = rows.into_iter().map(CompanyRow::with_phones).collect();
         let ids: Vec<i32> = rows.iter().map(|row| row.customer.id).collect();
         (ListResponse::Companies(rows), ids)
     } else {
@@ -254,7 +302,8 @@ pub async fn list_companies(
     filter: ListFilter,
 ) -> Result<Vec<CompanyRow>, sqlx::Error> {
     debug_assert_eq!(filter.view, CustomersView::Companies);
-    fetch_list(pool, company_id, filter).await
+    let rows: Vec<CompanyRow> = fetch_list(pool, company_id, filter).await?;
+    Ok(rows.into_iter().map(CompanyRow::with_phones).collect())
 }
 
 #[derive(FromRow)]

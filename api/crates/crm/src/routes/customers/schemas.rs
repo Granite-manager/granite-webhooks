@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 #[derive(Debug, Default, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct ListQuery {
-    /// `customers` (default) lists every customer. `companies` lists only
-    /// customers with a company name and adds revenue and project totals.
+    /// `customers` (default) lists every customer. `companies` lists one row
+    /// per company name (its contacts together) with revenue and project totals.
     /// Any other value is treated as `customers`.
     #[param(value_type = Option<CustomersView>, inline)]
     pub view: Option<String>,
@@ -31,7 +31,7 @@ pub struct ListQuery {
 pub enum CustomersView {
     /// Every customer of the company.
     Customers,
-    /// Only customers with a company name, plus revenue/project totals.
+    /// One row per company name (all its contacts), plus revenue/project totals.
     Companies,
 }
 
@@ -107,8 +107,8 @@ pub struct CustomerRow {
     pub customer_temperature: Option<String>,
 }
 
-/// A customer row of the `companies` view, with totals over its own sales
-/// and those of its child customers.
+/// A company of the `companies` view: the contact named like the company,
+/// else its oldest, with totals over every contact of the company and their child customers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, FromRow, ToSchema)]
 pub struct CompanyRow {
     #[sqlx(flatten)]
@@ -119,6 +119,45 @@ pub struct CompanyRow {
     pub revenue_generated: Option<String>,
     /// Number of sales.
     pub projects_count: i64,
+    /// Every phone number of the company's contacts, once each (same digits
+    /// = same number), this row's own numbers first.
+    #[sqlx(skip)]
+    pub company_phones: Vec<String>,
+    /// `company_phones` as the query returns them, one per line.
+    #[serde(skip)]
+    #[schema(ignore)]
+    pub company_phones_raw: Option<String>,
+}
+
+impl CompanyRow {
+    /// Fills `company_phones` from `company_phones_raw`.
+    pub fn with_phones(mut self) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        let raw = self.company_phones_raw.take().unwrap_or_default();
+        // GROUP_CONCAT stops at 1,024 bytes: drop the cut-off last number.
+        let raw = if raw.len() >= 1024 {
+            raw.rsplit_once('\n').map_or("", |(kept, _)| kept)
+        } else {
+            raw.as_str()
+        };
+        self.company_phones = raw
+            .lines()
+            .map(str::trim)
+            .filter(|phone| {
+                // Last 10 digits: "+1 931…" and "931…" are one number.
+                let all: Vec<char> = phone.chars().filter(char::is_ascii_digit).collect();
+                let digits: String = all[all.len().saturating_sub(10)..].iter().collect();
+                !phone.is_empty()
+                    && seen.insert(if digits.is_empty() {
+                        phone.to_lowercase()
+                    } else {
+                        digits
+                    })
+            })
+            .map(str::to_owned)
+            .collect();
+        self
+    }
 }
 
 /// `GET /v1/customers` returns `CustomerRow`s, or `CompanyRow`s when `view=companies`.

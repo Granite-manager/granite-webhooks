@@ -534,3 +534,156 @@ async fn an_invited_user_sets_up_their_own_account(pool: MySqlPool) {
         .await
         .assert_status_not_found();
 }
+
+#[test_db::test(seed)]
+async fn the_app_resets_a_forgotten_password_with_an_emailed_code(pool: MySqlPool) {
+    let (server, sent) = setup(pool.clone(), None).await;
+    // Unknown emails get the same answer and no email.
+    server
+        .post("/v1/auth/password-reset-code")
+        .json(&json!({ "email": "nobody@acme.test" }))
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    assert!(sent.lock().unwrap().is_empty());
+    server
+        .post("/v1/auth/password-reset-code")
+        .json(&json!({ "email": " Rep@Acme.test " }))
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    let emails = sent.lock().unwrap().clone();
+    assert_eq!(emails.len(), 1);
+    assert_eq!(emails[0].to, ["rep@acme.test"]);
+    let code: String = emails[0].subject.chars().take(6).collect();
+    assert!(code.bytes().all(|b| b.is_ascii_digit()));
+    assert!(emails[0].body.contains(&code));
+    assert!(!emails[0].body.contains("http"));
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": code, "password": "short" }))
+        .await
+        .assert_status_bad_request();
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": wrong, "password": "a-new-password" }))
+        .await
+        .assert_status_bad_request();
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "Rep@acme.test", "code": code, "password": " a-new-password " }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Every session ended; the code is spent; the new password signs in.
+    server
+        .get("/v1/me")
+        .with_session(sessions::REP)
+        .await
+        .assert_status_unauthorized();
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": code, "password": "another-password" }))
+        .await
+        .assert_status_bad_request();
+    server
+        .post("/v1/auth/login")
+        .json(&json!({ "email": "rep@acme.test", "password": "a-new-password" }))
+        .await
+        .assert_status_ok();
+}
+
+#[test_db::test(seed)]
+async fn five_wrong_reset_codes_end_the_code(pool: MySqlPool) {
+    let (server, sent) = setup(pool.clone(), None).await;
+    server
+        .post("/v1/auth/password-reset-code")
+        .json(&json!({ "email": "rep@acme.test" }))
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    let code: String = sent.lock().unwrap()[0].subject.chars().take(6).collect();
+    let wrong = if code == "000000" { "111111" } else { "000000" };
+    for _ in 0..5 {
+        server
+            .post("/v1/auth/password-reset-code/confirm")
+            .json(&json!({ "email": "rep@acme.test", "code": wrong, "password": "a-new-password" }))
+            .await
+            .assert_status_bad_request();
+    }
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": code, "password": "a-new-password" }))
+        .await
+        .assert_status_bad_request();
+}
+
+/// The code of `secret` (base32) now.
+fn authenticator_code(secret: &str) -> String {
+    let key = api_accounts::mfa::base32_decode(secret).unwrap();
+    let step = chrono::Utc::now().timestamp().div_euclid(30);
+    format!("{:06}", api_accounts::mfa::code_at(&key, step))
+}
+
+#[test_db::test(seed)]
+async fn a_reset_code_needs_the_authenticator_when_two_step_is_on(pool: MySqlPool) {
+    let (server, sent) = setup(pool.clone(), None).await;
+    let started: Value = server
+        .post("/v1/me/mfa/setup")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    let secret = started["secret"].as_str().unwrap().to_string();
+    server
+        .post("/v1/me/mfa/confirm")
+        .with_session(sessions::REP)
+        .json(&json!({ "code": authenticator_code(&secret) }))
+        .await
+        .assert_status_ok();
+    // The next 30-second step, so the confirm's code is not reused.
+    sqlx::query("UPDATE user_mfa SET last_step = NULL WHERE user_id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    server
+        .post("/v1/auth/password-reset-code")
+        .json(&json!({ "email": "rep@acme.test" }))
+        .await
+        .assert_status(StatusCode::ACCEPTED);
+    let code: String = sent.lock().unwrap()[0].subject.chars().take(6).collect();
+    // The email code alone is not enough.
+    let res = server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({ "email": "rep@acme.test", "code": code, "password": "a-new-password" }))
+        .await;
+    res.assert_status(StatusCode::CONFLICT);
+    assert_eq!(res.json::<Value>()["error"], "authenticator_code_required");
+    let right = authenticator_code(&secret);
+    let wrong = if right == "000000" {
+        "111111"
+    } else {
+        "000000"
+    };
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({
+            "email": "rep@acme.test", "code": code, "password": "a-new-password",
+            "authenticator_code": wrong,
+        }))
+        .await
+        .assert_status_bad_request();
+    server
+        .post("/v1/auth/password-reset-code/confirm")
+        .json(&json!({
+            "email": "rep@acme.test", "code": code, "password": "a-new-password",
+            "authenticator_code": right,
+        }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Signing in still asks for the authenticator code.
+    let login = server
+        .post("/v1/auth/login")
+        .json(&json!({ "email": "rep@acme.test", "password": "a-new-password" }))
+        .await;
+    login.assert_status(StatusCode::ACCEPTED);
+    assert_eq!(login.json::<Value>()["step"], "code");
+}

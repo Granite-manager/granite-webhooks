@@ -46,7 +46,7 @@ async fn post_sms_followup_call_check(
     let api_url = std::env::var("API_URL").map_err(|error| error.to_string())?;
     let lambda_key = std::env::var("LAMBDA_KEY").map_err(|error| error.to_string())?;
     let url = format!("{}/v1/followups/call-check", api_url.trim_end_matches('/'));
-    let response = common::http::client()
+    let response = crate::http::client()
         .post(url)
         .header("Authorization", lambda_key)
         .json(&body)

@@ -30,11 +30,15 @@ pub fn client_builder() -> reqwest::ClientBuilder {
         .tls_backend_preconfigured(tls_config())
 }
 
-/// The TLS settings reqwest would build for each client (ring, TLS 1.2 and
-/// 1.3, the platform's root certificates, h2 then HTTP/1.1), built once.
-/// reqwest builds a new platform verifier per client, and on Linux that reads
-/// and parses the system's CA bundle: about 14 ms a client on a 512 MB
-/// Lambda, and the api builds two dozen of them at cold start.
+/// The TLS settings every client shares (ring, TLS 1.2 and 1.3, h2 then
+/// HTTP/1.1), built once.
+///
+/// The root certificates are Mozilla's, compiled in (`webpki-roots`, as sqlx
+/// uses for RDS), not the system's: reading and parsing Amazon Linux's CA
+/// bundle (rustls' platform verifier) took 60-75 ms of a 1024 MB Lambda's
+/// cold start, before the first request to Secrets Manager could go out.
+/// Amazon Linux's bundle is Mozilla's list as well. reqwest would also build
+/// a verifier per client, and the api builds two dozen at cold start.
 fn tls_config() -> rustls::ClientConfig {
     static CONFIG: OnceLock<rustls::ClientConfig> = OnceLock::new();
     CONFIG
@@ -42,13 +46,13 @@ fn tls_config() -> rustls::ClientConfig {
             let provider = rustls::crypto::CryptoProvider::get_default()
                 .cloned()
                 .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
-            let verifier = rustls_platform_verifier::Verifier::new(Arc::clone(&provider))
-                .expect("the platform's root certificates");
+            let roots = rustls::RootCertStore {
+                roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+            };
             let mut config = rustls::ClientConfig::builder_with_provider(provider)
                 .with_safe_default_protocol_versions()
                 .expect("TLS 1.2 and 1.3")
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(verifier))
+                .with_root_certificates(roots)
                 .with_no_client_auth();
             config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
             config

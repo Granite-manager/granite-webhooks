@@ -43,13 +43,18 @@ pub async fn undo_send(
     State(state): State<AppState>,
     EmployeeUser(user): EmployeeUser,
 ) -> ApiResult<Json<UndoSend>> {
+    Ok(Json(undo_send_of(&state.pool, user.id).await?))
+}
+
+/// The user's Undo send (also part of `GET /v1/me/account`).
+pub(super) async fn undo_send_of(pool: &sqlx::MySqlPool, user_id: i32) -> ApiResult<UndoSend> {
     let on: Option<bool> = sqlx::query_scalar("SELECT undo_send <> 0 FROM users WHERE id = ?")
-        .bind(user.id)
-        .fetch_optional(&state.pool)
+        .bind(user_id)
+        .fetch_optional(pool)
         .await?;
-    Ok(Json(UndoSend {
+    Ok(UndoSend {
         on: on.unwrap_or(true),
-    }))
+    })
 }
 
 /// Turn my Undo send on or off

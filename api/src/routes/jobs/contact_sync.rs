@@ -125,6 +125,10 @@ async fn due(pool: &MySqlPool, provider: Provider) -> Result<Vec<(i32, i32)>, sq
 }
 
 async fn sync_provider(state: &AppState, provider: Provider) -> Result<usize, sqlx::Error> {
+    // CloudTalk is switched off unless CLOUDTALK_ENABLED: no customer is due.
+    if matches!(provider, Provider::Cloudtalk) && !common::telephony::cloudtalk::enabled() {
+        return Ok(0);
+    }
     let customers = due(&state.pool, provider).await?;
     for &(customer_id, company_id) in &customers {
         // Recorded first, so a customer that breaks the sync is not retried

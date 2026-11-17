@@ -80,7 +80,7 @@ use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use cookie::{SESSION_COOKIE_NAME, cookie_values, decode_session};
 use sections::Access;
-use session::{SessionUser, effective_user, find_session_user, user_positions};
+use session::{SUPER_ADMIN_POSITION, SessionUser, effective_user, find_session_user, user_positions};
 
 async fn authenticate(parts: &Parts, state: &AppState) -> Result<SessionUser, ApiError> {
     authenticate_with_access(parts, state)
@@ -144,8 +144,9 @@ async fn check_sections(
 /// `/v1/me/todos` and `/v1/me/todo-order` are the caller's own to-do list
 /// (the app's To do tab); `/v1/me/undo-send` is the caller's Undo send (Settings ›
 /// General); `/v1/me/photo` is the caller's own picture (the app's Profile);
-/// `/v1/me/mfa` is the caller's two-step sign-in (Settings › Security).
-pub const DEVICE_ROUTES: [&str; 10] = [
+/// `/v1/me/mfa` is the caller's two-step sign-in (Settings › Security);
+/// `/v1/me/gmail` is the caller's own Gmail for sending (Settings › Emails).
+pub const DEVICE_ROUTES: [&str; 11] = [
     "/v1/emails",
     "/v1/schedule",
     "/v1/events",
@@ -156,6 +157,7 @@ pub const DEVICE_ROUTES: [&str; 10] = [
     "/v1/me/undo-send",
     "/v1/me/photo",
     "/v1/me/mfa",
+    "/v1/me/gmail",
 ];
 
 /// CRM routes the app reads with its device token, `GET` only (my texts
@@ -707,6 +709,26 @@ impl FromRequestParts<AppState> for EmployeeUser {
     }
 }
 
+/// [`EmployeeUser`], with what their positions open: for a route that
+/// answers for several areas and leaves out those of closed tabs.
+pub struct EmployeeAccess {
+    pub user: SessionUser,
+    pub access: Access,
+}
+
+impl FromRequestParts<AppState> for EmployeeAccess {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        let (user, _, access) = authenticate_with_access(parts, state).await?;
+        if user.is_employee || user.is_admin || user.is_superuser || access != Access::Full {
+            Ok(Self { user, access })
+        } else {
+            Err(ApiError::Forbidden)
+        }
+    }
+}
+
 /// Shop manager and shop worker positions (`Positions` in the CRM).
 const SHOP_POSITIONS: [i32; 2] = [3, 4];
 
@@ -718,13 +740,35 @@ impl FromRequestParts<AppState> for ShopOrEmployeeUser {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        ShopOrEmployeeAccess::from_request_parts(parts, state)
+            .await
+            .map(|access| Self(access.user))
+    }
+}
+
+/// [`ShopOrEmployeeUser`], and whether [`EmployeeUser`] lets them in too: one
+/// sign-in check for a route that answers both, with the employee-only parts
+/// left out for the shop.
+pub struct ShopOrEmployeeAccess {
+    pub user: SessionUser,
+    /// [`EmployeeUser`] would let them in (false for a shop manager or worker
+    /// who is not also an employee).
+    pub employee: bool,
+}
+
+impl FromRequestParts<AppState> for ShopOrEmployeeAccess {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let (user, positions, access) = authenticate_with_access(parts, state).await?;
         let shop = positions.iter().any(|row| {
             row.company_id == user.company_id && SHOP_POSITIONS.contains(&row.position_id)
         });
         let sectioned = access != Access::Full;
-        if user.is_employee || user.is_admin || user.is_superuser || shop || sectioned {
-            Ok(Self(user))
+        // `EmployeeUser`'s rule.
+        let employee = user.is_employee || user.is_admin || user.is_superuser || sectioned;
+        if employee || shop {
+            Ok(Self { user, employee })
         } else {
             Err(ApiError::Forbidden)
         }
@@ -782,7 +826,7 @@ impl FromRequestParts<AppState> for UserManager {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
         let manager = positions
             .iter()
-            .any(|row| row.company_id == user.company_id && row.position_id == MANAGER_POSITION);
+            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
         if user.is_superuser || ((user.is_admin) && manager) {
             Ok(Self(user))
         } else {
@@ -802,7 +846,7 @@ impl FromRequestParts<AppState> for BillingManager {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
         let manager = positions
             .iter()
-            .any(|row| row.company_id == user.company_id && row.position_id == MANAGER_POSITION);
+            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
         if user.is_superuser || ((user.is_employee || user.is_admin) && manager) {
             Ok(Self(user))
         } else {
@@ -824,7 +868,7 @@ impl FromRequestParts<AppState> for CompanyManager {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
         let manager = positions
             .iter()
-            .any(|row| row.company_id == user.company_id && row.position_id == MANAGER_POSITION);
+            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
         if manager {
             Ok(Self(user))
         } else {
@@ -938,6 +982,8 @@ mod tests {
             "/v1/me/photo",
             "/v1/me/mfa",
             "/v1/me/mfa/setup",
+            "/v1/me/gmail",
+            "/v1/me/gmail/app",
         ] {
             assert!(device_route(&Method::GET, path), "{path}");
             assert!(device_route(&Method::POST, path), "{path}");

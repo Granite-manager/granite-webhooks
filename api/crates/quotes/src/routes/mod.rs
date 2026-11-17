@@ -7,6 +7,8 @@ pub mod commissions;
 pub mod customer_payments;
 pub mod customer_view;
 pub mod feature_sales;
+pub mod job_chips;
+pub mod job_pay;
 pub mod customer_view_extras;
 pub mod invoice_queue;
 pub mod invoices;

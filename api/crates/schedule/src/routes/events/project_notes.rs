@@ -53,7 +53,7 @@ const DIRECTIONS: [&str; 12] = [
 /// The house number and street name of an address (`"13636 frenchman"`), so
 /// "647 Overpeck Rd" and "647 Overpeck Road, IN" match. `None` when it has no
 /// house number ("Carmel, IN 46033").
-fn street_key(address: &str) -> Option<String> {
+pub fn street_key(address: &str) -> Option<String> {
     let lower = address.to_lowercase();
     let mut words = lower
         .split(|c: char| !c.is_ascii_alphanumeric())
@@ -133,7 +133,7 @@ fn event_project(
 
 /// The event's project sales, newest first (see [`event_project`]); empty
 /// when it has none, 404 when the event is not the company's.
-async fn find_event_sales(pool: &MySqlPool, company_id: i32, event_id: i32) -> ApiResult<Vec<i32>> {
+pub async fn find_event_sales(pool: &MySqlPool, company_id: i32, event_id: i32) -> ApiResult<Vec<i32>> {
     let event: Option<(Option<i32>, Option<i32>, Option<String>)> = sqlx::query_as(
         "SELECT e.sale_id, e.customer_id, e.location
            FROM events e JOIN users u ON e.created_user_id = u.id

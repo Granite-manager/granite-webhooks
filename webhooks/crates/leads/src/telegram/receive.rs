@@ -332,23 +332,22 @@ async fn handle_assign_lead<T: Telegram>(
         .await
         .unwrap();
     }
-    let client = common::http::client();
-    // For right now we log but ignore errors
+    let client = crate::http::client();
+    let deal_id = result.last_insert_id();
+    let lead_link = lead_url(deal_id);
+    // The contact sync (errors only logged) and the rep's phone push at
+    // once: they wait on different servers.
     tokio::join!(
         sync_customer_to_cloud_talk(pool, &client, lead_id),
         sync_customer_to_ring_central(pool, &client, lead_id),
+        push_lead(
+            position.company_id,
+            i64::from(lead_id),
+            Some(deal_id),
+            LeadKind::Assigned,
+            Audience::Rep(position.user_id),
+        ),
     );
-
-    let deal_id = result.last_insert_id();
-    let lead_link = lead_url(deal_id);
-    push_lead(
-        position.company_id,
-        i64::from(lead_id),
-        Some(deal_id),
-        LeadKind::Assigned,
-        Audience::Rep(position.user_id),
-    )
-    .await;
     // The managers' phones hear who has it, as their Telegram messages did; never the one
     // who pressed the button (whatever company their account is in: an owner's may be another).
     let assigners: Vec<i32> =
@@ -428,10 +427,10 @@ pub async fn webhook_handler(
 #[cfg(test)]
 mod local_tests {
     use super::*;
+    use crate::libs::leads::LeadSender;
     use crate::schemas::add_customer::NewLeadForm;
     use crate::tests::telegram::{MockTelegram, generate_message, take_sent_emails, telegram_user};
     use crate::tests::utils::{assigned_user_position, insert_user, positioned_user};
-    use crate::libs::leads::LeadSender;
     use crate::webhooks::receive::new_lead_form_inner;
     use axum::http::StatusCode;
     use chrono::{DateTime, Duration, NaiveDateTime, Utc};
@@ -541,7 +540,8 @@ mod local_tests {
             .unwrap();
         assigned_user_position(&pool, 1, 2, admin_id).await.unwrap();
 
-        let response = new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
+        let response =
+            new_lead_form_inner(1, pool.clone(), lead.clone(), LeadSender::Verified, &bot).await;
         assert_eq!(response.0, StatusCode::CREATED);
         return (response, bot);
     }

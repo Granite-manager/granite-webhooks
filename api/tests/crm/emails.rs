@@ -107,6 +107,27 @@ async fn search_matches_text_and_customer_names(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn search_words_match_across_line_breaks(pool: MySqlPool) {
+    sqlx::query(
+        "UPDATE emails SET body = 'Fits the quartzite\r\nwaterfall edge', \
+         html_body = '<p>Polished\nonyx slab</p>' WHERE id = 8803",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    for (search, ids) in [
+        ("quartzite%20waterfall", vec![8803]),
+        ("onyx%20slab", vec![8803]),
+        ("waterfall%20quartzite", vec![]),
+        ("quartzite", vec![8803]),
+    ] {
+        let page = get(&pool, &format!("/v1/emails/threads?search={search}"), OLGA).await;
+        assert_eq!(email_ids(&page), ids, "{search}");
+        assert_eq!(page["total_count"], i64::from(!ids.is_empty()), "{search}");
+    }
+}
+
+#[test_db::test(seed)]
 async fn mailboxes_are_per_user_and_company(pool: MySqlPool) {
     let rita = get(&pool, "/v1/emails/threads", sessions::REP).await;
     assert_eq!(email_ids(&rita), vec![8807]);
@@ -131,6 +152,14 @@ async fn unread_badge_needs_a_mail_domain(pool: MySqlPool) {
         get(&pool, "/v1/emails/unread", sessions::REP).await,
         json!({ "count": 0, "latest_inbound_id": null })
     );
+    // The same badge in `GET /v1/me/badges`.
+    for session in [OLGA, sessions::REP] {
+        let badges = get(&pool, "/v1/me/badges?include=emails_unread", session).await;
+        assert_eq!(
+            badges,
+            json!({ "emails_unread": get(&pool, "/v1/emails/unread", session).await })
+        );
+    }
 }
 
 #[test_db::test(seed)]

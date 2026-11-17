@@ -80,9 +80,9 @@ const RESET_INTERVAL_SECONDS: i64 = 60;
 /// An invite link works this long.
 const INVITE_DAYS: i64 = 7;
 /// Shortest new password.
-const MIN_PASSWORD: usize = 8;
+pub(crate) const MIN_PASSWORD: usize = 8;
 /// bcrypt cost of new passwords (as Remix).
-const BCRYPT_COST: u32 = 10;
+pub(crate) const BCRYPT_COST: u32 = 10;
 /// Checked when the email is unknown, so it takes as long as a real check.
 static DUMMY_HASH: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     bcrypt::hash("granite-manager-dummy", BCRYPT_COST).unwrap_or_default()

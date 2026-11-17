@@ -13,6 +13,20 @@ static CLEANER: LazyLock<Builder<'static>> = LazyLock::new(|| {
         .add_tag_attributes("font", ["color", "face", "size"])
         .add_generic_attributes(["style", "class"])
         .add_tag_attributes("a", ["target", "rel"])
+        // A signature in columns (Gmail's photo, icons and logo side by side).
+        .add_tag_attributes(
+            "table",
+            [
+                "border",
+                "cellpadding",
+                "cellspacing",
+                "width",
+                "bgcolor",
+                "role",
+            ],
+        )
+        .add_tag_attributes("tr", ["align", "valign", "bgcolor"])
+        .add_tag_attributes("td", ["align", "valign", "bgcolor", "width", "height"])
         .link_rel(None)
         .add_url_schemes(["data"])
         .attribute_filter(|element, _attribute, value| {
@@ -71,6 +85,23 @@ mod tests {
             sanitize(r#"<a href="data:text/html,x">a</a><img src="data:image/png;base64,AAAA">"#);
         assert!(!clean.contains("text/html"), "{clean}");
         assert!(clean.contains("data:image/png"), "{clean}");
+    }
+
+    #[test]
+    fn keeps_a_signature_in_columns() {
+        let html = r#"<table cellpadding="0" cellspacing="0" border="0"><tbody><tr><td valign="top" width="120"><img src="https://x.test/p.png" width="110" height="110"></td><td style="padding-left: 12px"><b>Vadim</b></td></tr></tbody></table>"#;
+        let clean = sanitize(html);
+        assert!(clean.contains(r#"cellpadding="0""#), "{clean}");
+        assert!(clean.contains(r#"cellspacing="0""#), "{clean}");
+        assert!(clean.contains(r#"valign="top""#), "{clean}");
+        assert!(clean.contains(r#"width="110""#), "{clean}");
+        assert!(clean.contains(r#"style="padding-left: 12px""#), "{clean}");
+        // Icons drawn as round spans, with phone links.
+        let icons = sanitize(
+            r#"<a href="tel:+13345137537"><span style="display:inline-block;border-radius:50%;background:#0b2545">&#9742;</span></a>"#,
+        );
+        assert!(icons.contains(r#"href="tel:+13345137537""#), "{icons}");
+        assert!(icons.contains("border-radius:50%"), "{icons}");
     }
 
     #[test]

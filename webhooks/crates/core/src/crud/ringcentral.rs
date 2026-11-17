@@ -221,7 +221,7 @@ pub async fn get_access_token(
 ) -> Result<(String, String), Box<dyn Error + Send + Sync>> {
     let token = common::telephony::ringcentral_auth::access_token(
         pool,
-        &common::http::client(),
+        &crate::http::client(),
         i32::try_from(company_id)?,
     )
     .await?;

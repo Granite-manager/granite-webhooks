@@ -1,15 +1,17 @@
 use super::queries::{
-    company_by_subdomain as find_company, find_stone, list_colors, list_fixtures, list_stones,
-    search_stones as search, stone_photos, stone_slabs,
+    company_by_subdomain as find_company, find_material, find_stone, list_colors, list_fixtures,
+    list_stones, material_photos, material_stones, search_stones as search, stone_photos,
+    stone_slabs,
 };
 use super::schemas::{
     PublicCompaniesQuery, PublicCompany, PublicCompanyCard, PublicFixture, PublicFixturesQuery,
-    PublicPhoto, PublicSearchQuery, PublicSlab, PublicStone, PublicStonesQuery,
+    PublicMaterial, PublicPhoto, PublicSearchQuery, PublicSlab, PublicStone, PublicStonesQuery,
 };
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::MultiQuery;
 use crate::routes::catalog::schemas::Color;
 use crate::routes::fixtures::{FAUCETS, SINKS};
+use crate::routes::stones::materials::{StoneSettings, stone_view as company_stone_view};
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, State};
@@ -215,6 +217,81 @@ pub async fn stone_images(
         return Err(ApiError::NotFound);
     }
     Ok(Json(stone_photos(&state.pool, company_id, stone_id).await?))
+}
+
+/// Get a company's stone view
+///
+/// What the company's Stones pages show first, set in Admin › Stones ›
+/// Settings: `stones` (one card per stone, the default) or `materials` (one
+/// card per material, then its stones). The showroom follows it. No session
+/// needed.
+#[crate::openapi::path(
+    get,
+    path = "/v1/public/companies/{company_id}/stone-view",
+    operation_id = "get_public_stone_view",
+    tag = "public",
+    params(("company_id" = i32, Path, description = "Company id")),
+    responses(
+        (status = 200, description = "The stone view", body = StoneSettings),
+        (status = 500, description = "Database error", body = ErrorBody),
+    )
+)]
+pub async fn stone_view(
+    State(state): State<AppState>,
+    Path(company_id): Path<i32>,
+) -> ApiResult<Json<StoneSettings>> {
+    let mut conn = state.pool.acquire().await?;
+    Ok(Json(StoneSettings {
+        stone_view: company_stone_view(&mut conn, company_id).await?,
+    }))
+}
+
+/// Get one showroom material
+///
+/// A material of the company (the stones of one name) with its displayed
+/// stones in stock, by bundle number, and the installed photos of its
+/// displayed stones. No prices: the stones' `retail_price` and
+/// `slab_price_per_sqft` are null. A material without a stone in the
+/// showroom is 404. No session needed.
+#[crate::openapi::path(
+    get,
+    path = "/v1/public/companies/{company_id}/materials/{material_id}",
+    operation_id = "get_public_material",
+    tag = "public",
+    params(
+        ("company_id" = i32, Path, description = "Company id"),
+        ("material_id" = i32, Path, description = "Material id"),
+    ),
+    responses(
+        (status = 200, description = "The material", body = PublicMaterial),
+        (status = 404, description = "No material of this company with a stone in the showroom", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    )
+)]
+pub async fn material(
+    State(state): State<AppState>,
+    Path((company_id, material_id)): Path<(i32, i32)>,
+) -> ApiResult<Json<PublicMaterial>> {
+    let (id, name, kind, url) = find_material(&state.pool, company_id, material_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    let mut stones = material_stones(&state.pool, company_id, material_id).await?;
+    if stones.is_empty() {
+        return Err(ApiError::NotFound);
+    }
+    for stone in &mut stones {
+        stone.retail_price = None;
+        stone.slab_price_per_sqft = None;
+    }
+    let images = material_photos(&state.pool, company_id, material_id).await?;
+    Ok(Json(PublicMaterial {
+        id,
+        name,
+        kind: kind.or_else(|| stones.iter().find_map(|s| s.kind.clone())),
+        url: url.or_else(|| stones.iter().find_map(|s| s.url.clone())),
+        stones,
+        images,
+    }))
 }
 
 /// List a company's showroom sinks

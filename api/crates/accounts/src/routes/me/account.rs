@@ -4,7 +4,9 @@
 //! the texting line. Replaces the Remix `employee.user` and `shop.user`
 //! loaders and actions.
 
-use crate::auth::ShopOrEmployeeUser;
+use super::mfa::{MfaStatus, status as mfa_status};
+use super::undo_send::{UndoSend, undo_send_of};
+use crate::auth::{ShopOrEmployeeAccess, ShopOrEmployeeUser};
 use crate::auth::cookie::request_session_id;
 use crate::email_signature;
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -14,7 +16,8 @@ use crate::phone::company as phone_company;
 use crate::phone::lines;
 use crate::routes::company::queries::company_features;
 use crate::routes::onboarding::{self, Credit, CreditOutcome, store};
-use crate::routes::users::manage::resolve_ringcentral_extension;
+use crate::routes::templates::lead_automation::{LeadAutomationMode, mode_of};
+use crate::routes::users::manage::{free_deleted_email, resolve_ringcentral_extension};
 use crate::routes::users::texting_history;
 use crate::state::AppState;
 use axum::Json;
@@ -73,6 +76,15 @@ pub struct Account {
     pub granite_phone_numbers: Vec<String>,
     /// My picture (`PUT /v1/me/photo`); null when I have none.
     pub photo_url: Option<String>,
+    /// My two-step sign-in, as `GET /v1/me/mfa` answers it.
+    pub mfa: MfaStatus,
+    /// My Undo send, as `GET /v1/me/undo-send` answers it; null for a shop
+    /// manager or worker who is not an employee.
+    pub undo_send: Option<UndoSend>,
+    /// Whose automations my deals get (`company` or `own`), as `GET
+    /// /v1/me/lead-automation` answers it; null for a shop manager or worker
+    /// who is not an employee.
+    pub lead_automation: Option<LeadAutomationMode>,
 }
 
 /// Body of `PUT /v1/me/account`. A field left out keeps its value; an empty
@@ -167,8 +179,15 @@ pub(super) async fn home_actor(pool: &MySqlPool, user_id: i32) -> ApiResult<stor
 
 /// My account
 ///
-/// The user's details in their home company, and what the page shows: the
-/// texting providers, the signature, and the guided tours rating.
+/// What the My Account page shows from the database, in one call: the user's
+/// details in their home company, the texting providers, the signature, the
+/// guided tours rating, and the settings that `GET /v1/me/mfa`,
+/// `/v1/me/undo-send` and `/v1/me/lead-automation` answer one by one (the
+/// employee-only ones are null for a shop manager or worker who is not an
+/// employee). The parts that ask other services stay their own calls: `GET
+/// /v1/me/telegram` (asks Telegram) and `GET /v1/me/gmail` (asks Amazon).
+/// Save with `PUT /v1/me/account`; the other settings keep their own routes
+/// for changes.
 #[crate::openapi::path(
     get,
     path = "/v1/me/account",
@@ -184,7 +203,7 @@ pub(super) async fn home_actor(pool: &MySqlPool, user_id: i32) -> ApiResult<stor
 )]
 pub async fn account(
     State(state): State<AppState>,
-    ShopOrEmployeeUser(user): ShopOrEmployeeUser,
+    ShopOrEmployeeAccess { user, employee }: ShopOrEmployeeAccess,
 ) -> ApiResult<Json<Account>> {
     let pool = &state.pool;
     let actor = home_actor(pool, user.id).await?;
@@ -225,6 +244,15 @@ pub async fn account(
             .await?;
     let ringcentral_signed_in = features.ringcentral
         && crate::ringcentral_connect::texts_as_user(pool, actor.company_id, actor.user_id).await?;
+    let mfa = mfa_status(&state, user.id).await?;
+    let (undo_send, lead_automation) = if employee {
+        (
+            Some(undo_send_of(pool, user.id).await?),
+            Some(mode_of(pool, user.id).await?),
+        )
+    } else {
+        (None, None)
+    };
     Ok(Json(Account {
         user_id: actor.user_id,
         name: row.name,
@@ -245,6 +273,9 @@ pub async fn account(
         has_granite_phone,
         granite_phone_numbers,
         photo_url,
+        mfa,
+        undo_send,
+        lead_automation,
     }))
 }
 
@@ -691,14 +722,7 @@ pub async fn update_account(
     let actor = home_actor(pool, user.id).await?;
     let before = stored(pool, actor).await?;
     if before.email.as_deref().map(str::to_lowercase).as_deref() != Some(input.email.as_str()) {
-        let taken: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(email) = ? AND id <> ? AND is_deleted = 0)",
-        )
-        .bind(&input.email)
-        .bind(actor.user_id)
-        .fetch_one(pool)
-        .await?;
-        if taken {
+        if free_deleted_email(pool, &input.email, Some(actor.user_id)).await? {
             return Err(ApiError::Conflict(
                 "This email belongs to another account".into(),
             ));

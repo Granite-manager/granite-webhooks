@@ -16,7 +16,7 @@ use sqlx::{MySql, MySqlConnection, QueryBuilder};
 const PAGE: u32 = 100;
 
 /// `SELECT` of [`ProjectTask`] from `project_activities t`.
-pub const TASK_SELECT: &str = "SELECT t.id, t.project_id, t.name, t.assigned_user_id,
+pub const TASK_SELECT: &str = "SELECT t.id, t.project_id, t.name, t.assigned_user_id, t.kind,
         au.name AS assigned_user_name,
         DATE_FORMAT(t.deadline, '%Y-%m-%dT%H:%i:%s') AS deadline, CAST(t.priority AS CHAR) AS priority,
         DATE_FORMAT(t.completed_at, '%Y-%m-%dT%H:%i:%sZ') AS completed_at,
@@ -127,8 +127,29 @@ pub async fn board(
             .push(" OR q.quote_name LIKE ")
             .push_bind(like.clone())
             .push(" OR p.project_address LIKE ")
-            .push_bind(like)
-            .push(")");
+            .push_bind(like.clone())
+            // As the Deals search: the customer's company, email and phone too.
+            .push(" OR c.company_name LIKE ")
+            .push_bind(like.clone())
+            .push(" OR ce.email LIKE ")
+            .push_bind(like.clone())
+            .push(" OR q.email LIKE ")
+            .push_bind(like);
+        let digits: String = term.chars().filter(char::is_ascii_digit).collect();
+        if digits.len() >= 4
+            && term
+                .chars()
+                .all(|ch| ch.is_ascii_digit() || " ()+.-".contains(ch))
+        {
+            let digits = format!("%{digits}%");
+            for column in ["c.phone", "c.phone_2", "q.phone"] {
+                sql.push(format!(
+                    " OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE({column},'-',''),' ',''),'(',''),')',''),'+',''),'.','') LIKE "
+                ))
+                .push_bind(digits.clone());
+            }
+        }
+        sql.push(")");
     }
     if query.hold {
         sql.push(" AND p.is_on_hold <> 0");
@@ -321,11 +342,13 @@ pub async fn get(
         "{TASK_SELECT} WHERE t.project_id = ? AND t.company_id = ? AND t.deleted_at IS NULL
           ORDER BY t.completed_at IS NOT NULL, t.deadline IS NULL, t.deadline, t.id"
     );
-    let tasks: Vec<ProjectTask> = sqlx::query_as(sqlx::AssertSqlSafe(task_sql))
+    let mut tasks: Vec<ProjectTask> = sqlx::query_as(sqlx::AssertSqlSafe(task_sql))
         .bind(id)
         .bind(company)
         .fetch_all(&mut *conn)
         .await?;
+    super::tasks::load_photos(&mut conn, &mut tasks).await?;
+    super::tasks::load_items(&mut conn, &mut tasks).await?;
     let notes: Vec<ProjectNote> = sqlx::query_as(
         "SELECT n.id, n.content, n.created_by, u.name AS author,
                 DATE_FORMAT(n.created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at
@@ -487,7 +510,14 @@ pub async fn get(
     let process_steps = super::process::company_steps(&mut conn, company).await?;
     let done_steps = super::process::done_steps(&mut conn, &[id]).await?;
     let parts = super::parts::parts_of(&mut conn, company, &[id]).await?;
+    let customer_todos =
+        crate::routes::customer_todos::project_todos(&mut conn, company, id).await?;
     let part_types = super::parts::part_types(&mut conn, company).await?;
+    let step_owners = super::lists::step_owners(&mut conn, &project, &process_steps).await?;
+    let step_items_done = super::lists::step_items_done(&mut conn, id).await?;
+    let lists = super::lists::company_lists(&mut conn, company).await?;
+    let questions = super::questions::project_questions(&mut conn, id, viewer.user_id).await?;
+    let involved = super::lists::involved(&mut conn, &project, &step_owners).await?;
     Ok(Json(ProjectWorkspace {
         project,
         tasks,
@@ -495,6 +525,7 @@ pub async fn get(
         notes,
         files,
         job_photos,
+        customer_todos,
         issues,
         history,
         sales,
@@ -507,6 +538,11 @@ pub async fn get(
         part_types,
         permissions: viewer.permissions,
         user_id: viewer.user_id,
+        step_owners,
+        step_items_done,
+        lists,
+        questions,
+        involved,
     }))
 }
 

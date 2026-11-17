@@ -30,18 +30,10 @@ pub mod tests;
 
 /// This crate's routes.
 pub fn router() -> Router<MySqlPool> {
-    use cloudtalk::receive as ct;
     use ringcentral::receive as rc;
     Router::new()
         .route("/sms/send", post(outbound::sms::send_handler))
-        .route("/cloudtalk/sms", post(ct::sms_received_unscoped))
-        .route("/cloudtalk/sms/{company_id}", post(ct::sms_received))
-        .route("/cloudtalk/sms/sent/{company_id}", post(ct::sms_sent))
-        .route("/cloudtalk/call/{company_id}", post(ct::call_received))
-        .route(
-            "/cloudtalk/sync/{company_id}/{customer_id}",
-            post(ct::sync_cloudtalk).delete(ct::unsync_cloudtalk),
-        )
+        .merge(cloudtalk_routes())
         .merge(ringcentral_webhooks())
         .route(
             "/ringcentral/sync/{company_id}/{customer_id}",
@@ -55,6 +47,35 @@ pub fn router() -> Router<MySqlPool> {
             "/google/address-autocomplete",
             post(google::receive::address_information),
         )
+}
+
+/// The `CloudTalk` routes: its webhooks and the contact sync. While
+/// `CloudTalk` is off (`CLOUDTALK_ENABLED`) each answers 200 and does
+/// nothing, so a caller that still calls is not made to retry.
+fn cloudtalk_routes() -> Router<MySqlPool> {
+    use cloudtalk::receive as ct;
+    Router::new()
+        .route("/cloudtalk/sms", post(ct::sms_received_unscoped))
+        .route("/cloudtalk/sms/{company_id}", post(ct::sms_received))
+        .route("/cloudtalk/sms/sent/{company_id}", post(ct::sms_sent))
+        .route("/cloudtalk/call/{company_id}", post(ct::call_received))
+        .route(
+            "/cloudtalk/sync/{company_id}/{customer_id}",
+            post(ct::sync_cloudtalk).delete(ct::unsync_cloudtalk),
+        )
+        .route_layer(axum::middleware::from_fn(cloudtalk_switch))
+}
+
+async fn cloudtalk_switch(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if common::telephony::cloudtalk::enabled() {
+        return next.run(request).await;
+    }
+    lambda_http::tracing::info!(path = %request.uri().path(), "CloudTalk is disabled; request ignored");
+    (axum::http::StatusCode::OK, "CloudTalk is disabled").into_response()
 }
 
 /// The routes `RingCentral` calls, which answer its subscription handshake

@@ -15,9 +15,9 @@
 
 use crate::auth::{AdminUser, EmployeeUser};
 use crate::commissions::{
-    BasePay, CommissionPart, CommissionRule, GoalRow, PaidRow, PayrollWeek, PositionMember,
-    base_pay_by_person, feature_sales, next_week_payroll, payroll_weeks, pick_invoice,
-    quote_commission, status_of,
+    BasePay, CommissionPart, CommissionRule, GoalRow, JobPaid, PaidRow, PayrollWeek,
+    PositionMember, base_pay_by_person, feature_sales, next_week_payroll, payroll_weeks,
+    pick_invoice, quote_commission, status_of, with_job_pay,
 };
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -444,14 +444,25 @@ pub struct CommissionSettings {
     /// Read only: a saved value is ignored.
     #[serde(default)]
     pub last_synced_at: Option<String>,
+    /// Template and install pay goes into the first payroll on or after the
+    /// day the job was finished (true), or the payroll of the week after
+    /// (false, the default). Left out of a save: unchanged.
+    #[serde(default)]
+    pub job_pay_same_week: Option<bool>,
+    /// Templates and installs finished from this day on are paid
+    /// (YYYY-MM-DD); null until the company's first pay rule, which sets it
+    /// to that day. Left out of a save: unchanged.
+    #[serde(default)]
+    pub job_pay_from: Option<String>,
 }
 
 /// `loadCommissionSettings` (Friday payroll until saved).
 pub async fn load_settings(pool: &MySqlPool, company_id: i32) -> ApiResult<CommissionSettings> {
-    let row: Option<(i32, Option<String>)> = sqlx::query_as(
+    let row: Option<(i32, Option<String>, i32, Option<String>)> = sqlx::query_as(
         "SELECT CAST(payroll_weekday AS SIGNED),
                 DATE_FORMAT(CONVERT_TZ(last_synced_at, @@session.time_zone, '+00:00'),
-                            '%Y-%m-%dT%H:%i:%sZ')
+                            '%Y-%m-%dT%H:%i:%sZ'),
+                CAST(job_pay_same_week AS SIGNED), DATE_FORMAT(job_pay_from, '%Y-%m-%d')
            FROM commission_settings WHERE company_id = ?",
     )
     .bind(company_id)
@@ -460,8 +471,10 @@ pub async fn load_settings(pool: &MySqlPool, company_id: i32) -> ApiResult<Commi
     Ok(CommissionSettings {
         payroll_weekday: row
             .as_ref()
-            .map_or(5, |(w, _)| u32::try_from((*w).clamp(0, 6)).unwrap_or(5)),
-        last_synced_at: row.and_then(|(_, synced)| synced),
+            .map_or(5, |(w, ..)| u32::try_from((*w).clamp(0, 6)).unwrap_or(5)),
+        job_pay_same_week: Some(row.as_ref().is_some_and(|(_, _, same, _)| *same == 1)),
+        job_pay_from: row.as_ref().and_then(|(_, _, _, from)| from.clone()),
+        last_synced_at: row.and_then(|(_, synced, ..)| synced),
     })
 }
 
@@ -510,12 +523,29 @@ pub async fn save_settings(
     AdminUser(user): AdminUser,
     JsonBody(input): JsonBody<CommissionSettings>,
 ) -> ApiResult<StatusCode> {
+    let from = match input.job_pay_from.as_deref().map(str::trim) {
+        None | Some("") => None,
+        Some(text) => Some(
+            ymd(text)
+                .filter(|_| text.len() == 10)
+                .ok_or_else(|| ApiError::BadRequest("Pick the day jobs are paid from.".into()))?
+                .format("%Y-%m-%d")
+                .to_string(),
+        ),
+    };
     sqlx::query(
-        "INSERT INTO commission_settings (company_id, payroll_weekday) VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE payroll_weekday = VALUES(payroll_weekday)",
+        "INSERT INTO commission_settings (company_id, payroll_weekday, job_pay_same_week, job_pay_from)
+         VALUES (?, ?, COALESCE(?, 0), ?)
+         ON DUPLICATE KEY UPDATE payroll_weekday = VALUES(payroll_weekday),
+           job_pay_same_week = COALESCE(?, job_pay_same_week),
+           job_pay_from = COALESCE(?, job_pay_from)",
     )
     .bind(user.company_id)
     .bind(input.payroll_weekday.min(6))
+    .bind(input.job_pay_same_week)
+    .bind(from.as_deref())
+    .bind(input.job_pay_same_week)
+    .bind(from.as_deref())
     .execute(&state.pool)
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -1105,6 +1135,20 @@ pub async fn list_commissions(
         chrono::Utc::now().date_naive(),
         quickbooks,
     );
+    // Template and install pay in the salary, under whoever did the job.
+    let jobs: Vec<JobPaid> = super::job_pay::load_job_pay(&state.pool, user.company_id, only)
+        .await?
+        .into_iter()
+        .filter_map(|job| {
+            Some(JobPaid {
+                payroll_date: job.payroll_date?,
+                user_id: job.user_id,
+                person: job.person,
+                total: job.total,
+            })
+        })
+        .collect();
+    let weeks = with_job_pay(weeks, &jobs);
     Ok(Json(Commissions { rows, weeks }))
 }
 
@@ -1115,6 +1159,8 @@ pub struct SyncResult {
     pub synced: usize,
     /// `ok`, `not_connected` (payments unknown) or `error` (some lookups failed).
     pub qbo: String,
+    /// Finished templates and installs worked out (a row per person on each).
+    pub jobs: usize,
 }
 
 #[derive(sqlx::FromRow)]
@@ -1365,6 +1411,7 @@ pub async fn sync_commissions(
             }
         }
     }
+    let jobs = super::job_pay::sync_job_pay(&state, company_id).await?;
     sqlx::query(
         "INSERT INTO commission_settings (company_id, last_synced_at) VALUES (?, NOW())
          ON DUPLICATE KEY UPDATE last_synced_at = NOW()",
@@ -1375,6 +1422,7 @@ pub async fn sync_commissions(
     Ok(Json(SyncResult {
         synced,
         qbo: found.status.into(),
+        jobs,
     }))
 }
 

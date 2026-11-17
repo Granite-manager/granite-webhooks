@@ -8,6 +8,7 @@ mod common;
 
 mod call_transcripts;
 mod calls;
+mod customer_files;
 mod customer_history;
 mod customer_lookup;
 mod customer_phones;
@@ -15,6 +16,7 @@ mod customer_projects;
 mod customer_writes;
 mod customers;
 mod deal_document_events;
+mod deal_page;
 mod deal_pipelines;
 mod deals;
 mod email_attachments;

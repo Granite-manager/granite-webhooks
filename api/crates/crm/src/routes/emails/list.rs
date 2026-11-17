@@ -107,53 +107,32 @@ pub async fn list_page(
 
     // Inbox search hits any message of the thread; the row previews the newest.
     let hit = alias(&search_sql.sql, "hit");
-    let inbox_search_exists = if hit.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " AND EXISTS (SELECT 1 FROM emails hit WHERE hit.thread_id = e.thread_id \
-             AND hit.deleted_at IS NULL AND hit.is_draft = 0 {hit})"
-        )
-    };
-    let where_thread_match = if is_inbox {
-        format!("{folder_where}{inbox_search_exists}")
-    } else {
-        format!("{folder_where}{}", search_sql.sql)
-    };
-    let search_hit_on_thread = if hit.is_empty() {
-        String::new()
-    } else {
-        format!(
-            " AND EXISTS (SELECT 1 FROM emails hit WHERE hit.thread_id = e2.thread_id \
-             AND hit.deleted_at IS NULL AND hit.is_draft = 0 {hit})"
-        )
-    };
-    let subquery_where = if is_inbox {
-        format!("{}{search_hit_on_thread}", alias(&folder_where, "e2"))
-    } else {
-        alias(&where_thread_match, "e2")
+    let search_hit = |thread: &str| {
+        if hit.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " AND EXISTS (SELECT 1 FROM emails hit WHERE hit.thread_id = {thread} \
+                 AND hit.deleted_at IS NULL AND hit.is_draft = 0 {hit})"
+            )
+        }
     };
     let mut thread_match_args = folder_args.clone();
     thread_match_args.extend(search_sql.args.clone());
 
-    // Only the threads the badge counts unread. Added after `alias`, which would rename the
-    // subquery's own `e`; the subquery stands alone, so its `e` shadows nothing it needs.
-    let (where_thread_match, subquery_where) = if is_inbox && query.unread == Some(true) {
-        let unread = unread_inbox(mailbox);
-        thread_match_args.extend(unread.args);
-        let only_unread = |outer: &str| {
+    // Only the threads the badge counts unread.
+    let unread = (is_inbox && query.unread == Some(true)).then(|| unread_inbox(mailbox));
+    let only_unread = |thread: &str| {
+        unread.as_ref().map_or(String::new(), |unread| {
             format!(
-                " AND {outer}.thread_id IN (SELECT DISTINCT e.thread_id {})",
+                " AND {thread} IN (SELECT DISTINCT e.thread_id {})",
                 unread.sql
             )
-        };
-        (
-            format!("{where_thread_match}{}", only_unread("e")),
-            format!("{subquery_where}{}", only_unread("e2")),
-        )
-    } else {
-        (where_thread_match, subquery_where)
+        })
     };
+    if let Some(unread) = &unread {
+        thread_match_args.extend(unread.args.clone());
+    }
 
     let offset = (page - 1) * PAGE_SIZE;
     let (thread_order, list_order) = if folder == EmailFolder::Trash {
@@ -161,10 +140,41 @@ pub async fn list_page(
     } else {
         ("MAX(e2.sent_at)", "e.sent_at DESC")
     };
-    let thread_pick = format!(
-        "SELECT e2.thread_id, {thread_order} AS mt FROM emails e2 WHERE {subquery_where}
-         GROUP BY e2.thread_id ORDER BY mt DESC LIMIT {PAGE_SIZE} OFFSET {offset}"
-    );
+    // The inbox groups its messages into threads first and tests the search
+    // and the unread filter once per thread: tested per message, each
+    // thread's text was searched again for every message of it.
+    let (thread_pick, total_sql) = if is_inbox {
+        let filter = format!(
+            "{}{}",
+            search_hit("t.thread_id"),
+            only_unread("t.thread_id")
+        );
+        (
+            format!(
+                "SELECT t.thread_id, t.mt FROM (
+                   SELECT e2.thread_id, {thread_order} AS mt FROM emails e2
+                    WHERE {} GROUP BY e2.thread_id) t
+                  WHERE TRUE{filter}
+                  ORDER BY t.mt DESC LIMIT {PAGE_SIZE} OFFSET {offset}",
+                alias(&folder_where, "e2")
+            ),
+            format!(
+                "SELECT COUNT(t.thread_id) FROM (
+                   SELECT e.thread_id FROM emails e WHERE {folder_where} GROUP BY e.thread_id) t
+                  WHERE TRUE{filter}"
+            ),
+        )
+    } else {
+        let where_thread_match = format!("{folder_where}{}", search_sql.sql);
+        (
+            format!(
+                "SELECT e2.thread_id, {thread_order} AS mt FROM emails e2 WHERE {}
+                 GROUP BY e2.thread_id ORDER BY mt DESC LIMIT {PAGE_SIZE} OFFSET {offset}",
+                alias(&where_thread_match, "e2")
+            ),
+            format!("SELECT COUNT(DISTINCT e.thread_id) FROM emails e WHERE {where_thread_match}"),
+        )
+    };
     let columns = format!(
         "e.id, e.thread_id, e.subject, e.body, e.sent_at, e.sender_email, e.receiver_email,
          e.sender_user_id, e.employee_read_at, e.is_draft <> 0 AS is_draft,
@@ -217,13 +227,10 @@ pub async fn list_page(
         mark_unread_threads(pool, mailbox, &mut emails).await?;
     }
 
-    let total: i64 = Sql::new(
-        format!("SELECT COUNT(DISTINCT e.thread_id) FROM emails e WHERE {where_thread_match}"),
-        thread_match_args,
-    )
-    .query_scalar()
-    .fetch_one(pool)
-    .await?;
+    let total: i64 = Sql::new(total_sql, thread_match_args)
+        .query_scalar()
+        .fetch_one(pool)
+        .await?;
 
     Ok(MailboxPage {
         emails,
