@@ -16,6 +16,7 @@ const LOCAL_DATETIME: &str = "'%Y-%m-%dT%H:%i:%s'";
 /// Groups visible to the company: its own.
 const GROUP_VISIBLE: &str = "gl.deleted_at IS NULL AND gl.company_id = ?";
 
+/// The company's default pipeline comes first: boards open on the first one.
 pub async fn list_groups(
     pool: &MySqlPool,
     company_id: i32,
@@ -34,7 +35,7 @@ pub async fn list_groups(
                 ) AS has_overdue_activity
          FROM groups_list gl
          WHERE {GROUP_VISIBLE} AND gl.is_displayed = 1
-         ORDER BY gl.id",
+         ORDER BY gl.is_default DESC, gl.id",
         won = status.sql("d"),
     );
     sqlx::query_as(sqlx::AssertSqlSafe(sql))
