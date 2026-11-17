@@ -271,7 +271,8 @@ pub async fn list(
 pub const INSTALLER: i32 = 6;
 pub const TEMPLATE_GUY: i32 = 11;
 
-/// `positionsConflict`: Sales Rep and Shop Worker never together; Installer
+/// `positionsConflict`: Sales Rep, Sales Manager and Manager never with Shop
+/// Worker, Manager never with Shop Manager; Installer
 /// and Marketing only alone; Template Guy alone or with Scheduling Manager
 /// (owner, 2026-11-16).
 fn position_conflict(positions: &[i32]) -> Option<&'static str> {
@@ -290,8 +291,19 @@ fn position_conflict(positions: &[i32]) -> Option<&'static str> {
     if others(TEMPLATE_GUY, &[SCHEDULING_MANAGER]) {
         return Some("Template Guy can only be combined with Scheduling Manager.");
     }
-    (positions.contains(&SALES_REP) && positions.contains(&SHOP_WORKER))
-        .then_some("A user can't be both Sales Representative and Shop Worker.")
+    // A manager is never in the shop positions (owner, 2026-11-17).
+    const SALES_MANAGER: i32 = 2;
+    const SHOP_MANAGER: i32 = 3;
+    const MANAGER: i32 = 5;
+    let both = |a: i32, b: i32| positions.contains(&a) && positions.contains(&b);
+    if both(SALES_REP, SHOP_WORKER) {
+        return Some("A user can't be both Sales Representative and Shop Worker.");
+    }
+    if both(SALES_MANAGER, SHOP_WORKER) {
+        return Some("A user can't be both Sales Manager and Shop Worker.");
+    }
+    (both(MANAGER, SHOP_MANAGER) || both(MANAGER, SHOP_WORKER))
+        .then_some("A Manager can't also be a Shop Manager or Shop Worker.")
 }
 
 /// `computeIsEmployeeFlag`: everyone but external marketing and shop
@@ -1222,6 +1234,10 @@ mod tests {
         assert!(position_conflict(&[7, 1]).is_some());
         assert!(position_conflict(&[11, 13]).is_none());
         assert!(position_conflict(&[11, 1]).is_some());
+        assert!(position_conflict(&[2, 4]).is_some());
+        assert!(position_conflict(&[5, 3]).is_some());
+        assert!(position_conflict(&[5, 4]).is_some());
+        assert!(position_conflict(&[2, 3, 12, 13]).is_none());
         assert!(is_employee(&[]));
         assert!(!is_employee(&[4, 7]));
         assert!(is_employee(&[4, 6]));
