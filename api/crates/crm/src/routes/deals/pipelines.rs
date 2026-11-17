@@ -82,6 +82,16 @@ fn clean_name(input: &NameInput) -> ApiResult<String> {
     Ok(name.to_string())
 }
 
+/// Whether the company hid the shared pipeline from its boards.
+async fn shared_hidden(pool: &MySqlPool, company_id: i32) -> Result<bool, sqlx::Error> {
+    let hidden: Option<bool> =
+        sqlx::query_scalar("SELECT shared_pipeline_hidden FROM company WHERE id = ?")
+            .bind(company_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(hidden.unwrap_or(false))
+}
+
 /// A pipeline the company may change: its own, or (when `shared_ok`) the shared one.
 async fn check_group(
     pool: &MySqlPool,
@@ -141,6 +151,7 @@ pub async fn list(
     let own_default = groups
         .iter()
         .any(|(id, _, _, default)| *id != SHARED_GROUP && default.unwrap_or(false));
+    let shared_hidden = shared_hidden(&state.pool, user.company_id).await?;
     let mut pipelines = Vec::with_capacity(groups.len());
     for (id, name, displayed, default) in groups {
         let lists: Vec<PipelineStage> = sqlx::query_as(
@@ -153,7 +164,11 @@ pub async fn list(
         pipelines.push(Pipeline {
             id,
             name: name.unwrap_or_default(),
-            is_displayed: displayed.unwrap_or(false),
+            is_displayed: if id == SHARED_GROUP {
+                !shared_hidden
+            } else {
+                displayed.unwrap_or(false)
+            },
             is_default: if id == SHARED_GROUP {
                 !own_default
             } else {
@@ -240,11 +255,27 @@ pub async fn update(
         ));
     }
     if let Some(displayed) = patch.is_displayed {
-        // Every company sees the shared pipeline: it is not hidden for one.
+        // The shared pipeline is hidden for this company only, and only
+        // while another pipeline is its default (new deals need one).
         if id == SHARED_GROUP {
-            return Err(ApiError::BadRequest(
-                "The shared pipeline cannot be changed".into(),
-            ));
+            let own_default: Option<i32> = sqlx::query_scalar(
+                "SELECT 1 FROM groups_list
+                 WHERE company_id = ? AND is_default = 1 AND deleted_at IS NULL LIMIT 1",
+            )
+            .bind(user.company_id)
+            .fetch_optional(pool)
+            .await?;
+            if !displayed && own_default.is_none() {
+                return Err(ApiError::BadRequest(
+                    "make another pipeline the default before hiding this one".into(),
+                ));
+            }
+            sqlx::query("UPDATE company SET shared_pipeline_hidden = ? WHERE id = ?")
+                .bind(!displayed)
+                .bind(user.company_id)
+                .execute(pool)
+                .await?;
+            return Ok(StatusCode::NO_CONTENT);
         }
         sqlx::query("UPDATE groups_list SET is_displayed = ? WHERE id = ? AND company_id = ?")
             .bind(displayed)
@@ -259,7 +290,13 @@ pub async fn update(
             .bind(user.company_id)
             .execute(&mut *tx)
             .await?;
-        if id != SHARED_GROUP {
+        if id == SHARED_GROUP {
+            // The default pipeline is always on the boards.
+            sqlx::query("UPDATE company SET shared_pipeline_hidden = 0 WHERE id = ?")
+                .bind(user.company_id)
+                .execute(&mut *tx)
+                .await?;
+        } else {
             sqlx::query("UPDATE groups_list SET is_default = 1 WHERE id = ? AND company_id = ?")
                 .bind(id)
                 .bind(user.company_id)
