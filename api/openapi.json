@@ -123962,7 +123962,7 @@
               "string",
               "null"
             ],
-            "description": "Email, or empty for none."
+            "description": "New email; omitted or empty keeps the current one (every user has one)."
           },
           "phone_number": {
             "type": [
