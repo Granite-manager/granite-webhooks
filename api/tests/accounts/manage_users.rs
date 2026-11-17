@@ -217,6 +217,29 @@ async fn managers_edit_users_and_keep_position_rows(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn an_empty_email_keeps_the_current_one(pool: MySqlPool) {
+    make_manager(&pool).await;
+    let server = server(pool.clone());
+    // Saved twice: the second blank used to collide with the first on users.email.
+    for (id, body) in [
+        (100, json!({ "name": "Rita", "company_id": 100, "email": "" })),
+        (101, json!({ "name": "Mark", "company_id": 100 })),
+    ] {
+        server
+            .put(&format!("/v1/admin/users/{id}"))
+            .with_session(ADA)
+            .json(&body)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    }
+    let blank: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE email = ''")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(blank, 0);
+}
+
+#[test_db::test(seed)]
 async fn moving_a_rep_to_ringcentral_keeps_their_texts(pool: MySqlPool) {
     make_manager(&pool).await;
     sqlx::query(

@@ -735,7 +735,7 @@ pub async fn get(
 pub struct UserChanges {
     /// Name (may stay empty while their invite is pending).
     pub name: String,
-    /// Email, or empty for none.
+    /// New email; omitted or empty keeps the current one (every user has one).
     #[serde(default)]
     pub email: Option<String>,
     /// Phone (10+ characters) or empty.
@@ -1071,7 +1071,7 @@ pub async fn update(
 
     let mut tx = pool.begin().await?;
     sqlx::query(
-        "UPDATE users SET name = ?, email = ?, phone_number = ?, company_id = ?, is_admin = ?,
+        "UPDATE users SET name = ?, email = COALESCE(?, email), phone_number = ?, company_id = ?, is_admin = ?,
                 is_employee = ?, cloudtalk_agent_id = ?, cloudtalk_phone_number = ?,
                 ringcentral_extension_id = ?, ringcentral_phone_number = ?
           WHERE id = ?",
