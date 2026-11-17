@@ -16,6 +16,7 @@ mod customer_projects;
 mod customer_writes;
 mod customers;
 mod deal_document_events;
+mod deal_page;
 mod deal_pipelines;
 mod deals;
 mod email_attachments;

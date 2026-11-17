@@ -17540,6 +17540,85 @@
         ]
       }
     },
+    "/v1/deals/{id}/page": {
+      "get": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "Get everything the deal page shows",
+        "description": "One read instead of six: the deal, its stage history, activities, notes,\nemail history and quote/contract events, each shaped like its own route.\n`emails` and `document_events` are null when they fail to load, so the\npage still opens. To refresh one part after a change, call its own route\n(`/v1/deals/{id}/notes`, `/activities`, ...).",
+        "operationId": "get_deal_page",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Deal id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The deal page's data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DealPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such live deal in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/deals/{id}/stage-history": {
       "get": {
         "tags": [
@@ -89967,6 +90046,64 @@
           "group_name": {
             "type": "string",
             "description": "Name of that group."
+          }
+        }
+      },
+      "DealPage": {
+        "type": "object",
+        "description": "The deal page's data.",
+        "required": [
+          "deal",
+          "stage_history",
+          "activities",
+          "notes"
+        ],
+        "properties": {
+          "deal": {
+            "$ref": "#/components/schemas/DealDetail",
+            "description": "The deal, as `GET /v1/deals/{id}` returns it."
+          },
+          "stage_history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StageVisit"
+            },
+            "description": "Stage visits, oldest first, as `GET /v1/deals/{id}/stage-history`."
+          },
+          "activities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Activity"
+            },
+            "description": "Live activities, newest first, as `GET /v1/deals/{id}/activities`."
+          },
+          "notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Note"
+            },
+            "description": "Live notes with comments, newest first, as `GET /v1/deals/{id}/notes`."
+          },
+          "emails": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/DealEmails",
+                "description": "The email history, as `GET /v1/deals/{id}/emails`. Null when it could\nnot be read; the rest of the page is still returned."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document_events": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/DocumentEvent"
+            },
+            "description": "Quote and contract events, unsorted, as\n`GET /v1/deals/{id}/document-events`. Null when they could not be read."
           }
         }
       },
