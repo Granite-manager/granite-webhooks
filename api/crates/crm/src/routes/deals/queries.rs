@@ -16,6 +16,11 @@ const LOCAL_DATETIME: &str = "'%Y-%m-%dT%H:%i:%s'";
 /// Groups visible to the company: its own plus the shared group 1.
 const GROUP_VISIBLE: &str = "gl.deleted_at IS NULL AND (gl.company_id = ? OR gl.id = 1)";
 
+/// On the boards: not the shared group 1 when the company hid it
+/// (`company.shared_pipeline_hidden`). Its deals stay reachable by id.
+const SHARED_SHOWN: &str = "(gl.id <> 1 OR NOT EXISTS (
+    SELECT 1 FROM company co WHERE co.id = ? AND co.shared_pipeline_hidden = 1))";
+
 pub async fn list_groups(
     pool: &MySqlPool,
     company_id: i32,
@@ -33,12 +38,13 @@ pub async fn list_groups(
                     AND da.deadline IS NOT NULL AND DATE(da.deadline) < CURDATE()
                 ) AS has_overdue_activity
          FROM groups_list gl
-         WHERE {GROUP_VISIBLE} AND gl.is_displayed = 1
+         WHERE {GROUP_VISIBLE} AND gl.is_displayed = 1 AND {SHARED_SHOWN}
          ORDER BY gl.id",
         won = status.sql("d"),
     );
     sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(user_id)
+        .bind(company_id)
         .bind(company_id)
         .bind(company_id)
         .fetch_all(pool)
@@ -67,8 +73,9 @@ pub async fn list_lists(
         }
         None => {
             sqlx::query_as(sqlx::AssertSqlSafe(format!(
-                "{base} AND gl.is_displayed = 1 ORDER BY gl.name, dl.position, dl.id"
+                "{base} AND gl.is_displayed = 1 AND {SHARED_SHOWN} ORDER BY gl.name, dl.position, dl.id"
             )))
+            .bind(company_id)
             .bind(company_id)
             .fetch_all(pool)
             .await
@@ -647,9 +654,11 @@ pub async fn first_list_of_group(
     sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT dl.id FROM deals_list dl JOIN groups_list gl ON gl.id = dl.group_id
          WHERE dl.group_id = ? AND dl.deleted_at IS NULL AND gl.is_displayed = 1 AND {GROUP_VISIBLE}
+           AND {SHARED_SHOWN}
          ORDER BY dl.position, dl.id LIMIT 1"
     )))
     .bind(group_id)
+    .bind(company_id)
     .bind(company_id)
     .fetch_optional(pool)
     .await

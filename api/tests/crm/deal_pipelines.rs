@@ -184,12 +184,6 @@ async fn the_shared_pipeline_and_other_companies_are_off_limits(pool: MySqlPool)
         .json(&json!({ "name": "X" }))
         .await
         .assert_status(StatusCode::BAD_REQUEST);
-    server
-        .patch("/v1/deal-pipelines/1")
-        .with_session(ADMIN)
-        .json(&json!({ "is_displayed": false }))
-        .await
-        .assert_status(StatusCode::BAD_REQUEST);
     // Company 101's pipeline and stage.
     server
         .delete("/v1/deal-pipelines/101")
@@ -263,4 +257,58 @@ async fn duplicate_stage_names_in_one_pipeline_are_rejected(pool: MySqlPool) {
         .json(&json!({ "name": "QA List 1" }))
         .await
         .assert_status(StatusCode::CREATED);
+}
+
+/// Ids of the pipelines on the admin's deal board.
+async fn board_groups(server: &axum_test::TestServer) -> Vec<i64> {
+    let res = server.get("/v1/deal-groups").with_session(ADMIN).await;
+    res.assert_status_ok();
+    res.json::<Value>()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g["id"].as_i64().unwrap())
+        .collect()
+}
+
+#[test_db::test(seed)]
+async fn a_company_hides_the_shared_pipeline_from_its_boards(pool: MySqlPool) {
+    let server = server(pool.clone());
+    assert!(board_groups(&server).await.contains(&1));
+
+    // Sales (100) is the company's own default, so the shared one may hide.
+    server
+        .patch("/v1/deal-pipelines/1")
+        .with_session(ADMIN)
+        .json(&json!({ "is_displayed": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(find(&pipelines(&server).await, 1)["is_displayed"], false);
+    let groups = board_groups(&server).await;
+    assert!(!groups.contains(&1) && groups.contains(&100));
+    // Only for this company.
+    let shown: Option<bool> =
+        sqlx::query_scalar("SELECT shared_pipeline_hidden FROM company WHERE id = 101")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+    assert_eq!(shown, Some(false));
+
+    // Making it the default shows it again.
+    server
+        .patch("/v1/deal-pipelines/1")
+        .with_session(ADMIN)
+        .json(&json!({ "is_default": true }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(find(&pipelines(&server).await, 1)["is_displayed"], true);
+    assert!(board_groups(&server).await.contains(&1));
+
+    // While it is the default it cannot hide.
+    server
+        .patch("/v1/deal-pipelines/1")
+        .with_session(ADMIN)
+        .json(&json!({ "is_displayed": false }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
 }
