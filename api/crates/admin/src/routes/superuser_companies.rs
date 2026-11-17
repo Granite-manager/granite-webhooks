@@ -44,6 +44,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_companies, create_company))
         .routes(routes!(get_company, update_company, delete_company))
         .routes(routes!(company_users))
+        .routes(routes!(company_statuses))
         .routes(routes!(domain_trust))
         .routes(routes!(ses_inbound))
         .routes(routes!(setup_checklist))
@@ -155,8 +156,9 @@ struct SummaryRow {
 ///
 /// Every live company, most users first: users counting toward the limit,
 /// tours progress, connected integrations, feature switches and whether
-/// Stripe payment is required. The slower checks are per company:
-/// `/domain-trust`, `/ses-inbound`, `/setup-checklist`.
+/// Stripe payment is required. The slower checks come from
+/// `GET /v1/superuser/companies/statuses` for all companies at once, or per
+/// company from `/{id}/domain-trust`, `/{id}/ses-inbound`, `/{id}/setup-checklist`.
 #[crate::openapi::path(
     get,
     path = "/v1/superuser/companies",
@@ -1031,34 +1033,145 @@ pub async fn ses_inbound(
     CurrentUser(user): CurrentUser,
     Path(id): Path<i32>,
 ) -> ApiResult<Json<SesInbound>> {
-    use crate::deliverability::Dns;
     superuser(&user)?;
     let domain = deliverability::company_domain(company_domain(&state, id).await?.as_deref());
+    if domain.is_none() {
+        return Ok(Json(ses_status(None, None, false)));
+    }
+    let (sets, mx) = tokio::join!(state.ses.sets(), mx_inbound(&state, domain.as_deref()));
+    Ok(Json(ses_status(domain, sets.as_ref(), mx)))
+}
+
+/// Whether `domain`'s MX points at SES email receiving (3 s DNS timeout).
+async fn mx_inbound(state: &AppState, domain: Option<&str>) -> bool {
+    use crate::deliverability::Dns;
     let Some(domain) = domain else {
-        return Ok(Json(SesInbound {
+        return false;
+    };
+    let mx = tokio::time::timeout(std::time::Duration::from_secs(3), state.dns.mx(domain)).await;
+    matches!(mx, Ok(Ok(records)) if records.iter().any(|(host, _)| host.to_lowercase().contains("inbound-smtp.")))
+}
+
+/// The SES inbound status of a usable `domain` (see [`deliverability::company_domain`]),
+/// given SES's identity lists (`None`: SES could not be asked).
+fn ses_status(
+    domain: Option<String>,
+    sets: Option<&common::amazon::email::IdentitySets>,
+    mx_inbound: bool,
+) -> SesInbound {
+    let Some(domain) = domain else {
+        return SesInbound {
             domain: None,
             ses_verified: Some(false),
             ses_pending: false,
             mx_inbound: false,
             inbound_ready: false,
-        }));
+        };
     };
-    let mx = tokio::time::timeout(std::time::Duration::from_secs(3), state.dns.mx(&domain));
-    let (sets, mx) = tokio::join!(state.ses.sets(), mx);
-    let mx_inbound = matches!(mx, Ok(Ok(records)) if records.iter().any(|(host, _)| host.to_lowercase().contains("inbound-smtp.")));
-    let ses_verified = sets
-        .as_ref()
-        .map(|(verified, _)| verified.contains(&domain));
-    let ses_pending = sets
-        .as_ref()
-        .is_some_and(|(_, pending)| pending.contains(&domain));
-    Ok(Json(SesInbound {
+    let ses_verified = sets.map(|(verified, _)| verified.contains(&domain));
+    let ses_pending = sets.is_some_and(|(_, pending)| pending.contains(&domain));
+    SesInbound {
         inbound_ready: ses_verified == Some(true) && mx_inbound,
         domain: Some(domain),
         ses_verified,
         ses_pending,
         mx_inbound,
-    }))
+    }
+}
+
+/// How many companies [`company_statuses`] checks at once.
+const STATUS_CHECKS_AT_ONCE: usize = 8;
+
+/// The slower checks of one company, as the companies list shows them.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CompanyStatus {
+    /// Company id.
+    pub id: i32,
+    /// Its domain's email deliverability, as `GET .../{id}/domain-trust`
+    /// answers it; null when the company has no usable domain.
+    pub domain_trust: Option<DomainTrust>,
+    /// Whether it receives email through SES, as `GET .../{id}/ses-inbound`
+    /// answers it.
+    pub ses_inbound: SesInbound,
+    /// Its setup checklist, as `GET .../{id}/setup-checklist` answers it.
+    pub setup_checklist: Checklist,
+}
+
+/// List the companies' email and setup statuses
+///
+/// For every live company at once (ordered by id): its domain's
+/// deliverability, its SES inbound status and its setup checklist, the same
+/// values `GET /v1/superuser/companies/{id}/domain-trust`, `.../ses-inbound`
+/// and `.../setup-checklist` answer one company at a time. SES is asked once
+/// for all companies; a domain check from the last week is reused, so the
+/// answer can take a few seconds only when some domain needs a fresh DNS
+/// check. Join it to `GET /v1/superuser/companies` by `id`.
+#[crate::openapi::path(
+    get,
+    path = "/v1/superuser/companies/statuses",
+    operation_id = "list_platform_company_statuses",
+    tag = "superuser",
+    responses(
+        (status = 200, description = "One status per live company", body = [CompanyStatus]),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not a superuser", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn company_statuses(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+) -> ApiResult<Json<Vec<CompanyStatus>>> {
+    use futures_util::StreamExt;
+    superuser(&user)?;
+    let sql = format!(
+        "SELECT {} FROM company c WHERE c.deleted_at IS NULL ORDER BY c.id",
+        setup_checklist::FACTS_SQL
+    );
+    let companies: Vec<CompanyFacts> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .fetch_all(&state.pool)
+        .await?;
+    let (sets, checklists) = tokio::join!(
+        state.ses.sets(),
+        setup_checklist::checklists(&state, &companies)
+    );
+    let mut checklists = checklists?;
+    let state = &state;
+    let sets = sets.as_ref();
+    let checks: Vec<_> = companies
+        .iter()
+        .map(|company| async move {
+            let domain = deliverability::company_domain(company.domain.as_deref());
+            let (trust, mx) = tokio::join!(
+                deliverability::ensure_company_trust(
+                    &state.pool,
+                    &state.dns,
+                    company.id,
+                    company.domain.as_deref()
+                ),
+                mx_inbound(state, domain.as_deref())
+            );
+            trust.map(|trust| (company.id, trust, ses_status(domain, sets, mx)))
+        })
+        .collect();
+    let checks = futures_util::stream::iter(checks)
+        .buffered(STATUS_CHECKS_AT_ONCE)
+        .collect::<Vec<_>>()
+        .await;
+    let mut statuses = Vec::with_capacity(checks.len());
+    for check in checks {
+        let (id, domain_trust, ses_inbound) = check?;
+        if let Some(setup_checklist) = checklists.remove(&id) {
+            statuses.push(CompanyStatus {
+                id,
+                domain_trust,
+                ses_inbound,
+                setup_checklist,
+            });
+        }
+    }
+    Ok(Json(statuses))
 }
 
 async fn facts(state: &AppState, id: i32) -> ApiResult<CompanyFacts> {
