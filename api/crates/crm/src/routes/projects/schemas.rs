@@ -408,10 +408,9 @@ pub struct ProcessStep {
     /// Its own to-do list, in order.
     #[sqlx(skip)]
     pub items: Vec<ListItem>,
-    /// It ends the stage: checked off by itself when the project moves on from
-    /// the stage, and its Auto moves the project on (Awaiting Template,
-    /// Templated). The project's Next shows its template or installation date
-    /// while it is the step to do.
+    /// Deprecated, for older apps: true when its Auto waits for the project to
+    /// move on (`stage_moved`) or moves it on (`moves`). The project's Next
+    /// shows its template or installation date while it is the step to do.
     pub ends_stage: bool,
 }
 
@@ -421,7 +420,8 @@ pub struct StepAuto {
     /// What happens: `email_template`, `text_template`, `customer_replied`,
     /// `file_added`, `sent_to_sign`, `signed`, `questionnaire_filled`,
     /// `template_booked`, `install_booked`, `invoice_sent`, `payment_any`,
-    /// `payment_full`, `task_done` or `days_after`.
+    /// `payment_full`, `task_done`, `days_after` or `stage_moved` (the project
+    /// moves on to the next stage, by hand or by itself).
     pub trigger: String,
     /// The email or text template (`email_template`, `text_template`).
     #[serde(default)]
@@ -435,6 +435,11 @@ pub struct StepAuto {
     /// Days after the step before (`days_after`).
     #[serde(default)]
     pub days: Option<i32>,
+    /// Then moves the project on to the next stage: Awaiting Template to
+    /// Templated, Templated to In Fabrication. Only on those two stages, and
+    /// not with `stage_moved`.
+    #[serde(default)]
+    pub moves: bool,
 }
 
 /// A step's new rule; `null` turns it off.
@@ -473,13 +478,6 @@ pub struct ProcessStepInput {
 pub struct ProcessStepName {
     /// What to do.
     pub name: String,
-}
-
-/// Whether a process step ends its stage.
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct ProcessStepEndsStage {
-    /// True: checked off when the project moves on, and its Auto moves it on.
-    pub ends_stage: bool,
 }
 
 /// Who to tell when a project checks a step off.

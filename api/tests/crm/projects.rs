@@ -796,17 +796,17 @@ async fn checking_a_step_off_tells_its_people(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
-async fn each_stage_ends_with_a_step_checked_off_when_the_project_moves_on(pool: MySqlPool) {
+async fn each_stage_starts_with_a_step_checked_off_when_the_project_moves_on(pool: MySqlPool) {
     turn_on(&pool).await;
     win_8002(&pool).await;
     let project = projects_of_8002(&pool).await[0];
 
-    // The company starts with the four built-in lines as steps that end their stage.
+    // The company starts with four steps whose Auto waits for the move on.
     let seen = board(&pool, sessions::ADMIN).await;
     let steps = seen["process_steps"].as_array().unwrap().clone();
     let ends: Vec<(String, String)> = steps
         .iter()
-        .filter(|step| step["ends_stage"] == true)
+        .filter(|step| step["auto"]["trigger"] == "stage_moved" && step["ends_stage"] == true)
         .map(|step| {
             (
                 step["stage_code"].as_str().unwrap().to_string(),
@@ -819,15 +819,15 @@ async fn each_stage_ends_with_a_step_checked_off_when_the_project_moves_on(pool:
         vec![
             ("new".to_string(), "Schedule the template".to_string()),
             ("templated".to_string(), "Start fabrication".to_string()),
-            ("fabrication".to_string(), "Schedule the installation".to_string()),
+            (
+                "fabrication".to_string(),
+                "Schedule the installation".to_string()
+            ),
             ("installed".to_string(), "Confirm full payment".to_string()),
         ]
     );
     let id_of = |name: &str| {
-        steps
-            .iter()
-            .find(|step| step["name"] == name)
-            .unwrap()["id"]
+        steps.iter().find(|step| step["name"] == name).unwrap()["id"]
             .as_i64()
             .unwrap()
     };
@@ -841,17 +841,11 @@ async fn each_stage_ends_with_a_step_checked_off_when_the_project_moves_on(pool:
         .json(&json!({ "user_ids": [100] }))
         .await
         .assert_status(StatusCode::NO_CONTENT);
-    // Start fabrication no longer ends its stage; a rep can't change that.
+    // Start fabrication's Auto is turned off like any step's.
     server(pool.clone())
-        .put(&format!("/v1/projects/process-steps/{fabrication}/ends-stage"))
-        .with_session(sessions::REP)
-        .json(&json!({ "ends_stage": false }))
-        .await
-        .assert_status(StatusCode::FORBIDDEN);
-    server(pool.clone())
-        .put(&format!("/v1/projects/process-steps/{fabrication}/ends-stage"))
+        .put(&format!("/v1/projects/process-steps/{fabrication}/auto"))
         .with_session(sessions::ADMIN)
-        .json(&json!({ "ends_stage": false }))
+        .json(&json!({ "auto": null }))
         .await
         .assert_status(StatusCode::NO_CONTENT);
 
@@ -907,30 +901,52 @@ async fn each_stage_ends_with_a_step_checked_off_when_the_project_moves_on(pool:
         .find(|step| step["id"].as_i64() == Some(fabrication))
         .unwrap()
         .clone();
+    assert_eq!(start["auto"], Value::Null);
     assert_eq!(start["ends_stage"], false);
 }
 
 #[test_db::test(seed)]
-async fn a_step_that_ends_the_stage_moves_the_project_on_by_its_rule(pool: MySqlPool) {
+async fn a_step_whose_rule_moves_the_project_on_moves_it(pool: MySqlPool) {
     turn_on(&pool).await;
     win_8002(&pool).await;
     let project = projects_of_8002(&pool).await[0];
     let seen = board(&pool, sessions::ADMIN).await;
-    let schedule = seen["process_steps"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|step| step["name"] == "Schedule the template")
-        .unwrap()["id"]
-        .as_i64()
-        .unwrap();
-    server(pool.clone())
-        .put(&format!("/v1/projects/process-steps/{schedule}/auto"))
-        .with_session(sessions::ADMIN)
-        .json(&json!({ "auto": { "trigger": "file_added" } }))
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
-    assert_eq!(board(&pool, sessions::ADMIN).await["projects"][0]["stage_code"], "new");
+    let id_of = |name: &str| {
+        seen["process_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["name"] == name)
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap()
+    };
+    let schedule = id_of("Schedule the template");
+    let install = id_of("Schedule the installation");
+    let auto = async |step: i64, rule: Value| {
+        server(pool.clone())
+            .put(&format!("/v1/projects/process-steps/{step}/auto"))
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "auto": rule }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    };
+    auto(schedule, json!({ "trigger": "file_added", "moves": true })).await;
+    // Only Awaiting Template and Templated move on by themselves.
+    auto(install, json!({ "trigger": "file_added", "moves": true })).await;
+    let seen = board(&pool, sessions::ADMIN).await;
+    let rule_of = |id: i64| {
+        seen["process_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["id"].as_i64() == Some(id))
+            .unwrap()["auto"]
+            .clone()
+    };
+    assert_eq!(rule_of(schedule)["moves"], true);
+    assert_eq!(rule_of(install)["moves"], false);
+    assert_eq!(seen["projects"][0]["stage_code"], "new");
 
     // A file comes in: the project moves on to Templated, the step checked off.
     sqlx::query(

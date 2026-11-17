@@ -69,7 +69,6 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(tasks::delete_file))
         .routes(routes!(process::list, process::create))
         .routes(routes!(process::rename, process::delete))
-        .routes(routes!(process::set_ends_stage))
         .routes(routes!(process::reorder))
         .routes(routes!(process::set_notify))
         .routes(routes!(process::notify_positions))
