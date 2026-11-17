@@ -75,8 +75,8 @@ pub struct ScheduleSettings {
     /// one an admin picked, else the built-in Estimates calendar (null when
     /// there is neither).
     pub estimates_calendar_id: Option<i32>,
-    /// The label color the caller gave most of the events they added in the
-    /// last 90 days (null when none): a new event starts with it.
+    /// The label color of the last event the caller added by hand (null when
+    /// none): a new event starts with it.
     pub favorite_color: Option<String>,
     /// The job's sales rep is told when the installer taps Completed on an
     /// installation (Admin > Schedule; on unless an admin turned it off).
@@ -115,14 +115,15 @@ pub async fn estimates_calendar_id(
     .await
 }
 
-/// The color the user gave most of the events they added in the last 90
-/// days; the latest wins a tie.
+/// The color of the last event the user added by hand. Events the CRM adds
+/// on its own when a quote is sold (`quote_id` set, saved under the seller)
+/// do not count.
 async fn favorite_color(pool: &MySqlPool, user_id: i32) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT color FROM events
-          WHERE created_user_id = ? AND created_date >= NOW() - INTERVAL 90 DAY
+          WHERE created_user_id = ? AND quote_id IS NULL
             AND COALESCE(TRIM(color), '') <> ''
-          GROUP BY color ORDER BY COUNT(*) DESC, MAX(id) DESC LIMIT 1",
+          ORDER BY id DESC LIMIT 1",
     )
     .bind(user_id)
     .fetch_optional(pool)
