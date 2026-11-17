@@ -39,6 +39,10 @@ pub async fn facebook_contact_form(
     post,
     path = "/v1/webhooks/new-lead-form/{company_id}",
     description = "Create a marketing lead from Make, Zapier, or the website.\n\n\
+**Repeat leads.** A request whose `email` (any case) or `phone` (last 10 digits) matches an existing \
+customer of the company does not create a duplicate: it fills in that customer's empty fields (saved values \
+are never overwritten), makes the deal active again in the first stage, and notifies the sales rep. \
+A separate quiz or showroom form can therefore be linked to an earlier lead by sending the same email or phone.\n\n\
 **`referral_source`** is optional. When provided, prefer `website` or `facebook` so statistics group correctly. \
 Aliases such as `Facebook Form` or `WordPress` are rewritten automatically; other unrecognized values are \
 stored as sent and flagged for review.\n\n\
