@@ -465,19 +465,68 @@ static OPENS_WITH_GREETING: LazyLock<Regex> = LazyLock::new(|| {
         .expect("valid pattern")
 });
 
+static GREETING_WORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)^\s*(hi|hey|hello)\b").expect("valid pattern"));
+
+/// "Hi", "Hey" or "Hello" when `text` opens with one.
+fn greeting_word(text: &str) -> Option<&'static str> {
+    let word = GREETING_WORD
+        .captures(text)?
+        .get(1)?
+        .as_str()
+        .to_lowercase();
+    Some(match word.as_str() {
+        "hey" => "Hey",
+        "hello" => "Hello",
+        _ => "Hi",
+    })
+}
+
+/// How the rep says hello (owner, 2026-11-17): the greeting they already used
+/// with this customer, newest first; else the one they use most in their recent
+/// messages to anyone; else "Hi".
+pub fn rep_greeting(timeline: &[FollowupTimelineMessage], examples: &[String]) -> &'static str {
+    if let Some(word) = timeline
+        .iter()
+        .rev()
+        .filter(|m| m.direction == crate::followups::timeline::Direction::Outbound)
+        .find_map(|m| greeting_word(&m.text))
+    {
+        return word;
+    }
+    let mut best = ("Hi", 0);
+    for word in ["Hi", "Hey", "Hello"] {
+        let uses = examples
+            .iter()
+            .filter(|e| greeting_word(e) == Some(word))
+            .count();
+        if uses > best.1 {
+            best = (word, uses);
+        }
+    }
+    best.0
+}
+
 /// The opening of an empty-draft suggestion when the rep has not written to
-/// the customer yet today: "Hi Charles, …". The model skips the GREETING line
-/// too often (owner, 2026-11-17), so the code adds it.
-pub fn with_greeting(completion: &str, first_name: &str) -> String {
+/// the customer yet today: "Hi Charles, …" with the rep's own `greeting`. The
+/// model skips the GREETING line too often (owner, 2026-11-17), so the code adds it.
+pub fn with_greeting(completion: &str, first_name: &str, greeting: &str) -> String {
     let text = completion.trim_start();
-    if text.is_empty() || first_name.is_empty() || OPENS_WITH_GREETING.is_match(text) {
+    if text.is_empty() || first_name.is_empty() {
         return text.to_string();
     }
-    // "Charles, I hope …" already names them: only "Hi " is missing.
+    // The model's own "Hi"/"Hey"/"Hello" becomes the rep's word.
+    if let Some(found) = GREETING_WORD.find(text) {
+        return format!("{greeting}{}", &text[found.end()..]);
+    }
+    if OPENS_WITH_GREETING.is_match(text) {
+        return text.to_string();
+    }
+    // "Charles, I hope …" already names them: only the greeting is missing.
     if let Some(rest) = text.strip_prefix(first_name)
         && rest.starts_with([',', ' ', '!', '.'])
     {
-        return format!("Hi {first_name}{rest}");
+        return format!("{greeting} {first_name}{rest}");
     }
     // "I hope …" stays capital; "Your quote …" reads "your quote …".
     let first_word = FIRST_WORD.find(text).map_or("", |m| m.as_str());
@@ -493,7 +542,7 @@ pub fn with_greeting(completion: &str, first_name: &str) -> String {
             c.to_lowercase().chain(chars).collect::<String>()
         })
     };
-    format!("Hi {first_name}, {body}")
+    format!("{greeting} {first_name}, {body}")
 }
 
 /// The suggestion without the sentences that repeat what the rep already told the customer.
@@ -860,12 +909,14 @@ pub async fn autocomplete(
     .map_err(ai_failed)?;
     let completion = normalize_completion(&raw, &request.draft);
     let mut completion = drop_repeated_sentences(&completion, &request.draft, &context.timeline);
-    // An empty draft and no message from the rep yet today: it opens "Hi <name>,".
+    // An empty draft and no message from the rep yet today: it opens "Hi <name>,"
+    // ("Hey"/"Hello" when that is how the rep greets).
     if request.draft.is_empty()
         && !conversation_recency(&context.timeline, Utc::now()).is_continuing()
         && let Some(first_name) = first_name_from_customer_profile(&context.profile)
     {
-        completion = with_greeting(&completion, &first_name);
+        let greeting = rep_greeting(&context.timeline, &context.rep_voice);
+        completion = with_greeting(&completion, &first_name, greeting);
     }
     Ok(Json(Completion { completion }))
 }
@@ -1112,34 +1163,64 @@ mod tests {
     fn an_opener_greets_the_customer_by_name() {
         // The owner's case: the suggestion skipped "Hi".
         assert_eq!(
-            with_greeting("I hope the installation went well.", "Charles"),
+            with_greeting("I hope the installation went well.", "Charles", "Hi"),
             "Hi Charles, I hope the installation went well."
         );
         assert_eq!(
-            with_greeting("I'm checking in.", "Ann"),
+            with_greeting("I'm checking in.", "Ann", "Hi"),
             "Hi Ann, I'm checking in."
         );
         assert_eq!(
-            with_greeting("Your quote is ready.", "Ann"),
-            "Hi Ann, your quote is ready."
+            with_greeting("Your quote is ready.", "Ann", "Hey"),
+            "Hey Ann, your quote is ready."
         );
         assert_eq!(
-            with_greeting("Charles, quick question.", "Charles"),
-            "Hi Charles, quick question."
+            with_greeting("Charles, quick question.", "Charles", "Hello"),
+            "Hello Charles, quick question."
         );
-        // Already greeted, or nothing to suggest: unchanged.
-        assert_eq!(with_greeting("Hi Ann, all set.", "Ann"), "Hi Ann, all set.");
+        // The model's own greeting becomes the rep's word.
         assert_eq!(
-            with_greeting("Good morning Ann!", "Ann"),
+            with_greeting("Hi Ann, all set.", "Ann", "Hey"),
+            "Hey Ann, all set."
+        );
+        assert_eq!(with_greeting("Hello, Ann.", "Ann", "Hello"), "Hello, Ann.");
+        // Other openings, or nothing to suggest: unchanged.
+        assert_eq!(
+            with_greeting("Good morning Ann!", "Ann", "Hi"),
             "Good morning Ann!"
         );
-        assert_eq!(with_greeting("Hello, Ann.", "Ann"), "Hello, Ann.");
-        assert_eq!(with_greeting("", "Ann"), "");
+        assert_eq!(with_greeting("", "Ann", "Hi"), "");
         // "Hint" is not "Hi".
         assert_eq!(
-            with_greeting("Hint: bring a sample.", "Ann"),
+            with_greeting("Hint: bring a sample.", "Ann", "Hi"),
             "Hi Ann, hint: bring a sample."
         );
+    }
+
+    #[test]
+    fn the_greeting_is_the_reps_own() {
+        use crate::followups::timeline::Direction::{Inbound, Outbound};
+        let voice = |texts: &[&str]| texts.iter().map(|t| (*t).to_string()).collect::<Vec<_>>();
+        // Already said in this conversation: the newest one the rep used wins.
+        let timeline = [
+            sms(Outbound, "Hello Charles, your quote is attached."),
+            sms(Inbound, "hi, thanks"),
+            sms(Outbound, "Hey Charles, any questions?"),
+            sms(Outbound, "Sounds good."),
+        ];
+        assert_eq!(rep_greeting(&timeline, &voice(&["Hi Bob"])), "Hey");
+        // The customer's "hi" does not count; then the rep's usual word.
+        let timeline = [sms(Inbound, "Hi, I need a quote")];
+        assert_eq!(
+            rep_greeting(
+                &timeline,
+                &voice(&["Hello Ann", "Hey Bob", "hello Sue", "Thanks!"])
+            ),
+            "Hello"
+        );
+        // Nothing to go on: "Hi".
+        assert_eq!(rep_greeting(&timeline, &voice(&["Thanks!"])), "Hi");
+        assert_eq!(rep_greeting(&[], &[]), "Hi");
     }
 
     #[test]
