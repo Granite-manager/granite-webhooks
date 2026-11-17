@@ -687,8 +687,8 @@ pub async fn open_deal_in(
     let stage: Option<(i32, Option<String>)> = sqlx::query_as(
         "SELECT dl.id, dl.name FROM groups_list g
          JOIN deals_list dl ON dl.group_id = g.id AND dl.deleted_at IS NULL
-         WHERE g.deleted_at IS NULL AND ((g.company_id = ? AND g.is_default = 1) OR g.id = 1)
-         ORDER BY g.id = 1, dl.position LIMIT 1",
+         WHERE g.deleted_at IS NULL AND g.company_id = ?
+         ORDER BY g.is_default DESC, g.id, dl.position LIMIT 1",
     )
     .bind(company_id)
     .fetch_optional(&mut **tx)

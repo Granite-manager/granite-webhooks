@@ -505,7 +505,7 @@ pub async fn list(
             "SELECT dl.id, dl.name, gl.name AS group_name
                FROM deals_list dl
                JOIN groups_list gl ON gl.id = dl.group_id AND gl.deleted_at IS NULL
-              WHERE dl.deleted_at IS NULL AND (gl.company_id = ? OR gl.id = 1)
+              WHERE dl.deleted_at IS NULL AND gl.company_id = ?
               ORDER BY gl.created_at, dl.position, dl.id",
         )
         .bind(user.company_id)

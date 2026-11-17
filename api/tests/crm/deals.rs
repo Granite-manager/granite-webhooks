@@ -70,7 +70,10 @@ async fn groups_flag_overdue_activities_of_the_callers_deals(pool: MySqlPool) {
     assert!(names.contains(&(100, "Sales", true)));
     assert!(names.contains(&(104, "Remodel", false)));
     assert!(names.iter().all(|(id, _, _)| *id != 105 && *id != 101));
-    assert_eq!(names[0].0, 1, "shared group first (id order)");
+    assert!(
+        names.iter().all(|(id, _, _)| *id != 1),
+        "the retired shared group is not listed"
+    );
 
     // Won deal 8603 has an overdue activity too.
     let won = get(&pool, "/v1/deal-groups?status=won", sessions::DEALER).await;

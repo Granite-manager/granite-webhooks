@@ -821,8 +821,8 @@ async fn create_won_deal(
         "SELECT CAST(dl.id AS SIGNED), dl.name FROM groups_list g
            JOIN deals_list dl ON dl.group_id = g.id AND dl.deleted_at IS NULL
           WHERE g.deleted_at IS NULL
-            AND ((g.company_id = ? AND g.is_default = 1) OR g.id = 1)
-          ORDER BY g.id = 1 ASC, dl.position ASC
+            AND g.company_id = ?
+          ORDER BY g.is_default DESC, g.id ASC, dl.position ASC
           LIMIT 1",
     )
     .bind(quote.company_id)

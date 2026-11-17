@@ -468,20 +468,21 @@ pub async fn get_default_list_id_from_company_id(
     pool: &MySqlPool,
     company_id: i32,
 ) -> Result<i32, sqlx::Error> {
-    let id = sqlx::query_scalar!(
+    // The default pipeline's first stage; any pipeline of the company when
+    // none is the default.
+    let id: Option<i32> = sqlx::query_scalar(
         r#"
         SELECT dl.id
         FROM deals_list dl
         INNER JOIN groups_list gl ON dl.group_id = gl.id
         WHERE gl.company_id = ?
-          AND gl.is_default = 1
           AND dl.deleted_at IS NULL
           AND gl.deleted_at IS NULL
-        ORDER BY dl.position ASC, dl.id ASC
+        ORDER BY gl.is_default DESC, gl.id ASC, dl.position ASC, dl.id ASC
         LIMIT 1
         "#,
-        company_id
     )
+    .bind(company_id)
     .fetch_optional(pool)
     .await?;
     Ok(id.unwrap_or(1))

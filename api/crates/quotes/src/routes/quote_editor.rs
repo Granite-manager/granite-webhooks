@@ -2382,7 +2382,7 @@ async fn move_deal_to_got_a_quote(pool: &MySqlPool, quote: &QuoteRow) -> ApiResu
     let lists: Vec<(i32, String, i32)> = sqlx::query_as(
         "SELECT dl.id, dl.name, dl.group_id FROM deals_list dl
            JOIN groups_list g ON g.id = dl.group_id AND g.deleted_at IS NULL
-          WHERE dl.deleted_at IS NULL AND (g.company_id = ? OR g.id = 1)",
+          WHERE dl.deleted_at IS NULL AND g.company_id = ?",
     )
     .bind(quote.company_id)
     .fetch_all(pool)
