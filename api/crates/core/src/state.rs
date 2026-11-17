@@ -16,7 +16,7 @@ use sqlx::MySqlPool;
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 /// Origins allowed when `API_ALLOWED_ORIGINS` is unset: the production tenant
@@ -545,6 +545,11 @@ impl AppState {
                 Method::DELETE,
             ])
             .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+            // Browsers re-ask with an OPTIONS preflight before every
+            // cross-origin call unless told to remember the answer (Chrome
+            // keeps it 5 s by default). One hour cuts the repeated preflights
+            // of the 60 s pollers; each one is a Lambda invocation.
+            .max_age(Duration::from_secs(3600))
     }
 }
 

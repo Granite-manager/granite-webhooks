@@ -158,6 +158,8 @@ async fn cors_allows_credentials_for_known_origins_only(pool: MySqlPool) {
         common::ALLOWED_ORIGIN
     );
     assert_eq!(allowed.header("access-control-allow-credentials"), "true");
+    // Browsers keep the preflight answer for an hour instead of re-asking.
+    assert_eq!(allowed.header("access-control-max-age"), "3600");
 
     let denied = server
         .get("/v1/me")
