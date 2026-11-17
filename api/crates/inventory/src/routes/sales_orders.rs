@@ -211,6 +211,17 @@ pub async fn list(
     Ok(Json(rows))
 }
 
+/// The company's pending orders, the Transactions badge (part of
+/// `GET /v1/me/badges`): what `GET /v1/sales-orders` lists by default.
+pub async fn pending_count(pool: &MySqlPool, company_id: i32) -> sqlx::Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sales_orders WHERE company_id = ? AND status = 'pending'",
+    )
+    .bind(company_id)
+    .fetch_one(pool)
+    .await
+}
+
 #[derive(sqlx::FromRow)]
 struct OrderFacts {
     option_index: i32,

@@ -2435,6 +2435,109 @@
         ]
       }
     },
+    "/v1/me/badges": {
+      "get": {
+        "tags": [
+          "me"
+        ],
+        "summary": "Get my badges",
+        "description": "The sidebar badges and desktop alerts the CRM polls each minute, in one\nrequest: name the parts with `include` (repeat the key). Each part is what\nits own route returns: `emails_unread` as `GET /v1/emails/unread`,\n`sms_unread` as `GET /v1/sms/mine/unread-count`, `sms_alerts` as\n`GET /v1/sms/mine/desktop-alerts` (opening the `inbox` provider's page),\n`sales_orders` the count of pending `GET /v1/sales-orders` (absent unless\nthe caller's positions open the Sales orders tab). Parts not asked for are\nabsent. Reads only the CRM's database; the notification bell is\n`GET /v1/notifications`.",
+        "operationId": "get_my_badges",
+        "parameters": [
+          {
+            "name": "include",
+            "in": "query",
+            "description": "The parts to return; repeat the key for several\n(`include=emails_unread&include=sms_unread`). At least one.",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "A part of `GET /v1/me/badges`.",
+                "enum": [
+                  "emails_unread",
+                  "sms_unread",
+                  "sms_alerts",
+                  "sales_orders"
+                ]
+              }
+            }
+          },
+          {
+            "name": "inbox",
+            "in": "query",
+            "description": "The SMS page the `sms_alerts` open (the caller's inbox); default\n`telnyx`. Used only with `sms_alerts`.",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "The SMS provider a company texts through: `cloudtalk`, `ringcentral`, or\n`telnyx` (Granite Manager: texts from the company's Telnyx numbers).",
+              "enum": [
+                "cloudtalk",
+                "ringcentral",
+                "telnyx"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The parts asked for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Badges"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No part named in `include`, or an unknown one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/customers": {
       "get": {
         "tags": [
@@ -81751,6 +81854,70 @@
           "OutsideHours"
         ]
       },
+      "BadgeCount": {
+        "type": "object",
+        "description": "A badge count.",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many."
+          }
+        }
+      },
+      "Badges": {
+        "type": "object",
+        "description": "`GET /v1/me/badges`: the parts asked for; a part not asked for is absent.",
+        "properties": {
+          "emails_unread": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EmailBadge",
+                "description": "`emails_unread`: unread threads of the caller's inbox."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sms_unread": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BadgeCount",
+                "description": "`sms_unread`: the caller's conversations with unread texts over every\nprovider they text through (a phone unread through two providers\ncounts twice)."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sms_alerts": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SmsAlerts",
+                "description": "`sms_alerts`: the caller's unread texts to show as desktop alerts."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sales_orders": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BadgeCount",
+                "description": "`sales_orders`: the company's sales orders waiting to be confirmed.\nAbsent, even when asked for, for someone whose positions do not open\nthe Sales orders tab."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
       "BasePay": {
         "type": "object",
         "description": "A rep's base pay (`commission_base_pay`): `amount` every week, two weeks\nor month from the first payday, until an optional last day. It is one\nperson's (`user_id`) or everyone's with a position (`position_id`); a\nperson's own base pay replaces their position's.",
@@ -91474,6 +91641,28 @@
           "invite_pending": {
             "type": "boolean",
             "description": "Has not set up their account from the invite yet (no password)."
+          }
+        }
+      },
+      "EmailBadge": {
+        "type": "object",
+        "description": "The inbox badge.",
+        "required": [
+          "count"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unread inbox threads; 0 when the company has no inbound email."
+          },
+          "latest_inbound_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Newest unread message id, to notice new mail between polls; null when\nnothing is unread."
           }
         }
       },
@@ -116202,6 +116391,22 @@
           "stone": {
             "$ref": "#/components/schemas/SlabStone",
             "description": "The slab's stone."
+          }
+        }
+      },
+      "SmsAlerts": {
+        "type": "object",
+        "description": "The texts to alert about.",
+        "required": [
+          "alerts"
+        ],
+        "properties": {
+          "alerts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DesktopAlert"
+            },
+            "description": "One per phone (its latest unread text from the customer), newest\nfirst, at most 50."
           }
         }
       },

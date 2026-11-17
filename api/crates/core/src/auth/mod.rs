@@ -709,6 +709,26 @@ impl FromRequestParts<AppState> for EmployeeUser {
     }
 }
 
+/// [`EmployeeUser`], with what their positions open: for a route that
+/// answers for several areas and leaves out those of closed tabs.
+pub struct EmployeeAccess {
+    pub user: SessionUser,
+    pub access: Access,
+}
+
+impl FromRequestParts<AppState> for EmployeeAccess {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
+        let (user, _, access) = authenticate_with_access(parts, state).await?;
+        if user.is_employee || user.is_admin || user.is_superuser || access != Access::Full {
+            Ok(Self { user, access })
+        } else {
+            Err(ApiError::Forbidden)
+        }
+    }
+}
+
 /// Shop manager and shop worker positions (`Positions` in the CRM).
 const SHOP_POSITIONS: [i32; 2] = [3, 4];
 

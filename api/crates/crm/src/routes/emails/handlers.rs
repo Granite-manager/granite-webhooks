@@ -145,11 +145,17 @@ pub async fn unread(
     State(state): State<AppState>,
     EmployeeUser(user): EmployeeUser,
 ) -> ApiResult<Json<UnreadCount>> {
-    if !has_inbound_email(&state.pool, user.company_id).await? {
-        return Ok(Json(UnreadCount {
+    Ok(Json(unread_badge(&state.pool, &user).await?))
+}
+
+/// The caller's inbox badge, as `GET /v1/emails/unread` returns it (also part
+/// of `GET /v1/me/badges`).
+pub async fn unread_badge(pool: &MySqlPool, user: &SessionUser) -> sqlx::Result<UnreadCount> {
+    if !has_inbound_email(pool, user.company_id).await? {
+        return Ok(UnreadCount {
             count: 0,
             latest_inbound_id: None,
-        }));
+        });
     }
     let unread = unread_inbox(&mailbox(&user));
     let (count, latest): (i64, Option<i64>) = Sql::new(
@@ -160,12 +166,12 @@ pub async fn unread(
         unread.args,
     )
     .query_as()
-    .fetch_one(&state.pool)
+    .fetch_one(pool)
     .await?;
-    Ok(Json(UnreadCount {
+    Ok(UnreadCount {
         count,
         latest_inbound_id: latest,
-    }))
+    })
 }
 
 /// The company receives email: it has an inbound email domain.

@@ -24,6 +24,7 @@
 //! fails stuck sends runs here, at most once a minute per company.
 
 mod all;
+pub use all::{my_alerts, my_unread};
 mod attachments;
 mod discard;
 pub mod flow_stops;

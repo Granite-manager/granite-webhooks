@@ -598,6 +598,16 @@ async fn a_rep_on_two_providers_reads_every_text_in_one_inbox(pool: MySqlPool) {
             "/employee/ringcentral/thread/3175550100"
         ]
     );
+    // The same two in one request, with nothing else.
+    let badges = get(
+        &pool,
+        "/v1/me/badges?include=sms_unread&include=sms_alerts&inbox=ringcentral",
+        sessions::REP,
+    )
+    .await;
+    assert_eq!(badges["sms_unread"], unread);
+    assert_eq!(badges["sms_alerts"], alerts);
+    assert_eq!(badges.as_object().unwrap().len(), 2);
 
     // Someone on no provider: an empty inbox, nothing to answer through.
     let none = get(&pool, "/v1/sms/mine/threads", sessions::ADMIN).await;
