@@ -311,7 +311,7 @@ pub async fn verify_login(
 /// Said to someone who may not sign in because every switch on their user is
 /// off (no position, not an admin).
 pub const NO_POSITION: &str =
-    "Your account has no position yet. Ask your admin to turn one on, then sign in.";
+    "You don't have a position assigned. Please ask your manager to assign you one.";
 
 /// The user has no position and is neither an admin nor a superuser: every
 /// switch on their user is off, so they may not sign in.
