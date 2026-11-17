@@ -174,6 +174,10 @@ pub async fn set_events(
 
 /// Set what moving a project on from a stage does to its events
 ///
+/// Deprecated: no longer used. Each stage now ends with an ordinary step
+/// (`ends_stage`, see `GET /v1/projects/process-steps`) whose own Notify,
+/// Schedule and Auto replaced these settings; what is saved here does nothing.
+///
 /// The built-in line at the end of a stage takes Schedule rules like a step.
 /// They run when a project moves on from the stage (and, for Fabrication,
 /// when a part is marked fabricated).

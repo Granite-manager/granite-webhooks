@@ -408,6 +408,11 @@ pub struct ProcessStep {
     /// Its own to-do list, in order.
     #[sqlx(skip)]
     pub items: Vec<ListItem>,
+    /// It ends the stage: checked off by itself when the project moves on from
+    /// the stage, and its Auto moves the project on (Awaiting Template,
+    /// Templated). The project's Next shows its template or installation date
+    /// while it is the step to do.
+    pub ends_stage: bool,
 }
 
 /// What checks a process step off by itself.
@@ -468,6 +473,13 @@ pub struct ProcessStepInput {
 pub struct ProcessStepName {
     /// What to do.
     pub name: String,
+}
+
+/// Whether a process step ends its stage.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ProcessStepEndsStage {
+    /// True: checked off when the project moves on, and its Auto moves it on.
+    pub ends_stage: bool,
 }
 
 /// Who to tell when a project checks a step off.
