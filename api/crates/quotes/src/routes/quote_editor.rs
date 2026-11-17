@@ -129,7 +129,13 @@ pub const QUOTE_ROW_SELECT: &str = "SELECT q.id, q.company_id, q.customer_id, c.
        CAST(COALESCE(q.discount_amount, 0) AS DOUBLE) AS discount_amount,
        CAST(q.payment_terms_json AS CHAR) AS payment_terms_json, q.address, q.phone,
        c.phone AS customer_phone, c.phone_2 AS customer_phone_2, q.email, q.address_notes,
-       sp.phone_number AS salesperson_phone, CAST(q.draft_drawing_json AS CHAR) AS draft_drawing_json,
+       COALESCE((SELECT CONCAT(SUBSTRING(n.last10, 1, 3), '-', SUBSTRING(n.last10, 4, 3), '-', SUBSTRING(n.last10, 7, 4))
+                   FROM telnyx_numbers n
+                   JOIN telnyx_number_users nu ON nu.number_id = n.id AND nu.user_id = sp.id AND nu.can_call_from <> 0
+                  WHERE n.company_id = q.company_id AND n.active <> 0
+                  ORDER BY FIELD(n.kind, 'direct', 'shared', 'main'), n.id LIMIT 1),
+                sp.phone_number) AS salesperson_phone,
+       CAST(q.draft_drawing_json AS CHAR) AS draft_drawing_json,
        q.current_step, q.current_revision, q.portal_token,
        DATE_FORMAT(q.signed_at, '%Y-%m-%dT%H:%i:%sZ') AS signed_at, q.signature_data,
        q.customer_accepted_option_id, q.qbo_invoice_id
