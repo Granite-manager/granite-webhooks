@@ -1532,3 +1532,131 @@ async fn the_schedule_reads_quotes_square_feet_without_opening_them(pool: MySqlP
         .await
         .assert_status(StatusCode::UNAUTHORIZED);
 }
+
+/// Events of company 100 made by Mark (101): 8990 has Alice's sale 7010
+/// (1 Main St, one Taj Mahal slab in a 30.25 sq ft Kitchen), 8991 is Alice's
+/// at another street, 8992 has no customer, 8993 is Alice's at 7010's street
+/// without a sale of its own. 8994 is another company's.
+const JOB_EVENTS: &str = "
+INSERT INTO events (id, title, location, start_date, end_date, created_user_id, assigned_user_id, sale_id, customer_id) VALUES
+  (8990, 'Install', '1 Main St', '2026-11-02 15:00:00', '2026-11-02 16:00:00', 101, 101, 7010, 1000),
+  (8991, 'Measure', '99 Elm St', '2026-11-02 15:00:00', '2026-11-02 16:00:00', 101, 101, NULL, 1000),
+  (8992, 'Lunch', NULL, '2026-11-02 15:00:00', '2026-11-02 16:00:00', 101, 101, NULL, NULL),
+  (8993, 'Template', '1 Main Street', '2026-11-02 15:00:00', '2026-11-02 16:00:00', 101, 101, NULL, 1000),
+  (8994, 'Theirs', '1 Main St', '2026-11-02 15:00:00', '2026-11-02 16:00:00', 106, 106, NULL, 2000);
+";
+
+#[test_db::test(seed)]
+async fn schedule_job_chips_match_what_the_cards_read_one_by_one(pool: MySqlPool) {
+    sqlx::raw_sql(JOB_EVENTS).execute(&pool).await.unwrap();
+    let (server, _) = server(&pool).await;
+    let chips = |query: &'static str| {
+        let request = server
+            .get(&format!("/v1/schedule/job-chips?{query}"))
+            .with_session(sessions::REP);
+        async move { request.await.json::<Value>() }
+    };
+    const ALL: &str = "ids=8994&ids=8993&ids=8992&ids=8991&ids=8990&ids=8990&ids=999999";
+
+    // The stones are the sale's slabs', as `GET /v1/transactions/{id}` lists them.
+    let detail = server
+        .get("/v1/transactions/7010")
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    assert_eq!(detail["slabs"][0]["stone_name"], "Taj Mahal");
+    let sale = server
+        .get("/v1/events/8993/sale")
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    assert_eq!(sale["sale_ids"], json!([7010]));
+
+    // No quotes yet: the sale's rooms give the sq ft.
+    assert_eq!(
+        chips(ALL).await,
+        json!([
+            { "event_id": 8990, "stones": ["Taj Mahal"], "square_feet": 30.25 },
+            { "event_id": 8991, "stones": [], "square_feet": 0.0 },
+            { "event_id": 8992, "stones": [], "square_feet": 0.0 },
+            { "event_id": 8993, "stones": ["Taj Mahal"], "square_feet": 30.25 },
+        ])
+    );
+
+    // A sold quote at 1 Main St (17.7 sq ft twice) wins over the rooms there;
+    // an unsold one and the other street count nothing.
+    price_list(&server, &pool).await;
+    let sold = create(&server, json!({ "customer_id": 1000, "quote_name": "Kitchen" })).await;
+    let draft = create(&server, json!({ "customer_id": 1000, "quote_name": "Draft" })).await;
+    for quote in [sold, draft] {
+        server
+            .put(&format!("/v1/quotes/{quote}/drawing"))
+            .with_session(sessions::REP)
+            .json(&json!({ "doc": counter_doc() }))
+            .await
+            .assert_status_ok();
+    }
+    sqlx::query("UPDATE quotes SET address = '1 Main St', status = IF(id = ?, 'accepted', 'draft') WHERE id IN (?, ?)")
+        .bind(sold)
+        .bind(sold)
+        .bind(draft)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        chips("ids=8990&ids=8991&ids=8993").await,
+        json!([
+            { "event_id": 8990, "stones": ["Taj Mahal"], "square_feet": 35.4 },
+            { "event_id": 8991, "stones": [], "square_feet": 0.0 },
+            { "event_id": 8993, "stones": ["Taj Mahal"], "square_feet": 35.4 },
+        ])
+    );
+    // The same number the day total reads for that quote.
+    let feet = server
+        .get(&format!("/v1/quotes/square-feet?ids={sold}"))
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    assert_eq!(feet[0]["square_feet"], 35.4);
+
+    // A sale the card can't read (no slab left) loses its project's stones
+    // and rooms, as the card does when `GET /v1/sales/{id}` answers 404.
+    sqlx::query("UPDATE quotes SET status = 'draft' WHERE id = ?")
+        .bind(sold)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE slab_inventory SET sale_id = NULL WHERE sale_id = 7010")
+        .execute(&pool)
+        .await
+        .unwrap();
+    server
+        .get("/v1/sales/7010")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    assert_eq!(
+        chips("ids=8990").await,
+        json!([{ "event_id": 8990, "stones": [], "square_feet": 0.0 }])
+    );
+
+    // Another company sees none of them; at most 100 at once; only for staff.
+    assert_eq!(
+        server
+            .get("/v1/schedule/job-chips?ids=8990")
+            .with_session(sessions::OTHER_COMPANY_REP)
+            .await
+            .json::<Value>(),
+        json!([])
+    );
+    let many: Vec<String> = (1..=101).map(|id| format!("ids={id}")).collect();
+    server
+        .get(&format!("/v1/schedule/job-chips?{}", many.join("&")))
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    server
+        .get("/v1/schedule/job-chips?ids=8990")
+        .await
+        .assert_status(StatusCode::UNAUTHORIZED);
+}
