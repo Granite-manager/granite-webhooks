@@ -123952,7 +123952,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`deal_activity`, `deal_note`, `email`, `cloudtalk_sms`, ..."
+            "description": "`deal_activity`, `deal_note`, `email`, `cloudtalk_sms`,\n`ringcentral_sms`, `telnyx_sms` (a text by provider), ..."
           },
           "user_id": {
             "type": [
