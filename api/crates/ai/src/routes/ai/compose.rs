@@ -22,6 +22,7 @@ use crate::followups::greeting::{conversation_recency, greeting_instruction};
 use crate::followups::js::{js_len, js_slice, trim};
 use crate::followups::prompt::FollowupTimelineMessage;
 use crate::followups::send_window::FollowupChannel;
+use crate::followups::style::first_name_from_customer_profile;
 use crate::openapi::ToSchema;
 use crate::routes::ai::compose_catalog::load_catalog;
 use crate::routes::ai::conversation_reply::REPLY_FALLBACK_MODEL;
@@ -459,6 +460,42 @@ fn says_again(sentence: &str, said: &[Vec<String>]) -> bool {
     })
 }
 
+static OPENS_WITH_GREETING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*(?:hi|hey|hello|good\s+(?:morning|afternoon|evening)|dear)\b")
+        .expect("valid pattern")
+});
+
+/// The opening of an empty-draft suggestion when the rep has not written to
+/// the customer yet today: "Hi Charles, …". The model skips the GREETING line
+/// too often (owner, 2026-11-17), so the code adds it.
+pub fn with_greeting(completion: &str, first_name: &str) -> String {
+    let text = completion.trim_start();
+    if text.is_empty() || first_name.is_empty() || OPENS_WITH_GREETING.is_match(text) {
+        return text.to_string();
+    }
+    // "Charles, I hope …" already names them: only "Hi " is missing.
+    if let Some(rest) = text.strip_prefix(first_name)
+        && rest.starts_with([',', ' ', '!', '.'])
+    {
+        return format!("Hi {first_name}{rest}");
+    }
+    // "I hope …" stays capital; "Your quote …" reads "your quote …".
+    let first_word = FIRST_WORD.find(text).map_or("", |m| m.as_str());
+    let keep_case = first_word == "I"
+        || text.starts_with("I'")
+        || text.starts_with("I’")
+        || first_word.chars().skip(1).any(char::is_uppercase);
+    let body = if keep_case {
+        text.to_string()
+    } else {
+        let mut chars = text.chars();
+        chars.next().map_or_else(String::new, |c| {
+            c.to_lowercase().chain(chars).collect::<String>()
+        })
+    };
+    format!("Hi {first_name}, {body}")
+}
+
 /// The suggestion without the sentences that repeat what the rep already told the customer.
 ///
 /// The model does it although told not to. The first sentence of a typed draft can't be left
@@ -483,7 +520,10 @@ pub fn drop_repeated_sentences(
     for (i, part) in parts.iter().enumerate() {
         // The first part finishes the draft's own sentence: judged with what was typed.
         let whole = if i == 0 && !draft.is_empty() {
-            format!("{}{part}", draft.rsplit(['.', '!', '?']).next().unwrap_or(draft))
+            format!(
+                "{}{part}",
+                draft.rsplit(['.', '!', '?']).next().unwrap_or(draft)
+            )
         } else {
             (*part).to_string()
         };
@@ -819,9 +859,15 @@ pub async fn autocomplete(
     }
     .map_err(ai_failed)?;
     let completion = normalize_completion(&raw, &request.draft);
-    Ok(Json(Completion {
-        completion: drop_repeated_sentences(&completion, &request.draft, &context.timeline),
-    }))
+    let mut completion = drop_repeated_sentences(&completion, &request.draft, &context.timeline);
+    // An empty draft and no message from the rep yet today: it opens "Hi <name>,".
+    if request.draft.is_empty()
+        && !conversation_recency(&context.timeline, Utc::now()).is_continuing()
+        && let Some(first_name) = first_name_from_customer_profile(&context.profile)
+    {
+        completion = with_greeting(&completion, &first_name);
+    }
+    Ok(Json(Completion { completion }))
 }
 
 fn ai_failed(err: AiError) -> ApiError {
@@ -1048,7 +1094,10 @@ pub async fn learn(
 mod tests {
     use super::*;
 
-    fn sms(direction: crate::followups::timeline::Direction, text: &str) -> FollowupTimelineMessage {
+    fn sms(
+        direction: crate::followups::timeline::Direction,
+        text: &str,
+    ) -> FollowupTimelineMessage {
         FollowupTimelineMessage {
             at: "2026-11-06T16:00:00Z".into(),
             channel: FollowupChannel::Sms,
@@ -1060,15 +1109,55 @@ mod tests {
     }
 
     #[test]
+    fn an_opener_greets_the_customer_by_name() {
+        // The owner's case: the suggestion skipped "Hi".
+        assert_eq!(
+            with_greeting("I hope the installation went well.", "Charles"),
+            "Hi Charles, I hope the installation went well."
+        );
+        assert_eq!(
+            with_greeting("I'm checking in.", "Ann"),
+            "Hi Ann, I'm checking in."
+        );
+        assert_eq!(
+            with_greeting("Your quote is ready.", "Ann"),
+            "Hi Ann, your quote is ready."
+        );
+        assert_eq!(
+            with_greeting("Charles, quick question.", "Charles"),
+            "Hi Charles, quick question."
+        );
+        // Already greeted, or nothing to suggest: unchanged.
+        assert_eq!(with_greeting("Hi Ann, all set.", "Ann"), "Hi Ann, all set.");
+        assert_eq!(
+            with_greeting("Good morning Ann!", "Ann"),
+            "Good morning Ann!"
+        );
+        assert_eq!(with_greeting("Hello, Ann.", "Ann"), "Hello, Ann.");
+        assert_eq!(with_greeting("", "Ann"), "");
+        // "Hint" is not "Hi".
+        assert_eq!(
+            with_greeting("Hint: bring a sample.", "Ann"),
+            "Hi Ann, hint: bring a sample."
+        );
+    }
+
+    #[test]
     fn a_suggestion_does_not_say_again_what_the_rep_said() {
         use crate::followups::timeline::Direction::{Inbound, Outbound};
         let timeline = [
-            sms(Inbound, "Unfortunately the one countertop in half bath was damaged."),
+            sms(
+                Inbound,
+                "Unfortunately the one countertop in half bath was damaged.",
+            ),
             sms(
                 Outbound,
                 "I’m sorry about the damage. We’ll replace the half bath countertop as soon as possible.",
             ),
-            sms(Inbound, "Thank you. The install went very well. They did great job."),
+            sms(
+                Inbound,
+                "Thank you. The install went very well. They did great job.",
+            ),
         ];
         // The owner's case: the opening stays, the repeated promise goes.
         assert_eq!(
@@ -1083,10 +1172,17 @@ mod tests {
         let new = "Glad to hear it! I'll send the warranty papers today.";
         assert_eq!(drop_repeated_sentences(new, "", &timeline), new);
         // Short replies are never cut.
-        assert_eq!(drop_repeated_sentences("Thank you!", "", &timeline), "Thank you!");
+        assert_eq!(
+            drop_repeated_sentences("Thank you!", "", &timeline),
+            "Thank you!"
+        );
         // Finishing a typed sentence that repeats: nothing to suggest.
         assert_eq!(
-            drop_repeated_sentences(" the half bath countertop as soon as possible.", "We'll replace", &timeline),
+            drop_repeated_sentences(
+                " the half bath countertop as soon as possible.",
+                "We'll replace",
+                &timeline
+            ),
             ""
         );
         // No messages from the rep: nothing to compare with.
@@ -1250,7 +1346,11 @@ mod tests {
             // now starts an email.
             timeline: vec![
                 message("2026-10-13 13:00", FollowupChannel::Sms, Direction::Inbound),
-                message("2026-10-13 13:30", FollowupChannel::Sms, Direction::Outbound),
+                message(
+                    "2026-10-13 13:30",
+                    FollowupChannel::Sms,
+                    Direction::Outbound,
+                ),
             ],
             rep_phone: None,
             company_name: None,
