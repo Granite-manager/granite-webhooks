@@ -112149,7 +112149,42 @@
               "string",
               "null"
             ],
-            "description": "Status of the template job it adds to Unscheduled: `ready` (default) or\n`not_ready`. The installation job is always `not_ready`."
+            "description": "Status of the template job it adds to Unscheduled: `ready` (default) or\n`not_ready`."
+          },
+          "installation_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Status of the installation job: `ready` or `not_ready` (default)."
+          },
+          "fh_backsplash_template_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Status of the FH Backsplash template job: `ready` or `not_ready` (default)."
+          },
+          "fh_backsplash_installation_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Status of the FH Backsplash installation job: `ready` or `not_ready` (default)."
+          },
+          "fh_backsplash_template_notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Notes on the FH Backsplash template job; left out: the template job's notes."
+          },
+          "fh_backsplash_installation_notes": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Notes on the FH Backsplash installation job; left out: the installation job's notes."
           },
           "template_notes": {
             "type": [
@@ -112344,6 +112379,13 @@
           "urgent": {
             "type": "boolean",
             "description": "Red flag: the event must be scheduled fast."
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its status: `ready` or `not_ready` (default)."
           },
           "template_id": {
             "type": "integer",
