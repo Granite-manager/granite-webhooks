@@ -308,6 +308,25 @@ pub async fn verify_login(
     Ok(None)
 }
 
+/// Said to someone who may not sign in because every switch on their user is
+/// off (no position, not an admin).
+pub const NO_POSITION: &str =
+    "You don't have a position assigned. Please ask your manager to assign you one.";
+
+/// The user has no position and is neither an admin nor a superuser: every
+/// switch on their user is off, so they may not sign in.
+pub async fn has_no_position(pool: &sqlx::MySqlPool, user_id: i32) -> sqlx::Result<bool> {
+    sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM users u
+          WHERE u.id = ? AND COALESCE(u.is_admin, 0) = 0 AND COALESCE(u.is_superuser, 0) = 0
+            AND NOT EXISTS (SELECT 1 FROM users_positions up WHERE up.user_id = u.id)",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .map(|n| n > 0)
+}
+
 /// Counts a failed sign-in for the rate limits, and prunes day-old ones.
 pub async fn record_failed_login(
     pool: &sqlx::MySqlPool,
@@ -379,6 +398,9 @@ pub async fn login(
             "Incorrect email or password. Please try again.".into(),
         ));
     };
+    if has_no_position(pool, user_id).await? {
+        return Err(ApiError::Denied(NO_POSITION.into()));
+    }
     if let Some(step) = login_steps::first_step(pool, user_id, &password).await? {
         return login_steps::begin(pool, user_id, step, &password, &email_hash, &ip_hash, None)
             .await;
@@ -1041,6 +1063,10 @@ pub async fn accept_invite(
         return Err(ApiError::NotFound);
     }
     tx.commit().await?;
+    // The account is set up, but every switch is off: no sign-in yet.
+    if has_no_position(&state.pool, invited.id).await? {
+        return Err(ApiError::Denied(NO_POSITION.into()));
+    }
     start_session(&state, invited.id).await
 }
 

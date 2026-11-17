@@ -105,6 +105,7 @@ pub struct QuoteRow {
     pub customer_phone: Option<String>,
     pub customer_phone_2: Option<String>,
     pub email: Option<String>,
+    pub email_2: Option<String>,
     pub address_notes: Option<String>,
     pub salesperson_phone: Option<String>,
     pub draft_drawing_json: Option<String>,
@@ -128,7 +129,7 @@ pub const QUOTE_ROW_SELECT: &str = "SELECT q.id, q.company_id, q.customer_id, c.
        CAST(COALESCE(q.discount_pct, 0) AS DOUBLE) AS discount_pct,
        CAST(COALESCE(q.discount_amount, 0) AS DOUBLE) AS discount_amount,
        CAST(q.payment_terms_json AS CHAR) AS payment_terms_json, q.address, q.phone,
-       c.phone AS customer_phone, c.phone_2 AS customer_phone_2, q.email, q.address_notes,
+       c.phone AS customer_phone, c.phone_2 AS customer_phone_2, q.email, q.email_2, q.address_notes,
        COALESCE((SELECT CONCAT(SUBSTRING(n.last10, 1, 3), '-', SUBSTRING(n.last10, 4, 3), '-', SUBSTRING(n.last10, 7, 4))
                    FROM telnyx_numbers n
                    JOIN telnyx_number_users nu ON nu.number_id = n.id AND nu.user_id = sp.id AND nu.can_call_from <> 0
@@ -415,16 +416,25 @@ pub async fn create_quote(
         phone: Option<String>,
         phone_2: Option<String>,
         email: Option<String>,
+        email_2: Option<String>,
         sales_rep: Option<i32>,
         company_name: Option<String>,
     }
     let customer: Option<Customer> = sqlx::query_as(
         "SELECT c.name, c.address, c.city, c.state, c.postal_code, c.phone, c.phone_2, ce.email,
+                IF(c.name LIKE ? AND c.created_by <=> c.name, NULL,
+                   (SELECT TRIM(other.email) FROM customers_emails other
+                     WHERE other.customer_id = c.id AND TRIM(COALESCE(other.email, '')) <> ''
+                       AND NOT (other.id <=> c.email_id)
+                       AND LOWER(TRIM(other.email)) <> LOWER(TRIM(COALESCE(ce.email, '')))
+                     ORDER BY other.created_at, other.id LIMIT 1)) AS email_2,
                 c.sales_rep, c.company_name
            FROM customers c
            LEFT JOIN customers_emails ce ON ce.id = c.email_id AND ce.customer_id = c.id
           WHERE c.id = ? AND c.company_id = ?",
     )
+    // The second email never comes from the import's shared customer.
+    .bind(IMPORT_PLACEHOLDER)
     .bind(input.customer_id)
     .bind(user.company_id)
     .fetch_optional(&state.pool)
@@ -506,9 +516,9 @@ pub async fn create_quote(
         "INSERT INTO quotes (customer_id, quote_name, quote_type, created_date, sales_rep, company_id,
                              salesperson_id, created_by, price_list_id, price_list_revision_id,
                              expiration_date, deal_id, draft_drawing_json, status, updated_at,
-                             address, phone, email)
+                             address, phone, email, email_2)
          VALUES (?, ?, '', NOW(), ?, ?, ?, ?, ?, ?, DATE_ADD(CURDATE(), INTERVAL ? DAY), NULL, ?, 'draft', NOW(),
-                 ?, ?, ?)",
+                 ?, ?, ?, ?)",
     )
     .bind(input.customer_id)
     .bind(&name)
@@ -534,6 +544,7 @@ pub async fn create_quote(
     })
     .bind(copy(customer.phone.as_deref()).or_else(|| copy(customer.phone_2.as_deref())))
     .bind(copy(customer.email.as_deref()))
+    .bind(copy(customer.email_2.as_deref()))
     .execute(&state.pool)
     .await?
     .last_insert_id();
@@ -628,6 +639,8 @@ pub struct QuoteInfo {
     pub phone_2: Option<String>,
     /// The quote's email.
     pub email: Option<String>,
+    /// The quote's second email.
+    pub email_2: Option<String>,
     /// Address notes.
     pub address_notes: Option<String>,
     /// Latest saved revision.
@@ -1198,6 +1211,7 @@ fn info_of(row: &QuoteRow) -> QuoteInfo {
         customer_phone: row.customer_phone.clone(),
         phone_2: row.customer_phone_2.clone(),
         email: row.email.clone(),
+        email_2: row.email_2.clone(),
         address_notes: row.address_notes.clone(),
         current_revision: row.current_revision,
         current_step: row.current_step,
@@ -1372,6 +1386,9 @@ pub struct QuoteChanges {
     /// Email (blank clears).
     #[serde(default)]
     pub email: Option<String>,
+    /// Second email, on the quote only (blank clears).
+    #[serde(default)]
+    pub email_2: Option<String>,
     /// Address notes (blank clears).
     #[serde(default)]
     pub address_notes: Option<String>,
@@ -1458,6 +1475,7 @@ pub async fn update_quote(
         ("address", blank_is_null(input.address)),
         ("phone", blank_is_null(input.phone)),
         ("email", blank_is_null(input.email)),
+        ("email_2", blank_is_null(input.email_2)),
         ("address_notes", blank_is_null(input.address_notes)),
     ] {
         if let Some(value) = value {
@@ -2225,12 +2243,12 @@ pub async fn copy_quote(
         "INSERT INTO quotes (customer_id, quote_name, quote_type, created_date, sales_rep, company_id,
                              salesperson_id, created_by, price_list_id, price_list_revision_id,
                              expiration_date, deal_id, draft_drawing_json, notes, tax_pct, discount_pct,
-                             discount_amount, payment_terms_json, address, phone, email, address_notes,
+                             discount_amount, payment_terms_json, address, phone, email, email_2, address_notes,
                              status, updated_at)
          SELECT customer_id, ?, ?, NOW(), ?, company_id, ?, ?, ?, ?, expiration_date, deal_id,
                 IF(?, draft_drawing_json, NULL), notes, tax_pct, discount_pct, discount_amount,
                 payment_terms_json, IF(?, address, NULL), IF(?, phone, NULL), IF(?, email, NULL),
-                IF(?, address_notes, NULL), 'draft', NOW()
+                IF(?, email_2, NULL), IF(?, address_notes, NULL), 'draft', NOW()
            FROM quotes WHERE id = ? AND company_id = ?",
     )
     .bind(name)
@@ -2241,6 +2259,7 @@ pub async fn copy_quote(
     .bind(list.map(|l| l.id).or(quote.price_list_id))
     .bind(list.and_then(|l| l.current_revision_id).or(quote.price_list_revision_id))
     .bind(input.copy_drawing)
+    .bind(copy)
     .bind(copy)
     .bind(copy)
     .bind(copy)
