@@ -335,7 +335,8 @@ struct IssueJob {
 /// An issue was just reported: the job's sales rep (the sale's seller, else
 /// the deal's owner, else the customer's sales rep, else whoever made the
 /// event) gets a bell notification and a phone push, unless they reported
-/// it themselves.
+/// it themselves. It reads "Issue on <job title>: <issue>" (the customer's
+/// name when the job has no title).
 async fn tell_rep(
     state: &AppState,
     event_id: i32,
@@ -376,10 +377,11 @@ async fn tell_rep(
     let Some(rep_id) = job.rep_id.filter(|rep| *rep != by.id) else {
         return Ok(());
     };
+    // The job's title names the job ("I-Victoria Joyce countertops"), else the customer.
     let about = job
-        .customer_name
+        .title
         .as_deref()
-        .or(job.title.as_deref())
+        .or(job.customer_name.as_deref())
         .unwrap_or("a job");
     let message: String = format!("Issue on {about}: {description}")
         .chars()
