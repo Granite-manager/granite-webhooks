@@ -33,6 +33,7 @@ mod conversation;
 pub mod deal_history;
 mod drafts;
 mod handlers;
+pub use handlers::unread_badge;
 mod inbound_push;
 mod list;
 mod names;

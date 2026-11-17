@@ -483,3 +483,57 @@ async fn sales_managers_and_managers_delete_customers(pool: MySqlPool) {
         .await
         .assert_status(StatusCode::NO_CONTENT);
 }
+
+#[test_db::test(seed)]
+async fn the_badges_count_sales_orders_only_for_their_tab(pool: MySqlPool) {
+    sqlx::query(
+        "INSERT INTO sales_orders (company_id, quote_id, option_index, customer_id, status) VALUES
+           (100, 1, 0, 1000, 'pending'), (100, 2, 0, 1000, 'pending'), (100, 3, 0, 1000, 'confirmed')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let server = server(pool.clone());
+    let badges = |session: &'static str| {
+        let server = &server;
+        async move {
+            let res = server
+                .get("/v1/me/badges?include=sales_orders&include=sms_unread")
+                .with_session(session)
+                .await;
+            res.assert_status_ok();
+            res.json::<Value>()
+        }
+    };
+
+    // Scheduling Manager: no Sales orders tab, so no count (the rest stays).
+    seat(&pool, 13).await;
+    let limited = badges(sessions::VIEWER).await;
+    assert_eq!(limited.get("sales_orders"), None);
+    assert_eq!(limited["sms_unread"], json!({ "count": 0 }));
+
+    // Inventory Manager: the pending orders `GET /v1/sales-orders` lists.
+    sqlx::query("UPDATE users_positions SET position_id = 12 WHERE user_id = 104")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let listed: Value = server
+        .get("/v1/sales-orders")
+        .with_session(sessions::VIEWER)
+        .await
+        .json();
+    assert_eq!(listed.as_array().unwrap().len(), 2);
+    assert_eq!(badges(sessions::VIEWER).await["sales_orders"], json!({ "count": 2 }));
+
+    // Naming no part is a mistake.
+    server
+        .get("/v1/me/badges")
+        .with_session(sessions::VIEWER)
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    server
+        .get("/v1/me/badges?include=everything")
+        .with_session(sessions::VIEWER)
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+}

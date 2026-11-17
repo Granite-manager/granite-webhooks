@@ -11,6 +11,7 @@ pub use api_admin::routes::*;
 pub use api_ai::routes::*;
 pub use api_phone::routes::*;
 
+pub mod badges;
 pub mod jobs;
 pub mod notifications;
 pub mod public;
@@ -21,6 +22,7 @@ use crate::state::AppState;
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .merge(me::router())
+        .merge(badges::router())
         .merge(customers::router())
         .merge(customer_todos::router())
         .merge(customer_sources::router())

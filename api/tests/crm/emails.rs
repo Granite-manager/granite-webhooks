@@ -152,6 +152,14 @@ async fn unread_badge_needs_a_mail_domain(pool: MySqlPool) {
         get(&pool, "/v1/emails/unread", sessions::REP).await,
         json!({ "count": 0, "latest_inbound_id": null })
     );
+    // The same badge in `GET /v1/me/badges`.
+    for session in [OLGA, sessions::REP] {
+        let badges = get(&pool, "/v1/me/badges?include=emails_unread", session).await;
+        assert_eq!(
+            badges,
+            json!({ "emails_unread": get(&pool, "/v1/emails/unread", session).await })
+        );
+    }
 }
 
 #[test_db::test(seed)]

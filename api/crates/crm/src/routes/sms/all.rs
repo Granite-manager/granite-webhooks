@@ -753,11 +753,19 @@ pub async fn my_unread_count(
     State(state): State<AppState>,
     EmployeeUser(user): EmployeeUser,
 ) -> ApiResult<Json<UnreadCount>> {
-    let mut count = 0;
-    for provider in own_providers(&state.pool, &user).await? {
-        count += unread_threads(&state.pool, provider, &user, SmsScope::Mine, None, None).await?;
-    }
+    let count = my_unread(&state.pool, &user).await?;
     Ok(Json(UnreadCount { count }))
+}
+
+/// The caller's unread conversations over every provider, as
+/// `GET /v1/sms/mine/unread-count` counts them (also part of
+/// `GET /v1/me/badges`).
+pub async fn my_unread(pool: &MySqlPool, user: &SessionUser) -> sqlx::Result<i64> {
+    let mut count = 0;
+    for provider in own_providers(pool, user).await? {
+        count += unread_threads(pool, provider, user, SmsScope::Mine, None, None).await?;
+    }
+    Ok(count)
 }
 
 /// `GET /v1/sms/mine/desktop-alerts`.
@@ -794,9 +802,22 @@ pub async fn my_desktop_alerts(
     MultiQuery(query): MultiQuery<AlertsQuery>,
 ) -> ApiResult<Json<DesktopAlerts>> {
     let inbox = query.inbox.unwrap_or(SmsProvider::Telnyx);
+    let alerts = my_alerts(&state.pool, &user, inbox).await?;
+    Ok(Json(DesktopAlerts { alerts }))
+}
+
+/// The caller's unread texts to alert about, as
+/// `GET /v1/sms/mine/desktop-alerts` lists them (also part of
+/// `GET /v1/me/badges`): one per phone, newest first, at most 50, each
+/// opening the conversation on the `inbox` provider's page.
+pub async fn my_alerts(
+    pool: &MySqlPool,
+    user: &SessionUser,
+    inbox: SmsProvider,
+) -> ApiResult<Vec<DesktopAlert>> {
     let mut by_phone: HashMap<String, DesktopAlert> = HashMap::new();
-    for provider in own_providers(&state.pool, &user).await? {
-        for alert in provider_alerts(&state.pool, provider, &user, inbox).await? {
+    for provider in own_providers(pool, user).await? {
+        for alert in provider_alerts(pool, provider, user, inbox).await? {
             let key = phone10(&alert.phone_digits);
             match by_phone.get(&key) {
                 Some(seen) if seen.sent_at >= alert.sent_at => {}
@@ -809,5 +830,5 @@ pub async fn my_desktop_alerts(
     let mut alerts: Vec<DesktopAlert> = by_phone.into_values().collect();
     alerts.sort_by(|a, b| b.sent_at.cmp(&a.sent_at));
     alerts.truncate(50);
-    Ok(Json(DesktopAlerts { alerts }))
+    Ok(alerts)
 }
