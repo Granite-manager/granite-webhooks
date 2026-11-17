@@ -92,7 +92,7 @@ async fn an_issue_has_a_description_and_pictures_and_tells_the_rep(pool: MySqlPo
             100,
             Some(1000),
             Some(8970),
-            "Issue on Alice Lead: The slab cracked at the sink cutout".to_string()
+            "Issue on Kitchen install: The slab cracked at the sink cutout".to_string()
         )]
     );
     let bell: Value = server
