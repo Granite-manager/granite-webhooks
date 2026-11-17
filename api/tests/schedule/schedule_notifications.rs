@@ -1208,6 +1208,180 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn the_customer_gets_a_reply_to_their_yes_or_no(pool: MySqlPool) {
+    sqlx::raw_sql(CALENDARS).execute(&pool).await.unwrap();
+    sqlx::raw_sql(TEXTING).execute(&pool).await.unwrap();
+    let (server, sent) = server(&pool).await;
+    let created: Value = server
+        .post("/v1/schedule/notifications/templates")
+        .with_session(sessions::ADMIN)
+        .json(&json!({
+            "name": "Install date", "kind": "question", "channel": "sms",
+            "body": "Can we install {{appointment.date}}? Reply YES.",
+            "calendar_ids": [8830],
+        }))
+        .await
+        .json();
+    let template = created["id"].as_i64().unwrap();
+    server
+        .put("/v1/schedule/notifications/scheduling")
+        .with_session(sessions::ADMIN)
+        .json(&json!({
+            "ai_ready": true, "text_days": [0, 1, 2, 3, 4, 5, 6],
+            "text_start": "00:00", "text_end": "23:59",
+        }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Too long is refused; reps can't change it.
+    server
+        .put("/v1/schedule/notifications/scheduling/replies")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "yes_reply": "x".repeat(1601), "no_reply": null }))
+        .await
+        .assert_status_bad_request();
+    server
+        .put("/v1/schedule/notifications/scheduling/replies")
+        .with_session(sessions::REP)
+        .json(&json!({ "yes_reply": "Hi", "no_reply": null }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    server
+        .put("/v1/schedule/notifications/scheduling/replies")
+        .with_session(sessions::ADMIN)
+        .json(&json!({
+            "yes_reply": "  Thanks {{customer.first_name}}, see you {{appointment.date}}!  ",
+            "no_reply": "Got it, we'll reach out to find another time.",
+        }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let list: Value = server
+        .get("/v1/schedule/notifications")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(
+        list["auto_confirm_replies"],
+        json!({
+            "yes_reply": "Thanks {{customer.first_name}}, see you {{appointment.date}}!",
+            "no_reply": "Got it, we'll reach out to find another time.",
+        })
+    );
+
+    let run = || async {
+        server
+            .post("/v1/jobs/appointment-reminders")
+            .add_header("Authorization", "job-secret")
+            .await
+            .json::<Value>()
+    };
+    let reply = |text: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "INSERT INTO cloudtalk_sms (sender, recipient, text, direction, status, company_id, created_date, phone_digits)
+                 VALUES ('3175550100', '3175550999', ?, 'inbound', 'received', 100,
+                         UTC_TIMESTAMP() + INTERVAL 5 SECOND, '3175550100')",
+            )
+            .bind(text)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+
+    // YES: the job turns Confirmed and Alice gets the reply, filled in.
+    event(&pool, 8830, "1000", 72, false).await;
+    let yes = last_event(&pool).await;
+    server
+        .post(&format!("/v1/events/{yes}/confirmation"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "template_id": template }))
+        .await
+        .assert_status_ok();
+    reply("Yes").await;
+    *sent.ai_reply.lock().unwrap() = json!({ "answer": "agreed", "evidence": "Yes" }).to_string();
+    assert_eq!(run().await["marked_ready"], 1);
+    let texts = sent.texts.lock().unwrap().clone();
+    assert_eq!(texts.len(), 2);
+    assert!(texts[1].text.starts_with("Thanks Alice, see you "), "{}", texts[1].text);
+    assert!(!texts[1].text.contains("{{"));
+    assert_eq!(texts[1].agent_id, texts[0].agent_id, "from the line she texted");
+    assert!(
+        history(&pool, yes)
+            .await
+            .contains(&"Replied to the customer's YES".to_string())
+    );
+    // Settled: never sent twice.
+    run().await;
+    assert_eq!(sent.texts.lock().unwrap().len(), 2);
+
+    // NO: nothing changes, and Alice hears her text got through.
+    event(&pool, 8830, "1000", 96, false).await;
+    let no = last_event(&pool).await;
+    server
+        .post(&format!("/v1/events/{no}/confirmation"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "template_id": template }))
+        .await
+        .assert_status_ok();
+    sqlx::query("UPDATE cloudtalk_sms SET created_date = UTC_TIMESTAMP() - INTERVAL 1 DAY")
+        .execute(&pool)
+        .await
+        .unwrap();
+    reply("No, next week please").await;
+    *sent.ai_reply.lock().unwrap() =
+        json!({ "answer": "declined", "evidence": "No, next week please" }).to_string();
+    run().await;
+    let texts = sent.texts.lock().unwrap().clone();
+    assert_eq!(texts.len(), 4);
+    assert_eq!(texts[3].text, "Got it, we'll reach out to find another time.");
+    let status: String = sqlx::query_scalar("SELECT status FROM events WHERE id = ?")
+        .bind(no)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "called");
+    assert!(
+        history(&pool, no)
+            .await
+            .contains(&"Replied to the customer's NO".to_string())
+    );
+
+    // Empty replies send nothing.
+    server
+        .put("/v1/schedule/notifications/scheduling/replies")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "yes_reply": " ", "no_reply": null }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    event(&pool, 8830, "1000", 120, false).await;
+    let quiet = last_event(&pool).await;
+    server
+        .post(&format!("/v1/events/{quiet}/confirmation"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "template_id": template }))
+        .await
+        .assert_status_ok();
+    sqlx::query("UPDATE cloudtalk_sms SET created_date = UTC_TIMESTAMP() - INTERVAL 1 DAY")
+        .execute(&pool)
+        .await
+        .unwrap();
+    reply("yes").await;
+    *sent.ai_reply.lock().unwrap() = json!({ "answer": "agreed", "evidence": "yes" }).to_string();
+    assert_eq!(run().await["marked_ready"], 1);
+    assert_eq!(sent.texts.lock().unwrap().len(), 5);
+    let list: Value = server
+        .get("/v1/schedule/notifications")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(
+        list["auto_confirm_replies"],
+        json!({ "yes_reply": null, "no_reply": null })
+    );
+}
+
+#[test_db::test(seed)]
 async fn admins_group_messages_in_their_own_lists(pool: MySqlPool) {
     let (server, _) = server(&pool).await;
     let settings = || async {

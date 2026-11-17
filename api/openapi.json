@@ -51343,6 +51343,76 @@
         ]
       }
     },
+    "/v1/schedule/notifications/scheduling/replies": {
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Save the auto-confirm replies",
+        "description": "The texts the customer gets back once AI reads their reply to an\nauto-confirm text: `yes_reply` after a clear YES turned the job\nConfirmed, `no_reply` after a NO or a request for another day. An empty\ntext turns that reply off. Read them back with `GET\n/v1/schedule/notifications` (`auto_confirm_replies`).",
+        "operationId": "set_auto_confirm_replies",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutoConfirmReplies"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "A text is over 1600 characters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/schedule/notifications/templates": {
       "post": {
         "tags": [
@@ -81751,6 +81821,26 @@
           }
         }
       },
+      "AutoConfirmReplies": {
+        "type": "object",
+        "description": "Admin > Schedule > Auto-confirm: the text the customer gets back once AI\nreads their reply to an auto-confirm text. Sent at once (texting hours do\nnot apply), from the line they texted, only while \"Turn the job Confirmed\nwhen the customer replies YES (AI)\" is on. Variables such as\n`{{appointment.date}}` are filled in for the job.",
+        "properties": {
+          "yes_reply": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sent after a clear YES turned the job Confirmed (up to 1600\ncharacters); null sends nothing."
+          },
+          "no_reply": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sent after a NO or a request for another day or time (up to 1600\ncharacters); null sends nothing."
+          }
+        }
+      },
       "AutoInvoiceInput": {
         "type": "object",
         "description": "Body of `PUT /v1/company/auto-invoice`.",
@@ -101378,7 +101468,8 @@
           "sms_enabled",
           "on_my_way",
           "on_my_way_technician",
-          "scheduling"
+          "scheduling",
+          "auto_confirm_replies"
         ],
         "properties": {
           "templates": {
@@ -101417,6 +101508,10 @@
           "scheduling": {
             "$ref": "#/components/schemas/SchedulingSettings",
             "description": "The AI texts tab's switch and texting hours."
+          },
+          "auto_confirm_replies": {
+            "$ref": "#/components/schemas/AutoConfirmReplies",
+            "description": "What the customer gets back after a YES or a NO to an auto-confirm text."
           }
         }
       },
