@@ -170,6 +170,19 @@ async fn creating_a_company_seeds_it(pool: MySqlPool) {
         count("SELECT COUNT(*) FROM customer_sources WHERE company_id = ? AND is_system = 1").await,
         4
     );
+    // Its own starter pipeline, the default, with four stages.
+    assert_eq!(
+        count("SELECT COUNT(*) FROM groups_list WHERE company_id = ? AND is_default = 1").await,
+        1
+    );
+    assert_eq!(
+        count(
+            "SELECT COUNT(*) FROM deals_list dl JOIN groups_list g ON g.id = dl.group_id
+              WHERE g.company_id = ? AND dl.deleted_at IS NULL"
+        )
+        .await,
+        4
+    );
     let walk_in: (String, String) =
         sqlx::query_as("SELECT name, email FROM users WHERE company_id = ? AND is_employee = 1")
             .bind(id)

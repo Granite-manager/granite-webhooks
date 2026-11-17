@@ -19049,7 +19049,7 @@
           "deals"
         ],
         "summary": "List pipelines",
-        "description": "Every pipeline of the company (shown or hidden) and the shared one, with\ntheir stages. The shared pipeline is the default while none of the\ncompany's own is.",
+        "description": "Every pipeline of the company (shown or hidden), with their stages.",
         "operationId": "list_deal_pipelines",
         "responses": {
           "200": {
@@ -19184,7 +19184,7 @@
           "deals"
         ],
         "summary": "Delete a pipeline",
-        "description": "Deletes one of the company's pipelines and its stages.",
+        "description": "Deletes one of the company's pipelines and its stages. When it was the\ndefault, the company's oldest remaining pipeline becomes the default.",
         "operationId": "delete_deal_pipeline",
         "parameters": [
           {
@@ -19201,16 +19201,6 @@
         "responses": {
           "204": {
             "description": "Deleted"
-          },
-          "400": {
-            "description": "The shared pipeline",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
           },
           "401": {
             "description": "No valid session",
@@ -19264,7 +19254,7 @@
           "deals"
         ],
         "summary": "Change a pipeline",
-        "description": "Shows or hides a pipeline, or makes it the company's default (the\nshared pipeline is the default when none of the company's own is).",
+        "description": "Shows or hides a pipeline, or makes it the company's default.",
         "operationId": "update_deal_pipeline",
         "parameters": [
           {
@@ -19293,7 +19283,7 @@
             "description": "Changed"
           },
           "400": {
-            "description": "`is_default: false`, or hiding the shared pipeline",
+            "description": "`is_default: false`",
             "content": {
               "application/json": {
                 "schema": {
@@ -19392,7 +19382,7 @@
             }
           },
           "400": {
-            "description": "Missing name, or the shared pipeline",
+            "description": "Missing name",
             "content": {
               "application/json": {
                 "schema": {
@@ -19484,7 +19474,7 @@
             "description": "Saved"
           },
           "400": {
-            "description": "Not exactly the pipeline's stages, or the shared pipeline",
+            "description": "Not exactly the pipeline's stages",
             "content": {
               "application/json": {
                 "schema": {
@@ -19564,16 +19554,6 @@
         "responses": {
           "204": {
             "description": "Deleted"
-          },
-          "400": {
-            "description": "A stage of the shared pipeline",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
           },
           "401": {
             "description": "No valid session",
@@ -51804,7 +51784,7 @@
           "places"
         ],
         "summary": "Suggest addresses",
-        "description": "US addresses for typed text (3 characters or more), with their parts.\nA suggestion without a ZIP gets one from the place, else from geocoding.",
+        "description": "US addresses for typed text (3 characters or more), with their parts,\nclosest to the company's address first. A suggestion without a ZIP gets\none from the place, else from geocoding.",
         "operationId": "autocomplete_address",
         "parameters": [
           {
@@ -103857,7 +103837,6 @@
           "name",
           "is_displayed",
           "is_default",
-          "is_shared",
           "lists"
         ],
         "properties": {
@@ -103877,10 +103856,6 @@
           "is_default": {
             "type": "boolean",
             "description": "New deals start in it."
-          },
-          "is_shared": {
-            "type": "boolean",
-            "description": "The shared starter pipeline: its stages cannot change."
           },
           "lists": {
             "type": "array",
@@ -114083,7 +114058,7 @@
               "string",
               "null"
             ],
-            "description": "The label color the caller gave most of the events they added in the\nlast 90 days (null when none): a new event starts with it."
+            "description": "The label color of the last event the caller added by hand (null when\nnone): a new event starts with it."
           },
           "notify_rep_on_install_complete": {
             "type": "boolean",

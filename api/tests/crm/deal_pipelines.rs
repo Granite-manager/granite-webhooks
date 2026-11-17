@@ -7,8 +7,8 @@ use sqlx::MySqlPool;
 
 // Seed: company 100 has pipelines 100 "Sales" (default; stages 100 New,
 // 101 Quoted, 102 deleted), 104 "Remodel" (104, 105) and 105 "Hidden"
-// (not displayed; 106). Company 101 has 101 (103). Pipeline 1 "Default"
-// is shared (migration).
+// (not displayed; 106). Company 101 has 101 (103). The old shared
+// pipeline 1 is retired (migration): every company owns its pipelines.
 
 const ADMIN: &str = sessions::ADMIN;
 
@@ -37,18 +37,16 @@ async fn admins_list_every_pipeline_with_its_stages(pool: MySqlPool) {
         .iter()
         .map(|p| p["id"].as_i64().unwrap())
         .collect();
-    assert!(ids.contains(&1) && ids.contains(&100) && ids.contains(&104) && ids.contains(&105));
+    assert!(!ids.contains(&1) && ids.contains(&100) && ids.contains(&104) && ids.contains(&105));
     assert!(!ids.contains(&101));
     assert_eq!(
         find(&list, 100),
         json!({
-            "id": 100, "name": "Sales", "is_displayed": true, "is_default": true, "is_shared": false,
+            "id": 100, "name": "Sales", "is_displayed": true, "is_default": true,
             "lists": [{ "id": 100, "name": "New", "position": 0 }, { "id": 101, "name": "Quoted", "position": 1 }],
         })
     );
     assert_eq!(find(&list, 105)["is_displayed"], false);
-    assert_eq!(find(&list, 1)["is_shared"], true);
-    assert_eq!(find(&list, 1)["is_default"], false);
 
     for session in [sessions::REP, sessions::DEALER] {
         server
@@ -148,18 +146,6 @@ async fn default_and_display_switch(pool: MySqlPool) {
     let list = pipelines(&server).await;
     assert_eq!(find(&list, 104)["is_default"], true);
     assert_eq!(find(&list, 100)["is_default"], false);
-    assert_eq!(find(&list, 1)["is_default"], false);
-
-    // The shared pipeline becomes the default when chosen.
-    server
-        .patch("/v1/deal-pipelines/1")
-        .with_session(ADMIN)
-        .json(&json!({ "is_default": true }))
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
-    let list = pipelines(&server).await;
-    assert_eq!(find(&list, 1)["is_default"], true);
-    assert_eq!(find(&list, 104)["is_default"], false);
 
     server
         .patch("/v1/deal-pipelines/105")
@@ -171,19 +157,19 @@ async fn default_and_display_switch(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
-async fn the_shared_pipeline_and_other_companies_are_off_limits(pool: MySqlPool) {
+async fn the_retired_shared_pipeline_and_other_companies_are_off_limits(pool: MySqlPool) {
     let server = server(pool.clone());
     server
         .delete("/v1/deal-pipelines/1")
         .with_session(ADMIN)
         .await
-        .assert_status(StatusCode::BAD_REQUEST);
+        .assert_status(StatusCode::NOT_FOUND);
     server
         .post("/v1/deal-pipelines/1/stages")
         .with_session(ADMIN)
         .json(&json!({ "name": "X" }))
         .await
-        .assert_status(StatusCode::BAD_REQUEST);
+        .assert_status(StatusCode::NOT_FOUND);
     // Company 101's pipeline and stage.
     server
         .delete("/v1/deal-pipelines/101")
@@ -272,43 +258,33 @@ async fn board_groups(server: &axum_test::TestServer) -> Vec<i64> {
 }
 
 #[test_db::test(seed)]
-async fn a_company_hides_the_shared_pipeline_from_its_boards(pool: MySqlPool) {
+async fn any_pipeline_hides_and_deleting_the_default_picks_another(pool: MySqlPool) {
     let server = server(pool.clone());
-    assert!(board_groups(&server).await.contains(&1));
+    assert!(board_groups(&server).await.contains(&100));
 
-    // Sales (100) is the company's own default, so the shared one may hide.
+    // Even the default pipeline may hide.
     server
-        .patch("/v1/deal-pipelines/1")
+        .patch("/v1/deal-pipelines/100")
         .with_session(ADMIN)
         .json(&json!({ "is_displayed": false }))
         .await
         .assert_status(StatusCode::NO_CONTENT);
-    assert_eq!(find(&pipelines(&server).await, 1)["is_displayed"], false);
-    let groups = board_groups(&server).await;
-    assert!(!groups.contains(&1) && groups.contains(&100));
-    // Only for this company.
-    let shown: Option<bool> =
-        sqlx::query_scalar("SELECT shared_pipeline_hidden FROM company WHERE id = 101")
+    assert!(!board_groups(&server).await.contains(&100));
+
+    // Deleting the default makes the oldest remaining pipeline the default.
+    server
+        .delete("/v1/deal-pipelines/100")
+        .with_session(ADMIN)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let list = pipelines(&server).await;
+    assert_eq!(find(&list, 100), Value::Null);
+    assert_eq!(find(&list, 104)["is_default"], true);
+    // Only this company: 101 keeps its own default.
+    let other: Option<bool> =
+        sqlx::query_scalar("SELECT is_default FROM groups_list WHERE id = 101")
             .fetch_optional(&pool)
             .await
             .unwrap();
-    assert_eq!(shown, Some(false));
-
-    // Making it the default shows it again.
-    server
-        .patch("/v1/deal-pipelines/1")
-        .with_session(ADMIN)
-        .json(&json!({ "is_default": true }))
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
-    assert_eq!(find(&pipelines(&server).await, 1)["is_displayed"], true);
-    assert!(board_groups(&server).await.contains(&1));
-
-    // While it is the default it cannot hide.
-    server
-        .patch("/v1/deal-pipelines/1")
-        .with_session(ADMIN)
-        .json(&json!({ "is_displayed": false }))
-        .await
-        .assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(other, Some(true));
 }

@@ -36,6 +36,9 @@ use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Stages of the starter pipeline a new company gets.
+const STARTER_STAGES: [&str; 4] = ["Not Contacted Yet", "Contacted", "Got a Quote", "On Hold"];
+
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(list_companies, create_company))
@@ -552,6 +555,23 @@ pub async fn create_company(
             .await?;
     }
     crate::routes::schedule::notifications::seed_auto_confirm(&mut tx, id).await?;
+    // Its own starter pipeline, which it may change or delete like any other.
+    let group = sqlx::query(
+        "INSERT INTO groups_list (name, created_at, company_id, is_displayed, is_default)
+         VALUES ('Default', NOW(), ?, 1, 1)",
+    )
+    .bind(id)
+    .execute(&mut *tx)
+    .await?
+    .last_insert_id();
+    for (position, stage) in (0_i32..).zip(STARTER_STAGES) {
+        sqlx::query("INSERT INTO deals_list (name, group_id, position) VALUES (?, ?, ?)")
+            .bind(stage)
+            .bind(group)
+            .bind(position)
+            .execute(&mut *tx)
+            .await?;
+    }
     for template in DEFAULT_TEMPLATES.iter() {
         sqlx::query(
             "INSERT INTO email_templates (template_name, template_subject, template_body, company_id, user_id)

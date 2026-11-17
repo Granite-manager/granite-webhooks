@@ -1,6 +1,5 @@
 //! Admins set up the company's pipelines (`groups_list`) and their stages
-//! (`deals_list`). The shared starter pipeline (id 1) belongs to every
-//! company: it can be hidden or made the default, never edited.
+//! (`deals_list`). Every company owns its pipelines, the starter one included.
 
 use crate::auth::AdminUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -13,9 +12,6 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, MySqlPool};
-
-/// The shared starter pipeline.
-const SHARED_GROUP: i32 = 1;
 
 /// Id, name, displayed and default flags of a `groups_list` row.
 type GroupRow = (i32, Option<String>, Option<bool>, Option<bool>);
@@ -31,8 +27,6 @@ pub struct Pipeline {
     pub is_displayed: bool,
     /// New deals start in it.
     pub is_default: bool,
-    /// The shared starter pipeline: its stages cannot change.
-    pub is_shared: bool,
     /// Live stages, in board order.
     pub lists: Vec<PipelineStage>,
 }
@@ -82,32 +76,8 @@ fn clean_name(input: &NameInput) -> ApiResult<String> {
     Ok(name.to_string())
 }
 
-/// Whether the company hid the shared pipeline from its boards.
-async fn shared_hidden(pool: &MySqlPool, company_id: i32) -> Result<bool, sqlx::Error> {
-    let hidden: Option<bool> =
-        sqlx::query_scalar("SELECT shared_pipeline_hidden FROM company WHERE id = ?")
-            .bind(company_id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(hidden.unwrap_or(false))
-}
-
-/// A pipeline the company may change: its own, or (when `shared_ok`) the shared one.
-async fn check_group(
-    pool: &MySqlPool,
-    company_id: i32,
-    group_id: i32,
-    shared_ok: bool,
-) -> ApiResult<()> {
-    if group_id == SHARED_GROUP {
-        return if shared_ok {
-            Ok(())
-        } else {
-            Err(ApiError::BadRequest(
-                "The shared pipeline cannot be changed".into(),
-            ))
-        };
-    }
+/// One of the company's live pipelines.
+async fn check_group(pool: &MySqlPool, company_id: i32, group_id: i32) -> ApiResult<()> {
     let found: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM groups_list WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
     )
@@ -120,9 +90,7 @@ async fn check_group(
 
 /// List pipelines
 ///
-/// Every pipeline of the company (shown or hidden) and the shared one, with
-/// their stages. The shared pipeline is the default while none of the
-/// company's own is.
+/// Every pipeline of the company (shown or hidden), with their stages.
 #[crate::openapi::path(
     get,
     path = "/v1/deal-pipelines",
@@ -142,16 +110,12 @@ pub async fn list(
 ) -> ApiResult<Json<Vec<Pipeline>>> {
     let groups: Vec<GroupRow> = sqlx::query_as(
         "SELECT id, name, is_displayed, is_default FROM groups_list
-         WHERE deleted_at IS NULL AND (company_id = ? OR id = 1)
+         WHERE deleted_at IS NULL AND company_id = ?
          ORDER BY created_at, id",
     )
     .bind(user.company_id)
     .fetch_all(&state.pool)
     .await?;
-    let own_default = groups
-        .iter()
-        .any(|(id, _, _, default)| *id != SHARED_GROUP && default.unwrap_or(false));
-    let shared_hidden = shared_hidden(&state.pool, user.company_id).await?;
     let mut pipelines = Vec::with_capacity(groups.len());
     for (id, name, displayed, default) in groups {
         let lists: Vec<PipelineStage> = sqlx::query_as(
@@ -164,17 +128,8 @@ pub async fn list(
         pipelines.push(Pipeline {
             id,
             name: name.unwrap_or_default(),
-            is_displayed: if id == SHARED_GROUP {
-                !shared_hidden
-            } else {
-                displayed.unwrap_or(false)
-            },
-            is_default: if id == SHARED_GROUP {
-                !own_default
-            } else {
-                default.unwrap_or(false)
-            },
-            is_shared: id == SHARED_GROUP,
+            is_displayed: displayed.unwrap_or(false),
+            is_default: default.unwrap_or(false),
             lists,
         });
     }
@@ -222,8 +177,7 @@ pub async fn create(
 
 /// Change a pipeline
 ///
-/// Shows or hides a pipeline, or makes it the company's default (the
-/// shared pipeline is the default when none of the company's own is).
+/// Shows or hides a pipeline, or makes it the company's default.
 #[crate::openapi::path(
     patch,
     path = "/v1/deal-pipelines/{id}",
@@ -233,7 +187,7 @@ pub async fn create(
     request_body = PipelinePatch,
     responses(
         (status = 204, description = "Changed"),
-        (status = 400, description = "`is_default: false`, or hiding the shared pipeline", body = ErrorBody),
+        (status = 400, description = "`is_default: false`", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 404, description = "No such pipeline of the company", body = ErrorBody),
@@ -248,35 +202,13 @@ pub async fn update(
     JsonBody(patch): JsonBody<PipelinePatch>,
 ) -> ApiResult<StatusCode> {
     let pool = &state.pool;
-    check_group(pool, user.company_id, id, true).await?;
+    check_group(pool, user.company_id, id).await?;
     if patch.is_default == Some(false) {
         return Err(ApiError::BadRequest(
             "make another pipeline the default instead".into(),
         ));
     }
     if let Some(displayed) = patch.is_displayed {
-        // The shared pipeline is hidden for this company only, and only
-        // while another pipeline is its default (new deals need one).
-        if id == SHARED_GROUP {
-            let own_default: Option<i32> = sqlx::query_scalar(
-                "SELECT 1 FROM groups_list
-                 WHERE company_id = ? AND is_default = 1 AND deleted_at IS NULL LIMIT 1",
-            )
-            .bind(user.company_id)
-            .fetch_optional(pool)
-            .await?;
-            if !displayed && own_default.is_none() {
-                return Err(ApiError::BadRequest(
-                    "make another pipeline the default before hiding this one".into(),
-                ));
-            }
-            sqlx::query("UPDATE company SET shared_pipeline_hidden = ? WHERE id = ?")
-                .bind(!displayed)
-                .bind(user.company_id)
-                .execute(pool)
-                .await?;
-            return Ok(StatusCode::NO_CONTENT);
-        }
         sqlx::query("UPDATE groups_list SET is_displayed = ? WHERE id = ? AND company_id = ?")
             .bind(displayed)
             .bind(id)
@@ -290,19 +222,11 @@ pub async fn update(
             .bind(user.company_id)
             .execute(&mut *tx)
             .await?;
-        if id == SHARED_GROUP {
-            // The default pipeline is always on the boards.
-            sqlx::query("UPDATE company SET shared_pipeline_hidden = 0 WHERE id = ?")
-                .bind(user.company_id)
-                .execute(&mut *tx)
-                .await?;
-        } else {
-            sqlx::query("UPDATE groups_list SET is_default = 1 WHERE id = ? AND company_id = ?")
-                .bind(id)
-                .bind(user.company_id)
-                .execute(&mut *tx)
-                .await?;
-        }
+        sqlx::query("UPDATE groups_list SET is_default = 1 WHERE id = ? AND company_id = ?")
+            .bind(id)
+            .bind(user.company_id)
+            .execute(&mut *tx)
+            .await?;
         tx.commit().await?;
     }
     Ok(StatusCode::NO_CONTENT)
@@ -310,7 +234,8 @@ pub async fn update(
 
 /// Delete a pipeline
 ///
-/// Deletes one of the company's pipelines and its stages.
+/// Deletes one of the company's pipelines and its stages. When it was the
+/// default, the company's oldest remaining pipeline becomes the default.
 #[crate::openapi::path(
     delete,
     path = "/v1/deal-pipelines/{id}",
@@ -319,7 +244,6 @@ pub async fn update(
     params(("id" = i32, Path, description = "Group id")),
     responses(
         (status = 204, description = "Deleted"),
-        (status = 400, description = "The shared pipeline", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 404, description = "No such pipeline of the company", body = ErrorBody),
@@ -332,7 +256,7 @@ pub async fn delete(
     AdminUser(user): AdminUser,
     Path(id): Path<i32>,
 ) -> ApiResult<StatusCode> {
-    check_group(&state.pool, user.company_id, id, false).await?;
+    check_group(&state.pool, user.company_id, id).await?;
     let mut tx = state.pool.begin().await?;
     sqlx::query("UPDATE groups_list SET deleted_at = NOW() WHERE id = ? AND company_id = ?")
         .bind(id)
@@ -345,6 +269,29 @@ pub async fn delete(
     .bind(id)
     .execute(&mut *tx)
     .await?;
+    // New deals need a default pipeline.
+    let has_default: Option<i32> = sqlx::query_scalar(
+        "SELECT 1 FROM groups_list
+          WHERE company_id = ? AND deleted_at IS NULL AND is_default = 1 LIMIT 1",
+    )
+    .bind(user.company_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if has_default.is_none() {
+        let first: Option<i32> = sqlx::query_scalar(
+            "SELECT id FROM groups_list WHERE company_id = ? AND deleted_at IS NULL
+              ORDER BY created_at, id LIMIT 1",
+        )
+        .bind(user.company_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(first) = first {
+            sqlx::query("UPDATE groups_list SET is_default = 1 WHERE id = ?")
+                .bind(first)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -361,7 +308,7 @@ pub async fn delete(
     request_body = NameInput,
     responses(
         (status = 201, description = "Created", body = CreatedId),
-        (status = 400, description = "Missing name, or the shared pipeline", body = ErrorBody),
+        (status = 400, description = "Missing name", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 404, description = "No such pipeline of the company", body = ErrorBody),
@@ -376,7 +323,7 @@ pub async fn create_stage(
     JsonBody(input): JsonBody<NameInput>,
 ) -> ApiResult<(StatusCode, Json<CreatedId>)> {
     let name = clean_name(&input)?;
-    check_group(&state.pool, user.company_id, id, false).await?;
+    check_group(&state.pool, user.company_id, id).await?;
     let taken: Option<i64> = sqlx::query_scalar(
         "SELECT CAST(id AS SIGNED) FROM deals_list
          WHERE group_id = ? AND name = ? AND deleted_at IS NULL LIMIT 1",
@@ -423,7 +370,7 @@ pub async fn create_stage(
     request_body = StageOrder,
     responses(
         (status = 204, description = "Saved"),
-        (status = 400, description = "Not exactly the pipeline's stages, or the shared pipeline", body = ErrorBody),
+        (status = 400, description = "Not exactly the pipeline's stages", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 404, description = "No such pipeline of the company", body = ErrorBody),
@@ -437,7 +384,7 @@ pub async fn order_stages(
     Path(id): Path<i32>,
     JsonBody(body): JsonBody<StageOrder>,
 ) -> ApiResult<StatusCode> {
-    check_group(&state.pool, user.company_id, id, false).await?;
+    check_group(&state.pool, user.company_id, id).await?;
     let mut current: Vec<i32> =
         sqlx::query_scalar("SELECT id FROM deals_list WHERE group_id = ? AND deleted_at IS NULL")
             .bind(id)
@@ -475,7 +422,6 @@ pub async fn order_stages(
     params(("id" = i32, Path, description = "List id")),
     responses(
         (status = 204, description = "Deleted"),
-        (status = 400, description = "A stage of the shared pipeline", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 404, description = "No such stage of the company", body = ErrorBody),
@@ -494,7 +440,7 @@ pub async fn delete_stage(
             .fetch_optional(&state.pool)
             .await?;
     let group = group.ok_or(ApiError::NotFound)?;
-    check_group(&state.pool, user.company_id, group, false).await?;
+    check_group(&state.pool, user.company_id, group).await?;
     sqlx::query("UPDATE deals_list SET deleted_at = NOW() WHERE id = ?")
         .bind(id)
         .execute(&state.pool)

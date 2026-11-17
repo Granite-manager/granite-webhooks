@@ -56,7 +56,7 @@ async fn list_group(pool: &MySqlPool, company_id: i32, list_id: i32) -> ApiResul
     let group: Option<i32> = sqlx::query_scalar(
         "SELECT dl.group_id FROM deals_list dl
            JOIN groups_list g ON g.id = dl.group_id AND g.deleted_at IS NULL
-          WHERE dl.id = ? AND dl.deleted_at IS NULL AND (g.company_id = ? OR g.id = 1)",
+          WHERE dl.id = ? AND dl.deleted_at IS NULL AND g.company_id = ?",
     )
     .bind(list_id)
     .bind(company_id)

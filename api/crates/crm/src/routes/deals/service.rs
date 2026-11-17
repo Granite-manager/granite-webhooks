@@ -322,10 +322,10 @@ pub async fn reopen(pool: &MySqlPool, deal_id: i64) -> Result<(), sqlx::Error> {
                     "SELECT dl.id FROM deals_list dl
                      JOIN groups_list gl ON dl.group_id = gl.id AND gl.deleted_at IS NULL AND gl.is_displayed = 1
                      JOIN deals d ON d.id = ?
-                     JOIN customers c ON d.customer_id = c.id AND (gl.company_id = c.company_id OR gl.id = 1)
+                     JOIN customers c ON d.customer_id = c.id AND gl.company_id = c.company_id
                      LEFT JOIN deals_list old ON old.id = d.list_id
                      WHERE dl.deleted_at IS NULL
-                     ORDER BY gl.id = old.group_id DESC, gl.company_id = c.company_id DESC,
+                     ORDER BY gl.id = old.group_id DESC,
                               gl.is_default DESC, gl.id ASC, dl.position ASC LIMIT 1",
                 )
                 .bind(deal_id)
