@@ -146,6 +146,8 @@ async fn default_and_display_switch(pool: MySqlPool) {
     let list = pipelines(&server).await;
     assert_eq!(find(&list, 104)["is_default"], true);
     assert_eq!(find(&list, 100)["is_default"], false);
+    // Boards open on the first group: the default one.
+    assert_eq!(board_groups(&server).await.first(), Some(&104));
 
     server
         .patch("/v1/deal-pipelines/105")
