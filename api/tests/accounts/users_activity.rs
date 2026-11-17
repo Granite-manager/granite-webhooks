@@ -20,6 +20,8 @@ async fn seed(pool: &MySqlPool) {
            VALUES (9802, 13175559999, 13175550100, 'See you Monday', 'outbound', 'sent', 'A1', NOW() - INTERVAL 30 MINUTE, 100, 0, 0);
          INSERT INTO telnyx_sms (id, sender, recipient, text, direction, status, agent, sender_user_id, created_date, company_id, recipient10, phone_digits)
            VALUES (9805, 13175558888, 13175550100, 'Sent from Granite Manager', 'outbound', 'sent', '100', 100, NOW() - INTERVAL 20 MINUTE, 100, '3175550100', '3175550100');
+         INSERT INTO telnyx_sms (id, sender, recipient, text, direction, status, agent, sender_user_id, created_date, company_id, is_automated)
+           VALUES (9806, 13175558888, 13175550100, 'Flow step', 'outbound', 'sent', '100', 100, NOW() - INTERVAL 15 MINUTE, 100, 1);
          INSERT INTO emails (id, thread_id, subject, body, sender_user_id, sender_email, receiver_email, sent_at, company_id, is_draft)
            VALUES (9803, 't-9803', '  ', 'Hi', 100, 'rep@acme.test', 'Alice <ALICE@example.com>', NOW() - INTERVAL 10 MINUTE, 100, 0);
          INSERT INTO deals (id, customer_id, amount, title, list_id, position, user_id, created_at, updated_at, created_by, description)
@@ -80,6 +82,14 @@ async fn admins_see_what_users_did(pool: MySqlPool) {
     assert_eq!(telnyx["customer_name"], "Alice Lead");
     assert_eq!(telnyx["contact"], "13175550100");
     assert_eq!(telnyx["user_id"], 100);
+    // A follow-up flow's text is not the rep's doing.
+    assert!(
+        !activities
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["source"] == "telnyx_sms" && a["id"] == 9806)
+    );
     let email = find(activities, "email", 9803);
     assert_eq!(email["customer_name"], "Alice Lead");
     assert_eq!(email["summary"], "(no subject)");

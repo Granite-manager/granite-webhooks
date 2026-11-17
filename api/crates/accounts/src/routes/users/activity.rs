@@ -641,7 +641,13 @@ async fn sms_rows(
             "ringcentral_sms",
             "u.ringcentral_extension_id = m.agent"
         ),
-        part("telnyx_sms", "telnyx_sms", "u.id = m.sender_user_id"),
+        // Follow-up flow texts carry the rep's id too; only hand-sent ones
+        // are something the rep did.
+        part(
+            "telnyx_sms",
+            "telnyx_sms",
+            "u.id = m.sender_user_id AND m.is_automated = 0"
+        ),
     );
     let texts: Vec<SmsRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(company)
