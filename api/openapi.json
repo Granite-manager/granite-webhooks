@@ -3926,6 +3926,88 @@
         ]
       }
     },
+    "/v1/customers/{id}/files": {
+      "get": {
+        "tags": [
+          "customers"
+        ],
+        "summary": "List a customer's files",
+        "description": "Files kept on the customer, newest first.",
+        "operationId": "list_customer_files",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Files",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerFile"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such customer in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/customers/{id}/activity-search": {
       "post": {
         "tags": [
@@ -87865,6 +87947,49 @@
           "lead": {
             "$ref": "#/components/schemas/LeadAnswers",
             "description": "Lead form answers, as the lead sources send them (free text)."
+          }
+        }
+      },
+      "CustomerFile": {
+        "type": "object",
+        "description": "A file kept on a customer.",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "url"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The file."
+          },
+          "name": {
+            "type": "string",
+            "description": "Its name."
+          },
+          "kind": {
+            "type": "string",
+            "description": "`invoice`, `signed_contract`, `signed_invoice` or `upload`."
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What it belongs to, e.g. `Quote #11934` or `Invoice #11162`."
+          },
+          "file_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its date (`YYYY-MM-DD`)."
+          },
+          "url": {
+            "type": "string",
+            "description": "Where to open it."
           }
         }
       },
