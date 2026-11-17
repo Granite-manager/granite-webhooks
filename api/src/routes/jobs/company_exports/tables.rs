@@ -93,6 +93,7 @@ pub const TABLES: &[Table] = &[
     export("company_setup_checklist", Company),
     export("crew_positions", Company),
     export("customer_checklists", Company),
+    export("customer_files", Company),
     export("customer_phone_index", Company),
     export("customer_phone_index_builds", Company),
     export("customer_sources", Company),
@@ -586,6 +587,7 @@ pub enum Bucket {
 pub const FILE_COLUMNS: &[FileColumn] = &[
     FileColumn::Url("bug_report_images", "url"),
     FileColumn::Url("company", "logo_url"),
+    FileColumn::Url("customer_files", "url"),
     FileColumn::Url("customers", "attached_file"),
     FileColumn::Url("deals_documents", "image_url"),
     FileColumn::Url("deals_images", "image_url"),

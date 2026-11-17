@@ -8,6 +8,7 @@ mod common;
 
 mod call_transcripts;
 mod calls;
+mod customer_files;
 mod customer_history;
 mod customer_lookup;
 mod customer_phones;

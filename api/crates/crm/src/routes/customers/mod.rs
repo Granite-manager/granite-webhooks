@@ -8,6 +8,7 @@
 //! - `POST /v1/customers`, `PUT /v1/customers/{id}` → create, change
 //! - `PUT  /v1/customers/{id}/sales-rep`, `/temperature` → assign, rate
 //! - `GET  /v1/customers/{id}/history` → deals, reassignments, emails, activities and notes
+//! - `GET  /v1/customers/{id}/files`   → files kept on the customer (GMQ TOPS's from Slabware)
 //! - `GET  /v1/customers/{id}/projects`, `PUT /v1/customers/{id}/parent` → linked projects
 //! - `GET  /v1/customers/sms-contacts`, `POST /v1/customers/{id}/phone`, `POST /v1/customers/from-phone` → the SMS inbox's contacts
 //!
@@ -16,6 +17,7 @@
 
 mod activity_search;
 pub mod duplicates;
+mod files;
 pub mod estimate_time;
 pub mod fuzzy;
 mod handlers;
@@ -48,6 +50,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(write::mark_invalid))
         .routes(routes!(history::history))
         .routes(routes!(signatures::signature_requests))
+        .routes(routes!(files::files))
         .routes(routes!(activity_search::activity_search))
         .routes(routes!(estimate_time::estimate_time))
         .routes(routes!(projects::projects))
