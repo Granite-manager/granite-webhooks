@@ -109855,6 +109855,13 @@
             ],
             "description": "Email (blank clears)."
           },
+          "email_2": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Second email, on the quote only (blank clears)."
+          },
           "address_notes": {
             "type": [
               "string",
@@ -110625,6 +110632,13 @@
               "null"
             ],
             "description": "The quote's email."
+          },
+          "email_2": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The quote's second email."
           },
           "address_notes": {
             "type": [

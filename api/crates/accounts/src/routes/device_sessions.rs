@@ -22,7 +22,8 @@ use crate::openapi::ToSchema;
 use crate::openapi::{OpenApiRouter, routes};
 use crate::phone::revoke::{RevokeReason, revoke_device_session};
 use crate::routes::auth::{
-    client_ip, normalized_credentials, record_failed_login, too_many_failures, verify_login,
+    client_ip, has_no_position, normalized_credentials, record_failed_login, too_many_failures,
+    verify_login,
 };
 use crate::routes::login_steps::{self, LoginChallenge, PhoneDetails};
 use crate::serde_helpers::{js_date, js_date_required};
@@ -377,6 +378,9 @@ pub async fn sign_in(
     let Some(user) = phone_access_user(pool, user_id).await? else {
         return Ok(refuse(StatusCode::FORBIDDEN, "no_phone_access"));
     };
+    if has_no_position(pool, user_id).await? {
+        return Ok(refuse(StatusCode::FORBIDDEN, "no_phone_access"));
+    }
     let phone = PhoneDetails {
         device_name,
         platform: input.platform,

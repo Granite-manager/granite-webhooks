@@ -137,6 +137,85 @@ async fn a_new_quote_starts_from_the_price_list_and_the_customer(pool: MySqlPool
 }
 
 #[test_db::test(seed)]
+async fn a_quote_keeps_a_second_email_of_its_own(pool: MySqlPool) {
+    let (server, _) = server(&pool).await;
+    price_list(&server, &pool).await;
+    // Alice's primary is alice@; of the others the oldest is alice.work@.
+    let id = create(&server, json!({ "customer_id": 1000 })).await;
+    let path = format!("/v1/quotes/{id}");
+    let read = || async {
+        server
+            .get(&path)
+            .with_session(sessions::REP)
+            .await
+            .json::<Value>()["quote"]
+            .clone()
+    };
+    let quote = read().await;
+    assert_eq!(quote["email"], "alice@example.com");
+    assert_eq!(quote["email_2"], "alice.work@example.com");
+
+    server
+        .patch(&path)
+        .with_session(sessions::REP)
+        .json(&json!({ "email_2": " spouse@example.com " }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(read().await["email_2"], "spouse@example.com");
+    // The customer's emails stay as they were.
+    let emails: Vec<String> = sqlx::query_scalar(
+        "SELECT email FROM customers_emails WHERE customer_id = 1000 ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        emails,
+        ["alice.old@example.com", "alice@example.com", "alice.work@example.com"]
+    );
+
+    // A change without it leaves it; a copy with the address keeps it.
+    server
+        .patch(&path)
+        .with_session(sessions::REP)
+        .json(&json!({ "phone": "317-555-0101" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(read().await["email_2"], "spouse@example.com");
+    let res = server
+        .post(&format!("{path}/copies"))
+        .with_session(sessions::REP)
+        .json(&json!({ "quote_name": "Copy", "copy_address": true }))
+        .await;
+    res.assert_status(StatusCode::CREATED);
+    let copy = res.json::<Value>()["id"].as_i64().unwrap();
+    let copied = server
+        .get(&format!("/v1/quotes/{copy}"))
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    assert_eq!(copied["quote"]["email_2"], "spouse@example.com");
+
+    // Blank clears.
+    server
+        .patch(&path)
+        .with_session(sessions::REP)
+        .json(&json!({ "email_2": "  " }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(read().await["email_2"], Value::Null);
+
+    // A customer with one email: no second one.
+    let erin = create(&server, json!({ "customer_id": 1004 })).await;
+    let quote = server
+        .get(&format!("/v1/quotes/{erin}"))
+        .with_session(sessions::REP)
+        .await
+        .json::<Value>();
+    assert_eq!(quote["quote"]["email_2"], Value::Null);
+}
+
+#[test_db::test(seed)]
 async fn a_quote_by_a_non_rep_goes_to_the_customers_rep(pool: MySqlPool) {
     let (server, _) = server(&pool).await;
     price_list(&server, &pool).await;
