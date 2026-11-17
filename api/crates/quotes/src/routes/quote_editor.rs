@@ -1880,9 +1880,24 @@ pub struct Sale {
     #[serde(default)]
     pub new_deal: bool,
     /// Status of the template job it adds to Unscheduled: `ready` (default) or
-    /// `not_ready`. The installation job is always `not_ready`.
+    /// `not_ready`.
     #[serde(default)]
     pub job_status: Option<String>,
+    /// Status of the installation job: `ready` or `not_ready` (default).
+    #[serde(default)]
+    pub installation_status: Option<String>,
+    /// Status of the FH Backsplash template job: `ready` or `not_ready` (default).
+    #[serde(default)]
+    pub fh_backsplash_template_status: Option<String>,
+    /// Status of the FH Backsplash installation job: `ready` or `not_ready` (default).
+    #[serde(default)]
+    pub fh_backsplash_installation_status: Option<String>,
+    /// Notes on the FH Backsplash template job; left out: the template job's notes.
+    #[serde(default)]
+    pub fh_backsplash_template_notes: Option<String>,
+    /// Notes on the FH Backsplash installation job; left out: the installation job's notes.
+    #[serde(default)]
+    pub fh_backsplash_installation_notes: Option<String>,
     /// Notes on the template job it adds to Unscheduled.
     #[serde(default)]
     pub template_notes: Option<String>,
@@ -1939,11 +1954,26 @@ pub struct SaleExtraEvent {
     /// Red flag: the event must be scheduled fast.
     #[serde(default)]
     pub urgent: bool,
+    /// Its status: `ready` or `not_ready` (default).
+    #[serde(default)]
+    pub status: Option<String>,
     /// The event template (`GET /v1/quote-sale-events`).
     pub template_id: i32,
     /// Notes on the event (trimmed; blank: none).
     #[serde(default)]
     pub notes: Option<String>,
+}
+
+/// A Mark as Sold status: `ready` or `not_ready`; left out, `default`.
+fn sale_ready(status: Option<&str>, default: bool, what: &str) -> ApiResult<bool> {
+    match status {
+        None => Ok(default),
+        Some("ready") => Ok(true),
+        Some("not_ready") => Ok(false),
+        Some(_) => Err(ApiError::BadRequest(format!(
+            "Pick Ready or Not ready for {what}."
+        ))),
+    }
 }
 
 /// What selling did.
@@ -1988,15 +2018,31 @@ pub async fn mark_sold(
             "Pick the option that was sold.".into(),
         ));
     }
-    let template_ready = match input.job_status.as_deref() {
-        None | Some("ready") => true,
-        Some("not_ready") => false,
-        Some(_) => {
-            return Err(ApiError::BadRequest(
-                "Pick Ready or Not ready for the template.".into(),
-            ));
-        }
-    };
+    let template_ready = sale_ready(input.job_status.as_deref(), true, "the template")?;
+    let installation_ready =
+        sale_ready(input.installation_status.as_deref(), false, "the installation")?;
+    let fh_backsplash_template_ready = sale_ready(
+        input.fh_backsplash_template_status.as_deref(),
+        false,
+        "the FH Backsplash template",
+    )?;
+    let fh_backsplash_installation_ready = sale_ready(
+        input.fh_backsplash_installation_status.as_deref(),
+        false,
+        "the FH Backsplash installation",
+    )?;
+    let extra_events = input
+        .extra_events
+        .into_iter()
+        .map(|extra| -> ApiResult<ExtraEventPick> {
+            Ok(ExtraEventPick {
+                ready: sale_ready(extra.status.as_deref(), false, "the extra event")?,
+                template_id: extra.template_id,
+                notes: extra.notes,
+                urgent: extra.urgent,
+            })
+        })
+        .collect::<ApiResult<Vec<_>>>()?;
     let sold = mark_quote_sold(
         &state.pool,
         id,
@@ -2010,6 +2056,11 @@ pub async fn mark_sold(
         },
         &SaleJobs {
             template_ready,
+            installation_ready,
+            fh_backsplash_template_ready,
+            fh_backsplash_installation_ready,
+            fh_backsplash_template_notes: input.fh_backsplash_template_notes,
+            fh_backsplash_installation_notes: input.fh_backsplash_installation_notes,
             template_notes: input.template_notes,
             install_notes: input.install_notes,
             project_notes: input.project_notes,
@@ -2022,15 +2073,7 @@ pub async fn mark_sold(
             installation_urgent: input.installation_urgent,
             fh_backsplash_template_urgent: input.fh_backsplash_template_urgent,
             fh_backsplash_installation_urgent: input.fh_backsplash_installation_urgent,
-            extra_events: input
-                .extra_events
-                .into_iter()
-                .map(|extra| ExtraEventPick {
-                    template_id: extra.template_id,
-                    notes: extra.notes,
-                    urgent: extra.urgent,
-                })
-                .collect(),
+            extra_events,
         },
     )
     .await?

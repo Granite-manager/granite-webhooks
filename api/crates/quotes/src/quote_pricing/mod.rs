@@ -868,6 +868,16 @@ pub enum SaleDeal {
 pub struct SaleJobs {
     /// The template job waits as Ready (else Not ready).
     pub template_ready: bool,
+    /// The installation job waits as Ready (else Not ready).
+    pub installation_ready: bool,
+    /// The FH Backsplash template job waits as Ready (else Not ready).
+    pub fh_backsplash_template_ready: bool,
+    /// The FH Backsplash installation job waits as Ready (else Not ready).
+    pub fh_backsplash_installation_ready: bool,
+    /// Notes on the FH Backsplash template job; none: the template job's.
+    pub fh_backsplash_template_notes: Option<String>,
+    /// Notes on the FH Backsplash installation job; none: the installation job's.
+    pub fh_backsplash_installation_notes: Option<String>,
     /// Notes on the template job.
     pub template_notes: Option<String>,
     /// Notes on the installation job.
@@ -905,6 +915,8 @@ pub struct SaleJobs {
 pub struct ExtraEventPick {
     /// Red flag from Mark as Sold: it must be scheduled fast.
     pub urgent: bool,
+    /// The event waits as Ready (else Not ready).
+    pub ready: bool,
     /// `quote_sale_event_templates.id`.
     pub template_id: i32,
     /// Notes on the event.
@@ -1049,16 +1061,16 @@ pub async fn mark_quote_sold(
 ///
 /// While the company's switch is on (`company.auto_unscheduled_jobs`, Admin ›
 /// Quotes › Automation): one on each of the templates and installations
-/// calendars, the template "ready" (or "not ready" when `jobs.template_ready`
-/// is false), the installation "not ready", each with its notes from `jobs`.
-/// With `jobs.full_height_backsplash` each calendar also gets a "FH
-/// Backsplash" job, "not ready", with the same notes; `fh_backsplash_template`
+/// calendars, each "ready" or "not ready" as `jobs` says, with its notes from
+/// `jobs`. With `jobs.full_height_backsplash` each calendar also gets a "FH
+/// Backsplash" job with its own status and notes (else the same notes);
+/// `fh_backsplash_template`
 /// / `fh_backsplash_installation` add only that calendar's one. The template (or
 /// installation) jobs are left out when the company removed them
 /// (`company.sale_template_job` / `sale_installation_job`) or the seller
 /// unticked them (`jobs.skip_template` / `skip_installation`).
 ///
-/// Then, switch or not, one "not ready" event per event template the seller
+/// Then, switch or not, one event ("ready" or "not ready") per event template the seller
 /// ticked (`jobs.extra_events`; the company's `quote_sale_event_templates`,
 /// Admin › Quotes › Automation › Event templates) on its calendar, titled by
 /// `sale_event_title`, with the notes given for it. Ids of other companies'
@@ -1153,7 +1165,7 @@ async fn add_waiting_jobs(
         None
     };
     let mut events = built_in_jobs(&calendars, jobs, &titles, backsplash);
-    events.extend(extra.into_iter().map(|(template, notes, urgent)| NewJob {
+    events.extend(extra.into_iter().map(|(template, notes, urgent, ready)| NewJob {
         part_type_id: template.part_type_id,
         calendar_id: template.calendar_id,
         title: sale_event_title(
@@ -1165,7 +1177,7 @@ async fn add_waiting_jobs(
             &fallback,
         ),
         notes,
-        ready: false,
+        ready,
         urgent,
     }));
     for job in events {
@@ -1220,10 +1232,20 @@ fn built_in_jobs(
                 }
         })
         .map(|(calendar_id, template, fh)| {
-            let notes = if template {
+            // An FH Backsplash job has its own notes when the seller wrote
+            // them, else its template or installation job's.
+            let own = if template {
                 &jobs.template_notes
             } else {
                 &jobs.install_notes
+            };
+            let notes = match (fh, template) {
+                (true, true) => jobs.fh_backsplash_template_notes.as_ref().or(own.as_ref()),
+                (true, false) => jobs
+                    .fh_backsplash_installation_notes
+                    .as_ref()
+                    .or(own.as_ref()),
+                (false, _) => own.as_ref(),
             };
             NewJob {
                 part_type_id: if fh { backsplash } else { None },
@@ -1233,11 +1255,15 @@ fn built_in_jobs(
                     if fh { fh_title(title) } else { title.clone() }
                 },
                 notes: notes
-                    .as_deref()
-                    .map(str::trim)
+                    .map(|n| n.trim())
                     .filter(|n| !n.is_empty())
                     .map(str::to_string),
-                ready: jobs.template_ready && template && !fh,
+                ready: match (template, fh) {
+                    (true, false) => jobs.template_ready,
+                    (false, false) => jobs.installation_ready,
+                    (true, true) => jobs.fh_backsplash_template_ready,
+                    (false, true) => jobs.fh_backsplash_installation_ready,
+                },
                 urgent: match (template, fh) {
                     (true, false) => jobs.template_urgent,
                     (false, false) => jobs.installation_urgent,
@@ -1255,7 +1281,7 @@ async fn picked_extra_events(
     pool: &MySqlPool,
     company_id: i32,
     picks: &[ExtraEventPick],
-) -> Result<Vec<(QuoteSaleEvent, Option<String>, bool)>, sqlx::Error> {
+) -> Result<Vec<(QuoteSaleEvent, Option<String>, bool, bool)>, sqlx::Error> {
     if picks.is_empty() {
         return Ok(Vec::new());
     }
@@ -1270,7 +1296,7 @@ async fn picked_extra_events(
                 .map(str::trim)
                 .filter(|n| !n.is_empty())
                 .map(str::to_string);
-            Some((template, notes, pick.urgent))
+            Some((template, notes, pick.urgent, pick.ready))
         })
         .collect())
 }
