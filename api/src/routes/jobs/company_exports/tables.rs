@@ -170,6 +170,7 @@ pub const TABLES: &[Table] = &[
     export("project_notes", Company),
     export("project_part_types", Company),
     export("project_parts", Company),
+    export("project_process_seeded", Company),
     export("project_process_steps", Company),
     export("project_raptor_jobs", Company),
     export("project_stage_auto", Company),

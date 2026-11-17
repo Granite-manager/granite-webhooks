@@ -21794,6 +21794,88 @@
         ]
       }
     },
+    "/v1/projects/process-steps/{step_id}/ends-stage": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Set whether a process step ends its stage",
+        "description": "A step that ends the stage is checked off by itself when the project moves\non from the stage (telling its people and setting its schedule events), and\nits Auto moves the project on from Awaiting Template or Templated.",
+        "operationId": "set_project_process_step_ends_stage",
+        "parameters": [
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessStepEndsStage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such step in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/projects/process-steps/reorder": {
       "post": {
         "tags": [
@@ -22011,7 +22093,7 @@
           "projects"
         ],
         "summary": "Who is told when a project moves on from each stage",
-        "description": "The built-in line at the end of each stage (\"Then: Start fabrication\")\ntakes Notify like a step does.",
+        "description": "Deprecated: no longer used. Each stage now ends with an ordinary step\n(`ends_stage`, see `GET /v1/projects/process-steps`) whose own Notify,\nSchedule and Auto replaced these settings; what is saved here does nothing.\n\nThe built-in line at the end of each stage (\"Then: Start fabrication\")\ntakes Notify like a step does.",
         "operationId": "list_project_process_stages",
         "responses": {
           "200": {
@@ -22071,7 +22153,7 @@
           "projects"
         ],
         "summary": "Set who is told when a project moves on from a stage",
-        "description": "Replaces the list. Each person gets a bell notification and a phone push\nwhen someone moves a project on from the stage (not when they do it\nthemselves), by hand, by checking its last step or from a booking.",
+        "description": "Deprecated: no longer used. Each stage now ends with an ordinary step\n(`ends_stage`, see `GET /v1/projects/process-steps`) whose own Notify,\nSchedule and Auto replaced these settings; what is saved here does nothing.\n\nReplaces the list. Each person gets a bell notification and a phone push\nwhen someone moves a project on from the stage (not when they do it\nthemselves), by hand, by checking its last step or from a booking.",
         "operationId": "set_project_process_stage_notify",
         "parameters": [
           {
@@ -22162,7 +22244,7 @@
           "projects"
         ],
         "summary": "Set what moves a project on from a stage by itself",
-        "description": "The built-in line at the end of a stage takes Auto like a step: when the\naction happens (after the stage's own steps are done), the project moves\non to the next stage. Only Awaiting Template and Templated can do this:\ninstallation and payment are confirmed with their own buttons.",
+        "description": "Deprecated: no longer used. Each stage now ends with an ordinary step\n(`ends_stage`, see `GET /v1/projects/process-steps`) whose own Notify,\nSchedule and Auto replaced these settings; what is saved here does nothing.\n\nThe built-in line at the end of a stage takes Auto like a step: when the\naction happens (after the stage's own steps are done), the project moves\non to the next stage. Only Awaiting Template and Templated can do this:\ninstallation and payment are confirmed with their own buttons.",
         "operationId": "set_project_process_stage_auto",
         "parameters": [
           {
@@ -22253,7 +22335,7 @@
           "projects"
         ],
         "summary": "Set what moving a project on from a stage does to its events",
-        "description": "The built-in line at the end of a stage takes Schedule rules like a step.\nThey run when a project moves on from the stage (and, for Fabrication,\nwhen a part is marked fabricated).",
+        "description": "Deprecated: no longer used. Each stage now ends with an ordinary step\n(`ends_stage`, see `GET /v1/projects/process-steps`) whose own Notify,\nSchedule and Auto replaced these settings; what is saved here does nothing.\n\nThe built-in line at the end of a stage takes Schedule rules like a step.\nThey run when a project moves on from the stage (and, for Fabrication,\nwhen a part is marked fabricated).",
         "operationId": "set_project_process_stage_events",
         "parameters": [
           {
@@ -107052,7 +107134,8 @@
           "notify_sales_rep",
           "event_rules",
           "responsible_sales_rep",
-          "items"
+          "items",
+          "ends_stage"
         ],
         "properties": {
           "id": {
@@ -107129,6 +107212,10 @@
               "$ref": "#/components/schemas/ListItem"
             },
             "description": "Its own to-do list, in order."
+          },
+          "ends_stage": {
+            "type": "boolean",
+            "description": "It ends the stage: checked off by itself when the project moves on from\nthe stage, and its Auto moves the project on (Awaiting Template,\nTemplated). The project's Next shows its template or installation date\nwhile it is the step to do."
           }
         }
       },
@@ -107146,6 +107233,19 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "ProcessStepEndsStage": {
+        "type": "object",
+        "description": "Whether a process step ends its stage.",
+        "required": [
+          "ends_stage"
+        ],
+        "properties": {
+          "ends_stage": {
+            "type": "boolean",
+            "description": "True: checked off when the project moves on, and its Auto moves it on."
           }
         }
       },
