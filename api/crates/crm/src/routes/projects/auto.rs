@@ -25,7 +25,7 @@ struct Rule {
     auto_text: Option<String>,
     auto_days: Option<i32>,
     auto_since: Option<NaiveDateTime>,
-    ends_stage: bool,
+    auto_moves: bool,
 }
 
 /// Checks off what the rules say for these projects. Logged, never returned:
@@ -52,7 +52,7 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     let mut conn = state.pool.acquire().await?;
     let rules: Vec<Rule> = sqlx::query_as(
         "SELECT id, stage_code, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days, auto_since,
-                ends_stage <> 0 AS ends_stage
+                auto_moves <> 0 AS auto_moves
            FROM project_process_steps
           WHERE company_id = ?
           ORDER BY FIELD(stage_code, 'new', 'templated', 'fabrication', 'installed'), position, id",
@@ -60,7 +60,13 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
-    if !rules.iter().any(|rule| rule.auto_trigger.is_some()) {
+    // `stage_moved` waits for the move itself (`process::tell_moved_on`).
+    let waits = |rule: &Rule| {
+        rule.auto_trigger
+            .as_deref()
+            .is_none_or(|t| t == "stage_moved")
+    };
+    if rules.iter().all(waits) {
         return Ok(());
     }
     let ids: Vec<i32> = live.iter().map(|p| p.id).collect();
@@ -128,11 +134,11 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
             let Some(at) = happened.map(|at| at.min(now)) else {
                 break;
             };
-            // A step that ends Awaiting Template or Templated moves the project
-            // on, as the stage's built-in line did; the move checks it off
+            // A rule that moves the project on (Awaiting Template, Templated)
+            // moves it instead of checking the step off; the move checks it off
             // (`tell_moved_on`). Not moved (on hold, no transaction yet): it
             // waits and is tried again.
-            if rule.ends_stage && matches!(stage, "new" | "templated") {
+            if rule.auto_moves && matches!(stage, "new" | "templated") {
                 if let Ok(from) = Stage::try_from(stage.to_string())
                     && let Some(seen) = advance(&mut conn, company_id, project, part, from).await?
                 {
@@ -446,6 +452,7 @@ async fn happened(
             .fetch_one(&mut *conn)
             .await?
         }
+        // `stage_moved`: the move itself checks it off (`process::tell_moved_on`).
         _ => None,
     };
     Ok(at)
