@@ -7182,7 +7182,7 @@
             }
           },
           "403": {
-            "description": "Caller is not a superuser or an admin Manager",
+            "description": "Caller is not a superuser or an admin Manager, or customer payments are not turned on for the company",
             "content": {
               "application/json": {
                 "schema": {
@@ -7239,7 +7239,7 @@
             }
           },
           "403": {
-            "description": "Caller is not a superuser or an admin Manager",
+            "description": "Caller is not a superuser or an admin Manager, or customer payments are not turned on for the company",
             "content": {
               "application/json": {
                 "schema": {
@@ -7302,7 +7302,7 @@
           "customer-payments"
         ],
         "summary": "List a customer's payments",
-        "description": "The payments and unpaid payment links of the jobs of the customer's\nfamily (the customer, its parent and the parent's other projects: what\n`GET /v1/customers/{id}/projects` lists), newest first, withdrawn links\nincluded. `project_key` names the job. Money that reached the company is\n`paid`; an ACH transfer on its way is `pending`.",
+        "description": "The payments and unpaid payment links of the jobs of the customer's\nfamily (the customer, its parent and the parent's other projects: what\n`GET /v1/customers/{id}/projects` lists), newest first, withdrawn links\nincluded. `project_key` names the job. Money that reached the company is\n`paid`; an ACH transfer on its way is `pending`. A waiting payment whose\nnews from Stripe may have been missed is checked with Stripe here, at\nmost once in 5 minutes each.",
         "operationId": "list_customer_payments",
         "parameters": [
           {
@@ -7438,7 +7438,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an employee or admin",
+            "description": "Caller is not an employee or admin, or customer payments are not turned on for the company",
             "content": {
               "application/json": {
                 "schema": {
@@ -7582,7 +7582,7 @@
           "customer-payments"
         ],
         "summary": "Show a payment link's page",
-        "description": "What the customer is asked to pay, to whom and for which job, and whether\nit can still be paid (`status` is `created`). No session: the link's\nunguessable id is the credential. Next: `POST\n/v1/public/pay/{payment_id}/checkout`.",
+        "description": "What the customer is asked to pay, to whom and for which job, and whether\nit can still be paid (`status` is `created`). Once the customer opened\nStripe's page, Stripe is asked where the payment is (at most once a\nminute), so the page is right even when Stripe's own message was missed.\nNo session: the link's\nunguessable id is the credential. Next: `POST\n/v1/public/pay/{payment_id}/checkout`.",
         "operationId": "get_pay_page",
         "parameters": [
           {
@@ -66495,7 +66495,7 @@
           "superuser"
         ],
         "summary": "Switch a company feature",
-        "description": "Turns `quickbooks`, `signature`, `onboarding` or `leaderboard` on or off\nfor the company (an explicit setting, over the platform default).",
+        "description": "Turns `quickbooks`, `signature`, `onboarding`, `leaderboard` or\n`customer_payments` on or off for the company (an explicit setting, over\nthe platform default; `customer_payments` has no platform default and is\noff until turned on here).",
         "operationId": "switch_platform_company_feature",
         "parameters": [
           {
@@ -66511,7 +66511,7 @@
           {
             "name": "feature",
             "in": "path",
-            "description": "`quickbooks`, `signature`, `onboarding` or `leaderboard`",
+            "description": "`quickbooks`, `signature`, `onboarding`, `leaderboard` or `customer_payments`",
             "required": true,
             "schema": {
               "type": "string"
@@ -86254,6 +86254,7 @@
           "quickbooks_enabled",
           "signature_enabled",
           "billing_required",
+          "customer_payments_enabled",
           "onboarding_enabled",
           "leaderboard_enabled"
         ],
@@ -86397,6 +86398,10 @@
           "billing_required": {
             "type": "boolean",
             "description": "Stripe payment required."
+          },
+          "customer_payments_enabled": {
+            "type": "boolean",
+            "description": "Customer payments switch: the company may connect a bank account and\ntake its customers' payments by card or ACH. Off unless turned on."
           },
           "onboarding_enabled": {
             "type": "boolean",
@@ -86812,7 +86817,8 @@
         "description": "A company's customer payment settings.",
         "required": [
           "bank",
-          "fees"
+          "fees",
+          "enabled"
         ],
         "properties": {
           "bank": {
@@ -86822,6 +86828,10 @@
           "fees": {
             "$ref": "#/components/schemas/PaymentFees",
             "description": "The fee on each payment method and who pays it."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Customer payments are turned on for the company (by the platform,\ncompany by company). While false nothing can be set up and no link\ncan be made (403); links made before stay payable."
           }
         }
       },
@@ -94858,7 +94868,8 @@
           "quickbooks",
           "signature",
           "onboarding",
-          "leaderboard"
+          "leaderboard",
+          "customer_payments"
         ],
         "properties": {
           "quickbooks": {
@@ -94876,6 +94887,10 @@
           "leaderboard": {
             "type": "boolean",
             "description": "The points leaderboard is on (own switch, else the platform default)."
+          },
+          "customer_payments": {
+            "type": "boolean",
+            "description": "Customer payments are on: the company may connect a bank account and\ntake its customers' payments by card or ACH. Off unless turned on."
           }
         }
       },

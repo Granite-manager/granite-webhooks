@@ -90,6 +90,12 @@ const MAX_AMOUNT_CENTS: i64 = 99_999_999;
 const MANAGER_POSITION: i32 = 5;
 /// The account a company gets in demo mode: `acct_demo_<company id>`.
 const DEMO_ACCOUNT_PREFIX: &str = "acct_demo_";
+/// How often Stripe is asked about one payment whose webhook may not have
+/// come, in seconds: from its payment page, and from the CRM's list.
+const CHECK_FROM_PAGE_SECS: i64 = 60;
+const CHECK_FROM_LIST_SECS: i64 = 300;
+/// Stripe is asked about this many payments at most while listing.
+const CHECK_FROM_LIST_MOST: usize = 3;
 /// `notifications.message` holds this many characters.
 const MESSAGE_CHARS: usize = 255;
 
@@ -371,10 +377,15 @@ pub struct CompanyPaymentSettings {
     pub bank: BankAccount,
     /// The fee on each payment method and who pays it.
     pub fees: PaymentFees,
+    /// Customer payments are turned on for the company (by the platform,
+    /// company by company). While false nothing can be set up and no link
+    /// can be made (403); links made before stay payable.
+    pub enabled: bool,
 }
 
 #[derive(Default, sqlx::FromRow)]
 struct SettingsRow {
+    enabled: bool,
     stripe_account_id: Option<String>,
     charges_enabled: bool,
     bank_name: Option<String>,
@@ -411,14 +422,29 @@ impl SettingsRow {
 
 async fn settings_row(pool: &MySqlPool, company_id: i32) -> sqlx::Result<SettingsRow> {
     let row: Option<SettingsRow> = sqlx::query_as(
-        "SELECT stripe_account_id, charges_enabled, bank_name, bank_last4,
-                ach_customer_share_bps
-           FROM company_payment_settings WHERE company_id = ?",
+        "SELECT c.customer_payments_enabled <> 0 AS enabled, s.stripe_account_id,
+                COALESCE(s.charges_enabled, 0) <> 0 AS charges_enabled,
+                s.bank_name, s.bank_last4,
+                COALESCE(s.ach_customer_share_bps, 0) AS ach_customer_share_bps
+           FROM company c
+           LEFT JOIN company_payment_settings s ON s.company_id = c.id
+          WHERE c.id = ?",
     )
     .bind(company_id)
     .fetch_optional(pool)
     .await?;
     Ok(row.unwrap_or_default())
+}
+
+/// 403 unless customer payments are turned on for the company.
+fn turned_on(settings: &SettingsRow) -> ApiResult<()> {
+    if settings.enabled {
+        Ok(())
+    } else {
+        Err(ApiError::Denied(
+            "Customer payments are not turned on for this company".into(),
+        ))
+    }
 }
 
 /// Saves what Stripe says about a connected account (an `account` object).
@@ -479,7 +505,9 @@ pub async fn payment_settings(
     let mut row = settings_row(&state.pool, user.company_id).await?;
     let unverified = row
         .account(config.demo)
-        .filter(|_| !config.demo && !row.charges_enabled && state.stripe.is_enabled())
+        .filter(|_| {
+            row.enabled && !config.demo && !row.charges_enabled && state.stripe.is_enabled()
+        })
         .map(str::to_string);
     if let Some(account) = unverified {
         // Stripe's answer only refreshes what is kept: the page still opens
@@ -497,6 +525,7 @@ pub async fn payment_settings(
     let status = row.status(config.demo);
     let connected = status != BankAccountStatus::NotConnected;
     Ok(Json(CompanyPaymentSettings {
+        enabled: row.enabled,
         fees: PaymentFees {
             card: PaymentFeeSetting {
                 rate_bps: CARD_RATE_BPS,
@@ -547,7 +576,7 @@ pub struct PaymentFeesInput {
         (status = 204, description = "Saved"),
         (status = 400, description = "A share is out of range", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not a superuser or an admin Manager", body = ErrorBody),
+        (status = 403, description = "Caller is not a superuser or an admin Manager, or customer payments are not turned on for the company", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("session_cookie" = []))
@@ -562,6 +591,7 @@ pub async fn save_payment_fees(
             "The card fee cannot be passed on to customers yet".into(),
         ));
     }
+    turned_on(&settings_row(&state.pool, user.company_id).await?)?;
     let ach = input.ach_customer_share_bps;
     if !(0..=ACH_RATE_BPS).contains(&ach) || ach % SHARE_STEP_BPS != 0 {
         return Err(ApiError::BadRequest(
@@ -607,7 +637,7 @@ pub struct BankOnboarding {
     responses(
         (status = 200, description = "Stripe's page", body = BankOnboarding),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not a superuser or an admin Manager", body = ErrorBody),
+        (status = 403, description = "Caller is not a superuser or an admin Manager, or customer payments are not turned on for the company", body = ErrorBody),
         (status = 404, description = "The company was deleted", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
         (status = 502, description = "Stripe failed", body = ErrorBody),
@@ -621,6 +651,8 @@ pub async fn start_bank_onboarding(
 ) -> ApiResult<Json<BankOnboarding>> {
     let config = CustomerPayments::of(&state);
     let company_id = user.company_id;
+    let row = settings_row(&state.pool, company_id).await?;
+    turned_on(&row)?;
     if config.demo {
         sqlx::query(
             "INSERT INTO company_payment_settings
@@ -639,7 +671,6 @@ pub async fn start_bank_onboarding(
     if !state.stripe.is_enabled() {
         return Err(ApiError::Unavailable("Payments are not set up".into()));
     }
-    let row = settings_row(&state.pool, company_id).await?;
     let account = if let Some(account) = row.account(false) {
         account.to_string()
     } else {
@@ -783,6 +814,8 @@ struct PaymentRow {
     application_fee_cents: i32,
     refunded_cents: i32,
     stripe_account_id: String,
+    stripe_session_id: Option<String>,
+    stripe_checked_at: Option<NaiveDateTime>,
     failure_reason: Option<String>,
     created_by: Option<i32>,
     created_at: NaiveDateTime,
@@ -798,7 +831,7 @@ const PAYMENT_SELECT: &str = "SELECT p.id, p.public_id, p.company_id, p.customer
         CAST(p.method AS CHAR) AS method, CAST(p.status AS CHAR) AS status,
         p.amount_cents, p.fee_cents, p.customer_fee_cents, p.customer_fee_bps,
         p.company_fee_cents, p.application_fee_cents, p.refunded_cents,
-        p.stripe_account_id,
+        p.stripe_account_id, p.stripe_session_id, p.stripe_checked_at,
         p.failure_reason, p.created_by, p.created_at,
         NULLIF(TRIM(pc.name), '') AS customer_name,
         COALESCE(NULLIF(TRIM(pd.title), ''), NULLIF(TRIM(ps.project_address), ''))
@@ -842,6 +875,20 @@ impl PaymentRow {
         }
     }
 
+    /// Whether Stripe may know more than we do: the payment waits (`created`
+    /// or `pending`), the customer opened Stripe's page for it, and Stripe
+    /// was not asked in the last `every_secs` seconds.
+    fn may_be_behind(&self, every_secs: i64) -> bool {
+        matches!(
+            self.status(),
+            CustomerPaymentStatus::Created | CustomerPaymentStatus::Pending
+        ) && self.stripe_session_id.is_some()
+            && !self.stripe_account_id.starts_with(DEMO_ACCOUNT_PREFIX)
+            && self
+                .stripe_checked_at
+                .is_none_or(|at| (chrono::Utc::now().naive_utc() - at).num_seconds() >= every_secs)
+    }
+
     fn into_payment(self, origin: &str) -> CustomerPayment {
         CustomerPayment {
             project_key: self.project_key(),
@@ -873,6 +920,84 @@ async fn payment_by_id<'e>(
     .await
 }
 
+/// Asks Stripe where a waiting payment is, for when its webhook did not
+/// come (the server was down, the endpoint misconfigured): the payment's
+/// Checkout session, and for a bank transfer its payment intent. What Stripe
+/// says moves the payment on exactly as the webhook would, bells included; a
+/// webhook that comes later changes nothing. At most once per `every_secs`
+/// for one payment, whoever asks. True when the payment changed. Stripe not
+/// answering is only logged: the caller shows what is kept.
+async fn catch_up(state: &AppState, payment: &PaymentRow, every_secs: i64) -> sqlx::Result<bool> {
+    if CustomerPayments::of(state).demo
+        || !state.stripe.is_enabled()
+        || !payment.may_be_behind(every_secs)
+    {
+        return Ok(false);
+    }
+    let Some(session) = payment.stripe_session_id.as_deref() else {
+        return Ok(false);
+    };
+    let pool = &state.pool;
+    // One asker at a time: the others see the time just written.
+    let mine = sqlx::query(
+        "UPDATE customer_payments SET stripe_checked_at = UTC_TIMESTAMP()
+          WHERE public_id = ? AND status IN ('created', 'pending')
+            AND (stripe_checked_at IS NULL
+                 OR stripe_checked_at <= UTC_TIMESTAMP() - INTERVAL ? SECOND)",
+    )
+    .bind(&payment.public_id)
+    .bind(every_secs)
+    .execute(pool)
+    .await?
+    .rows_affected()
+        == 1;
+    if !mine {
+        return Ok(false);
+    }
+    let account = payment.stripe_account_id.as_str();
+    let id = payment.public_id.as_str();
+    let session = match state.stripe.checkout_session(account, session).await {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::warn!(%error, payment = id, "Checkout session not read");
+            return Ok(false);
+        }
+    };
+    // Open or expired: nobody paid on it.
+    if session["status"] != "complete" {
+        return Ok(false);
+    }
+    let intent = id_of(&session["payment_intent"]);
+    if session["payment_status"] == "paid" {
+        return settle(pool, id, Some(account), intent, Outcome::Paid).await;
+    }
+    // A bank transfer: on its way, arrived or bounced.
+    let Some(intent) = intent else {
+        return Ok(false);
+    };
+    let found = match state.stripe.payment_intent(account, intent).await {
+        Ok(found) => found,
+        Err(error) => {
+            tracing::warn!(%error, payment = id, "payment intent not read");
+            return Ok(false);
+        }
+    };
+    let outcome = match found["status"].as_str() {
+        Some("succeeded") => Outcome::Paid,
+        Some("processing" | "requires_action") => Outcome::Pending,
+        Some("requires_payment_method" | "canceled")
+            if payment.status() == CustomerPaymentStatus::Pending =>
+        {
+            Outcome::Failed(decline_reason(
+                payment.method(),
+                &found["last_payment_error"],
+            ))
+        }
+        _ => return Ok(false),
+    };
+    settle(pool, id, Some(account), Some(intent), outcome).await
+}
+
 /// The head of the family `customer_id` belongs to (its parent, else
 /// itself): the Projects tab shows the whole family's jobs. 404 when the
 /// customer is not the company's.
@@ -897,7 +1022,9 @@ const FAMILY_SQL: &str = "SELECT fc.id FROM customers fc
 /// family (the customer, its parent and the parent's other projects: what
 /// `GET /v1/customers/{id}/projects` lists), newest first, withdrawn links
 /// included. `project_key` names the job. Money that reached the company is
-/// `paid`; an ACH transfer on its way is `pending`.
+/// `paid`; an ACH transfer on its way is `pending`. A waiting payment whose
+/// news from Stripe may have been missed is checked with Stripe here, at
+/// most once in 5 minutes each.
 #[crate::openapi::path(
     get,
     path = "/v1/customers/{id}/payments",
@@ -919,17 +1046,33 @@ pub async fn list_payments(
     Path(id): Path<i32>,
 ) -> ApiResult<Json<Vec<CustomerPayment>>> {
     let head = family_of(&state.pool, user.company_id, id).await?;
-    let rows: Vec<PaymentRow> = sqlx::query_as(AssertSqlSafe(format!(
-        "{PAYMENT_SELECT}
-          WHERE p.company_id = ? AND p.customer_id IN ({FAMILY_SQL})
-          ORDER BY p.created_at DESC, p.id DESC"
-    )))
-    .bind(user.company_id)
-    .bind(user.company_id)
-    .bind(head)
-    .bind(head)
-    .fetch_all(&state.pool)
-    .await?;
+    let list = || async {
+        sqlx::query_as::<_, PaymentRow>(AssertSqlSafe(format!(
+            "{PAYMENT_SELECT}
+              WHERE p.company_id = ? AND p.customer_id IN ({FAMILY_SQL})
+              ORDER BY p.created_at DESC, p.id DESC"
+        )))
+        .bind(user.company_id)
+        .bind(user.company_id)
+        .bind(head)
+        .bind(head)
+        .fetch_all(&state.pool)
+        .await
+    };
+    let mut rows = list().await?;
+    // A webhook that never came: Stripe is asked about the waiting payments
+    // (a few, each seldom), and the list is read again when one moved.
+    let mut moved = false;
+    for row in rows
+        .iter()
+        .filter(|row| row.may_be_behind(CHECK_FROM_LIST_SECS))
+        .take(CHECK_FROM_LIST_MOST)
+    {
+        moved |= catch_up(&state, row, CHECK_FROM_LIST_SECS).await?;
+    }
+    if moved {
+        rows = list().await?;
+    }
     let origin = company_origin(&state, user.company_id).await?;
     Ok(Json(
         rows.into_iter()
@@ -1004,7 +1147,7 @@ fn new_public_id() -> ApiResult<String> {
         (status = 201, description = "The payment link", body = CustomerPayment),
         (status = 400, description = "Unknown job, the amount is out of range, or it is more than is left to pay on the job", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin, or customer payments are not turned on for the company", body = ErrorBody),
         (status = 404, description = "No such customer in the company", body = ErrorBody),
         (status = 409, description = "The company's bank account is not connected", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
@@ -1077,6 +1220,7 @@ pub async fn create_payment(
         }));
     }
     let settings = settings_row(pool, user.company_id).await?;
+    turned_on(&settings)?;
     if settings.status(config.demo) != BankAccountStatus::Connected {
         return Err(ApiError::Conflict(
             "Connect the company's bank account first (Admin → Company → Payments)".into(),
@@ -1295,7 +1439,10 @@ async fn page_payment(state: &AppState, payment_id: &str) -> ApiResult<PaymentRo
 /// Show a payment link's page
 ///
 /// What the customer is asked to pay, to whom and for which job, and whether
-/// it can still be paid (`status` is `created`). No session: the link's
+/// it can still be paid (`status` is `created`). Once the customer opened
+/// Stripe's page, Stripe is asked where the payment is (at most once a
+/// minute), so the page is right even when Stripe's own message was missed.
+/// No session: the link's
 /// unguessable id is the credential. Next: `POST
 /// /v1/public/pay/{payment_id}/checkout`.
 #[crate::openapi::path(
@@ -1314,7 +1461,12 @@ pub async fn pay_page(
     State(state): State<AppState>,
     Path(payment_id): Path<String>,
 ) -> ApiResult<Response> {
-    let payment = page_payment(&state, &payment_id).await?;
+    let mut payment = page_payment(&state, &payment_id).await?;
+    // The customer may be back from Stripe before its webhook, or the
+    // webhook may never come: Stripe is asked, at most once a minute.
+    if catch_up(&state, &payment, CHECK_FROM_PAGE_SECS).await? {
+        payment = page_payment(&state, &payment_id).await?;
+    }
     let company_name: Option<String> = sqlx::query_scalar(
         "SELECT COALESCE(NULLIF(TRIM(name), ''), CONCAT('Company ', id))
            FROM company WHERE id = ?",
@@ -1858,6 +2010,67 @@ async fn refund(
     tx.commit().await
 }
 
+/// The payment intent of a charge that is not the payment's own: the link
+/// was paid twice (`paid_twice`) and `intent` is the second charge's. None
+/// when it is the payment's own charge, or the payment has none kept yet.
+async fn extra_charge(
+    pool: &MySqlPool,
+    public_id: &str,
+    account: &str,
+    intent: Option<&str>,
+) -> sqlx::Result<Option<String>> {
+    let Some(intent) = intent else {
+        return Ok(None);
+    };
+    let own: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT stripe_payment_intent_id FROM customer_payments
+          WHERE public_id = ? AND stripe_account_id = ?",
+    )
+    .bind(public_id)
+    .bind(account)
+    .fetch_optional(pool)
+    .await?;
+    Ok(match own.flatten() {
+        Some(own) if own != intent => Some(intent.to_string()),
+        _ => None,
+    })
+}
+
+/// Money given back on the second charge of a link paid twice: the payment
+/// itself stays as it is, and the company hears that the extra charge went
+/// back, once per amount given back so far.
+async fn extra_refunded(
+    pool: &MySqlPool,
+    public_id: &str,
+    account: &str,
+    intent: &str,
+    refunded_total: Option<i64>,
+) -> sqlx::Result<()> {
+    let total = refunded_total.unwrap_or(0);
+    let mut tx = pool.begin().await?;
+    let first = sqlx::query("INSERT IGNORE INTO customer_payment_events (event_id) VALUES (?)")
+        .bind(format!("extra_refunded:{intent}:{total}"))
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+        == 1;
+    let ours: Option<u64> = sqlx::query_scalar(
+        "SELECT id FROM customer_payments WHERE public_id = ? AND stripe_account_id = ?",
+    )
+    .bind(public_id)
+    .bind(account)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if first && ours.is_some() && total > 0 {
+        let bell = Bell {
+            amount_cents: Some(total),
+            ..Bell::default()
+        };
+        notify(&mut tx, public_id, "payment_duplicate_refunded", bell).await?;
+    }
+    tx.commit().await
+}
+
 /// What a bell row says beyond the payment itself.
 #[derive(Default, Clone, Copy)]
 struct Bell<'a> {
@@ -1896,6 +2109,10 @@ fn message(payment: &PaymentRow, kind: &str, bell: Bell<'_>) -> String {
         "payment_disputed" => format!(
             "{} disputed the {amount} payment for {project}.",
             customer.unwrap_or("A customer")
+        ),
+        "payment_duplicate_refunded" => format!(
+            "The extra {amount} payment for {project} was refunded to {}. The first payment stays.",
+            customer.unwrap_or("the customer")
         ),
         "payment_duplicate" => format!(
             "{} paid {amount} by {method} for {project} a second time. Refund the extra payment in Stripe.",
@@ -2167,7 +2384,11 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
             if let Some(payment) = payment_of_charge(state, account, object).await? {
                 let full = object["refunded"].as_bool() == Some(true);
                 let total = object["amount_refunded"].as_i64();
-                refund(pool, &payment, account, total, full).await?;
+                if let Some(extra) = extra_charge(pool, &payment, account, intent).await? {
+                    extra_refunded(pool, &payment, account, &extra, total).await?;
+                } else {
+                    refund(pool, &payment, account, total, full).await?;
+                }
             }
         }
         // Once per dispute, and never after it closed: Stripe sending the
@@ -2177,10 +2398,15 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
                 payment_of_charge(state, account, object).await?,
                 object["id"].as_str(),
             ) {
+                // A dispute of the second charge of a link paid twice is
+                // not about the payment itself: Stripe tells the company.
+                if extra_charge(pool, &payment, account, intent).await?.is_some() {
+                    tracing::warn!(payment = %payment, dispute, "dispute of an extra charge");
+                    return Ok(());
+                }
                 // Only a payment that was made can be disputed: when this
                 // came first, the payment is marked paid here, and the
                 // event that says so changes nothing later.
-                let intent = id_of(&object["payment_intent"]);
                 settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
                 settle_once(
                     pool,
@@ -2198,6 +2424,9 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
                 payment_of_charge(state, account, object).await?,
                 object["id"].as_str(),
             ) {
+                if extra_charge(pool, &payment, account, intent).await?.is_some() {
+                    return Ok(());
+                }
                 let won = (object["status"] == "won").then_some(Outcome::DisputeWon);
                 settle_once(
                     pool,

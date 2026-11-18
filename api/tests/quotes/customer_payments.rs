@@ -330,6 +330,7 @@ async fn a_company_starts_without_a_bank_account(pool: MySqlPool) {
                 "ach": { "rate_bps": 100, "customer_share_bps": 0, "min_fee_cents": 0,
                          "locked": false },
             },
+            "enabled": true,
         })
     );
     assert!(stripe.lock().unwrap().requests.is_empty());
@@ -1458,6 +1459,48 @@ async fn a_link_paid_twice_tells_the_company_to_refund_one(pool: MySqlPool) {
     .await
     .unwrap();
     assert_eq!((status_of(&pool, id).await, intent), ("paid".into(), "pi_1".into()));
+
+    // The company refunds the extra charge, as asked: the payment itself
+    // stays paid with nothing given back, and the company hears once.
+    let extra = json!({
+        "id": "ch_2", "object": "charge", "payment_intent": "pi_2",
+        "refunded": true, "amount_refunded": 50_000,
+        "metadata": { "granite_payment": id },
+    });
+    webhook(&server, "charge.refunded", ACCOUNT, extra.clone()).await;
+    webhook(&server, "charge.refunded", ACCOUNT, extra).await;
+    let refunded: i32 =
+        sqlx::query_scalar("SELECT refunded_cents FROM customer_payments WHERE public_id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!((status_of(&pool, id).await, refunded), ("paid".into(), 0));
+    let heard: Vec<String> = bell(&pool)
+        .await
+        .into_iter()
+        .filter(|(user, kind, _)| *user == 100 && kind == "payment_duplicate_refunded")
+        .map(|(_, _, text)| text)
+        .collect();
+    assert_eq!(
+        heard,
+        vec![
+            "The extra $500 payment for Alice kitchen was refunded to Alice Lead. The first payment stays."
+                .to_string()
+        ]
+    );
+    // Nor does a dispute of the extra charge dispute the payment.
+    let dispute = json!({ "id": "dp_2", "object": "dispute", "payment_intent": "pi_2", "status": "needs_response" });
+    webhook(&server, "charge.dispute.created", ACCOUNT, dispute).await;
+    assert_eq!(status_of(&pool, id).await, "paid");
+    // The payment's own refund still counts.
+    let own = json!({
+        "id": "ch_1", "object": "charge", "payment_intent": "pi_1",
+        "refunded": true, "amount_refunded": 50_000,
+        "metadata": { "granite_payment": id },
+    });
+    webhook(&server, "charge.refunded", ACCOUNT, own).await;
+    assert_eq!(status_of(&pool, id).await, "refunded");
 }
 
 #[test_db::test(seed)]
@@ -1769,4 +1812,204 @@ async fn the_customer_sees_what_they_paid_and_owe(pool: MySqlPool) {
         (&last["project_key"], &last["project_name"]),
         (&json!("deal-8002"), &json!("Erin countertops"))
     );
+}
+
+// ---- the company's switch
+
+#[test_db::test(seed)]
+async fn a_company_that_is_not_turned_on_sets_nothing_up(pool: MySqlPool) {
+    let (server, stripe) = connected_server(&pool).await;
+    // A link made while payments were on.
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    sqlx::query("UPDATE company SET customer_payments_enabled = 0 WHERE id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let settings = server
+        .get("/v1/company/payment-settings")
+        .with_session(sessions::ADMIN)
+        .await;
+    settings.assert_status_ok();
+    assert_eq!(settings.json::<Value>()["enabled"], false);
+    let refused = "Customer payments are not turned on for this company";
+    let fees = server
+        .put("/v1/company/payment-settings")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "card_customer_share_bps": 0, "ach_customer_share_bps": 40 }))
+        .await;
+    fees.assert_status(StatusCode::FORBIDDEN);
+    assert_eq!(fees.json::<Value>()["error"], refused);
+    server
+        .post("/v1/company/payment-settings/bank-account")
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    let made = server
+        .post("/v1/customers/1000/payments")
+        .with_session(sessions::REP)
+        .json(&json!({ "project_key": "deal-8000", "method": "card", "amount_cents": 1_000 }))
+        .await;
+    made.assert_status(StatusCode::FORBIDDEN);
+    assert_eq!(made.json::<Value>()["error"], refused);
+    assert_eq!(stripe.lock().unwrap().count("POST", "/v2/core/accounts"), 0);
+
+    // The customer's money must not be stuck: the old link is still paid.
+    server
+        .get(&format!("/v1/public/pay/{id}"))
+        .await
+        .assert_status_ok();
+    server
+        .post(&format!("/v1/public/pay/{id}/checkout"))
+        .await
+        .assert_status_ok();
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "paid", "pi_1"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, id).await, "paid");
+}
+
+// ---- a webhook that never came
+
+/// Lets Stripe be asked again about `id` at once.
+async fn forget_the_check(pool: &MySqlPool, id: &str) {
+    sqlx::query(
+        "UPDATE customer_payments
+            SET stripe_checked_at = UTC_TIMESTAMP() - INTERVAL 1 HOUR WHERE public_id = ?",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test_db::test(seed)]
+async fn the_page_asks_stripe_when_the_webhook_did_not_come(pool: MySqlPool) {
+    let (server, stripe) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    let page = format!("/v1/public/pay/{id}");
+    let asked = |stripe: &Shared| stripe.lock().unwrap().count("GET", "/v1/checkout/sessions/{id}");
+
+    // Before the customer went to Stripe there is nothing to ask about.
+    assert_eq!(server.get(&page).await.json::<Value>()["status"], "created");
+    assert_eq!(asked(&stripe), 0);
+
+    server
+        .post(&format!("{page}/checkout"))
+        .await
+        .assert_status_ok();
+    // Stripe's page is open and unpaid: asked once, then not for a minute.
+    assert_eq!(server.get(&page).await.json::<Value>()["status"], "created");
+    assert_eq!(server.get(&page).await.json::<Value>()["status"], "created");
+    assert_eq!(asked(&stripe), 1);
+
+    // The customer paid and no webhook came.
+    {
+        let mut stripe = stripe.lock().unwrap();
+        let session = stripe.sessions.get_mut("cs_1").unwrap();
+        session["status"] = json!("complete");
+        session["payment_status"] = json!("paid");
+        session["payment_intent"] = json!("pi_1");
+    }
+    // Within the minute the page still shows what is kept.
+    assert_eq!(server.get(&page).await.json::<Value>()["status"], "created");
+    forget_the_check(&pool, id).await;
+    assert_eq!(server.get(&page).await.json::<Value>()["status"], "paid");
+    let intent: String = sqlx::query_scalar(
+        "SELECT stripe_payment_intent_id FROM customer_payments WHERE public_id = ?",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(intent, "pi_1");
+    // The company heard, once: the webhook coming late adds nothing, and a
+    // paid payment is not asked about again.
+    let heard = bell(&pool).await.len();
+    assert_eq!(heard, 2);
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "paid", "pi_1"),
+    )
+    .await;
+    assert_eq!(bell(&pool).await.len(), heard);
+    let before = asked(&stripe);
+    forget_the_check(&pool, id).await;
+    server.get(&page).await.assert_status_ok();
+    assert_eq!(asked(&stripe), before);
+}
+
+#[test_db::test(seed)]
+async fn the_list_asks_stripe_about_a_transfer_on_its_way(pool: MySqlPool) {
+    let (server, stripe) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "ach", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    server
+        .post(&format!("/v1/public/pay/{id}/checkout"))
+        .await
+        .assert_status_ok();
+    let set = |status: &str, error: Value| {
+        let mut stripe = stripe.lock().unwrap();
+        let session = stripe.sessions.get_mut("cs_1").unwrap();
+        session["status"] = json!("complete");
+        session["payment_status"] = json!("unpaid");
+        session["payment_intent"] = json!("pi_1");
+        stripe.intents.insert(
+            "pi_1".into(),
+            json!({ "id": "pi_1", "status": status, "last_payment_error": error }),
+        );
+    };
+    let listed = || async {
+        let list = server
+            .get("/v1/customers/1000/payments")
+            .with_session(sessions::REP)
+            .await;
+        list.assert_status_ok();
+        list.json::<Value>()[0]["status"].clone()
+    };
+
+    // The transfer started and no webhook came.
+    set("processing", Value::Null);
+    assert_eq!(listed().await, "pending");
+    assert_eq!(bell(&pool).await.last().unwrap().1, "payment_pending");
+    // It bounced: asked again only after a while.
+    set(
+        "requires_payment_method",
+        json!({ "code": "payment_intent_payment_attempt_failed",
+                "decline_code": "insufficient_funds", "message": "Insufficient funds." }),
+    );
+    assert_eq!(listed().await, "pending");
+    forget_the_check(&pool, id).await;
+    assert_eq!(listed().await, "failed");
+    let reason: Option<String> =
+        sqlx::query_scalar("SELECT failure_reason FROM customer_payments WHERE public_id = ?")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(reason.as_deref(), Some("insufficient funds"));
+}
+
+#[test_db::test(seed)]
+async fn stripe_not_answering_leaves_the_page_as_it_is(pool: MySqlPool) {
+    let (server, stripe) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    server
+        .post(&format!("/v1/public/pay/{id}/checkout"))
+        .await
+        .assert_status_ok();
+    // Stripe no longer knows the session (its answer is an error).
+    stripe.lock().unwrap().sessions.clear();
+    let page = server.get(&format!("/v1/public/pay/{id}")).await;
+    page.assert_status_ok();
+    assert_eq!(page.json::<Value>()["status"], "created");
 }
