@@ -411,6 +411,62 @@ pub async fn order_stages(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Rename a stage
+///
+/// Renames a stage of one of the company's pipelines. Deals stay in it.
+#[crate::openapi::path(
+    patch,
+    path = "/v1/deal-stages/{id}",
+    operation_id = "rename_deal_stage",
+    tag = "deals",
+    params(("id" = i32, Path, description = "List id")),
+    request_body = NameInput,
+    responses(
+        (status = 204, description = "Renamed"),
+        (status = 400, description = "Empty name, or another list of the group has it", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 404, description = "No such stage of the company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn rename_stage(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(id): Path<i32>,
+    JsonBody(input): JsonBody<NameInput>,
+) -> ApiResult<StatusCode> {
+    let name = clean_name(&input)?;
+    let group: Option<i32> =
+        sqlx::query_scalar("SELECT group_id FROM deals_list WHERE id = ? AND deleted_at IS NULL")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await?;
+    let group = group.ok_or(ApiError::NotFound)?;
+    check_group(&state.pool, user.company_id, group).await?;
+    let taken: Option<i64> = sqlx::query_scalar(
+        "SELECT CAST(id AS SIGNED) FROM deals_list
+         WHERE group_id = ? AND name = ? AND id <> ? AND deleted_at IS NULL LIMIT 1",
+    )
+    .bind(group)
+    .bind(&name)
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await?;
+    if taken.is_some() {
+        return Err(ApiError::BadRequest(format!(
+            "A list named {name} already exists in this group"
+        )));
+    }
+    sqlx::query("UPDATE deals_list SET name = ? WHERE id = ?")
+        .bind(name)
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Delete a stage
 ///
 /// Deletes a stage of one of the company's pipelines.
