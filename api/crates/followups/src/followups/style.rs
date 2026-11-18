@@ -148,6 +148,19 @@ pub fn compose_followup_pair_text(subject: Option<&str>, body: &str) -> String {
     }
 }
 
+/// The first name a draft greets: the person in a `Writing to:` line (an
+/// email to someone other than the customer on file, like a spouse), else
+/// the customer's.
+pub fn greeting_first_name(profile: &str) -> Option<String> {
+    if let Some(caps) = re!(r"^Writing to:\s*([^<\n]+?)\s*(?:<|$)", "m").captures(profile) {
+        let first = re!(r"\s+").split(trim(&caps[1])).next().unwrap_or("");
+        if js_len(first) >= 2 {
+            return Some(first.to_string());
+        }
+    }
+    first_name_from_customer_profile(profile)
+}
+
 /// The first word of the profile's `Name:` (two letters or more).
 pub fn first_name_from_customer_profile(profile: &str) -> Option<String> {
     let caps = re!(r"^Name:\s*(.+)$", "m").captures(profile)?;
@@ -480,4 +493,19 @@ pub fn format_style_preference_prompt_block(profile: Option<&FollowupStyleProfil
         "SALESPERSON WRITING PREFERENCES (learned from this user's edits — these override generic style notes above):\n{}",
         lines.join("\n")
     )
+}
+
+#[cfg(test)]
+mod greeting_name_tests {
+    use super::greeting_first_name;
+
+    #[test]
+    fn an_email_to_someone_else_greets_them() {
+        let profile = "Name: Rebekah Robinson\nWriting to: Ryan Robinson <ryan.robinson@x.com>. This email goes to them, not to the customer on file: greet them by their first name (Ryan), never by the customer's name.";
+        assert_eq!(greeting_first_name(profile).as_deref(), Some("Ryan"));
+        assert_eq!(
+            greeting_first_name("Name: Rebekah Robinson\nEmail: joy@x.com").as_deref(),
+            Some("Rebekah")
+        );
+    }
 }

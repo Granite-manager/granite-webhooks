@@ -698,7 +698,25 @@ pub async fn draft(
     request.customer_email = has_email.then(|| email.clone());
     request.preferred_deal_id = input.deal_id;
     let now = chrono::Utc::now();
-    let gathered = gather_followup_context(&state.pool, &request, now).await?;
+    let mut gathered = gather_followup_context(&state.pool, &request, now).await?;
+    // An email to a spouse or contractor greets them, not the customer.
+    if channel == FollowupChannel::Email && has_email {
+        match crate::followups::gather::email_contact_line(
+            &state.pool,
+            user.company_id,
+            gathered.customer_id,
+            &email,
+        )
+        .await
+        {
+            Ok(Some(line)) => {
+                gathered.profile.push('\n');
+                gathered.profile.push_str(&line);
+            }
+            Ok(None) => {}
+            Err(err) => tracing::warn!(error = %err, "AI reply: email contact unavailable"),
+        }
+    }
     let include_instructions =
         input.mode != ReplyMode::Custom || input.include_instructions != Some(false);
     let extras = load_extras(
@@ -787,7 +805,7 @@ pub async fn draft(
     // the rep's own "Hi <first name>," as the typing suggestions do.
     if !conversation_recency(&gathered.timeline, now).is_continuing()
         && let Some(first_name) =
-            crate::followups::style::first_name_from_customer_profile(&gathered.profile)
+            crate::followups::style::greeting_first_name(&gathered.profile)
     {
         let greeting = rep_greeting(&gathered.timeline, &gathered.rep_voice.examples);
         body = with_greeting(&body, &first_name, greeting);
