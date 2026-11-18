@@ -768,6 +768,8 @@ async fn the_page_sends_the_customer_to_stripe_checkout(pool: MySqlPool) {
         assert_eq!(form["payment_method_types[0]"], "us_bank_account");
         assert_eq!(form["wallet_options[link][display]"], "never");
         assert_eq!(form["adaptive_pricing[enabled]"], "false");
+        // The US-cards notice is for card pages only.
+        assert!(!form.contains_key("custom_text[submit][message]"));
         assert_eq!(form["metadata[granite_payment]"], id);
         assert_eq!(form["payment_intent_data[metadata][granite_payment]"], id);
         // Who and what it is for, on the session and on the payment.
@@ -1403,12 +1405,13 @@ async fn two_tabs_at_once_get_one_checkout_page(pool: MySqlPool) {
             "https://checkout.stripe.com/c/pay/cs_1"
         );
     }
+    let stripe = stripe.lock().unwrap();
+    assert_eq!(stripe.count("POST", "/v1/checkout/sessions"), 1);
+    // A card page says which cards are taken, by Stripe's Pay button.
+    let (_, form) = stripe.last("POST", "/v1/checkout/sessions");
     assert_eq!(
-        stripe
-            .lock()
-            .unwrap()
-            .count("POST", "/v1/checkout/sessions"),
-        1
+        form["custom_text[submit][message]"],
+        "We accept cards issued in the United States only."
     );
 }
 

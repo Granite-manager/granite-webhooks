@@ -20,6 +20,8 @@ pub const API_VERSION: &str = "2026-08-26.dahlia";
 const API_V2_VERSION: &str = "2026-10-28.endive";
 /// How old a webhook signature may be (the SDK's default).
 const SIGNATURE_TOLERANCE_SECS: i64 = 300;
+/// What a customer's card Checkout page says by its Pay button.
+pub const US_CARDS_ONLY: &str = "We accept cards issued in the United States only.";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StripeError {
@@ -656,7 +658,7 @@ impl Stripe {
     }
 
     /// A Checkout page on the connected `account` for one payment. It expires
-    /// in 24 hours.
+    /// in 24 hours. A card page says [`US_CARDS_ONLY`].
     pub async fn create_payment_checkout_session(
         &self,
         account: &str,
@@ -700,6 +702,11 @@ impl Stripe {
             ("success_url", checkout.success_url.into()),
             ("cancel_url", checkout.cancel_url.into()),
         ];
+        if checkout.payment_method == "card" {
+            // Only a notice next to Stripe's Pay button: a card issued
+            // elsewhere is not refused, and costs the company 1.5% more.
+            form.push(("custom_text[submit][message]", US_CARDS_ONLY.into()));
+        }
         if checkout.customer_fee_cents > 0 {
             form.extend([
                 ("line_items[1][quantity]", "1".to_string()),
