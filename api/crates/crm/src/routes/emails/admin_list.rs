@@ -2,7 +2,7 @@
 //! narrowed to one user (`sales_rep`). Port of the Remix `admin.emails`
 //! loader.
 
-use super::list::PAGE_SIZE;
+use super::list::{PAGE_SIZE, customer_name_match};
 use super::names::fill_display_names;
 use super::schemas::{EmailFolder, FolderCounts, MailboxPage, MailboxRow};
 use super::sql::{Arg, Sql, client_read_at, list_search};
@@ -161,7 +161,9 @@ pub async fn admin_page(
     search: &str,
 ) -> Result<MailboxPage, sqlx::Error> {
     let company = mailbox.company_id;
-    let search = list_search(search.trim(), None);
+    let search = search.trim();
+    let extra = customer_name_match(pool, company, search).await?;
+    let search = list_search(search, extra);
     let inbox = mailbox.folder == EmailFolder::Inbox;
     let outer = folder_where(mailbox, "e", "s", "r");
     let inner = folder_where(mailbox, "e2", "s2", "r2");

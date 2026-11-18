@@ -33,6 +33,34 @@ async fn customer_addresses(
     .await
 }
 
+/// ` OR ...` matching mail to or from a customer of the company whose name
+/// contains `search` (the shown name, e.g. "GTP Holdings"), aliased `e`.
+/// `None` when the term is empty or no customer's name has it.
+pub(super) async fn customer_name_match(
+    pool: &MySqlPool,
+    company_id: i32,
+    search: &str,
+) -> Result<Option<Sql>, sqlx::Error> {
+    if search.is_empty() {
+        return Ok(None);
+    }
+    let addresses = customer_addresses(pool, company_id, search).await?;
+    if addresses.is_empty() {
+        return Ok(None);
+    }
+    let marks = vec!["?"; addresses.len()].join(",");
+    let mut args: Vec<Arg> = addresses.iter().map(|a| Arg::from(a.clone())).collect();
+    args.extend(addresses.iter().map(|a| Arg::from(a.clone())));
+    Ok(Some(Sql::new(
+        format!(
+            " OR {} IN ({marks}) OR {} IN ({marks})",
+            normalized("e.sender_email"),
+            normalized("e.receiver_email")
+        ),
+        args,
+    )))
+}
+
 fn alias(sql: &str, to: &str) -> String {
     sql.replace("e.", &format!("{to}."))
 }
@@ -53,26 +81,7 @@ pub async fn list_page(
         .trim()
         .to_string();
 
-    let extra = if search.is_empty() {
-        None
-    } else {
-        let addresses = customer_addresses(pool, mailbox.company_id, &search).await?;
-        if addresses.is_empty() {
-            None
-        } else {
-            let marks = vec!["?"; addresses.len()].join(",");
-            let mut args: Vec<Arg> = addresses.iter().map(|a| Arg::from(a.clone())).collect();
-            args.extend(addresses.iter().map(|a| Arg::from(a.clone())));
-            Some(Sql::new(
-                format!(
-                    " OR {} IN ({marks}) OR {} IN ({marks})",
-                    normalized("e.sender_email"),
-                    normalized("e.receiver_email")
-                ),
-                args,
-            ))
-        }
-    };
+    let extra = customer_name_match(pool, mailbox.company_id, &search).await?;
     let search_sql = list_search(&search, extra);
 
     let scope = company_scope("e", mailbox.company_id);
@@ -345,24 +354,7 @@ pub async fn suggestions(
     if scope_kind == SuggestScope::Admin && folder == EmailFolder::Drafts {
         folder = EmailFolder::Inbox;
     }
-    let extra = if scope_kind == SuggestScope::Employee {
-        let addresses = customer_addresses(pool, mailbox.company_id, &term).await?;
-        (!addresses.is_empty()).then(|| {
-            let marks = vec!["?"; addresses.len()].join(",");
-            let mut args: Vec<Arg> = addresses.iter().map(|a| Arg::from(a.clone())).collect();
-            args.extend(addresses.iter().map(|a| Arg::from(a.clone())));
-            Sql::new(
-                format!(
-                    " OR {} IN ({marks}) OR {} IN ({marks})",
-                    normalized("e.sender_email"),
-                    normalized("e.receiver_email")
-                ),
-                args,
-            )
-        })
-    } else {
-        None
-    };
+    let extra = customer_name_match(pool, mailbox.company_id, &term).await?;
     let header = header_match(&term, extra.clone());
     let search = list_search(&term, extra);
     if search.sql.is_empty() {
