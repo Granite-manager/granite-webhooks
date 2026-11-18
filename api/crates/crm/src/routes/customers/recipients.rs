@@ -164,6 +164,35 @@ fn sort_by_rank(list: &mut [Recipient], term: &str) {
     });
 }
 
+/// The typed words, lowercase (at most 5; never empty for a non-empty term).
+fn term_words(term: &str) -> Vec<String> {
+    let words: Vec<String> = term
+        .to_lowercase()
+        .split_whitespace()
+        .take(5)
+        .map(str::to_string)
+        .collect();
+    if words.is_empty() {
+        vec![term.to_lowercase()]
+    } else {
+        words
+    }
+}
+
+/// Every word is in the name, the address or the company.
+fn matches_all_words(recipient: &Recipient, words: &[String]) -> bool {
+    let name = recipient.name.to_lowercase();
+    let email = recipient.email.to_lowercase();
+    let company = recipient
+        .company_name
+        .as_deref()
+        .unwrap_or_default()
+        .to_lowercase();
+    words
+        .iter()
+        .all(|w| name.contains(w) || email.contains(w) || company.contains(w))
+}
+
 fn dedupe(list: Vec<Recipient>) -> Vec<Recipient> {
     let mut seen = HashSet::new();
     list.into_iter()
@@ -249,11 +278,18 @@ pub async fn recipients(
             users,
         }));
     }
-    let like = format!("%{term}%");
-    let prefix = format!("{term}%");
-    let mut customers: Vec<Recipient> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+    // "Ryan R" finds ryan.robinson@… even when the customer is saved under
+    // another name: every typed word must be in the name, address or company.
+    let words = term_words(&term);
+    let prefix = format!("{}%", words[0]);
+    let word_filter = vec![
+        "(c.name LIKE ? OR ce.email LIKE ? OR (c.company_name IS NOT NULL AND c.company_name LIKE ?))";
+        words.len()
+    ]
+    .join(" AND ");
+    let mut search = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{CUSTOMER_ADDRESSES}
-           AND (c.name LIKE ? OR ce.email LIKE ? OR (c.company_name IS NOT NULL AND c.company_name LIKE ?))
+           AND {word_filter}
          ORDER BY owner_rank,
                   CASE WHEN ce.email LIKE ? THEN 0 WHEN c.name LIKE ? THEN 1
                        WHEN c.company_name LIKE ? THEN 2 ELSE 3 END, c.name
@@ -261,15 +297,17 @@ pub async fn recipients(
     )))
     .bind(user.id)
     .bind(user.id)
-    .bind(user.company_id)
-    .bind(&like)
-    .bind(&like)
-    .bind(&like)
-    .bind(&prefix)
-    .bind(&prefix)
-    .bind(&prefix)
-    .fetch_all(pool)
-    .await?;
+    .bind(user.company_id);
+    for word in &words {
+        let like = format!("%{word}%");
+        search = search.bind(like.clone()).bind(like.clone()).bind(like);
+    }
+    let mut customers: Vec<Recipient> = search
+        .bind(&prefix)
+        .bind(&prefix)
+        .bind(&prefix)
+        .fetch_all(pool)
+        .await?;
     let lowered = term.to_lowercase();
     let extra: Vec<Recipient> = match term.find('@') {
         Some(at) if at > 0 && at + 1 < term.len() => {
@@ -302,16 +340,9 @@ pub async fn recipients(
     customers.extend(extra);
     let mut customers: Vec<Recipient> = dedupe(customers)
         .into_iter()
-        .filter(|c| {
-            c.name.to_lowercase().contains(&lowered)
-                || c.email.to_lowercase().contains(&lowered)
-                || c.company_name
-                    .as_deref()
-                    .is_some_and(|n| n.to_lowercase().contains(&lowered))
-                || matches_email_fuzzy(&c.email, &term)
-        })
+        .filter(|c| matches_all_words(c, &words) || matches_email_fuzzy(&c.email, &term))
         .collect();
-    sort_by_rank(&mut customers, &term);
+    sort_by_rank(&mut customers, &words[0]);
     customers.truncate(15);
     Ok(Json(Recipients { customers, users }))
 }
@@ -354,6 +385,17 @@ mod tests {
         let names: Vec<&str> = list.iter().map(|r| r.name.as_str()).collect();
         // Both have a word starting with "pol": by name.
         assert_eq!(names, ["Beverly Pollis", "Polly", "Check-in"]);
+    }
+
+    #[test]
+    fn each_word_matches_name_or_address() {
+        let saved = recipient(
+            "Rebekah Robinson",
+            "ryan.robinson@integratedbenefitpartners.com",
+        );
+        assert!(matches_all_words(&saved, &term_words("Ryan R")));
+        assert!(matches_all_words(&saved, &term_words("rebekah robinson")));
+        assert!(!matches_all_words(&saved, &term_words("Ryan Smith")));
     }
 
     #[test]
