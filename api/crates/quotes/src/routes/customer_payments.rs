@@ -156,15 +156,18 @@ fn is_local_url(url: &str) -> bool {
         .unwrap_or_default();
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     let host = if authority.starts_with('[') {
-        authority.split(']').next().map(|host| &host[1..]).unwrap_or_default()
+        authority
+            .split(']')
+            .next()
+            .map(|host| &host[1..])
+            .unwrap_or_default()
     } else {
         authority.split(':').next().unwrap_or_default()
     };
     host == "localhost" || host.ends_with(".localhost") || host == "127.0.0.1" || host == "::1"
 }
 
-impl CustomerPayments {
-}
+impl CustomerPayments {}
 
 fn stripe_error(error: StripeError) -> ApiError {
     match error {
@@ -985,14 +988,11 @@ async fn catch_up(state: &AppState, payment: &PaymentRow, every_secs: i64) -> sq
     let outcome = match found["status"].as_str() {
         Some("succeeded") => Outcome::Paid,
         Some("processing" | "requires_action") => Outcome::Pending,
-        Some("requires_payment_method" | "canceled")
-            if payment.status() == CustomerPaymentStatus::Pending =>
-        {
-            Outcome::Failed(decline_reason(
-                payment.method(),
-                &found["last_payment_error"],
-            ))
-        }
+        // The transfer bounced, whether or not we heard that it started.
+        Some("requires_payment_method" | "canceled") => Outcome::Failed(decline_reason(
+            payment.method(),
+            &found["last_payment_error"],
+        )),
         _ => return Ok(false),
     };
     settle(pool, id, Some(account), Some(intent), outcome).await
@@ -2391,56 +2391,59 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
                 }
             }
         }
-        // Once per dispute, and never after it closed: Stripe sending the
-        // dispute again after it was won must not dispute the payment anew.
-        "charge.dispute.created" => {
-            if let (Some(payment), Some(dispute)) = (
-                payment_of_charge(state, account, object).await?,
-                object["id"].as_str(),
-            ) {
-                // A dispute of the second charge of a link paid twice is
-                // not about the payment itself: Stripe tells the company.
-                if extra_charge(pool, &payment, account, intent).await?.is_some() {
-                    tracing::warn!(payment = %payment, dispute, "dispute of an extra charge");
-                    return Ok(());
-                }
-                // Only a payment that was made can be disputed: when this
-                // came first, the payment is marked paid here, and the
-                // event that says so changes nothing later.
-                settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
-                settle_once(
-                    pool,
-                    &format!("dispute_created:{dispute}"),
-                    Some(&format!("dispute_closed:{dispute}")),
-                    &payment,
-                    account,
-                    Some(Outcome::Disputed),
-                )
-                .await?;
-            }
-        }
-        "charge.dispute.closed" => {
-            if let (Some(payment), Some(dispute)) = (
-                payment_of_charge(state, account, object).await?,
-                object["id"].as_str(),
-            ) {
-                if extra_charge(pool, &payment, account, intent).await?.is_some() {
-                    return Ok(());
-                }
-                let won = (object["status"] == "won").then_some(Outcome::DisputeWon);
-                settle_once(
-                    pool,
-                    &format!("dispute_closed:{dispute}"),
-                    None,
-                    &payment,
-                    account,
-                    won,
-                )
-                .await?;
-            }
+        "charge.dispute.created" | "charge.dispute.closed" => {
+            dispute_event(state, account, kind, object).await?;
         }
         _ => {}
     }
+    Ok(())
+}
+
+/// A dispute of a charge was opened or closed. Once per dispute, and never
+/// opened after it closed: Stripe sending the dispute again after it was won
+/// must not dispute the payment anew.
+async fn dispute_event(
+    state: &AppState,
+    account: &str,
+    kind: &str,
+    object: &Value,
+) -> sqlx::Result<()> {
+    let pool = &state.pool;
+    let intent = id_of(&object["payment_intent"]);
+    let (Some(payment), Some(dispute)) = (
+        payment_of_charge(state, account, object).await?,
+        object["id"].as_str(),
+    ) else {
+        return Ok(());
+    };
+    // A dispute of the second charge of a link paid twice is not about the
+    // payment itself: Stripe tells the company.
+    if extra_charge(pool, &payment, account, intent)
+        .await?
+        .is_some()
+    {
+        tracing::warn!(payment = %payment, dispute, "dispute of an extra charge");
+        return Ok(());
+    }
+    let closed = format!("dispute_closed:{dispute}");
+    if kind == "charge.dispute.closed" {
+        let won = (object["status"] == "won").then_some(Outcome::DisputeWon);
+        settle_once(pool, &closed, None, &payment, account, won).await?;
+        return Ok(());
+    }
+    // Only a payment that was made can be disputed: when this came first,
+    // the payment is marked paid here, and the event that says so changes
+    // nothing later.
+    settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
+    settle_once(
+        pool,
+        &format!("dispute_created:{dispute}"),
+        Some(&closed),
+        &payment,
+        account,
+        Some(Outcome::Disputed),
+    )
+    .await?;
     Ok(())
 }
 
@@ -2548,6 +2551,11 @@ pub struct ViewJob {
 /// What the customer paid and still owes.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CustomerViewPayments {
+    /// Customer payments are turned on for the company. While false the
+    /// customer's page shows payments only when there are some (links made
+    /// before it was turned off): no balance for a company that takes its
+    /// money another way.
+    pub enabled: bool,
     /// What their jobs cost together (`projects`), in US cents.
     pub total_cents: i64,
     /// What they paid through payment links, less what was refunded.
@@ -2702,7 +2710,9 @@ pub async fn view_payments(
             failure_reason: row.failure_reason,
         })
         .collect();
+    let enabled = settings_row(&state.pool, company_id).await?.enabled;
     Ok(no_store(Json(CustomerViewPayments {
+        enabled,
         total_cents,
         paid_cents,
         pending_cents,
@@ -2791,8 +2801,10 @@ mod tests {
     fn a_decline_reads_in_plain_words() {
         let card = |error: Value| decline_reason(PaymentMethod::Card, &error);
         assert_eq!(
-            card(serde_json::json!({ "code": "card_declined", "decline_code": "insufficient_funds",
-                                     "message": "Your card has insufficient funds." })),
+            card(
+                serde_json::json!({ "code": "card_declined", "decline_code": "insufficient_funds",
+                                     "message": "Your card has insufficient funds." })
+            ),
             "insufficient funds"
         );
         assert_eq!(

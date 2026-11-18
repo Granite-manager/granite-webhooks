@@ -420,14 +420,21 @@ async fn statuses_answer_every_company_like_the_single_checks(pool: MySqlPool) {
                     .json::<Value>()
             }
         };
-        assert_eq!(status["ses_inbound"], single("ses-inbound").await, "company {id}");
+        assert_eq!(
+            status["ses_inbound"],
+            single("ses-inbound").await,
+            "company {id}"
+        );
         assert_eq!(
             status["setup_checklist"],
             single("setup-checklist").await,
             "company {id}"
         );
         let trust = single("domain-trust").await;
-        assert_eq!(status["domain_trust"]["domain"], trust["domain"], "company {id}");
+        assert_eq!(
+            status["domain_trust"]["domain"], trust["domain"],
+            "company {id}"
+        );
         assert_eq!(
             status["domain_trust"]["risk_level"], trust["risk_level"],
             "company {id}"

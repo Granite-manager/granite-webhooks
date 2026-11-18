@@ -90209,6 +90209,7 @@
         "type": "object",
         "description": "What the customer paid and still owes.",
         "required": [
+          "enabled",
           "total_cents",
           "paid_cents",
           "pending_cents",
@@ -90217,6 +90218,10 @@
           "payments"
         ],
         "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Customer payments are turned on for the company. While false the\ncustomer's page shows payments only when there are some (links made\nbefore it was turned off): no balance for a company that takes its\nmoney another way."
+          },
           "total_cents": {
             "type": "integer",
             "format": "int64",

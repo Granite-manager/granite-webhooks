@@ -670,7 +670,10 @@ impl Stripe {
             .flat_map(|(key, value)| {
                 [
                     (format!("metadata[{key}]"), value.clone()),
-                    (format!("payment_intent_data[metadata][{key}]"), value.clone()),
+                    (
+                        format!("payment_intent_data[metadata][{key}]"),
+                        value.clone(),
+                    ),
                 ]
             })
             .collect();

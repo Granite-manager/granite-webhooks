@@ -238,7 +238,8 @@ declined card only notifies (once per Stripe event, kept in
 per link at a time (the row is locked while it is made, and Stripe gets an
 `Idempotency-Key`), so two tabs cannot both pay; a second payment that still
 arrives (another payment intent) is a `payment_duplicate` bell: refund it in
-Stripe. Each dispute disputes a payment once and never after it closed
+Stripe. That refund, or a dispute of that second charge, leaves the payment
+itself as it is (`payment_duplicate_refunded` bell). Each dispute disputes a payment once and never after it closed
 (steps kept in `customer_payment_events`). Demo mode is off unless `APP_URL`
 is localhost and the run is not a real Lambda (`AWS_EXECUTION_ENV`). A partial refund keeps
 the payment `paid` and adds to `refunded_cents`. The Checkout session and its
@@ -250,14 +251,35 @@ and needs notice to Visa and Mastercard first. The customer's own page reads
 `GET /v1/public/customer-view/{company_id}/{view_id}/payments`; its balance
 counts only payments made through links.
 
+Payments are turned on company by company: `company.customer_payments_enabled`
+(off by default; Superuser → Companies, `PUT
+/v1/superuser/companies/{id}/features/customer_payments`). While off, the
+settings, the bank onboarding and new links answer 403 and the CRM and the
+customer's page show nothing; links made before stay payable.
+
+A webhook that never came is caught up with: a waiting payment (`created` or
+`pending`) whose Checkout page was opened is checked with Stripe (`catch_up`:
+its Checkout session, and for a bank transfer its payment intent) from `GET
+/v1/public/pay/{payment_id}` at most once a minute and from `GET
+/v1/customers/{id}/payments` at most once in 5 minutes
+(`customer_payments.stripe_checked_at`). What Stripe says moves the payment
+on as the webhook would; the webhook coming later changes nothing.
+
+A card Checkout page says "We accept cards issued in the United States only."
+(`custom_text[submit][message]`); it is a notice, such cards are not refused.
+
 Env: `STRIPE_SECRET_KEY` (the platform account, with Connect enabled),
 `STRIPE_CONNECT_WEBHOOK_SECRET` (the Connect webhook's own signing secret) and
 `APP_URL` (the links). `CUSTOMER_PAYMENTS_DEMO=1`, for local runs only, never
 calls Stripe: the bank account connects at once, checkout answers no URL and
 the page reports the outcome with `POST /v1/public/pay/{payment_id}/demo`.
-Migration: `20270108090000_customer-payments.sql`. Tested against a fake
-Stripe in `tests/quotes/customer_payments.rs`; not yet run against Stripe's
-test mode (Connect is not enabled on the account).
+Migrations: `20270108090000_customer-payments.sql`,
+`20270108090100_customer-payments-refunds.sql`,
+`20270108090200_customer-payments-switch.sql`. Tested against a fake Stripe
+in `tests/quotes/customer_payments.rs`, and by hand against Stripe's test
+mode (cards, ACH, refunds, disputes, catching up); never in live mode.
+`Stripe::API_VERSION` is pinned: newer versions refuse
+`payment_method_types` on a Checkout session.
 
 ### Uploads and storage
 
