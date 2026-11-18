@@ -2,6 +2,10 @@
 
 /// The app origin for the user's company: `https://{subdomain}.{apex}` when
 /// the company has a subdomain and the app is not on localhost, else `APP_URL`.
+///
+/// The dev site puts its prefix first (`APP_URL=https://dev.{apex}` serves a
+/// company at `https://dev.{subdomain}.{apex}`, see granite-front's
+/// `infra/static-site.yaml`), so there the subdomain goes after `dev.`.
 pub fn app_origin(app_url: &str, subdomain: Option<&str>) -> String {
     let Some(subdomain) = subdomain else {
         return app_url.to_string();
@@ -18,8 +22,14 @@ pub fn app_origin(app_url: &str, subdomain: Option<&str>) -> String {
         return app_url.to_string();
     }
     let apex = host.strip_prefix("www.").unwrap_or(host);
+    if let Some(apex) = apex.strip_prefix(DEV_PREFIX) {
+        return format!("{scheme}://{DEV_PREFIX}{subdomain}.{apex}");
+    }
     format!("{scheme}://{subdomain}.{apex}")
 }
+
+/// The first label of the dev site's hosts.
+const DEV_PREFIX: &str = "dev.";
 
 /// The company's subdomain (lowercase), when it has one.
 pub async fn company_subdomain(
@@ -58,6 +68,27 @@ mod tests {
         assert_eq!(
             app_origin("https://granite-manager.com", None),
             "https://granite-manager.com"
+        );
+    }
+
+    #[test]
+    fn the_dev_site_keeps_its_prefix_first() {
+        assert_eq!(
+            app_origin("https://dev.granite-manager.com", Some("acme")),
+            "https://dev.acme.granite-manager.com"
+        );
+        assert_eq!(
+            app_origin("https://dev.granite-manager.com", None),
+            "https://dev.granite-manager.com"
+        );
+        // A company that is only named like the prefix is not the dev site.
+        assert_eq!(
+            app_origin("https://granite-manager.com", Some("dev")),
+            "https://dev.granite-manager.com"
+        );
+        assert_eq!(
+            app_origin("https://developers.example.com", Some("acme")),
+            "https://acme.developers.example.com"
         );
     }
 }
