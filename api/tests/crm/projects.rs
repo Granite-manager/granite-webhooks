@@ -1445,10 +1445,21 @@ async fn a_project_with_parts_sits_with_its_least_finished_part(pool: MySqlPool)
     assert_eq!(stage().await, "templated");
     // A step is checked off for one part: without a part, the least finished.
     check(json!({ "done": true, "part_id": backsplash })).await;
-    let done = page().await["done_steps"].clone();
-    assert_eq!(done.as_array().unwrap().len(), 2, "{done:?}");
+    // (Each part also left Awaiting Template: Schedule the template is done too.)
+    let checked = || {
+        let page = page.clone();
+        async move {
+            page().await["done_steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["step_id"].as_i64() == Some(step))
+                .count()
+        }
+    };
+    assert_eq!(checked().await, 2);
     check(json!({ "done": false, "part_id": backsplash })).await;
-    assert_eq!(page().await["done_steps"].as_array().unwrap().len(), 1);
+    assert_eq!(checked().await, 1);
 
     // Moved back by hand, one part: its finished template no longer counts.
     act(
@@ -1536,4 +1547,126 @@ async fn a_project_with_parts_sits_with_its_least_finished_part(pool: MySqlPool)
         .await
         .json();
     assert_eq!(left.as_array().unwrap().len(), 3);
+}
+
+#[test_db::test(seed)]
+async fn a_project_that_moves_on_by_itself_checks_off_the_stage_it_left(pool: MySqlPool) {
+    use chrono::Utc;
+    use chrono_tz::America::Indiana::Indianapolis;
+
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let project = projects_of_8002(&pool).await[0];
+    let steps = board(&pool, sessions::ADMIN).await["process_steps"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let schedule = steps
+        .iter()
+        .find(|step| step["name"] == "Schedule the template")
+        .unwrap()["id"]
+        .as_i64()
+        .unwrap();
+    // Rita (100) hears when a project moves on from Awaiting Template.
+    server(pool.clone())
+        .put(&format!("/v1/projects/process-steps/{schedule}/notify"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "user_ids": [100] }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let done = || {
+        let pool = pool.clone();
+        async move {
+            let page: Value = server(pool.clone())
+                .get(&format!("/v1/projects/{project}"))
+                .with_session(sessions::ADMIN)
+                .await
+                .json();
+            page["done_steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|d| (d["step_id"].as_i64().unwrap(), d["done_by"].clone()))
+                .collect::<Vec<_>>()
+        }
+    };
+    let told = || {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (i32, String)>(
+                "SELECT user_id, message FROM notifications
+                  WHERE notification_type = 'project_step_done' ORDER BY id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // Mark (101) makes templates; the template is on the calendar.
+    let today = Utc::now().with_timezone(&Indianapolis).date_naive();
+    run(
+        &pool,
+        "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (9880, 100, 'Templates', 'blue', 'templates');
+         INSERT INTO users_positions (user_id, position_id, company_id) VALUES (101, 11, 100);",
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO events (id, title, start_date, end_date, all_day, unscheduled,
+                             created_user_id, assigned_user_id, calendar_id, project_id)
+         VALUES (9870, 'Template', ?, ?, 1, 0, 102, 101, 9880, ?)",
+    )
+    .bind(today.and_hms_opt(0, 0, 0).unwrap())
+    .bind(today.and_hms_opt(23, 59, 59).unwrap())
+    .bind(project)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // The steps' Auto is set only after the move: an older move doesn't count.
+    run(
+        &pool,
+        "UPDATE project_process_steps SET auto_since = UTC_TIMESTAMP(3) + INTERVAL 1 HOUR
+          WHERE company_id = 100 AND auto_trigger IS NOT NULL",
+    )
+    .await;
+    server(pool.clone())
+        .post("/v1/events/9870/crew-status")
+        .with_session(sessions::MANAGER)
+        .json(&json!({ "status": "completed" }))
+        .await
+        .assert_status_ok();
+    assert_eq!(
+        board(&pool, sessions::ADMIN).await["projects"][0]["stage_code"],
+        "templated"
+    );
+    assert_eq!(done().await, vec![]);
+    assert_eq!(told().await, vec![]);
+
+    // Set before it: Mark's Completed moved it on from Awaiting Template, so
+    // Schedule the template is checked off and Rita is told, once.
+    run(
+        &pool,
+        "UPDATE project_process_steps SET auto_since = UTC_TIMESTAMP(3) - INTERVAL 1 HOUR
+          WHERE company_id = 100 AND auto_trigger IS NOT NULL",
+    )
+    .await;
+    board(&pool, sessions::ADMIN).await;
+    assert_eq!(done().await, vec![(schedule, json!("Auto"))]);
+    board(&pool, sessions::ADMIN).await;
+    assert_eq!(
+        told().await,
+        vec![(100, "Schedule the template".to_string())]
+    );
+
+    // Unchecked by hand, it stays unchecked.
+    server(pool.clone())
+        .put(&format!("/v1/projects/{project}/steps/{schedule}"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "done": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    board(&pool, sessions::ADMIN).await;
+    assert_eq!(done().await, vec![]);
 }

@@ -6,8 +6,13 @@
 //! before it was done, is checked off as "Auto" and its people are told. The
 //! first step without a rule, or whose action hasn't happened, stops the walk.
 //! A step a person unchecked stays unchecked (`project_process_step_auto_off`).
+//!
+//! A project also moves on by itself (the template maker's or installer's
+//! Completed, Fabricated, its installed or paid date): the steps of each stage
+//! it left that wait for the move on are checked off then, as a move by hand
+//! does (`process::tell_moved_on`), when it moved after their rule was set.
 
-use super::access::Stage;
+use super::access::{PROJECT_EVENTS_TABLE, Stage};
 use super::schemas::Project;
 use crate::routes::sms::provider::{SmsProvider, phone10};
 use crate::state::AppState;
@@ -60,16 +65,18 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
-    // `stage_moved` waits for the move itself (`process::tell_moved_on`).
-    let waits = |rule: &Rule| {
-        rule.auto_trigger
-            .as_deref()
-            .is_none_or(|t| t == "stage_moved")
-    };
-    if rules.iter().all(waits) {
+    if rules.iter().all(|rule| rule.auto_trigger.is_none()) {
         return Ok(());
     }
     let ids: Vec<i32> = live.iter().map(|p| p.id).collect();
+    // Done once the project has moved on from the rule's stage.
+    let waits_for_move =
+        |rule: &Rule| rule.auto_moves || rule.auto_trigger.as_deref() == Some("stage_moved");
+    let moves = if rules.iter().any(waits_for_move) {
+        last_moves(&mut conn, &ids).await?
+    } else {
+        Vec::new()
+    };
     let mut sql = QueryBuilder::<MySql>::new(
         "SELECT project_id, part_id, step_id, CAST(done_at AS DATETIME(3)) FROM project_process_steps_done WHERE 1 = 1",
     );
@@ -87,26 +94,88 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     let mut checked: Vec<(i32, i32, i32)> = Vec::new();
     let mut moved: Vec<(i32, i64)> = Vec::new();
 
-    // A project with parts walks each part's stage (part 0: a project without).
-    let mut tracks: Vec<(&Project, i32, &str)> = Vec::new();
+    // A project with parts walks each part's stage (part 0: a project without),
+    // with the stages it goes through (a part's type may skip some).
+    let mut tracks: Vec<(&Project, i32, &str, Vec<Stage>)> = Vec::new();
     for project in live {
         let own: Vec<_> = parts
             .iter()
             .filter(|part| part.project_id == project.id)
             .collect();
         if own.is_empty() {
-            tracks.push((project, 0, project.stage_code.as_str()));
+            tracks.push((project, 0, project.stage_code.as_str(), Stage::ALL.to_vec()));
         }
         for part in own {
+            let uses: Vec<Stage> = Stage::ALL
+                .into_iter()
+                .filter(|stage| match stage {
+                    Stage::New => part.uses_template,
+                    Stage::Templated => part.uses_template || part.uses_fabrication,
+                    Stage::Fabrication => part.uses_fabrication,
+                    Stage::Installed | Stage::Completed => true,
+                })
+                .collect();
             // A part that is not fabricated only waits there for its
             // installation: the fabrication steps are not its own.
-            if part.stage_code == super::access::Stage::Fabrication && !part.uses_fabrication {
+            if part.stage_code == Stage::Fabrication && !part.uses_fabrication {
+                tracks.push((project, part.id, "", uses));
                 continue;
             }
-            tracks.push((project, part.id, part.stage_code.as_str()));
+            tracks.push((project, part.id, part.stage_code.as_str(), uses));
         }
     }
-    for (project, part, stage) in tracks {
+    for (project, part, stage, uses) in tracks {
+        // The stages it has left: their steps that wait for the move on are
+        // done, when it moved after the rule was set (a rule set later is not
+        // applied to old moves).
+        let at_stage = parts
+            .iter()
+            .find(|p| p.id == part)
+            .map_or_else(|| Stage::try_from(stage.to_string()).ok(), |p| Some(p.stage_code));
+        let last_move = moves
+            .iter()
+            .find(|(id, _)| *id == project.id)
+            .and_then(|(_, at)| *at);
+        if let (Some(at_stage), Some(last_move)) = (at_stage, last_move) {
+            for rule in rules.iter().filter(|rule| waits_for_move(rule)) {
+                let Ok(left) = Stage::try_from(rule.stage_code.clone()) else {
+                    continue;
+                };
+                // Completed is seconds only: the same second as the rule counts.
+                let after_rule = rule
+                    .auto_since
+                    .is_some_and(|since| last_move + Duration::seconds(1) > since);
+                if left >= at_stage
+                    || !uses.contains(&left)
+                    || !after_rule
+                    || off.contains(&(project.id, part, rule.id))
+                    || done
+                        .iter()
+                        .any(|(p, d, s, _)| *p == project.id && *d == part && *s == rule.id)
+                {
+                    continue;
+                }
+                let added = sqlx::query(
+                    "INSERT IGNORE INTO project_process_steps_done
+                        (project_id, step_id, part_id, done_by, done_at, auto)
+                     VALUES (?, ?, ?, NULL, ?, 1)",
+                )
+                .bind(project.id)
+                .bind(rule.id)
+                .bind(part)
+                .bind(now)
+                .execute(&mut *conn)
+                .await?
+                .rows_affected();
+                if added > 0 {
+                    super::step_events::apply(&mut conn, None, project.id, rule.id, part).await;
+                    checked.push((project.id, rule.id, part));
+                }
+            }
+        }
+        if stage.is_empty() {
+            continue;
+        }
         let mut before: Option<NaiveDateTime> = None;
         for rule in rules.iter().filter(|rule| rule.stage_code == stage) {
             if let Some((_, _, _, at)) = done
@@ -259,6 +328,35 @@ async fn advance(
 /// When the project started (`created_at`, UTC ISO).
 fn started(project: &Project) -> Option<NaiveDateTime> {
     NaiveDateTime::parse_from_str(&project.created_at, "%Y-%m-%dT%H:%M:%SZ").ok()
+}
+
+/// When each project last moved, by hand or by itself (UTC): its newest stage
+/// history row, a template or installation its crew marked Completed, marked
+/// fabricated, or its installed or paid date. None: it never moved.
+async fn last_moves(
+    conn: &mut MySqlConnection,
+    ids: &[i32],
+) -> sqlx::Result<Vec<(i32, Option<NaiveDateTime>)>> {
+    const NEVER: &str = "TIMESTAMP('1970-01-01')";
+    let mut sql = QueryBuilder::<MySql>::new(format!(
+        "SELECT p.id, CAST(NULLIF(GREATEST(
+                COALESCE((SELECT MAX(h.created_at) FROM project_stage_history h
+                           WHERE h.project_id = p.id), {NEVER}),
+                COALESCE((SELECT MAX(e.completed_at) FROM {PROJECT_EVENTS_TABLE} e
+                            JOIN calendars cal ON cal.id = e.calendar_id
+                                              AND cal.slug IN ('templates', 'installations')
+                           WHERE e.crew_status = 'completed' AND e.deleted_date IS NULL), {NEVER}),
+                COALESCE(p.fabricated_at, {NEVER}),
+                COALESCE((SELECT MAX(pp.fabricated_at) FROM project_parts pp
+                           WHERE pp.project_id = p.id), {NEVER}),
+                COALESCE(s.installed_date, {NEVER}),
+                COALESCE(s.paid_date, {NEVER}),
+                COALESCE(p.qbo_paid_at, {NEVER})), {NEVER}) AS DATETIME(3))
+           FROM projects p LEFT JOIN sales s ON s.id = p.sale_id
+          WHERE 1 = 1"
+    ));
+    crate::sql::push_in(&mut sql, "p.id", ids);
+    sql.build_query_as().fetch_all(&mut *conn).await
 }
 
 /// When the rule's action first happened for the project after `after`.
