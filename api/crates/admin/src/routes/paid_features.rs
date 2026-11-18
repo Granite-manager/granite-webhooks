@@ -76,8 +76,8 @@ pub static METRICS: [Metric; 10] = [
         key: "texts_sent",
         label: "texts sent",
         sql: "SELECT company_id, COUNT(*) FROM telnyx_sms
-               WHERE created_date >= ? AND direction = 'outbound' AND is_echo = 0
-                 AND status <> 'failed'
+               WHERE created_date >= ? AND company_id IS NOT NULL
+                 AND direction = 'outbound' AND is_echo = 0 AND status <> 'failed'
                GROUP BY company_id",
     },
     Metric {

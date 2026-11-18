@@ -72,6 +72,17 @@ async fn lists_seeded_features_and_counts_usage(pool: MySqlPool) {
     .execute(&pool)
     .await
     .unwrap();
+    // Two texts sent by Acme, and one that belongs to no company (the column
+    // allows it): it is left out, it does not break the list.
+    sqlx::query(
+        "INSERT INTO telnyx_sms (recipient, text, direction, status, company_id) VALUES
+           (13175550001, 't1', 'outbound', 'sent', 100),
+           (13175550001, 't2', 'outbound', 'sent', 100),
+           (13175550001, 't3', 'outbound', 'sent', NULL)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let server = server(&pool).await;
     let response = server
         .get("/v1/superuser/paid-features")
@@ -95,6 +106,7 @@ async fn lists_seeded_features_and_counts_usage(pool: MySqlPool) {
     assert_eq!(body["usage_days"], 30);
     assert_eq!(usage(&body, 100, "chat_questions"), Some(2));
     assert_eq!(usage(&body, 101, "chat_questions"), None);
+    assert_eq!(usage(&body, 100, "texts_sent"), Some(2));
     assert_eq!(body["paid"], json!([]));
 }
 
