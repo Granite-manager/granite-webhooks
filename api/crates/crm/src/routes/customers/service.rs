@@ -625,8 +625,20 @@ pub async fn ensure_open_deal(
     company_id: i32,
     sales_rep: i32,
 ) -> Result<i64, sqlx::Error> {
+    ensure_open_deal_in_group(pool, customer_id, company_id, sales_rep, None).await
+}
+
+/// [`ensure_open_deal`], but a new deal starts in the first stage of
+/// `group` (a live pipeline of the company) when it is given.
+pub async fn ensure_open_deal_in_group(
+    pool: &MySqlPool,
+    customer_id: i32,
+    company_id: i32,
+    sales_rep: i32,
+    group: Option<i32>,
+) -> Result<i64, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let deal = open_deal_in(&mut tx, customer_id, company_id, sales_rep).await?;
+    let deal = open_deal_in_group(&mut tx, customer_id, company_id, sales_rep, group).await?;
     tx.commit().await?;
     if let Some(list_id) = deal.new_in_list {
         start_drips(pool, deal.id, list_id).await;
@@ -658,6 +670,18 @@ pub async fn open_deal_in(
     company_id: i32,
     sales_rep: i32,
 ) -> Result<OpenDeal, sqlx::Error> {
+    open_deal_in_group(tx, customer_id, company_id, sales_rep, None).await
+}
+
+/// [`open_deal_in`]; a new deal starts in `group`'s first stage when it is
+/// given, else in the default pipeline's (the oldest one's when none is).
+pub async fn open_deal_in_group(
+    tx: &mut Transaction<'_, MySql>,
+    customer_id: i32,
+    company_id: i32,
+    sales_rep: i32,
+    group: Option<i32>,
+) -> Result<OpenDeal, sqlx::Error> {
     sqlx::query("SELECT id FROM customers WHERE id = ? AND deleted_at IS NULL FOR UPDATE")
         .bind(customer_id)
         .execute(&mut **tx)
@@ -687,10 +711,12 @@ pub async fn open_deal_in(
     let stage: Option<(i32, Option<String>)> = sqlx::query_as(
         "SELECT dl.id, dl.name FROM groups_list g
          JOIN deals_list dl ON dl.group_id = g.id AND dl.deleted_at IS NULL
-         WHERE g.deleted_at IS NULL AND g.company_id = ?
+         WHERE g.deleted_at IS NULL AND g.company_id = ? AND (? IS NULL OR g.id = ?)
          ORDER BY g.is_default DESC, g.id, dl.position LIMIT 1",
     )
     .bind(company_id)
+    .bind(group)
+    .bind(group)
     .fetch_optional(&mut **tx)
     .await?;
     let (list_id, status) = stage.map_or_else(

@@ -73,3 +73,81 @@ async fn a_manager_sees_unassigned_leads_and_the_reps(pool: MySqlPool) {
     assert!(reps[0]["month_leads"].as_i64().unwrap() >= 1);
     assert_eq!(inbox["team"], inbox["reps"]);
 }
+
+// ---- the website's Leads page (Deals › Leads, 2026-11-18) ----------------
+
+#[test_db::test(seed)]
+async fn a_manager_gets_the_lead_details_and_the_pipelines(pool: MySqlPool) {
+    seed_leads(&pool).await;
+    sqlx::query(
+        "UPDATE customers SET your_message = 'Kitchen island, quartz', referral_source = 'Google',
+                address = '1 Main St' WHERE id = 9100",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let res = server(pool)
+        .get("/v1/customers/lead-inbox")
+        .with_session(sessions::MANAGER)
+        .await;
+    res.assert_status(StatusCode::OK);
+    let inbox: Value = res.json();
+    let lead = &inbox["unassigned"][0];
+    assert_eq!(lead["your_message"], "Kitchen island, quartz");
+    assert_eq!(lead["referral_source"], "Google");
+    assert_eq!(lead["address"], "1 Main St");
+    // Company 100's live pipelines, oldest first; 100 "Sales" is the default.
+    let groups = inbox["groups"].as_array().unwrap();
+    let group_ids: Vec<i64> = groups.iter().map(|g| g["id"].as_i64().unwrap()).collect();
+    assert!(group_ids.contains(&100) && group_ids.contains(&104));
+    let sales = groups.iter().find(|g| g["id"] == 100).unwrap();
+    assert_eq!(sales["is_default"], true);
+}
+
+#[test_db::test(seed)]
+async fn a_rep_gets_no_pipelines(pool: MySqlPool) {
+    let res = server(pool)
+        .get("/v1/customers/lead-inbox")
+        .with_session(sessions::REP)
+        .await;
+    res.assert_status(StatusCode::OK);
+    let inbox: Value = res.json();
+    assert_eq!(inbox["groups"], serde_json::json!([]));
+}
+
+#[test_db::test(seed)]
+async fn assigning_with_a_group_starts_the_deal_in_its_first_stage(pool: MySqlPool) {
+    seed_leads(&pool).await;
+    let server = server(pool.clone());
+    server
+        .put("/v1/customers/9100/sales-rep")
+        .with_session(sessions::MANAGER)
+        .json(&serde_json::json!({ "sales_rep": 100, "group_id": 104 }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Pipeline 104 "Remodel" starts with stage 104.
+    let list: i32 = sqlx::query_scalar(
+        "SELECT list_id FROM deals WHERE customer_id = 9100 AND deleted_at IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(list, 104);
+}
+
+#[test_db::test(seed)]
+async fn another_companys_group_is_refused(pool: MySqlPool) {
+    seed_leads(&pool).await;
+    let server = server(pool.clone());
+    server
+        .put("/v1/customers/9100/sales-rep")
+        .with_session(sessions::MANAGER)
+        .json(&serde_json::json!({ "sales_rep": 100, "group_id": 101 }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    let rep: Option<i32> = sqlx::query_scalar("SELECT sales_rep FROM customers WHERE id = 9100")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rep, None);
+}
