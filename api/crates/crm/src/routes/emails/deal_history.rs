@@ -47,6 +47,8 @@ pub struct HistoryEmail {
     #[serde(serialize_with = "js_date")]
     #[schema(value_type = Option<String>, format = DateTime)]
     pub employee_read_at: Option<DateTime<Utc>>,
+    /// Sent by the system (a reminder, an invoice), not typed by a person.
+    pub is_automated: bool,
     /// Some message of the conversation has attachments.
     #[sqlx(skip)]
     pub thread_has_attachments: bool,
@@ -69,7 +71,8 @@ const SELECT: &str =
     "SELECT e.id, CAST(e.deal_id AS SIGNED) AS deal_id, e.thread_id, e.subject, e.body,
     e.sent_at, COUNT(er.message_id) AS read_count,
     (SELECT COUNT(*) FROM email_attachments ea WHERE ea.email_id = e.id) > 0 AS has_attachments,
-    e.sender_user_id, e.sender_email, u_sender.name AS sender_name, e.employee_read_at
+    e.sender_user_id, e.sender_email, u_sender.name AS sender_name, e.employee_read_at,
+    COALESCE(e.is_automated, 0) <> 0 AS is_automated
   FROM emails e
   LEFT JOIN users u_sender ON u_sender.id = e.sender_user_id";
 

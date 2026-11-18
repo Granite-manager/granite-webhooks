@@ -9,13 +9,20 @@ use crate::followups::dates::parse_iso;
 use crate::followups::greeting::describe_ago;
 use crate::followups::js::{js_len, js_slice, trim};
 use crate::quote_pricing::doc::QuoteDoc;
+use crate::quote_pricing::pricing::{AreaPrice, OptionPrice, price_quote};
+use crate::quote_pricing::{load_company_quote, price_list_without_saving};
+use crate::routes::ai::compose_catalog::format_price_list;
 use chrono::{DateTime, Utc};
+use lambda_http::tracing;
 use serde::Deserialize;
 use sqlx::MySqlPool;
+use std::collections::HashMap;
 
 const MAX_QUOTES: i64 = 5;
 const MAX_OPTIONS_PER_QUOTE: usize = 6;
-const MAX_QUOTES_CHARS: usize = 3_500;
+const MAX_QUOTES_CHARS: usize = 9_000;
+/// The price list of the customer's quote, after the quotes.
+const MAX_PRICE_LIST_CHARS: usize = 5_000;
 
 /// One of the customer's quotes, as the prompt needs it.
 #[derive(Debug, Clone, Default, sqlx::FromRow)]
@@ -187,6 +194,140 @@ fn dated(at: &str, now: DateTime<Utc>) -> String {
     )
 }
 
+/// Each sent quote's prices line by line, and the price list of the first
+/// one (what changing an edge or adding an item costs this customer).
+#[derive(Debug, Default)]
+pub struct QuotePrices {
+    /// By quote id: per color option, the lines the quote shows.
+    pub options: HashMap<i32, Vec<Vec<String>>>,
+    /// The PRICE LIST block of the first sent quote (empty: none).
+    pub price_list: String,
+}
+
+/// "Kitchen: 45.2 sq ft Quartz Viraldi $2,938.00; …" with the lines the customer sees.
+fn area_line(area: &AreaPrice) -> Option<String> {
+    let lines: Vec<String> = area
+        .lines
+        .iter()
+        .filter(|line| !line.flags.hidden)
+        .map(|line| {
+            let description = trim(&line.description);
+            if line.missing {
+                format!("{description} (price missing)")
+            } else {
+                format!("{description} {}", format_money(line.total))
+            }
+        })
+        .collect();
+    if lines.is_empty() {
+        return None;
+    }
+    let quantity = if area.quantity > 1.0 {
+        format!(" (x{})", area.quantity)
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "    {}{quantity}: {}",
+        trim(&area.name),
+        lines.join("; ")
+    ))
+}
+
+/// One option's priced lines, area by area, then discount, tax and total.
+fn priced_option_lines(option: &OptionPrice) -> Vec<String> {
+    let mut lines: Vec<String> = option
+        .areas
+        .iter()
+        .chain(std::iter::once(&option.other))
+        .filter_map(area_line)
+        .collect();
+    let mut sums = Vec::new();
+    if option.discount.abs() >= 0.005 {
+        sums.push(format!("discount -{}", format_money(option.discount.abs())));
+    }
+    if option.tax.abs() >= 0.005 {
+        sums.push(format!("tax {}", format_money(option.tax)));
+    }
+    sums.push(format!("total {}", format_money(option.total)));
+    lines.push(format!("    {}", sums.join(" · ")));
+    lines
+}
+
+/// The name of a company's price list.
+async fn price_list_name(pool: &MySqlPool, id: Option<i32>, company_id: i32) -> Option<String> {
+    sqlx::query_scalar("SELECT name FROM price_lists WHERE id = ? AND company_id = ?")
+        .bind(id?)
+        .bind(company_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Prices every sent quote as the quote page does (nothing is saved). Best
+/// effort: a quote that fails to price just has no price lines.
+pub async fn load_quote_prices(
+    pool: &MySqlPool,
+    company_id: i32,
+    quotes: &[QuoteRow],
+) -> QuotePrices {
+    let mut prices = QuotePrices::default();
+    // The newest three sent quotes: each one priced is a few queries.
+    for row in quotes.iter().filter(|q| q.current_revision > 0).take(3) {
+        let Some(doc) = row
+            .drawing
+            .as_deref()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+            .and_then(|value| QuoteDoc::parse(&value))
+        else {
+            continue;
+        };
+        let quote = match load_company_quote(pool, row.id, company_id).await {
+            Ok(Some(quote)) => quote,
+            Ok(None) => continue,
+            Err(err) => {
+                tracing::warn!(error = %err, quote_id = row.id, "AI drafts: quote unavailable");
+                continue;
+            }
+        };
+        let price_list = match price_list_without_saving(pool, &quote).await {
+            Ok(list) => list,
+            Err(err) => {
+                tracing::warn!(error = %err, quote_id = row.id, "AI drafts: quote prices unavailable");
+                continue;
+            }
+        };
+        let options = price_quote(&doc, &price_list, quote.options());
+        prices.options.insert(
+            row.id,
+            options
+                .iter()
+                .take(MAX_OPTIONS_PER_QUOTE)
+                .map(priced_option_lines)
+                .collect(),
+        );
+        let items = format_price_list(&price_list);
+        if prices.price_list.is_empty() && !trim(&items).is_empty() {
+            let name = price_list_name(pool, quote.price_list_id, company_id)
+                .await
+                .map(|n| format!(" \"{}\"", trim(&n)))
+                .unwrap_or_default();
+            let block = format!(
+                "PRICE LIST{name} of quote #{} (what this customer pays to change or add an edge, cutout or item; an item's price is a line of its own, on top of the edge profile's price):\n{}",
+                row.id,
+                trim(&items)
+            );
+            prices.price_list = if js_len(&block) > MAX_PRICE_LIST_CHARS {
+                format!("{}…", js_slice(&block, 0, MAX_PRICE_LIST_CHARS))
+            } else {
+                block
+            };
+        }
+    }
+    prices
+}
+
 /// When the newest of the quotes was last emailed to the customer.
 pub fn last_quote_emailed(quotes: &[QuoteRow]) -> Option<DateTime<Utc>> {
     quotes
@@ -200,6 +341,17 @@ pub fn format_quotes(
     quotes: &[QuoteRow],
     focus_deal_id: Option<i64>,
     now: DateTime<Utc>,
+) -> String {
+    format_priced_quotes(quotes, focus_deal_id, now, &QuotePrices::default())
+}
+
+/// [`format_quotes`] with each sent quote's lines and prices under its
+/// options, and the first one's price list after the quotes.
+pub fn format_priced_quotes(
+    quotes: &[QuoteRow],
+    focus_deal_id: Option<i64>,
+    now: DateTime<Utc>,
+    prices: &QuotePrices,
 ) -> String {
     let mut blocks: Vec<String> = Vec::new();
     for quote in quotes {
@@ -245,7 +397,14 @@ pub fn format_quotes(
             if !areas.is_empty() {
                 lines.push(format!("  Areas: {}", areas.join(", ")));
             }
-            lines.extend(option_lines(doc, &totals, accepted));
+            let option_prices = prices.options.get(&quote.id);
+            for (index, line) in option_lines(doc, &totals, accepted).into_iter().enumerate() {
+                lines.push(line);
+                if let Some(option) = option_prices.and_then(|p| p.get(index)) {
+                    lines.push("    Lines and prices the customer sees:".into());
+                    lines.extend(option.iter().cloned());
+                }
+            }
         }
         if quote.current_revision == 0 {
             lines.push(
@@ -292,10 +451,15 @@ pub fn format_quotes(
         blocks.push(lines.join("\n"));
     }
     let text = blocks.join("\n");
-    if js_len(&text) > MAX_QUOTES_CHARS {
+    let text = if js_len(&text) > MAX_QUOTES_CHARS {
         format!("{}…", js_slice(&text, 0, MAX_QUOTES_CHARS))
     } else {
         text
+    };
+    if text.is_empty() || prices.price_list.is_empty() {
+        text
+    } else {
+        format!("{text}\n\n{}", prices.price_list)
     }
 }
 

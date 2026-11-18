@@ -300,13 +300,15 @@ async fn an_installation_done_yesterday_is_in_the_profile(pool: MySqlPool) {
         .await
         .unwrap();
     assert!(
-        g.profile.contains("Installation: scheduled for 2026-10-20 13:00 UTC\n"),
+        g.profile.contains(
+            "- Installations \"Alice island\": Tue Oct 20, 2026, 9:00 AM – 11:00 AM; scheduled\n"
+        ),
         "{}",
         g.profile
     );
     assert!(
         g.profile.contains(
-            "Installation: completed 2026-10-12 16:30 UTC (yesterday). It was just installed:"
+            "- Installations \"Alice install\": Mon Oct 12, 2026, 9:00 AM – 1:00 PM; completed (yesterday). It was just installed:"
         ),
         "{}",
         g.profile
