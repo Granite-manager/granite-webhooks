@@ -362,7 +362,8 @@ pub async fn get(
     .await?;
     let mut files: Vec<ProjectFile> = sqlx::query_as(
         "SELECT id, name, url, content_type, created_by,
-                DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at
+                DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at,
+                step_id, NULLIF(part_id, 0) AS part_id
            FROM project_files
           WHERE project_id = ? AND company_id = ? AND deleted_at IS NULL ORDER BY id DESC",
     )
@@ -515,6 +516,7 @@ pub async fn get(
     let part_types = super::parts::part_types(&mut conn, company).await?;
     let step_owners = super::lists::step_owners(&mut conn, &project, &process_steps).await?;
     let step_items_done = super::lists::step_items_done(&mut conn, id).await?;
+    let step_notes = super::lists::step_notes(&mut conn, id).await?;
     let lists = super::lists::company_lists(&mut conn, company).await?;
     let questions = super::questions::project_questions(&mut conn, id, viewer.user_id).await?;
     let involved = super::lists::involved(&mut conn, &project, &step_owners).await?;
@@ -540,6 +542,7 @@ pub async fn get(
         user_id: viewer.user_id,
         step_owners,
         step_items_done,
+        step_notes,
         lists,
         questions,
         involved,

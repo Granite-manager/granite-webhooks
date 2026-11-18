@@ -209,6 +209,31 @@ pub struct StepItemDone {
     pub done_at: String,
 }
 
+/// A step's note on a project (optional, like its files).
+#[derive(Debug, Clone, Serialize, FromRow, ToSchema)]
+pub struct StepNote {
+    /// The step.
+    pub step_id: i32,
+    /// The part; null on a project without parts.
+    pub part_id: Option<i32>,
+    /// The text.
+    pub note: String,
+    /// Who wrote it last.
+    pub updated_by: Option<String>,
+    /// When, UTC ISO.
+    pub updated_at: String,
+}
+
+/// Body of `PUT /v1/projects/{id}/steps/{step_id}/note`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct StepNoteInput {
+    /// Up to 5,000 characters; empty removes the note.
+    pub note: String,
+    /// The part, on a project with parts; left out: its least finished part.
+    #[serde(default)]
+    pub part_id: Option<i32>,
+}
+
 /// Body of `PUT /v1/projects/{id}/steps/{step_id}/owner`.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct StepOwnerInput {
@@ -563,6 +588,10 @@ pub struct ProjectFile {
     pub created_by: i32,
     /// When it was made, UTC ISO.
     pub created_at: String,
+    /// The step it was added on; null for one added to the project itself.
+    pub step_id: Option<i32>,
+    /// The part of that step, on a project with parts.
+    pub part_id: Option<i32>,
 }
 
 /// A problem the crew reported on one of the project's jobs (the job card's
@@ -732,6 +761,8 @@ pub struct ProjectWorkspace {
     pub step_owners: Vec<StepOwner>,
     /// Ticks of the steps' own to-do lists on this project.
     pub step_items_done: Vec<StepItemDone>,
+    /// The steps' notes on this project.
+    pub step_notes: Vec<StepNote>,
     /// The company's lists, to fill a new to-do list task.
     pub lists: Vec<ProjectList>,
     /// Its questions the caller can see: theirs first.
@@ -929,4 +960,11 @@ pub struct NewProjectFile {
 pub struct NewProjectFiles {
     /// Its files.
     pub files: Vec<NewProjectFile>,
+    /// Added on this step of the project (they still show with its files).
+    #[serde(default)]
+    pub step_id: Option<i32>,
+    /// The part of that step, on a project with parts; left out: its least
+    /// finished part.
+    #[serde(default)]
+    pub part_id: Option<i32>,
 }

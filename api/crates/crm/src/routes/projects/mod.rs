@@ -25,6 +25,7 @@
 //! - `PUT    /v1/projects/process-steps/{step_id}/setup` → who does a step, its due days and own list (admins)
 //! - `PUT    /v1/projects/{id}/steps/{step_id}/owner` → pick who does a step on one project
 //! - `PUT    /v1/projects/{id}/step-items/{item_id}` → tick a step's list item
+//! - `PUT    /v1/projects/{id}/steps/{step_id}/note` → a step's optional note (its files: `POST .../files` with `step_id`)
 //! - `/v1/projects/{id}/questions[/{question_id}[/messages]]` → questions to chosen people (POST, GET, PUT)
 //!
 //! Who sees what is in [`access`].
@@ -92,6 +93,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(lists::set_step_setup))
         .routes(routes!(lists::set_step_owner))
         .routes(routes!(lists::set_step_item_done))
+        .routes(routes!(lists::set_step_note))
         .routes(routes!(questions::ask))
         .routes(routes!(questions::get, questions::change))
         .routes(routes!(questions::reply))
