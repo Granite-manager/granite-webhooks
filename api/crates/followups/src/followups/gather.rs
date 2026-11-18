@@ -31,6 +31,7 @@ use super::style::{FollowupStyleProfile, parse_followup_style_profile};
 use super::timeline::Direction;
 use crate::re;
 use chrono::NaiveDateTime;
+use std::collections::HashMap;
 use sqlx::MySqlPool;
 
 const MAX_SMS: usize = 1000;
@@ -380,11 +381,11 @@ async fn load_customer_profile(
         }
     }
 
-    // Best effort: without them the AI just doesn't know about the install.
-    match installation_lines(pool, customer_id, company_id, clock).await {
+    // Best effort: without them the AI just doesn't know the appointments.
+    match schedule_lines(pool, customer_id, company_id, clock).await {
         Ok(found) => lines.extend(found),
         Err(err) => {
-            lambda_http::tracing::warn!(?err, customer_id, "follow-up installations unavailable");
+            lambda_http::tracing::warn!(?err, customer_id, "follow-up schedule unavailable");
         }
     }
 
@@ -411,12 +412,19 @@ async fn load_customer_profile(
     })
 }
 
-/// One of the customer's installation jobs (the Installations calendar).
-#[derive(Debug, sqlx::FromRow)]
-struct InstallationRow {
-    start_date: NaiveDateTime,
-    crew_status: Option<String>,
-    completed_at: Option<NaiveDateTime>,
+/// One of the customer's calendar events (template, installation, any
+/// calendar), as the drafts read it.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(crate) struct ScheduleRow {
+    pub calendar: String,
+    pub slug: Option<String>,
+    pub title: String,
+    pub start_date: NaiveDateTime,
+    pub end_date: NaiveDateTime,
+    pub all_day: bool,
+    pub unscheduled: bool,
+    pub crew_status: Option<String>,
+    pub completed_at: Option<NaiveDateTime>,
 }
 
 /// How long ago, for a person: "today", "yesterday", "3 days ago".
@@ -431,58 +439,102 @@ fn days_ago(at: NaiveDateTime, now: Instant) -> String {
     }
 }
 
-/// The profile line of one installation job (times UTC): done (the crew
-/// tapped Completed), booked ahead, or past without a Completed. A job done
-/// in the last two days carries the hint the drafts act on: the first
-/// message since may ask how it went.
-pub(crate) fn installation_line(
-    start: NaiveDateTime,
-    crew_status: Option<&str>,
-    completed_at: Option<NaiveDateTime>,
-    now: Instant,
-) -> String {
-    if crew_status == Some("completed") {
-        let done = completed_at.unwrap_or(start);
-        let mut line = format!(
-            "Installation: completed {} UTC ({})",
-            format_db_time(done),
-            days_ago(done, now)
+/// A stored (UTC) time on the store's clock: "Wed Nov 18, 2026, 9:30 AM".
+fn store_day(at: NaiveDateTime) -> chrono::DateTime<chrono_tz::Tz> {
+    at.and_utc()
+        .with_timezone(&chrono_tz::America::Indiana::Indianapolis)
+}
+
+/// When the event is, in store time: "Wed Nov 18, 2026, 9:30 AM – 11:30 AM",
+/// "Mon Nov 23, 2026 (all day)", "Wed Nov 11 – Fri Nov 13, 2026 (all day)".
+fn event_when(row: &ScheduleRow) -> String {
+    let start = store_day(row.start_date);
+    let end = store_day(row.end_date.max(row.start_date));
+    if row.all_day {
+        // An all-day event ends at 23:59:59 of its last day (or at midnight after it).
+        let last = if end.time() == chrono::NaiveTime::MIN && end.date_naive() > start.date_naive() {
+            end.date_naive().pred_opt().unwrap_or_else(|| end.date_naive())
+        } else {
+            end.date_naive()
+        };
+        if last > start.date_naive() {
+            return format!(
+                "{} – {} (all day)",
+                start.format("%a %b %-d"),
+                last.format("%a %b %-d, %Y")
+            );
+        }
+        return format!("{} (all day)", start.format("%a %b %-d, %Y"));
+    }
+    if end.date_naive() == start.date_naive() && end > start {
+        return format!(
+            "{} – {}",
+            start.format("%a %b %-d, %Y, %-I:%M %p"),
+            end.format("%-I:%M %p")
         );
-        if (now - done.and_utc()).num_hours() < 48 {
+    }
+    start.format("%a %b %-d, %Y, %-I:%M %p").to_string()
+}
+
+/// The profile line of one calendar event: what it is, when (store time)
+/// and whether it is ahead, done or past. An installation finished in the
+/// last two days carries the hint the drafts act on: the first message since
+/// may ask how it went.
+pub(crate) fn schedule_line(row: &ScheduleRow, now: Instant) -> String {
+    let title = trim(&row.title);
+    let what = if title.is_empty() {
+        trim(&row.calendar).to_string()
+    } else {
+        format!("{} \"{title}\"", trim(&row.calendar))
+    };
+    if row.unscheduled {
+        return format!("- {what}: not scheduled yet (no date or time set)");
+    }
+    let when = event_when(row);
+    if row.crew_status.as_deref() == Some("completed") {
+        let done = row.completed_at.unwrap_or(row.start_date);
+        let mut line = format!("- {what}: {when}; completed ({})", days_ago(done, now));
+        if row.slug.as_deref() == Some("installations") && (now - done.and_utc()).num_hours() < 48
+        {
             line.push_str(
                 ". It was just installed: unless the conversation already covered it, the message may say you hope the installation went well and ask how they like it (or to tell you if anything needs attention).",
             );
         }
         return line;
     }
-    if start.and_utc() > now {
-        return format!("Installation: scheduled for {} UTC", format_db_time(start));
+    let ends = if row.all_day {
+        row.end_date.max(row.start_date)
+    } else {
+        row.start_date
+    };
+    if ends.and_utc() >= now {
+        return format!("- {what}: {when}; scheduled");
     }
-    format!(
-        "Installation: was scheduled for {} UTC ({}); not marked completed",
-        format_db_time(start),
-        days_ago(start, now)
-    )
+    format!("- {what}: {when}; past ({})", days_ago(row.start_date, now))
 }
 
-/// The customer's installation jobs of the last 60 days and the next 60
-/// (newest first, at most three), as profile lines.
-async fn installation_lines(
+/// The customer's appointments on every calendar (template, installation,
+/// cabinets, …): those of the last 60 days, every one ahead and any not
+/// scheduled yet, nearest first (at most 12), as profile lines in date order.
+async fn schedule_lines(
     pool: &MySqlPool,
     customer_id: i32,
     company_id: i32,
     now: Instant,
 ) -> Result<Vec<String>, sqlx::Error> {
-    let rows: Vec<InstallationRow> = sqlx::query_as(
-        "SELECT e.start_date, e.crew_status, e.completed_at
+    let mut rows: Vec<ScheduleRow> = sqlx::query_as(
+        "SELECT cal.name AS calendar, cal.slug, e.title, e.start_date, e.end_date,
+                COALESCE(e.all_day, 0) <> 0 AS all_day, COALESCE(e.unscheduled, 0) <> 0 AS unscheduled,
+                e.crew_status, e.completed_at
            FROM events e
-           JOIN calendars cal ON cal.id = e.calendar_id AND cal.company_id = ?
-            AND cal.slug = 'installations' AND cal.deleted_at IS NULL
+           JOIN calendars cal ON cal.id = e.calendar_id AND cal.company_id = ? AND cal.deleted_at IS NULL
            LEFT JOIN sales s ON s.id = e.sale_id AND s.company_id = cal.company_id
-          WHERE COALESCE(e.customer_id, s.customer_id) = ?
-            AND e.deleted_date IS NULL AND COALESCE(e.unscheduled, 0) = 0
-            AND e.start_date BETWEEN ? - INTERVAL 60 DAY AND ? + INTERVAL 60 DAY
-          ORDER BY e.start_date DESC LIMIT 3",
+           LEFT JOIN quotes q ON q.id = e.quote_id AND q.company_id = cal.company_id
+          WHERE COALESCE(e.customer_id, s.customer_id, q.customer_id) = ?
+            AND e.deleted_date IS NULL
+            AND (COALESCE(e.unscheduled, 0) <> 0 OR e.end_date >= ? - INTERVAL 60 DAY)
+          ORDER BY COALESCE(e.unscheduled, 0), ABS(TIMESTAMPDIFF(MINUTE, ?, e.start_date)), e.id
+          LIMIT 12",
     )
     .bind(company_id)
     .bind(customer_id)
@@ -490,17 +542,15 @@ async fn installation_lines(
     .bind(now.naive_utc())
     .fetch_all(pool)
     .await?;
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            installation_line(
-                row.start_date,
-                row.crew_status.as_deref(),
-                row.completed_at,
-                now,
-            )
-        })
-        .collect())
+    rows.sort_by_key(|row| (row.unscheduled, row.start_date));
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut lines = vec![
+        "Schedule (the customer's appointments; dates and times are the store's local time, use them as written):".to_string(),
+    ];
+    lines.extend(rows.iter().map(|row| schedule_line(row, now)));
+    Ok(lines)
 }
 
 /// Deal notes and activities into the profile, and the holds they set.
@@ -592,6 +642,7 @@ struct SmsRow {
     direction: String,
     created_date: NaiveDateTime,
     sender: Option<String>,
+    is_automated: bool,
 }
 
 /// Both providers' texts with these phones (a company that switched keeps
@@ -626,7 +677,7 @@ async fn load_sms_timeline(
         };
         let sql = format!(
             "SELECT text, CAST(direction AS CHAR) AS direction, CAST(created_date AS DATETIME) AS created_date,
-                    CAST(sender AS CHAR) AS sender
+                    CAST(sender AS CHAR) AS sender, COALESCE(is_automated, 0) <> 0 AS is_automated
                FROM {table}
               WHERE company_id = ? AND status IN ('received', 'sent') AND {}
                 AND ({} IN ({marks}) OR {} IN ({marks}))
@@ -671,9 +722,91 @@ async fn load_sms_timeline(
                 } else {
                     None
                 },
+                automated: row.is_automated,
             }
         })
         .collect())
+}
+
+/// "ryan.robinson" → "Ryan"; "joy1p18" or a bare "ryan" says no name.
+fn name_from_address(email: &str) -> Option<String> {
+    let local = email.split('@').next().unwrap_or("");
+    let first = local.split(['.', '_', '-', '+']).next().unwrap_or("");
+    (first.len() >= 2 && first.chars().all(|c| c.is_ascii_alphabetic()) && first != local).then(
+        || {
+            let mut chars = first.chars();
+            chars.next().map_or_else(String::new, |c| {
+                c.to_uppercase().chain(chars).collect::<String>()
+            })
+        },
+    )
+}
+
+fn first_word(name: &str) -> String {
+    trim(name)
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_lowercase()
+}
+
+/// The `Writing to:` profile line when an email goes to someone other than
+/// the customer on file (a spouse, a contractor on the thread), even when the
+/// rep saved their address on the customer: their name from the mail they
+/// sent ("Ryan Robinson"), else from an address that is not the customer's
+/// ("ryan.robinson@…" is Ryan). None when it is the customer themself.
+pub async fn email_contact_line(
+    pool: &MySqlPool,
+    company_id: i32,
+    customer_id: Option<i32>,
+    email: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let email = trim(email).to_lowercase();
+    if !email.contains('@') {
+        return Ok(None);
+    }
+    let (own, customer_name) = match customer_id {
+        Some(customer_id) => {
+            let own = customer_email_addresses(pool, company_id, customer_id)
+                .await?
+                .iter()
+                .any(|a| trim(a).to_lowercase() == email);
+            let name: Option<String> =
+                sqlx::query_scalar("SELECT name FROM customers WHERE id = ? AND company_id = ?")
+                    .bind(customer_id)
+                    .bind(company_id)
+                    .fetch_optional(pool)
+                    .await?;
+            (own, name.unwrap_or_default())
+        }
+        None => (false, String::new()),
+    };
+    let shown: Option<String> = sqlx::query_scalar(
+        "SELECT TRIM(ep.display_name) FROM email_participants ep
+           JOIN emails e ON e.id = ep.email_id AND e.company_id = ? AND e.deleted_at IS NULL
+          WHERE LOWER(TRIM(ep.email)) = ? AND ep.user_id IS NULL
+            AND TRIM(COALESCE(ep.display_name, '')) NOT IN ('', ep.email)
+            AND ep.display_name NOT LIKE '%@%'
+          ORDER BY ep.id DESC LIMIT 1",
+    )
+    .bind(company_id)
+    .bind(&email)
+    .fetch_optional(pool)
+    .await?;
+    let name = shown
+        .filter(|n| !trim(n).is_empty())
+        .or_else(|| if own { None } else { name_from_address(&email) });
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let first = trim(&name).split_whitespace().next().unwrap_or("").to_string();
+    if first.chars().count() < 2 || first_word(&name) == first_word(&customer_name) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "Writing to: {} <{email}>. This email goes to them, not to the customer on file: greet them by their first name ({first}), never by the customer's name.",
+        trim(&name)
+    )))
 }
 
 async fn customer_email_addresses(
@@ -724,6 +857,12 @@ async fn load_email_timeline(
     let mut history = merge(by_address, by_participant);
     history.truncate(MAX_EMAILS);
     history.reverse();
+    let ids: Vec<i32> = history.iter().map(|email| email.id).collect();
+    // Best effort: without them the AI only misses who got it and what was attached.
+    let details = email_details(pool, &ids).await.unwrap_or_else(|err| {
+        lambda_http::tracing::warn!(?err, "follow-up email recipients unavailable");
+        HashMap::new()
+    });
     Ok(history
         .into_iter()
         .map(|email| FollowupTimelineMessage {
@@ -738,20 +877,82 @@ async fn load_email_timeline(
             },
             text: truncate_text(
                 &format!(
-                    "Subject: {}\n{}",
+                    "Subject: {}\n{}{}",
                     email
                         .subject
                         .as_deref()
                         .filter(|s| !s.is_empty())
                         .unwrap_or("No subject"),
+                    details.get(&email.id).map_or("", String::as_str),
                     strip_html_tags(&email.body)
                 ),
                 MAX_MSG_CHARS,
             ),
             from_email: email.sender_email,
             from_phone: None,
+            automated: email.is_automated,
         })
         .collect())
+}
+
+/// Who each email went to and what it attached ("To: Ann <ann@x.com>\n
+/// Attachments: Invoice-3328.pdf\n"), by email id: the AI sees that an
+/// invoice was already sent, and to whom.
+async fn email_details(
+    pool: &MySqlPool,
+    ids: &[i32],
+) -> Result<HashMap<i32, String>, sqlx::Error> {
+    let mut details: HashMap<i32, String> = HashMap::new();
+    if ids.is_empty() {
+        return Ok(details);
+    }
+    let marks = vec!["?"; ids.len()].join(", ");
+    let sql = format!(
+        "SELECT email_id, CAST(type AS CHAR) AS kind, email, display_name FROM email_participants
+          WHERE email_id IN ({marks}) AND type IN ('to', 'cc') ORDER BY email_id, type DESC, position, id"
+    );
+    let mut query = sqlx::query_as::<_, (i32, String, String, Option<String>)>(sqlx::AssertSqlSafe(sql));
+    for id in ids {
+        query = query.bind(id);
+    }
+    let mut to: HashMap<(i32, String), Vec<String>> = HashMap::new();
+    for (email_id, kind, address, name) in query.fetch_all(pool).await? {
+        let address = trim(&address).to_string();
+        let shown = match name.as_deref().map(trim).filter(|n| !n.is_empty() && *n != address) {
+            Some(name) => format!("{name} <{address}>"),
+            None => address,
+        };
+        to.entry((email_id, kind)).or_default().push(shown);
+    }
+    let sql = format!(
+        "SELECT email_id, filename FROM email_attachments
+          WHERE email_id IN ({marks}) AND COALESCE(is_inline, 0) = 0 ORDER BY email_id, id"
+    );
+    let mut query = sqlx::query_as::<_, (i32, Option<String>)>(sqlx::AssertSqlSafe(sql));
+    for id in ids {
+        query = query.bind(id);
+    }
+    let mut files: HashMap<i32, Vec<String>> = HashMap::new();
+    for (email_id, name) in query.fetch_all(pool).await? {
+        if let Some(name) = name.as_deref().map(trim).filter(|n| !n.is_empty()) {
+            files.entry(email_id).or_default().push(name.to_string());
+        }
+    }
+    for id in ids {
+        let mut parts: Vec<String> = Vec::new();
+        for (kind, label) in [("to", "To"), ("cc", "Cc")] {
+            if let Some(people) = to.get(&(*id, kind.to_string())) {
+                parts.push(format!("{label}: {}\n", people.join(", ")));
+            }
+        }
+        if let Some(names) = files.get(id) {
+            parts.push(format!("Attachments: {}\n", names.join(", ")));
+        }
+        if !parts.is_empty() {
+            details.insert(*id, parts.concat());
+        }
+    }
+    Ok(details)
 }
 
 /// The rep's own templates, then the company's (8 of each kind).
@@ -1237,8 +1438,8 @@ pub async fn gather_timed(
 }
 
 #[cfg(test)]
-mod installation_tests {
-    use super::installation_line;
+mod schedule_tests {
+    use super::{ScheduleRow, schedule_line};
     use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
 
     fn at(day: u32, hour: u32) -> NaiveDateTime {
@@ -1248,37 +1449,82 @@ mod installation_tests {
             .unwrap()
     }
 
+    fn row(calendar: &str, slug: &str, start: NaiveDateTime, end: NaiveDateTime) -> ScheduleRow {
+        ScheduleRow {
+            calendar: calendar.into(),
+            slug: Some(slug.into()),
+            title: format!("{}-Ann Lee", &calendar[..1]),
+            start_date: start,
+            end_date: end,
+            all_day: false,
+            unscheduled: false,
+            crew_status: None,
+            completed_at: None,
+        }
+    }
+
+    fn now() -> chrono::DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 11, 12, 15, 0, 0).unwrap()
+    }
+
     #[test]
     fn a_job_done_yesterday_asks_how_it_went() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 12, 15, 0, 0).unwrap();
-        let line = installation_line(at(11, 9), Some("completed"), Some(at(11, 14)), now);
+        let done = ScheduleRow {
+            crew_status: Some("completed".into()),
+            completed_at: Some(at(11, 19)),
+            ..row("Installations", "installations", at(11, 14), at(11, 20))
+        };
+        let line = schedule_line(&done, now());
         assert!(
             line.starts_with(
-                "Installation: completed 2026-11-11 14:00 UTC (yesterday). It was just installed"
+                "- Installations \"I-Ann Lee\": Wed Nov 11, 2026, 9:00 AM – 3:00 PM; completed (yesterday). It was just installed"
             ),
             "{line}"
         );
     }
 
     #[test]
-    fn an_older_job_is_only_a_fact() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 12, 15, 0, 0).unwrap();
-        assert_eq!(
-            installation_line(at(2, 9), Some("completed"), Some(at(2, 14)), now),
-            "Installation: completed 2026-11-02 14:00 UTC (10 days ago)"
-        );
-    }
-
-    #[test]
-    fn booked_and_unfinished_jobs() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 12, 15, 0, 0).unwrap();
-        assert_eq!(
-            installation_line(at(20, 13), None, None, now),
-            "Installation: scheduled for 2026-11-20 13:00 UTC"
+    fn times_are_store_local_and_all_day_events_are_dates() {
+        // 14:30-16:30 UTC is 9:30-11:30 AM in Indianapolis.
+        let template = row(
+            "Templates",
+            "templates",
+            at(18, 14) + chrono::Duration::minutes(30),
+            at(18, 16) + chrono::Duration::minutes(30),
         );
         assert_eq!(
-            installation_line(at(10, 13), Some("arrived"), None, now),
-            "Installation: was scheduled for 2026-11-10 13:00 UTC (2 days ago); not marked completed"
+            schedule_line(&template, now()),
+            "- Templates \"T-Ann Lee\": Wed Nov 18, 2026, 9:30 AM – 11:30 AM; scheduled"
+        );
+        // All day on Nov 23: stored 05:00 UTC to 04:59:59 UTC the next day.
+        let install = ScheduleRow {
+            all_day: true,
+            ..row(
+                "Installations",
+                "installations",
+                at(23, 5),
+                at(24, 4) + chrono::Duration::seconds(3599),
+            )
+        };
+        assert_eq!(
+            schedule_line(&install, now()),
+            "- Installations \"I-Ann Lee\": Mon Nov 23, 2026 (all day); scheduled"
+        );
+        let cabinets = ScheduleRow {
+            all_day: true,
+            ..row("Cabinets", "cabinets", at(4, 5), at(7, 4) + chrono::Duration::seconds(3599))
+        };
+        assert_eq!(
+            schedule_line(&cabinets, now()),
+            "- Cabinets \"C-Ann Lee\": Wed Nov 4 – Fri Nov 6, 2026 (all day); past (8 days ago)"
+        );
+        let later = ScheduleRow {
+            unscheduled: true,
+            ..row("Cabinets", "cabinets", at(4, 5), at(5, 5))
+        };
+        assert_eq!(
+            schedule_line(&later, now()),
+            "- Cabinets \"C-Ann Lee\": not scheduled yet (no date or time set)"
         );
     }
 }

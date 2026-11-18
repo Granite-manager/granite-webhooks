@@ -87,6 +87,10 @@ pub const TABLES: &[Table] = &[
     export("company_billing_invoices", Company),
     export("company_payment_settings", Company),
     export("company_domain_trust", Company),
+    skip(
+        "company_features",
+        "Granite Manager's own record of which features the company paid for",
+    ),
     skip("company_export_files", "this export's own bookkeeping"),
     skip("company_export_runs", "this export's own bookkeeping"),
     skip("company_exports", "this export's own bookkeeping"),
@@ -328,6 +332,10 @@ pub const TABLES: &[Table] = &[
         ),
     ),
     export("faucets", Parent("faucet_type_id", "faucet_type", "id")),
+    skip(
+        "features",
+        "the app's own list of paid features, the same for every company",
+    ),
     export("follow_ups", Parent("telnyx_call_id", "telnyx_calls", "id")),
     skip(
         "global_feature_flags",

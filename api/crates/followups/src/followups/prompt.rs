@@ -62,6 +62,9 @@ pub struct FollowupTimelineMessage {
     pub from_email: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_phone: Option<String>,
+    /// Sent by the system (a reminder, an "on the way" text), not by the rep.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automated: bool,
 }
 
 impl FollowupTimelineMessage {

@@ -22,7 +22,7 @@ use crate::followups::greeting::{conversation_recency, greeting_instruction};
 use crate::followups::js::{js_len, js_slice, trim};
 use crate::followups::prompt::FollowupTimelineMessage;
 use crate::followups::send_window::FollowupChannel;
-use crate::followups::style::first_name_from_customer_profile;
+use crate::followups::style::greeting_first_name;
 use crate::openapi::ToSchema;
 use crate::routes::ai::compose_catalog::load_catalog;
 use crate::routes::ai::conversation_reply::REPLY_FALLBACK_MODEL;
@@ -69,7 +69,7 @@ Rules:
 - If the draft ends mid-word, finish THAT word first, keeping the letters already typed (no leading space). If it ends after a full word, start with a space.
 - Stay consistent with the conversation and the rep's tone. Never invent prices, dates, or facts not in the context.
 - Name a stone color or a price only when it is in this customer's QUOTES, CUSTOMER / PROJECT INFO, CONVERSATION or DRAFT, or in STONES for a stone named there or one the customer asked for. Never take one from the rep's messages to other customers or from general knowledge, never suggest other stones from STONES unasked, and never list price levels or tiers: stop and let the rep type them.
-- STONES has each displayed stone's material, colors, price per sq ft (and the price quotes charge when it differs), slab size in inches and what is in stock now. PRICE LIST has what a new quote charges for edges, cutouts, fabrication and installation. Use them exactly; a price in this customer's QUOTES wins over both. For a stone priced by the slab with no quote price let the rep type the price; never say we have a sold out stone.
+- STONES has each displayed stone's material, colors, price per sq ft (and the price quotes charge when it differs), slab size in inches and what is in stock now. PRICE LIST has what a new quote charges for edges, cutouts, fabrication, installation and the list's other items. Use them exactly; a price in this customer's QUOTES wins over both. For a stone priced by the slab with no quote price let the rep type the price; never say we have a sold out stone.
 - When the rep is about to share the inventory / stones page, use the exact customer page URL from CUSTOMER / PROJECT INFO.
 - When the rep asks the customer for their measurements or sends them a link to send us their sizes, use the exact Customer quote URL from CUSTOMER / PROJECT INFO.
 - When the message needs the rep's name, the rep's phone number or the company address, use them from SALES REP and COMPANY.
@@ -80,6 +80,9 @@ Rules:
 - Stop once the point is made. Never tack on an extra offer, a promise to follow up or send something, or "let me know if you have any questions" unless the rep's own messages end that way: reps delete these more than anything else.
 - Sound like the rep's notes (HOW … WRITES) and RECENT MESSAGES BY THE REP: their length, wording, greeting, and the name they introduce themselves with (it can differ from SALES REP).
 - If the DRAFT is empty and the customer has not written to us yet, suggest the whole message (1–3 short sentences) built from CUSTOMER / PROJECT INFO: who the rep is and the company (unless already said on this channel), what the customer asked for, and one question that moves the project forward.
+- QUOTES lists each sent quote line by line with the price the customer sees, and the PRICE LIST of their quote: what changing or adding an edge, cutout or item costs them. An edge change costs the edge profile price plus the Edge item price for that edge when the list has one (Eased $0/lin ft but Edge: Eased $100 means it adds $100). Never say something is included or free unless those prices show it.
+- CUSTOMER / PROJECT INFO has the Schedule: every appointment (template, installation, cabinets…) with its date and time in store time. When the customer asks when their template, install or another visit is, answer with that date and time exactly. Not scheduled yet: say so. Never invent a date or time.
+- Each email shows who it went to (To, Cc) and its Attachments. When the rep already emailed something (an invoice, a quote) to anyone in this conversation, say it was sent and to which address; never offer to send it again or say it is attached.
 - When the customer asked something, answer it with the facts in CUSTOMER / PROJECT INFO, QUOTES, STONES and PRICE LIST (the sink, color, edge, price, availability, slab size, what is included). Only when a fact is not there may the rep say they'll check.
 - If nothing useful fits, return an empty string.
 Examples (DRAFT → your output):
@@ -736,7 +739,12 @@ async fn load_context(
             match reply_context::load_quotes(&state.pool, user.company_id, customer_id, deal_id)
                 .await
             {
-                Ok(quotes) => reply_context::format_quotes(&quotes, deal_id, Utc::now()),
+                Ok(quotes) => {
+                    let prices =
+                        reply_context::load_quote_prices(&state.pool, user.company_id, &quotes)
+                            .await;
+                    reply_context::format_priced_quotes(&quotes, deal_id, Utc::now(), &prices)
+                }
                 Err(err) => {
                     tracing::warn!(error = %err, customer_id, "compose: quotes unavailable");
                     String::new()
@@ -746,8 +754,25 @@ async fn load_context(
         None => String::new(),
     };
     let catalog = load_catalog(&state.pool, user.company_id).await;
+    // An email to a spouse or contractor greets them, not the customer.
+    let writing_to = match (thread.channel, thread.customer_email.as_deref()) {
+        (FollowupChannel::Email, Some(email)) => crate::followups::gather::email_contact_line(
+            &state.pool,
+            user.company_id,
+            gathered.customer_id,
+            email,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "compose: email contact unavailable");
+            None
+        })
+        .map(|line| format!("\n{line}"))
+        .unwrap_or_default(),
+        _ => String::new(),
+    };
     let context = ComposeContext {
-        profile: format!("{}\n{quote_page}", gathered.profile),
+        profile: format!("{}\n{quote_page}{writing_to}", gathered.profile),
         timeline: trim_timeline(&gathered.timeline, TIMELINE_MAX_CHARS),
         rep_phone,
         company_name,
@@ -913,7 +938,7 @@ pub async fn autocomplete(
     // ("Hey"/"Hello" when that is how the rep greets).
     if request.draft.is_empty()
         && !conversation_recency(&context.timeline, Utc::now()).is_continuing()
-        && let Some(first_name) = first_name_from_customer_profile(&context.profile)
+        && let Some(first_name) = greeting_first_name(&context.profile)
     {
         let greeting = rep_greeting(&context.timeline, &context.rep_voice);
         completion = with_greeting(&completion, &first_name, greeting);
@@ -1156,6 +1181,7 @@ mod tests {
             text: text.into(),
             from_email: None,
             from_phone: None,
+            automated: false,
         }
     }
 
@@ -1331,6 +1357,7 @@ mod tests {
             text,
             from_email: None,
             from_phone: None,
+            automated: false,
         };
         let kept = trim_timeline(
             &[
@@ -1420,6 +1447,7 @@ mod tests {
             text: "Can you send the price?".into(),
             from_email: None,
             from_phone: None,
+            automated: false,
         };
         let context = ComposeContext {
             profile: String::new(),

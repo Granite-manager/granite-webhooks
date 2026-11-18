@@ -335,6 +335,23 @@ pub async fn pricing_with_stock(
     quote: &Quote,
     stock: &Stock,
 ) -> ApiResult<(Value, Value)> {
+    pricing_from(pool, quote, stock, true).await
+}
+
+/// The prices [`price_list_for_quote`] gives, for a reader that must not
+/// change the quote (the AI drafts): a quote with no price snapshot yet is
+/// priced from its revision without saving one.
+pub async fn price_list_without_saving(pool: &MySqlPool, quote: &Quote) -> ApiResult<Value> {
+    let stock = load_stock(pool, quote.company_id).await?;
+    Ok(pricing_from(pool, quote, &stock, false).await?.0)
+}
+
+async fn pricing_from(
+    pool: &MySqlPool,
+    quote: &Quote,
+    stock: &Stock,
+    save_snapshot: bool,
+) -> ApiResult<(Value, Value)> {
     let snapshot: Option<Value> = sqlx::query_scalar::<_, Option<String>>(
         "SELECT CAST(price_snapshot_json AS CHAR) FROM quotes WHERE id = ?",
     )
@@ -383,11 +400,13 @@ pub async fn pricing_with_stock(
     } else {
         let taken = priced(revision.as_ref());
         // Before the snapshot migration quotes keep pricing live.
-        let _ = sqlx::query("UPDATE quotes SET price_snapshot_json = ? WHERE id = ?")
-            .bind(taken.to_string())
-            .bind(quote.id)
-            .execute(pool)
-            .await;
+        if save_snapshot {
+            let _ = sqlx::query("UPDATE quotes SET price_snapshot_json = ? WHERE id = ?")
+                .bind(taken.to_string())
+                .bind(quote.id)
+                .execute(pool)
+                .await;
+        }
         taken
     };
     Ok(with_quoted_choices(quote, &taken, latest))
