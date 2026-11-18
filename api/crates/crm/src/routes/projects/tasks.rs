@@ -716,6 +716,20 @@ pub async fn attach_files(
     let viewer = Viewer::load(&state.pool, &user).await?;
     let mut conn = state.pool.acquire().await?;
     visible_project(&mut conn, &viewer, id).await?;
+    // Added on a step: tied to it (and its part), still one of the project's files.
+    let step = match body.step_id {
+        Some(step_id) => {
+            super::process::require_step(&mut conn, viewer.company_id, step_id).await?;
+            let parts = super::parts::parts_of(&mut conn, viewer.company_id, &[id]).await?;
+            let part = if parts.is_empty() {
+                None
+            } else {
+                Some(super::parts::target(&parts, body.part_id)?.id)
+            };
+            Some((step_id, part))
+        }
+        None => None,
+    };
     for file in &body.files {
         attach(
             &state.storage,
@@ -735,8 +749,9 @@ pub async fn attach_files(
             .filter(|kind| !kind.is_empty())
             .unwrap_or("application/octet-stream");
         sqlx::query(
-            "INSERT INTO project_files (project_id, company_id, name, url, content_type, created_by)
-             VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO project_files
+                (project_id, company_id, name, url, content_type, created_by, step_id, part_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(id)
         .bind(viewer.company_id)
@@ -744,6 +759,8 @@ pub async fn attach_files(
         .bind(&file.url)
         .bind(clip(content_type, 255))
         .bind(user.id)
+        .bind(step.map(|(step_id, _)| step_id))
+        .bind(step.and_then(|(_, part)| part))
         .execute(&mut *tx)
         .await?;
     }
