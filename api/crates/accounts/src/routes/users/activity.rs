@@ -53,7 +53,8 @@ pub struct ActivityRep {
 pub struct UserActivity {
     /// Id of the row in its source.
     pub id: i64,
-    /// `deal_activity`, `deal_note`, `email`, `cloudtalk_sms`, ...
+    /// `deal_activity`, `deal_note`, `email`, `cloudtalk_sms`,
+    /// `ringcentral_sms`, `telnyx_sms` (a text by provider), ...
     pub source: String,
     /// Who did it, when known.
     pub user_id: Option<i64>,
@@ -611,7 +612,9 @@ async fn sms_rows(
     cutoff: NaiveDate,
 ) -> sqlx::Result<Vec<UserActivity>> {
     let phones = customers_by_phone(pool, company).await?;
-    let part = |table: &str, source: &str, agent: &str| {
+    // CloudTalk and RingCentral name the sender by agent / extension id;
+    // Telnyx (Granite Manager's own texting) stores the sending user's id.
+    let part = |table: &str, source: &str, sender: &str| {
         format!(
             "SELECT CAST(m.id AS SIGNED) AS id, '{source}' AS source, CAST(u.id AS SIGNED) AS user_id,
                     u.name AS user_name,
@@ -621,21 +624,35 @@ async fn sms_rows(
                     LEFT(m.text, {PREVIEW}) AS body,
                     CAST(m.direction AS CHAR) AS direction, CAST(m.status AS CHAR) AS status
                FROM {table} m
-               JOIN users u ON u.{agent} = m.agent
+               JOIN users u ON {sender}
               WHERE u.company_id = ? AND u.is_deleted = 0
                 AND (m.company_id = ? OR m.company_id IS NULL) AND m.created_date >= ?"
         )
     };
     let sql = format!(
-        "{} UNION ALL {} ORDER BY created_at DESC, id DESC",
-        part("cloudtalk_sms", "cloudtalk_sms", "cloudtalk_agent_id"),
+        "{} UNION ALL {} UNION ALL {} ORDER BY created_at DESC, id DESC",
+        part(
+            "cloudtalk_sms",
+            "cloudtalk_sms",
+            "u.cloudtalk_agent_id = m.agent"
+        ),
         part(
             "ringcentral_sms",
             "ringcentral_sms",
-            "ringcentral_extension_id"
+            "u.ringcentral_extension_id = m.agent"
+        ),
+        // Follow-up flow texts carry the rep's id too; only hand-sent ones
+        // are something the rep did.
+        part(
+            "telnyx_sms",
+            "telnyx_sms",
+            "u.id = m.sender_user_id AND m.is_automated = 0"
         ),
     );
     let texts: Vec<SmsRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(company)
+        .bind(company)
+        .bind(cutoff)
         .bind(company)
         .bind(company)
         .bind(cutoff)

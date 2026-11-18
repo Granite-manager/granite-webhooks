@@ -277,9 +277,12 @@ fn push_call_sms_ctes(q: &mut QueryBuilder<MySql>, company_id: i32, window: Wind
         ));
     }
     q.push(" sms_events AS (");
+    // Telnyx texts always carry their sender; they take no agent lookup (a
+    // user id must never be read as another provider's agent id).
     for (index, (table, agents)) in [
-        ("cloudtalk_sms", "sms_cloudtalk_agent_users"),
-        ("ringcentral_sms", "sms_ringcentral_agent_users"),
+        ("cloudtalk_sms", Some("sms_cloudtalk_agent_users")),
+        ("ringcentral_sms", Some("sms_ringcentral_agent_users")),
+        ("telnyx_sms", None),
     ]
     .into_iter()
     .enumerate()
@@ -287,13 +290,22 @@ fn push_call_sms_ctes(q: &mut QueryBuilder<MySql>, company_id: i32, window: Wind
         if index > 0 {
             q.push(" UNION ALL ");
         }
+        let (user, agent_join) = agents.map_or_else(
+            || ("m.sender_user_id".to_string(), String::new()),
+            |agents| {
+                (
+                    "COALESCE(m.sender_user_id, a.user_id)".to_string(),
+                    format!("LEFT JOIN {agents} a ON a.agent = TRIM(m.agent)"),
+                )
+            },
+        );
         q.push(format_args!(
-            "SELECT COALESCE(m.sender_user_id, a.user_id) AS user_id,
+            "SELECT {user} AS user_id,
                     COALESCE(m.recipient10, CONCAT('sms:', m.id)) AS number_key,
                     DATE(m.created_date) AS day, m.created_date AS ts, m.id
                FROM {table} m
                JOIN activity_points_sources src ON src.source = 'sms'
-               LEFT JOIN {agents} a ON a.agent = TRIM(m.agent)
+               {agent_join}
               WHERE m.company_id = "
         ))
         .push_bind(company_id)

@@ -17,6 +17,9 @@
 //! - `PUT /v1/schedule/notifications/on-my-way` → what the customer gets when
 //!   the installer taps On my way, `PUT …/on-my-way/technician` when the
 //!   template technician does (both sent by `send_on_my_way`)
+//! - `PUT /v1/schedule/notifications/scheduling/replies` → the texts the
+//!   customer gets back when AI reads their reply to an auto-confirm text as
+//!   a YES or a NO (sent by `send_answer_reply`)
 //! - `GET /v1/schedule/notifications/active` → the event form's flows. The
 //!   calendar's default flow goes on each of its events unless the event
 //!   turns it off (`event_notification_skips`); the others only go on events
@@ -405,6 +408,25 @@ pub struct NotificationSettings {
     pub on_my_way_technician: OnMyWayMessage,
     /// The AI texts tab's switch and texting hours.
     pub scheduling: SchedulingSettings,
+    /// What the customer gets back after a YES or a NO to an auto-confirm text.
+    pub auto_confirm_replies: AutoConfirmReplies,
+}
+
+/// Admin > Schedule > Auto-confirm: the text the customer gets back once AI
+/// reads their reply to an auto-confirm text. Sent at once (texting hours do
+/// not apply), from the line they texted, only while "Turn the job Confirmed
+/// when the customer replies YES (AI)" is on. Variables such as
+/// `{{appointment.date}}` are filled in for the job.
+#[derive(Debug, Default, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+pub struct AutoConfirmReplies {
+    /// Sent after a clear YES turned the job Confirmed (up to 1600
+    /// characters); null sends nothing.
+    #[serde(default)]
+    pub yes_reply: Option<String>,
+    /// Sent after a NO or a request for another day or time (up to 1600
+    /// characters); null sends nothing.
+    #[serde(default)]
+    pub no_reply: Option<String>,
 }
 
 /// Admin > Schedule > AI texts: what happens after an AI text.
@@ -1307,7 +1329,66 @@ pub async fn list(
         on_my_way: on_my_way_message(pool, user.company_id, Crew::Installer).await?,
         on_my_way_technician: on_my_way_message(pool, user.company_id, Crew::Technician).await?,
         scheduling: scheduling_settings(pool, user.company_id).await?,
+        auto_confirm_replies: auto_confirm_replies(pool, user.company_id).await?,
     }))
+}
+
+async fn auto_confirm_replies(
+    pool: &MySqlPool,
+    company_id: i32,
+) -> Result<AutoConfirmReplies, sqlx::Error> {
+    let saved: Option<AutoConfirmReplies> = sqlx::query_as(
+        "SELECT schedule_yes_reply AS yes_reply, schedule_no_reply AS no_reply
+           FROM company WHERE id = ?",
+    )
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(saved.unwrap_or_default())
+}
+
+/// Save the auto-confirm replies
+///
+/// The texts the customer gets back once AI reads their reply to an
+/// auto-confirm text: `yes_reply` after a clear YES turned the job
+/// Confirmed, `no_reply` after a NO or a request for another day. An empty
+/// text turns that reply off. Read them back with `GET
+/// /v1/schedule/notifications` (`auto_confirm_replies`).
+#[crate::openapi::path(
+    put,
+    path = "/v1/schedule/notifications/scheduling/replies",
+    operation_id = "set_auto_confirm_replies",
+    tag = "schedule",
+    request_body = AutoConfirmReplies,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "A text is over 1600 characters", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_auto_confirm_replies(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    JsonBody(input): JsonBody<AutoConfirmReplies>,
+) -> ApiResult<StatusCode> {
+    let yes = filled(input.yes_reply);
+    let no = filled(input.no_reply);
+    if [&yes, &no]
+        .iter()
+        .any(|text| text.as_ref().is_some_and(|text| text.chars().count() > MAX_SMS))
+    {
+        return Err(bad(&format!("Texts must be {MAX_SMS} characters or less")));
+    }
+    sqlx::query("UPDATE company SET schedule_yes_reply = ?, schedule_no_reply = ? WHERE id = ?")
+        .bind(yes)
+        .bind(no)
+        .bind(user.company_id)
+        .execute(&state.pool)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The company's texting days as 0 (Monday) to 6 (Sunday).
@@ -3851,6 +3932,67 @@ async fn send_followup(
     Ok(true)
 }
 
+/// How AI read the customer's reply to an auto-confirm text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    Yes,
+    No,
+}
+
+/// Texts the customer the company's reply to their YES or NO (Admin >
+/// Schedule > Auto-confirm), at once, from the line they texted. Nothing when
+/// the company left that reply empty. The wait is already settled, so it goes
+/// out at most once (and the idempotency key guards a retried run).
+async fn send_answer_reply(
+    state: &AppState,
+    wait: &Waiting,
+    answer: Answer,
+) -> Result<(), sqlx::Error> {
+    let pool = &state.pool;
+    let replies = auto_confirm_replies(pool, wait.company_id).await?;
+    let (body, word, key) = match answer {
+        Answer::Yes => (replies.yes_reply, "YES", "yes"),
+        Answer::No => (replies.no_reply, "NO", "no"),
+    };
+    let Some(body) = filled(body) else {
+        return Ok(());
+    };
+    let event = appointment(pool, wait.event_id).await?;
+    let Some(customer_id) = event.customer_id else {
+        return Ok(());
+    };
+    let message = Outgoing {
+        company_id: wait.company_id,
+        channel: Channel::Sms,
+        subject: None,
+        body: &body,
+        idempotency_key: Some(format!("schedule-answer-{}-{key}", wait.id)),
+        by_hand: false,
+        awaits_reply: true,
+    };
+    let outcome = match deliver_sent(state, &message, &event, customer_id).await {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::error!(error = %err, answer_id = wait.id, "auto-confirm reply failed");
+            Err("send_error")
+        }
+    };
+    let line = match outcome {
+        Ok(_) => format!("Replied to the customer's {word}"),
+        Err(code) => format!(
+            "Reply to the customer's {word} not sent: {}",
+            failure_text(code).unwrap_or("the text failed to send")
+        ),
+    };
+    let mut history =
+        History::new(wait.event_id, wait.company_id, "updated", Some(AUTOMATED)).message(&line);
+    if let Ok(sent) = &outcome {
+        history = history.body(&sent.content);
+    }
+    record(pool, &history).await;
+    Ok(())
+}
+
 /// Sent once per auto-confirm text when the customer's reply is neither a
 /// clear yes nor a clear no; after it, they text with the company as usual.
 pub const CLARIFY_TEXT: &str = "Thanks for your reply! Just to make sure we got it right: does {{appointment.date}}, {{appointment.time_range}} work for you? Please reply YES to confirm, or NO and we'll find another time.";
@@ -3996,9 +4138,13 @@ pub async fn check_answers(state: &AppState) -> Result<AnswerRun, sqlx::Error> {
             "agreed" => {
                 if mark_confirmed(state, &wait, &evidence).await? {
                     run.ready += 1;
+                    send_answer_reply(state, &wait, Answer::Yes).await?;
                 }
             }
-            "declined" => settle(pool, wait.id, "not_agreed", Some(&evidence)).await?,
+            "declined" => {
+                settle(pool, wait.id, "not_agreed", Some(&evidence)).await?;
+                send_answer_reply(state, &wait, Answer::No).await?;
+            }
             _ => {
                 // Unclear (e.g. "ues"): ask once whether it was a yes or a no.
                 if !wait.clarified {

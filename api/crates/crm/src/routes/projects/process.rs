@@ -40,14 +40,56 @@ fn clean_name(name: &str) -> ApiResult<&str> {
     Ok(name)
 }
 
+/// The step each stage starts with, at its end (the built-in line it
+/// replaced): renamed, moved or deleted as the company likes. Its Auto starts
+/// as `stage_moved`: checked off when the project moves on.
+pub const STAGE_END_STEPS: [(Stage, &str); 4] = [
+    (Stage::New, "Schedule the template"),
+    (Stage::Templated, "Start fabrication"),
+    (Stage::Fabrication, "Schedule the installation"),
+    (Stage::Installed, "Confirm full payment"),
+];
+
+/// Gives a company its starting steps once (a new company; the others got them
+/// from the migration), so a step it deletes doesn't come back.
+async fn seed_steps(conn: &mut MySqlConnection, company_id: i32) -> sqlx::Result<()> {
+    let first = sqlx::query("INSERT IGNORE INTO project_process_seeded (company_id) VALUES (?)")
+        .bind(company_id)
+        .execute(&mut *conn)
+        .await?
+        .rows_affected()
+        > 0;
+    if !first {
+        return Ok(());
+    }
+    for (stage, name) in STAGE_END_STEPS {
+        sqlx::query(
+            "INSERT INTO project_process_steps
+                (company_id, stage_code, name, position, auto_trigger, auto_since)
+             SELECT ?, ?, ?, COALESCE(MAX(position) + 1, 0), 'stage_moved', UTC_TIMESTAMP(3)
+               FROM project_process_steps WHERE company_id = ? AND stage_code = ?",
+        )
+        .bind(company_id)
+        .bind(stage.as_str())
+        .bind(name)
+        .bind(company_id)
+        .bind(stage.as_str())
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
 /// The company's steps, in process order.
 pub async fn company_steps(
     conn: &mut MySqlConnection,
     company_id: i32,
 ) -> sqlx::Result<Vec<ProcessStep>> {
+    seed_steps(&mut *conn, company_id).await?;
     let mut steps: Vec<ProcessStep> = sqlx::query_as(
         "SELECT id, stage_code, name, position, notify_sales_rep, responsible_user_id,
-                responsible_sales_rep, due_days
+                responsible_sales_rep, due_days,
+                (IFNULL(auto_trigger, '') = 'stage_moved' OR auto_moves <> 0) AS ends_stage
            FROM project_process_steps
           WHERE company_id = ?
           ORDER BY FIELD(stage_code, 'new', 'templated', 'fabrication', 'installed'), position, id",
@@ -76,14 +118,16 @@ pub async fn company_steps(
         Option<String>,
         Option<String>,
         Option<i32>,
+        bool,
     )> = sqlx::query_as(
-        "SELECT id, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days FROM project_process_steps
+        "SELECT id, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days, auto_moves <> 0
+           FROM project_process_steps
           WHERE company_id = ? AND auto_trigger IS NOT NULL",
     )
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
-    for (step_id, trigger, ref_id, ref_ids, text, days) in rules {
+    for (step_id, trigger, ref_id, ref_ids, text, days, moves) in rules {
         if let Some(step) = steps.iter_mut().find(|step| step.id == step_id) {
             let mut ids: Vec<i32> = ref_ids
                 .iter()
@@ -99,6 +143,7 @@ pub async fn company_steps(
                 ref_ids: ids,
                 text,
                 days,
+                moves,
             });
         }
     }
@@ -360,14 +405,6 @@ pub async fn set_notify(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The stages that end with a built-in step ("Then: ..."), and its name.
-const BUILT_IN_STEPS: [(Stage, &str); 4] = [
-    (Stage::New, "Schedule the template"),
-    (Stage::Templated, "Start fabrication"),
-    (Stage::Fabrication, "Schedule the installation"),
-    (Stage::Installed, "Confirm full payment"),
-];
-
 /// Who is told when a project moves on from each stage.
 pub async fn company_stages(
     conn: &mut MySqlConnection,
@@ -408,7 +445,7 @@ pub async fn company_stages(
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
-    Ok(BUILT_IN_STEPS
+    Ok(STAGE_END_STEPS
         .iter()
         .map(|(stage, _)| ProcessStage {
             stage_code: *stage,
@@ -434,6 +471,7 @@ pub async fn company_stages(
                         ref_ids: ids,
                         text: text.clone(),
                         days: *days,
+                        moves: false,
                     }
                 },
             ),
@@ -451,6 +489,10 @@ pub async fn company_stages(
 }
 
 /// Who is told when a project moves on from each stage
+///
+/// Deprecated: no longer used. Each stage now ends with an ordinary step
+/// (see `GET /v1/projects/process-steps`) whose own Notify,
+/// Schedule and Auto replaced these settings; what is saved here does nothing.
 ///
 /// The built-in line at the end of each stage ("Then: Start fabrication")
 /// takes Notify like a step does.
@@ -476,6 +518,10 @@ pub async fn list_stages(
 }
 
 /// Set who is told when a project moves on from a stage
+///
+/// Deprecated: no longer used. Each stage now ends with an ordinary step
+/// (see `GET /v1/projects/process-steps`) whose own Notify,
+/// Schedule and Auto replaced these settings; what is saved here does nothing.
 ///
 /// Replaces the list. Each person gets a bell notification and a phone push
 /// when someone moves a project on from the stage (not when they do it
@@ -504,7 +550,7 @@ pub async fn set_stage_notify(
     JsonBody(input): JsonBody<ProcessStepNotify>,
 ) -> ApiResult<StatusCode> {
     let stage = Stage::try_from(stage).map_err(|_| ApiError::NotFound)?;
-    if !BUILT_IN_STEPS
+    if !STAGE_END_STEPS
         .iter()
         .any(|(built_in, _)| *built_in == stage)
     {
@@ -598,36 +644,44 @@ pub(super) async fn tell_moved_on(
                 }
             }
         }
+        // The steps of each stage it left whose Auto waits for the move on, or
+        // moves the project on, are done now (those not done already): their
+        // schedule events are set and their people told.
+        let mut checked: Vec<(i32, i32)> = Vec::new();
         for (stage, part_id) in left {
-            let Some((_, name)) = BUILT_IN_STEPS
-                .iter()
-                .find(|(built_in, _)| *built_in == stage)
-            else {
-                continue;
-            };
-            let rules: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
-                "SELECT target, readiness, shop_status FROM project_stage_events
-                  WHERE company_id = ? AND stage_code = ? ORDER BY id",
+            let steps: Vec<i32> = sqlx::query_scalar(
+                "SELECT id FROM project_process_steps
+                  WHERE company_id = ? AND stage_code = ?
+                    AND (auto_trigger = 'stage_moved' OR auto_moves <> 0)
+                  ORDER BY position, id",
             )
             .bind(company_id)
             .bind(stage.as_str())
             .fetch_all(&state.pool)
             .await?;
-            if !rules.is_empty() {
-                let mut conn = state.pool.acquire().await?;
-                super::step_events::apply_list(
-                    &mut conn, company_id, actor_id, project_id, rules, part_id,
+            for step_id in steps {
+                let added = sqlx::query(
+                    "INSERT IGNORE INTO project_process_steps_done
+                        (project_id, step_id, part_id, done_by, done_at, auto)
+                     VALUES (?, ?, ?, NULL, UTC_TIMESTAMP(3), 1)",
                 )
-                .await?;
+                .bind(project_id)
+                .bind(step_id)
+                .bind(part_id)
+                .execute(&state.pool)
+                .await?
+                .rows_affected();
+                if added > 0 {
+                    let mut conn = state.pool.acquire().await?;
+                    super::step_events::apply(&mut conn, actor_id, project_id, step_id, part_id)
+                        .await;
+                    drop(conn);
+                    checked.push((step_id, part_id));
+                }
             }
-            tell_stage_people(
-                state,
-                (actor_id, actor_name),
-                (company_id, project_id, part_id),
-                stage,
-                name,
-            )
-            .await?;
+        }
+        for (step_id, part_id) in checked {
+            tell_step_people(state, actor_id, actor_name, project_id, step_id, part_id).await;
         }
         Ok(())
     }
@@ -637,60 +691,11 @@ pub(super) async fn tell_moved_on(
     }
 }
 
-async fn tell_stage_people(
-    state: &AppState,
-    (actor_id, actor_name): (Option<i32>, Option<&str>),
-    (company_id, project_id, part_id): (i32, i32, i32),
-    stage: Stage,
-    name: &str,
-) -> sqlx::Result<()> {
-    let people: Vec<i32> = sqlx::query_scalar(
-        "SELECT n.user_id FROM project_stage_notify n
-           JOIN users u ON u.id = n.user_id AND u.is_deleted = 0
-          WHERE n.company_id = ? AND n.stage_code = ? AND n.user_id <> ?
-         UNION
-         SELECT p.sales_rep_id FROM projects p
-           JOIN project_stage_notify_rep r ON r.company_id = p.company_id AND r.stage_code = ?
-           JOIN users u ON u.id = p.sales_rep_id AND u.is_deleted = 0
-          WHERE p.id = ? AND p.sales_rep_id <> ?",
-    )
-    .bind(company_id)
-    .bind(stage.as_str())
-    .bind(actor_id.unwrap_or(0))
-    .bind(stage.as_str())
-    .bind(project_id)
-    .bind(actor_id.unwrap_or(0))
-    .fetch_all(&state.pool)
-    .await?;
-    let actor = actor_name
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(|name| name.chars().take(255).collect::<String>());
-    for person in people {
-        let id = sqlx::query(
-            "INSERT INTO notifications
-                (user_id, project_id, message, notification_type, actor_name, due_at)
-             VALUES (?, ?,
-                     LEFT(CONCAT(?, COALESCE((SELECT CONCAT(' (', pp.name, ')')
-                                                FROM project_parts pp WHERE pp.id = ?), '')),
-                          255),
-                     ?, ?, NOW())",
-        )
-        .bind(person)
-        .bind(project_id)
-        .bind(name)
-        .bind(part_id)
-        .bind(STEP_DONE)
-        .bind(&actor)
-        .execute(&state.pool)
-        .await?
-        .last_insert_id();
-        push_notification_logged(state, i64::try_from(id).unwrap_or_default()).await;
-    }
-    Ok(())
-}
-
 /// Set what moves a project on from a stage by itself
+///
+/// Deprecated: no longer used. Each stage now ends with an ordinary step
+/// (see `GET /v1/projects/process-steps`) whose own Notify,
+/// Schedule and Auto replaced these settings; what is saved here does nothing.
 ///
 /// The built-in line at the end of a stage takes Auto like a step: when the
 /// action happens (after the stage's own steps are done), the project moves
@@ -826,7 +831,7 @@ const NOTIFY_POSITIONS: [(i32, &str); 7] = [
 ];
 
 /// What can check a step off by itself.
-pub const TRIGGERS: [&str; 14] = [
+pub const TRIGGERS: [&str; 15] = [
     "email_template",
     "text_template",
     "customer_replied",
@@ -841,7 +846,14 @@ pub const TRIGGERS: [&str; 14] = [
     "payment_full",
     "task_done",
     "days_after",
+    "stage_moved",
 ];
+
+/// Whether a rule with this trigger can also move the project on: not one that
+/// waits for the move itself.
+fn trigger_can_move(trigger: &str) -> bool {
+    trigger != "stage_moved"
+}
 
 /// The rule to store, or why it can't be.
 async fn clean_auto(
@@ -853,12 +865,14 @@ async fn clean_auto(
     if !TRIGGERS.contains(&trigger.as_str()) {
         return Err(ApiError::BadRequest("Pick what checks the step off".into()));
     }
+    let moves = auto.moves && trigger_can_move(&trigger);
     let mut clean = StepAuto {
         trigger,
         ref_id: None,
         ref_ids: Vec::new(),
         text: None,
         days: None,
+        moves,
     };
     match clean.trigger.as_str() {
         "email_template" | "text_template" => {
@@ -913,7 +927,9 @@ async fn clean_auto(
 /// Set what checks a step off by itself
 ///
 /// Replaces the step's rule; `null` turns it off. Only what happens after it is
-/// set counts, and only once the step before it is done.
+/// set counts, and only once the step before it is done. `stage_moved` checks
+/// it off when the project moves on to the next stage. `moves` (Awaiting
+/// Template and Templated only) also moves the project on when the rule fires.
 #[crate::openapi::path(
     put,
     path = "/v1/projects/process-steps/{step_id}/auto",
@@ -939,14 +955,24 @@ pub async fn set_auto(
 ) -> ApiResult<StatusCode> {
     let mut conn = state.pool.acquire().await?;
     require_step(&mut conn, user.company_id, step_id).await?;
-    let rule = match input.auto {
+    let mut rule = match input.auto {
         Some(auto) => Some(clean_auto(&mut conn, user.company_id, auto).await?),
         None => None,
     };
+    // Only Awaiting Template and Templated move on by themselves: installation
+    // and payment are confirmed with their own buttons.
+    if let Some(rule) = rule.as_mut().filter(|rule| rule.moves) {
+        let stage: String =
+            sqlx::query_scalar("SELECT stage_code FROM project_process_steps WHERE id = ?")
+                .bind(step_id)
+                .fetch_one(&mut *conn)
+                .await?;
+        rule.moves = matches!(stage.as_str(), "new" | "templated");
+    }
     sqlx::query(
         "UPDATE project_process_steps
             SET auto_trigger = ?, auto_ref_id = ?, auto_ref_ids = ?, auto_text = ?, auto_days = ?,
-                auto_since = IF(? IS NULL, NULL, UTC_TIMESTAMP(3))
+                auto_moves = ?, auto_since = IF(? IS NULL, NULL, UTC_TIMESTAMP(3))
           WHERE id = ? AND company_id = ?",
     )
     .bind(rule.as_ref().map(|rule| rule.trigger.clone()))
@@ -964,6 +990,7 @@ pub async fn set_auto(
     )
     .bind(rule.as_ref().and_then(|rule| rule.text.clone()))
     .bind(rule.as_ref().and_then(|rule| rule.days))
+    .bind(rule.as_ref().is_some_and(|rule| rule.moves))
     .bind(rule.as_ref().map(|rule| rule.trigger.clone()))
     .bind(step_id)
     .bind(user.company_id)

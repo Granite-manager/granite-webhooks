@@ -796,6 +796,179 @@ async fn checking_a_step_off_tells_its_people(pool: MySqlPool) {
 }
 
 #[test_db::test(seed)]
+async fn each_stage_starts_with_a_step_checked_off_when_the_project_moves_on(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let project = projects_of_8002(&pool).await[0];
+
+    // The company starts with four steps whose Auto waits for the move on.
+    let seen = board(&pool, sessions::ADMIN).await;
+    let steps = seen["process_steps"].as_array().unwrap().clone();
+    let ends: Vec<(String, String)> = steps
+        .iter()
+        .filter(|step| step["auto"]["trigger"] == "stage_moved" && step["ends_stage"] == true)
+        .map(|step| {
+            (
+                step["stage_code"].as_str().unwrap().to_string(),
+                step["name"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        ends,
+        vec![
+            ("new".to_string(), "Schedule the template".to_string()),
+            ("templated".to_string(), "Start fabrication".to_string()),
+            (
+                "fabrication".to_string(),
+                "Schedule the installation".to_string()
+            ),
+            ("installed".to_string(), "Confirm full payment".to_string()),
+        ]
+    );
+    let id_of = |name: &str| {
+        steps.iter().find(|step| step["name"] == name).unwrap()["id"]
+            .as_i64()
+            .unwrap()
+    };
+    let schedule = id_of("Schedule the template");
+    let fabrication = id_of("Start fabrication");
+
+    // Rita (100) hears when a project moves on from Awaiting Template.
+    server(pool.clone())
+        .put(&format!("/v1/projects/process-steps/{schedule}/notify"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "user_ids": [100] }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Start fabrication's Auto is turned off like any step's.
+    server(pool.clone())
+        .put(&format!("/v1/projects/process-steps/{fabrication}/auto"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "auto": null }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+
+    // Moved on to Templated: Schedule the template is checked off and Rita is told.
+    act(
+        &pool,
+        project,
+        sessions::ADMIN,
+        json!({ "intent": "stage", "version": version(&pool, project).await, "stage": "templated" }),
+    )
+    .await
+    .assert_status_ok();
+    let page: Value = server(pool.clone())
+        .get(&format!("/v1/projects/{project}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    let done: Vec<i64> = page["done_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["step_id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(done, vec![schedule], "{page:?}");
+    assert_eq!(page["done_steps"][0]["done_by"], "Auto");
+    let told: Vec<(i32, String)> = sqlx::query_as(
+        "SELECT user_id, message FROM notifications WHERE notification_type = 'project_step_done'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(told, vec![(100, "Schedule the template".to_string())]);
+
+    // A deleted starting step stays deleted.
+    server(pool.clone())
+        .delete(&format!("/v1/projects/process-steps/{schedule}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let seen = board(&pool, sessions::ADMIN).await;
+    let names: Vec<&str> = seen["process_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|step| step["name"].as_str().unwrap())
+        .collect();
+    assert!(!names.contains(&"Schedule the template"), "{names:?}");
+    assert_eq!(names.len(), 3);
+    let start = seen["process_steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["id"].as_i64() == Some(fabrication))
+        .unwrap()
+        .clone();
+    assert_eq!(start["auto"], Value::Null);
+    assert_eq!(start["ends_stage"], false);
+}
+
+#[test_db::test(seed)]
+async fn a_step_whose_rule_moves_the_project_on_moves_it(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let project = projects_of_8002(&pool).await[0];
+    let seen = board(&pool, sessions::ADMIN).await;
+    let id_of = |name: &str| {
+        seen["process_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["name"] == name)
+            .unwrap()["id"]
+            .as_i64()
+            .unwrap()
+    };
+    let schedule = id_of("Schedule the template");
+    let install = id_of("Schedule the installation");
+    let auto = async |step: i64, rule: Value| {
+        server(pool.clone())
+            .put(&format!("/v1/projects/process-steps/{step}/auto"))
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "auto": rule }))
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    };
+    auto(schedule, json!({ "trigger": "file_added", "moves": true })).await;
+    // Only Awaiting Template and Templated move on by themselves.
+    auto(install, json!({ "trigger": "file_added", "moves": true })).await;
+    let seen = board(&pool, sessions::ADMIN).await;
+    let rule_of = |id: i64| {
+        seen["process_steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["id"].as_i64() == Some(id))
+            .unwrap()["auto"]
+            .clone()
+    };
+    assert_eq!(rule_of(schedule)["moves"], true);
+    assert_eq!(rule_of(install)["moves"], false);
+    assert_eq!(seen["projects"][0]["stage_code"], "new");
+
+    // A file comes in: the project moves on to Templated, the step checked off.
+    sqlx::query(
+        "INSERT INTO project_files (project_id, company_id, name, url, content_type, created_by, created_at)
+         SELECT p.id, p.company_id, 'layout.pdf', 'x/layout.pdf', 'application/pdf',
+                (SELECT u.id FROM users u WHERE u.company_id = p.company_id LIMIT 1),
+                UTC_TIMESTAMP() + INTERVAL 1 MINUTE
+           FROM projects p WHERE p.id = ?",
+    )
+    .bind(project)
+    .execute(&pool)
+    .await
+    .unwrap();
+    board(&pool, sessions::ADMIN).await;
+    let seen = board(&pool, sessions::ADMIN).await;
+    assert_eq!(seen["projects"][0]["stage_code"], "templated");
+    let done = seen["done_steps"].as_array().unwrap();
+    assert_eq!(done.len(), 1, "{done:?}");
+    assert_eq!(done[0]["step_id"].as_i64(), Some(schedule));
+}
+
+#[test_db::test(seed)]
 async fn steps_check_themselves_off_by_their_rules(pool: MySqlPool) {
     turn_on(&pool).await;
     win_8002(&pool).await;

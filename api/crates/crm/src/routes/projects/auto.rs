@@ -25,6 +25,7 @@ struct Rule {
     auto_text: Option<String>,
     auto_days: Option<i32>,
     auto_since: Option<NaiveDateTime>,
+    auto_moves: bool,
 }
 
 /// Checks off what the rules say for these projects. Logged, never returned:
@@ -50,7 +51,8 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     }
     let mut conn = state.pool.acquire().await?;
     let rules: Vec<Rule> = sqlx::query_as(
-        "SELECT id, stage_code, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days, auto_since
+        "SELECT id, stage_code, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days, auto_since,
+                auto_moves <> 0 AS auto_moves
            FROM project_process_steps
           WHERE company_id = ?
           ORDER BY FIELD(stage_code, 'new', 'templated', 'fabrication', 'installed'), position, id",
@@ -58,14 +60,13 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
-    let stage_rules: Vec<Rule> = sqlx::query_as(
-        "SELECT id, stage_code, auto_trigger, auto_ref_id, auto_ref_ids, auto_text, auto_days, auto_since
-           FROM project_stage_auto WHERE company_id = ?",
-    )
-    .bind(company_id)
-    .fetch_all(&mut *conn)
-    .await?;
-    if stage_rules.is_empty() && !rules.iter().any(|rule| rule.auto_trigger.is_some()) {
+    // `stage_moved` waits for the move itself (`process::tell_moved_on`).
+    let waits = |rule: &Rule| {
+        rule.auto_trigger
+            .as_deref()
+            .is_none_or(|t| t == "stage_moved")
+    };
+    if rules.iter().all(waits) {
         return Ok(());
     }
     let ids: Vec<i32> = live.iter().map(|p| p.id).collect();
@@ -107,7 +108,6 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
     }
     for (project, part, stage) in tracks {
         let mut before: Option<NaiveDateTime> = None;
-        let mut complete = true;
         for rule in rules.iter().filter(|rule| rule.stage_code == stage) {
             if let Some((_, _, _, at)) = done
                 .iter()
@@ -118,11 +118,9 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
             }
             let (Some(trigger), Some(since)) = (rule.auto_trigger.as_deref(), rule.auto_since)
             else {
-                complete = false;
                 break;
             };
             if off.contains(&(project.id, part, rule.id)) {
-                complete = false;
                 break;
             }
             let after = before.map_or(since, |at| at.max(since));
@@ -134,9 +132,20 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
                 happened(&mut conn, company_id, project, rule, trigger, after).await?
             };
             let Some(at) = happened.map(|at| at.min(now)) else {
-                complete = false;
                 break;
             };
+            // A rule that moves the project on (Awaiting Template, Templated)
+            // moves it instead of checking the step off; the move checks it off
+            // (`tell_moved_on`). Not moved (on hold, no transaction yet): it
+            // waits and is tried again.
+            if rule.auto_moves && matches!(stage, "new" | "templated") {
+                if let Ok(from) = Stage::try_from(stage.to_string())
+                    && let Some(seen) = advance(&mut conn, company_id, project, part, from).await?
+                {
+                    moved.push((project.id, seen));
+                }
+                break;
+            }
             let added = sqlx::query(
                 "INSERT IGNORE INTO project_process_steps_done
                     (project_id, step_id, part_id, done_by, done_at, auto)
@@ -154,35 +163,6 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
                 checked.push((project.id, rule.id, part));
             }
             before = Some(at);
-        }
-        // Every step of the stage is done: the built-in line's rule moves it on.
-        if !complete {
-            continue;
-        }
-        let Some(stage_rule) = stage_rules.iter().find(|rule| rule.stage_code == stage) else {
-            continue;
-        };
-        let (Some(trigger), Some(since)) =
-            (stage_rule.auto_trigger.as_deref(), stage_rule.auto_since)
-        else {
-            continue;
-        };
-        let after = before.map_or(since, |at| at.max(since));
-        let fired = if trigger == "days_after" {
-            let start = before.or_else(|| started(project)).unwrap_or(now);
-            let at = start + Duration::days(i64::from(stage_rule.auto_days.unwrap_or(1)));
-            (at <= now).then_some(at)
-        } else {
-            happened(&mut conn, company_id, project, stage_rule, trigger, after).await?
-        };
-        if fired.is_none() {
-            continue;
-        }
-        let Ok(from) = Stage::try_from(stage.to_string()) else {
-            continue;
-        };
-        if let Some(seen) = advance(&mut conn, company_id, project, part, from).await? {
-            moved.push((project.id, seen));
         }
     }
     drop(conn);
@@ -472,6 +452,7 @@ async fn happened(
             .fetch_one(&mut *conn)
             .await?
         }
+        // `stage_moved`: the move itself checks it off (`process::tell_moved_on`).
         _ => None,
     };
     Ok(at)

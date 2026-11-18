@@ -22842,7 +22842,7 @@
           "projects"
         ],
         "summary": "Who is told when a project moves on from each stage",
-        "description": "The built-in line at the end of each stage (\"Then: Start fabrication\")\ntakes Notify like a step does.",
+        "description": "Deprecated: no longer used. Each stage now ends with an ordinary step\n(see `GET /v1/projects/process-steps`) whose own Notify,\nSchedule and Auto replaced these settings; what is saved here does nothing.\n\nThe built-in line at the end of each stage (\"Then: Start fabrication\")\ntakes Notify like a step does.",
         "operationId": "list_project_process_stages",
         "responses": {
           "200": {
@@ -22902,7 +22902,7 @@
           "projects"
         ],
         "summary": "Set who is told when a project moves on from a stage",
-        "description": "Replaces the list. Each person gets a bell notification and a phone push\nwhen someone moves a project on from the stage (not when they do it\nthemselves), by hand, by checking its last step or from a booking.",
+        "description": "Deprecated: no longer used. Each stage now ends with an ordinary step\n(see `GET /v1/projects/process-steps`) whose own Notify,\nSchedule and Auto replaced these settings; what is saved here does nothing.\n\nReplaces the list. Each person gets a bell notification and a phone push\nwhen someone moves a project on from the stage (not when they do it\nthemselves), by hand, by checking its last step or from a booking.",
         "operationId": "set_project_process_stage_notify",
         "parameters": [
           {
@@ -22993,7 +22993,7 @@
           "projects"
         ],
         "summary": "Set what moves a project on from a stage by itself",
-        "description": "The built-in line at the end of a stage takes Auto like a step: when the\naction happens (after the stage's own steps are done), the project moves\non to the next stage. Only Awaiting Template and Templated can do this:\ninstallation and payment are confirmed with their own buttons.",
+        "description": "Deprecated: no longer used. Each stage now ends with an ordinary step\n(see `GET /v1/projects/process-steps`) whose own Notify,\nSchedule and Auto replaced these settings; what is saved here does nothing.\n\nThe built-in line at the end of a stage takes Auto like a step: when the\naction happens (after the stage's own steps are done), the project moves\non to the next stage. Only Awaiting Template and Templated can do this:\ninstallation and payment are confirmed with their own buttons.",
         "operationId": "set_project_process_stage_auto",
         "parameters": [
           {
@@ -23084,7 +23084,7 @@
           "projects"
         ],
         "summary": "Set what moving a project on from a stage does to its events",
-        "description": "The built-in line at the end of a stage takes Schedule rules like a step.\nThey run when a project moves on from the stage (and, for Fabrication,\nwhen a part is marked fabricated).",
+        "description": "Deprecated: no longer used. Each stage now ends with an ordinary step\n(see `GET /v1/projects/process-steps`) whose own Notify,\nSchedule and Auto replaced these settings; what is saved here does nothing.\n\nThe built-in line at the end of a stage takes Schedule rules like a step.\nThey run when a project moves on from the stage (and, for Fabrication,\nwhen a part is marked fabricated).",
         "operationId": "set_project_process_stage_events",
         "parameters": [
           {
@@ -23175,7 +23175,7 @@
           "projects"
         ],
         "summary": "Set what checks a step off by itself",
-        "description": "Replaces the step's rule; `null` turns it off. Only what happens after it is\nset counts, and only once the step before it is done.",
+        "description": "Replaces the step's rule; `null` turns it off. Only what happens after it is\nset counts, and only once the step before it is done. `stage_moved` checks\nit off when the project moves on to the next stage. `moves` (Awaiting\nTemplate and Templated only) also moves the project on when the rule fires.",
         "operationId": "set_project_process_step_auto",
         "parameters": [
           {
@@ -52128,6 +52128,76 @@
           },
           "400": {
             "description": "No texting day, or the hours end before they start",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/schedule/notifications/scheduling/replies": {
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Save the auto-confirm replies",
+        "description": "The texts the customer gets back once AI reads their reply to an\nauto-confirm text: `yes_reply` after a clear YES turned the job\nConfirmed, `no_reply` after a NO or a request for another day. An empty\ntext turns that reply off. Read them back with `GET\n/v1/schedule/notifications` (`auto_confirm_replies`).",
+        "operationId": "set_auto_confirm_replies",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutoConfirmReplies"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "A text is over 1600 characters",
             "content": {
               "application/json": {
                 "schema": {
@@ -82582,6 +82652,26 @@
           }
         }
       },
+      "AutoConfirmReplies": {
+        "type": "object",
+        "description": "Admin > Schedule > Auto-confirm: the text the customer gets back once AI\nreads their reply to an auto-confirm text. Sent at once (texting hours do\nnot apply), from the line they texted, only while \"Turn the job Confirmed\nwhen the customer replies YES (AI)\" is on. Variables such as\n`{{appointment.date}}` are filled in for the job.",
+        "properties": {
+          "yes_reply": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sent after a clear YES turned the job Confirmed (up to 1600\ncharacters); null sends nothing."
+          },
+          "no_reply": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Sent after a NO or a request for another day or time (up to 1600\ncharacters); null sends nothing."
+          }
+        }
+      },
       "AutoInvoiceInput": {
         "type": "object",
         "description": "Body of `PUT /v1/company/auto-invoice`.",
@@ -102499,7 +102589,8 @@
           "sms_enabled",
           "on_my_way",
           "on_my_way_technician",
-          "scheduling"
+          "scheduling",
+          "auto_confirm_replies"
         ],
         "properties": {
           "templates": {
@@ -102538,6 +102629,10 @@
           "scheduling": {
             "$ref": "#/components/schemas/SchedulingSettings",
             "description": "The AI texts tab's switch and texting hours."
+          },
+          "auto_confirm_replies": {
+            "$ref": "#/components/schemas/AutoConfirmReplies",
+            "description": "What the customer gets back after a YES or a NO to an auto-confirm text."
           }
         }
       },
@@ -108228,7 +108323,8 @@
           "notify_sales_rep",
           "event_rules",
           "responsible_sales_rep",
-          "items"
+          "items",
+          "ends_stage"
         ],
         "properties": {
           "id": {
@@ -108305,6 +108401,10 @@
               "$ref": "#/components/schemas/ListItem"
             },
             "description": "Its own to-do list, in order."
+          },
+          "ends_stage": {
+            "type": "boolean",
+            "description": "Deprecated, for older apps: true when its Auto waits for the project to\nmove on (`stage_moved`) or moves it on (`moves`). The project's Next\nshows its template or installation date while it is the step to do."
           }
         }
       },
@@ -119000,7 +119100,7 @@
         "properties": {
           "trigger": {
             "type": "string",
-            "description": "What happens: `email_template`, `text_template`, `customer_replied`,\n`file_added`, `sent_to_sign`, `signed`, `questionnaire_filled`,\n`template_booked`, `install_booked`, `invoice_sent`, `payment_any`,\n`payment_full`, `task_done` or `days_after`."
+            "description": "What happens: `email_template`, `text_template`, `customer_replied`,\n`file_added`, `sent_to_sign`, `signed`, `questionnaire_filled`,\n`template_booked`, `install_booked`, `invoice_sent`, `payment_any`,\n`payment_full`, `task_done`, `days_after` or `stage_moved` (the project\nmoves on to the next stage, by hand or by itself)."
           },
           "ref_id": {
             "type": [
@@ -119032,6 +119132,10 @@
             ],
             "format": "int32",
             "description": "Days after the step before (`days_after`)."
+          },
+          "moves": {
+            "type": "boolean",
+            "description": "Then moves the project on to the next stage: Awaiting Template to\nTemplated, Templated to In Fabrication. Only on those two stages, and\nnot with `stage_moved`."
           }
         }
       },
@@ -125128,7 +125232,7 @@
           },
           "source": {
             "type": "string",
-            "description": "`deal_activity`, `deal_note`, `email`, `cloudtalk_sms`, ..."
+            "description": "`deal_activity`, `deal_note`, `email`, `cloudtalk_sms`,\n`ringcentral_sms`, `telnyx_sms` (a text by provider), ..."
           },
           "user_id": {
             "type": [
