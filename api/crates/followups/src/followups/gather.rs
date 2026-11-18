@@ -728,6 +728,87 @@ async fn load_sms_timeline(
         .collect())
 }
 
+/// "ryan.robinson" → "Ryan"; "joy1p18" or a bare "ryan" says no name.
+fn name_from_address(email: &str) -> Option<String> {
+    let local = email.split('@').next().unwrap_or("");
+    let first = local.split(['.', '_', '-', '+']).next().unwrap_or("");
+    (first.len() >= 2 && first.chars().all(|c| c.is_ascii_alphabetic()) && first != local).then(
+        || {
+            let mut chars = first.chars();
+            chars.next().map_or_else(String::new, |c| {
+                c.to_uppercase().chain(chars).collect::<String>()
+            })
+        },
+    )
+}
+
+fn first_word(name: &str) -> String {
+    trim(name)
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_lowercase()
+}
+
+/// The `Writing to:` profile line when an email goes to someone other than
+/// the customer on file (a spouse, a contractor on the thread), even when the
+/// rep saved their address on the customer: their name from the mail they
+/// sent ("Ryan Robinson"), else from an address that is not the customer's
+/// ("ryan.robinson@…" is Ryan). None when it is the customer themself.
+pub async fn email_contact_line(
+    pool: &MySqlPool,
+    company_id: i32,
+    customer_id: Option<i32>,
+    email: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    let email = trim(email).to_lowercase();
+    if !email.contains('@') {
+        return Ok(None);
+    }
+    let (own, customer_name) = match customer_id {
+        Some(customer_id) => {
+            let own = customer_email_addresses(pool, company_id, customer_id)
+                .await?
+                .iter()
+                .any(|a| trim(a).to_lowercase() == email);
+            let name: Option<String> =
+                sqlx::query_scalar("SELECT name FROM customers WHERE id = ? AND company_id = ?")
+                    .bind(customer_id)
+                    .bind(company_id)
+                    .fetch_optional(pool)
+                    .await?;
+            (own, name.unwrap_or_default())
+        }
+        None => (false, String::new()),
+    };
+    let shown: Option<String> = sqlx::query_scalar(
+        "SELECT TRIM(ep.display_name) FROM email_participants ep
+           JOIN emails e ON e.id = ep.email_id AND e.company_id = ? AND e.deleted_at IS NULL
+          WHERE LOWER(TRIM(ep.email)) = ? AND ep.user_id IS NULL
+            AND TRIM(COALESCE(ep.display_name, '')) NOT IN ('', ep.email)
+            AND ep.display_name NOT LIKE '%@%'
+          ORDER BY ep.id DESC LIMIT 1",
+    )
+    .bind(company_id)
+    .bind(&email)
+    .fetch_optional(pool)
+    .await?;
+    let name = shown
+        .filter(|n| !trim(n).is_empty())
+        .or_else(|| if own { None } else { name_from_address(&email) });
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let first = trim(&name).split_whitespace().next().unwrap_or("").to_string();
+    if first.chars().count() < 2 || first_word(&name) == first_word(&customer_name) {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "Writing to: {} <{email}>. This email goes to them, not to the customer on file: greet them by their first name ({first}), never by the customer's name.",
+        trim(&name)
+    )))
+}
+
 async fn customer_email_addresses(
     pool: &MySqlPool,
     company_id: i32,

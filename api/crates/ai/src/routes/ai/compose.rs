@@ -22,7 +22,7 @@ use crate::followups::greeting::{conversation_recency, greeting_instruction};
 use crate::followups::js::{js_len, js_slice, trim};
 use crate::followups::prompt::FollowupTimelineMessage;
 use crate::followups::send_window::FollowupChannel;
-use crate::followups::style::first_name_from_customer_profile;
+use crate::followups::style::greeting_first_name;
 use crate::openapi::ToSchema;
 use crate::routes::ai::compose_catalog::load_catalog;
 use crate::routes::ai::conversation_reply::REPLY_FALLBACK_MODEL;
@@ -754,8 +754,25 @@ async fn load_context(
         None => String::new(),
     };
     let catalog = load_catalog(&state.pool, user.company_id).await;
+    // An email to a spouse or contractor greets them, not the customer.
+    let writing_to = match (thread.channel, thread.customer_email.as_deref()) {
+        (FollowupChannel::Email, Some(email)) => crate::followups::gather::email_contact_line(
+            &state.pool,
+            user.company_id,
+            gathered.customer_id,
+            email,
+        )
+        .await
+        .unwrap_or_else(|err| {
+            tracing::warn!(error = %err, "compose: email contact unavailable");
+            None
+        })
+        .map(|line| format!("\n{line}"))
+        .unwrap_or_default(),
+        _ => String::new(),
+    };
     let context = ComposeContext {
-        profile: format!("{}\n{quote_page}", gathered.profile),
+        profile: format!("{}\n{quote_page}{writing_to}", gathered.profile),
         timeline: trim_timeline(&gathered.timeline, TIMELINE_MAX_CHARS),
         rep_phone,
         company_name,
@@ -921,7 +938,7 @@ pub async fn autocomplete(
     // ("Hey"/"Hello" when that is how the rep greets).
     if request.draft.is_empty()
         && !conversation_recency(&context.timeline, Utc::now()).is_continuing()
-        && let Some(first_name) = first_name_from_customer_profile(&context.profile)
+        && let Some(first_name) = greeting_first_name(&context.profile)
     {
         let greeting = rep_greeting(&context.timeline, &context.rep_voice);
         completion = with_greeting(&completion, &first_name, greeting);
