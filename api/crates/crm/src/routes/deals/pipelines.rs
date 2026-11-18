@@ -58,7 +58,10 @@ pub struct PipelinePatch {
     pub name: Option<String>,
     /// Show or hide it on the boards.
     pub is_displayed: Option<bool>,
-    /// `true` makes it the company's default (only `true` is accepted).
+    /// `true` makes it the company's default ("Assign leads here");
+    /// `false` turns that off, leaving the company with no default: its
+    /// sales managers then pick the pipeline of each lead on the website's
+    /// Leads page (Telegram and phone assignments use the oldest pipeline).
     pub is_default: Option<bool>,
 }
 
@@ -189,7 +192,7 @@ pub async fn create(
     request_body = PipelinePatch,
     responses(
         (status = 204, description = "Changed"),
-        (status = 400, description = "`is_default: false`, or an empty name", body = ErrorBody),
+        (status = 400, description = "An empty name", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 404, description = "No such pipeline of the company", body = ErrorBody),
@@ -205,11 +208,6 @@ pub async fn update(
 ) -> ApiResult<StatusCode> {
     let pool = &state.pool;
     check_group(pool, user.company_id, id).await?;
-    if patch.is_default == Some(false) {
-        return Err(ApiError::BadRequest(
-            "make another pipeline the default instead".into(),
-        ));
-    }
     let name = match patch.name {
         Some(name) => Some(clean_name(&NameInput { name })?),
         None => None,
@@ -225,6 +223,13 @@ pub async fn update(
     if let Some(displayed) = patch.is_displayed {
         sqlx::query("UPDATE groups_list SET is_displayed = ? WHERE id = ? AND company_id = ?")
             .bind(displayed)
+            .bind(id)
+            .bind(user.company_id)
+            .execute(pool)
+            .await?;
+    }
+    if patch.is_default == Some(false) {
+        sqlx::query("UPDATE groups_list SET is_default = 0 WHERE id = ? AND company_id = ?")
             .bind(id)
             .bind(user.company_id)
             .execute(pool)
@@ -271,6 +276,13 @@ pub async fn delete(
     Path(id): Path<i32>,
 ) -> ApiResult<StatusCode> {
     check_group(&state.pool, user.company_id, id).await?;
+    let was_default: Option<bool> =
+        sqlx::query_scalar("SELECT is_default FROM groups_list WHERE id = ? AND company_id = ?")
+            .bind(id)
+            .bind(user.company_id)
+            .fetch_optional(&state.pool)
+            .await?
+            .flatten();
     let mut tx = state.pool.begin().await?;
     sqlx::query("UPDATE groups_list SET deleted_at = NOW() WHERE id = ? AND company_id = ?")
         .bind(id)
@@ -283,7 +295,8 @@ pub async fn delete(
     .bind(id)
     .execute(&mut *tx)
     .await?;
-    // New deals need a default pipeline.
+    // Deleting the default pipeline hands "Assign leads here" to the oldest
+    // one left; a company that turned the default off keeps none.
     let has_default: Option<i32> = sqlx::query_scalar(
         "SELECT 1 FROM groups_list
           WHERE company_id = ? AND deleted_at IS NULL AND is_default = 1 LIMIT 1",
@@ -291,7 +304,7 @@ pub async fn delete(
     .bind(user.company_id)
     .fetch_optional(&mut *tx)
     .await?;
-    if has_default.is_none() {
+    if was_default == Some(true) && has_default.is_none() {
         let first: Option<i32> = sqlx::query_scalar(
             "SELECT id FROM groups_list WHERE company_id = ? AND deleted_at IS NULL
               ORDER BY created_at, id LIMIT 1",

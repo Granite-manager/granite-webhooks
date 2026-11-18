@@ -290,3 +290,27 @@ async fn any_pipeline_hides_and_deleting_the_default_picks_another(pool: MySqlPo
             .unwrap();
     assert_eq!(other, Some(true));
 }
+
+// ---- "Assign leads here" can be turned off (2026-11-18) -------------------
+
+#[test_db::test(seed)]
+async fn the_default_can_be_turned_off_and_stays_off(pool: MySqlPool) {
+    let server = server(pool);
+    server
+        .patch("/v1/deal-pipelines/100")
+        .with_session(ADMIN)
+        .json(&json!({ "is_default": false }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let list = pipelines(&server).await;
+    assert_eq!(find(&list, 100)["is_default"], false);
+    assert_eq!(find(&list, 104)["is_default"], false);
+    // Deleting another pipeline does not make one the default again.
+    server
+        .delete("/v1/deal-pipelines/105")
+        .with_session(ADMIN)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let list = pipelines(&server).await;
+    assert!(list.as_array().unwrap().iter().all(|p| p["is_default"] == false));
+}
