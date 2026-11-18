@@ -40,14 +40,29 @@ fn clean_name(name: &str) -> ApiResult<&str> {
     Ok(name)
 }
 
-/// The step each stage starts with, at its end (the built-in line it
-/// replaced): renamed, moved or deleted as the company likes. Its Auto starts
-/// as `stage_moved`: checked off when the project moves on.
-pub const STAGE_END_STEPS: [(Stage, &str); 4] = [
-    (Stage::New, "Schedule the template"),
-    (Stage::Templated, "Start fabrication"),
-    (Stage::Fabrication, "Schedule the installation"),
-    (Stage::Installed, "Confirm full payment"),
+/// The steps a company starts with, renamed, moved or deleted as it likes,
+/// each checked off by the real work (owner, 2026-11-18): the template booked,
+/// then the template maker's Completed; moved to In Fabrication; the
+/// installation booked, then the installer's Completed; paid in full.
+pub const STAGE_END_STEPS: [(Stage, &str, &str); 6] = [
+    (Stage::New, "Schedule the template", "template_booked"),
+    (Stage::New, "Template", "template_completed"),
+    (Stage::Templated, "Start fabrication", "stage_moved"),
+    (
+        Stage::Fabrication,
+        "Schedule the installation",
+        "install_booked",
+    ),
+    (Stage::Fabrication, "Installation", "install_completed"),
+    (Stage::Installed, "Confirm full payment", "payment_full"),
+];
+
+/// The stages that have steps.
+const STEP_STAGES: [Stage; 4] = [
+    Stage::New,
+    Stage::Templated,
+    Stage::Fabrication,
+    Stage::Installed,
 ];
 
 /// Gives a company its starting steps once (a new company; the others got them
@@ -62,16 +77,17 @@ async fn seed_steps(conn: &mut MySqlConnection, company_id: i32) -> sqlx::Result
     if !first {
         return Ok(());
     }
-    for (stage, name) in STAGE_END_STEPS {
+    for (stage, name, trigger) in STAGE_END_STEPS {
         sqlx::query(
             "INSERT INTO project_process_steps
                 (company_id, stage_code, name, position, auto_trigger, auto_since)
-             SELECT ?, ?, ?, COALESCE(MAX(position) + 1, 0), 'stage_moved', UTC_TIMESTAMP(3)
+             SELECT ?, ?, ?, COALESCE(MAX(position) + 1, 0), ?, UTC_TIMESTAMP(3)
                FROM project_process_steps WHERE company_id = ? AND stage_code = ?",
         )
         .bind(company_id)
         .bind(stage.as_str())
         .bind(name)
+        .bind(trigger)
         .bind(company_id)
         .bind(stage.as_str())
         .execute(&mut *conn)
@@ -89,7 +105,8 @@ pub async fn company_steps(
     let mut steps: Vec<ProcessStep> = sqlx::query_as(
         "SELECT id, stage_code, name, position, notify_sales_rep, responsible_user_id,
                 responsible_sales_rep, due_days,
-                (IFNULL(auto_trigger, '') = 'stage_moved' OR auto_moves <> 0) AS ends_stage
+                (IFNULL(auto_trigger, '') IN ('stage_moved', 'template_completed', 'install_completed')
+                 OR auto_moves <> 0) AS ends_stage
            FROM project_process_steps
           WHERE company_id = ?
           ORDER BY FIELD(stage_code, 'new', 'templated', 'fabrication', 'installed'), position, id",
@@ -445,9 +462,9 @@ pub async fn company_stages(
     .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
-    Ok(STAGE_END_STEPS
+    Ok(STEP_STAGES
         .iter()
-        .map(|(stage, _)| ProcessStage {
+        .map(|stage| ProcessStage {
             stage_code: *stage,
             notify: told
                 .iter()
@@ -550,10 +567,7 @@ pub async fn set_stage_notify(
     JsonBody(input): JsonBody<ProcessStepNotify>,
 ) -> ApiResult<StatusCode> {
     let stage = Stage::try_from(stage).map_err(|_| ApiError::NotFound)?;
-    if !STAGE_END_STEPS
-        .iter()
-        .any(|(built_in, _)| *built_in == stage)
-    {
+    if !STEP_STAGES.contains(&stage) {
         return Err(ApiError::NotFound);
     }
     let mut ids = input.user_ids;
@@ -831,7 +845,7 @@ const NOTIFY_POSITIONS: [(i32, &str); 7] = [
 ];
 
 /// What can check a step off by itself.
-pub const TRIGGERS: [&str; 15] = [
+pub const TRIGGERS: [&str; 17] = [
     "email_template",
     "text_template",
     "customer_replied",
@@ -840,7 +854,9 @@ pub const TRIGGERS: [&str; 15] = [
     "signed",
     "questionnaire_filled",
     "template_booked",
+    "template_completed",
     "install_booked",
+    "install_completed",
     "invoice_sent",
     "payment_any",
     "payment_full",
@@ -850,9 +866,13 @@ pub const TRIGGERS: [&str; 15] = [
 ];
 
 /// Whether a rule with this trigger can also move the project on: not one that
-/// waits for the move itself.
+/// waits for the move itself, or the template or installation done (which
+/// moves it already).
 fn trigger_can_move(trigger: &str) -> bool {
-    trigger != "stage_moved"
+    !matches!(
+        trigger,
+        "stage_moved" | "template_completed" | "install_completed"
+    )
 }
 
 /// The rule to store, or why it can't be.

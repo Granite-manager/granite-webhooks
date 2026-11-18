@@ -7,10 +7,12 @@
 //! first step without a rule, or whose action hasn't happened, stops the walk.
 //! A step a person unchecked stays unchecked (`project_process_step_auto_off`).
 //!
-//! A project also moves on by itself (the template maker's or installer's
-//! Completed, Fabricated, its installed or paid date): the steps of each stage
-//! it left that wait for the move on are checked off then, as a move by hand
-//! does (`process::tell_moved_on`), when it moved after their rule was set.
+//! Once a project has left a stage (the template maker's or installer's
+//! Completed, Fabricated, its installed or paid date, or a move by hand), that
+//! stage's steps whose work is booking, finishing or paying for the job are
+//! checked off when it happened, and those that wait for the move on when it
+//! moved after their rule was set (as `process::tell_moved_on` does). Work
+//! done before a rule was set is checked off quietly.
 
 use super::access::{PROJECT_EVENTS_TABLE, Stage};
 use super::schemas::Project;
@@ -19,6 +21,18 @@ use crate::state::AppState;
 use chrono::{Duration, NaiveDateTime, Utc};
 use lambda_http::tracing;
 use sqlx::{FromRow, MySql, MySqlConnection, QueryBuilder};
+
+/// Rules whose work can move the project on (the template or installation
+/// booked or done, a payment): still checked off once the project has left
+/// their stage.
+const JOB_TRIGGERS: [&str; 6] = [
+    "template_booked",
+    "template_completed",
+    "install_booked",
+    "install_completed",
+    "payment_any",
+    "payment_full",
+];
 
 #[derive(FromRow)]
 struct Rule {
@@ -125,52 +139,72 @@ async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx:
         }
     }
     for (project, part, stage, uses) in tracks {
-        // The stages it has left: their steps that wait for the move on are
-        // done, when it moved after the rule was set (a rule set later is not
-        // applied to old moves).
-        let at_stage = parts
-            .iter()
-            .find(|p| p.id == part)
-            .map_or_else(|| Stage::try_from(stage.to_string()).ok(), |p| Some(p.stage_code));
+        // The stages it has left (the template or installation done, paid, or
+        // moved on by hand or by itself): their steps whose work is booking,
+        // finishing or paying for the job are done once it happened; those
+        // that wait for the move on, when it moved after the rule was set (a
+        // rule set later is not applied to old moves).
+        let at_stage = parts.iter().find(|p| p.id == part).map_or_else(
+            || Stage::try_from(stage.to_string()).ok(),
+            |p| Some(p.stage_code),
+        );
         let last_move = moves
             .iter()
             .find(|(id, _)| *id == project.id)
             .and_then(|(_, at)| *at);
-        if let (Some(at_stage), Some(last_move)) = (at_stage, last_move) {
-            for rule in rules.iter().filter(|rule| waits_for_move(rule)) {
-                let Ok(left) = Stage::try_from(rule.stage_code.clone()) else {
-                    continue;
-                };
+        for rule in &rules {
+            let (Some(at_stage), Ok(left), Some(since)) = (
+                at_stage,
+                Stage::try_from(rule.stage_code.clone()),
+                rule.auto_since,
+            ) else {
+                continue;
+            };
+            if left >= at_stage
+                || !uses.contains(&left)
+                || off.contains(&(project.id, part, rule.id))
+                || done
+                    .iter()
+                    .any(|(p, d, s, _)| *p == project.id && *d == part && *s == rule.id)
+            {
+                continue;
+            }
+            let at = if waits_for_move(rule) {
                 // Completed is seconds only: the same second as the rule counts.
-                let after_rule = rule
-                    .auto_since
-                    .is_some_and(|since| last_move + Duration::seconds(1) > since);
-                if left >= at_stage
-                    || !uses.contains(&left)
-                    || !after_rule
-                    || off.contains(&(project.id, part, rule.id))
-                    || done
-                        .iter()
-                        .any(|(p, d, s, _)| *p == project.id && *d == part && *s == rule.id)
-                {
-                    continue;
-                }
-                let added = sqlx::query(
-                    "INSERT IGNORE INTO project_process_steps_done
-                        (project_id, step_id, part_id, done_by, done_at, auto)
-                     VALUES (?, ?, ?, NULL, ?, 1)",
-                )
-                .bind(project.id)
-                .bind(rule.id)
-                .bind(part)
-                .bind(now)
-                .execute(&mut *conn)
-                .await?
-                .rows_affected();
-                if added > 0 {
-                    super::step_events::apply(&mut conn, None, project.id, rule.id, part).await;
-                    checked.push((project.id, rule.id, part));
-                }
+                last_move
+                    .filter(|moved| *moved + Duration::seconds(1) > since)
+                    .map(|_| now)
+            } else if let Some(trigger) = rule
+                .auto_trigger
+                .as_deref()
+                .filter(|trigger| JOB_TRIGGERS.contains(trigger))
+            {
+                happened(&mut conn, company_id, project, rule, trigger, since)
+                    .await?
+                    .map(|at| at.min(now))
+            } else {
+                None
+            };
+            let Some(at) = at else {
+                continue;
+            };
+            let added = sqlx::query(
+                "INSERT IGNORE INTO project_process_steps_done
+                    (project_id, step_id, part_id, done_by, done_at, auto)
+                 VALUES (?, ?, ?, NULL, ?, 1)",
+            )
+            .bind(project.id)
+            .bind(rule.id)
+            .bind(part)
+            .bind(at)
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+            // Work done before the rule was set is checked off quietly: no one
+            // is told about an old job, and its schedule is left alone.
+            if added > 0 && at > since {
+                super::step_events::apply(&mut conn, None, project.id, rule.id, part).await;
+                checked.push((project.id, rule.id, part));
             }
         }
         if stage.is_empty() {
@@ -508,6 +542,46 @@ async fn happened(
             .bind(project.id)
             .fetch_one(&mut *conn)
             .await?
+        }
+        "template_completed" | "install_completed" => {
+            // Done now counts, even if it was done before (as booked): the
+            // crew's Completed, or for the installation the transaction's
+            // installed date.
+            let job: Option<NaiveDateTime> = sqlx::query_scalar(
+                "SELECT CAST(MIN(GREATEST(e.completed_at, ?)) AS DATETIME(3)) FROM events e
+                   JOIN calendars cal ON cal.id = e.calendar_id AND cal.slug = ? AND cal.company_id = ?
+                  WHERE e.deleted_date IS NULL AND e.crew_status = 'completed'
+                    AND e.completed_at IS NOT NULL
+                    AND (e.project_id = ?
+                         OR (e.project_id IS NULL AND e.customer_id = ?
+                             AND e.created_date >= (SELECT created_at FROM projects WHERE id = ?) - INTERVAL 1 DAY))",
+            )
+            .bind(after)
+            .bind(if trigger == "template_completed" { "templates" } else { "installations" })
+            .bind(company_id)
+            .bind(project.id)
+            .bind(project.customer_id)
+            .bind(project.id)
+            .fetch_one(&mut *conn)
+            .await?;
+            let installed: Option<NaiveDateTime> = if trigger == "install_completed" {
+                sqlx::query_scalar(
+                    "SELECT CAST(GREATEST(s.installed_date, ?) AS DATETIME(3)) FROM projects p
+                       JOIN sales s ON s.id = p.sale_id
+                      WHERE p.id = ? AND s.installed_date IS NOT NULL",
+                )
+                .bind(after)
+                .bind(project.id)
+                .fetch_optional(&mut *conn)
+                .await?
+                .flatten()
+            } else {
+                None
+            };
+            match (job, installed) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
         }
         "invoice_sent" => {
             sqlx::query_scalar(
