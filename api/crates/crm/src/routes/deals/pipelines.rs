@@ -54,6 +54,8 @@ pub struct NameInput {
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PipelinePatch {
+    /// New name (1–255 characters).
+    pub name: Option<String>,
     /// Show or hide it on the boards.
     pub is_displayed: Option<bool>,
     /// `true` makes it the company's default (only `true` is accepted).
@@ -177,7 +179,7 @@ pub async fn create(
 
 /// Change a pipeline
 ///
-/// Shows or hides a pipeline, or makes it the company's default.
+/// Renames a pipeline, shows or hides it, or makes it the company's default.
 #[crate::openapi::path(
     patch,
     path = "/v1/deal-pipelines/{id}",
@@ -187,7 +189,7 @@ pub async fn create(
     request_body = PipelinePatch,
     responses(
         (status = 204, description = "Changed"),
-        (status = 400, description = "`is_default: false`", body = ErrorBody),
+        (status = 400, description = "`is_default: false`, or an empty name", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an admin", body = ErrorBody),
         (status = 404, description = "No such pipeline of the company", body = ErrorBody),
@@ -207,6 +209,18 @@ pub async fn update(
         return Err(ApiError::BadRequest(
             "make another pipeline the default instead".into(),
         ));
+    }
+    let name = match patch.name {
+        Some(name) => Some(clean_name(&NameInput { name })?),
+        None => None,
+    };
+    if let Some(name) = name {
+        sqlx::query("UPDATE groups_list SET name = ? WHERE id = ? AND company_id = ?")
+            .bind(name)
+            .bind(id)
+            .bind(user.company_id)
+            .execute(pool)
+            .await?;
     }
     if let Some(displayed) = patch.is_displayed {
         sqlx::query("UPDATE groups_list SET is_displayed = ? WHERE id = ? AND company_id = ?")

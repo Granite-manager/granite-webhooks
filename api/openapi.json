@@ -19436,7 +19436,7 @@
           "deals"
         ],
         "summary": "Change a pipeline",
-        "description": "Shows or hides a pipeline, or makes it the company's default.",
+        "description": "Renames a pipeline, shows or hides it, or makes it the company's default.",
         "operationId": "update_deal_pipeline",
         "parameters": [
           {
@@ -19465,7 +19465,7 @@
             "description": "Changed"
           },
           "400": {
-            "description": "`is_default: false`",
+            "description": "`is_default: false`, or an empty name",
             "content": {
               "application/json": {
                 "schema": {
@@ -105190,6 +105190,13 @@
         "type": "object",
         "description": "Body of `PATCH /v1/deal-pipelines/{id}`.",
         "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New name (1–255 characters)."
+          },
           "is_displayed": {
             "type": [
               "boolean",
