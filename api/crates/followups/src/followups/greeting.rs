@@ -3,7 +3,8 @@
 //! One rule for every AI-written SMS and email (the AI Reply button, inline
 //! autocomplete, follow-ups): greet by name unless the rep's side already
 //! wrote to this customer (SMS or email) earlier the same store-local
-//! (Indianapolis) day. The customer writing first today does not count: the
+//! (Indianapolis) day. Automatic texts and emails (reminders, "on the way")
+//! do not count either. The customer writing first today does not count: the
 //! first reply of the day still opens with "Hi <name>," (owner, 2026-11-16).
 //! Once we have written today the conversation is still going: no greeting
 //! and no name, the message starts with its content. Either way the name
@@ -45,11 +46,11 @@ pub fn conversation_recency(
     timeline: &[FollowupTimelineMessage],
     now: Instant,
 ) -> ConversationRecency {
-    let dated: Vec<(Instant, Direction)> = timeline
+    let dated: Vec<(Instant, Direction, bool)> = timeline
         .iter()
-        .filter_map(|m| parse_followup_timeline_at(&m.at).map(|at| (at, m.direction)))
+        .filter_map(|m| parse_followup_timeline_at(&m.at).map(|at| (at, m.direction, m.automated)))
         .collect();
-    let Some(last) = dated.iter().map(|(at, _)| *at).max() else {
+    let Some(last) = dated.iter().map(|(at, ..)| *at).max() else {
         return ConversationRecency::NoHistory;
     };
     let today = store_zoned_parts(now);
@@ -59,9 +60,11 @@ pub fn conversation_recency(
         at >= now || (day.year, day.month, day.day) == (today.year, today.month, today.day)
     };
     let minutes_since_last = (now - last).max(Duration::zero()).num_minutes();
+    // An automatic text (a reminder, "the crew is on the way") is not the
+    // rep writing: the rep's first message still greets by name.
     let we_wrote_today = dated
         .iter()
-        .any(|(at, dir)| *dir == Direction::Outbound && is_today(*at));
+        .any(|(at, dir, automated)| *dir == Direction::Outbound && !automated && is_today(*at));
     if we_wrote_today {
         ConversationRecency::Continuing { minutes_since_last }
     } else {
@@ -115,6 +118,7 @@ mod tests {
             text: "x".into(),
             from_email: None,
             from_phone: None,
+            automated: false,
         }
     }
 
@@ -157,6 +161,27 @@ mod tests {
         assert!(line.contains("20 minutes ago"));
         assert!(line.contains("do NOT use the customer's name"));
         assert!(line.contains("applies to email too"));
+    }
+
+    #[test]
+    fn an_automatic_text_today_still_gets_a_greeting() {
+        // "The crew is on the way" went out at 8:29 AM; the rep has not written yet.
+        let timeline = [
+            message("2026-11-16 19:49", E, O),
+            FollowupTimelineMessage {
+                automated: true,
+                ..message("2026-11-18 13:29", S, O)
+            },
+            message("2026-11-18 15:19", E, I),
+        ];
+        let recency = conversation_recency(&timeline, at("2026-11-18T15:30:00Z"));
+        assert_eq!(
+            recency,
+            ConversationRecency::Reopening {
+                minutes_since_last: 11
+            }
+        );
+        assert!(greeting_instruction(recency).starts_with("GREETING: BY NAME"));
     }
 
     #[test]
