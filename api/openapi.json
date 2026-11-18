@@ -95962,6 +95962,7 @@
           "body",
           "read_count",
           "has_attachments",
+          "is_automated",
           "thread_has_attachments"
         ],
         "properties": {
@@ -96039,6 +96040,10 @@
             ],
             "format": "date-time",
             "description": "When an employee opened it."
+          },
+          "is_automated": {
+            "type": "boolean",
+            "description": "Sent by the system (a reminder, an invoice), not typed by a person."
           },
           "thread_has_attachments": {
             "type": "boolean",
