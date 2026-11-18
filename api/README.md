@@ -279,7 +279,9 @@ Migrations: `20270108090000_customer-payments.sql`,
 in `tests/quotes/customer_payments.rs`, and by hand against Stripe's test
 mode (cards, ACH, refunds, disputes, catching up); never in live mode.
 `Stripe::API_VERSION` is pinned: newer versions refuse
-`payment_method_types` on a Checkout session.
+`payment_method_types` on a Checkout session. Running and testing it
+locally (demo mode, Stripe test mode, test cards):
+`docs/customer-payments.md` in granite-front.
 
 ### Uploads and storage
 
