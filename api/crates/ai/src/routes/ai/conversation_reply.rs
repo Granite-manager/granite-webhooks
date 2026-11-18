@@ -19,7 +19,7 @@ use crate::followups::send_window::FollowupChannel;
 use crate::followups::timeline::Direction;
 use crate::openapi::ToSchema;
 use crate::re;
-use crate::routes::ai::compose::format_rep_notes_block;
+use crate::routes::ai::compose::{format_rep_notes_block, rep_greeting, with_greeting};
 use crate::routes::ai::reply_context;
 use crate::state::AppState;
 use axum::Json;
@@ -66,6 +66,9 @@ PRIMARY TASK — write the next message this conversation itself calls for:
 Every message and quote shows its date and how long ago it was. Know how long the customer has had the quote and how long they have been quiet, and write for that moment. Never write as if an old message were recent.
 - Never invent prices, dates, availability, discounts, or promises. Mention a price only from QUOTES (never from a draft quote), and only when it helps.
 - With a FOCUS DEAL, prefer that deal's quote and facts.
+- Prices: QUOTES lists each sent quote line by line with the price the customer sees, and the PRICE LIST of their quote: what changing or adding an edge, cutout or item costs them. An edge change costs the edge profile price plus the Edge item price for that edge when the list has one (Eased $0/lin ft but Edge: Eased $100 means it adds $100). Never say something is included or free unless those prices show it.
+- CUSTOMER / PROJECT INFO has the Schedule: every appointment (template, installation, cabinets…) with its date and time in store time. When the customer asks when their template, install or another visit is, answer with that date and time exactly. Not scheduled yet: say so. Never invent a date or time.
+- Each email shows who it went to (To, Cc) and its Attachments. When the rep already emailed something (an invoice, a quote) to anyone in this conversation, say it was sent and to which address; never offer to send it again or say it is attached.
 
 ## Sound like the rep
 - Match HOW THE REP WRITES and RECENT MESSAGES BY THE REP: their length, openers, punctuation, casing, emoji (or none), and how they end messages. Borrow the voice, never the content.
@@ -604,7 +607,13 @@ async fn load_extras(
                 .await
             {
                 Ok(quotes) => (
-                    reply_context::format_quotes(&quotes, deal_id, now),
+                    reply_context::format_priced_quotes(
+                        &quotes,
+                        deal_id,
+                        now,
+                        &reply_context::load_quote_prices(&state.pool, user.company_id, &quotes)
+                            .await,
+                    ),
                     reply_context::last_quote_emailed(&quotes),
                 ),
                 Err(err) => {
@@ -773,6 +782,16 @@ pub async fn draft(
         body =
             trim(&re!(r"^(?:Subject:\s*[^\n\r]*(?:\r?\n)+)+", "iu").replace(&body, "")).to_string();
     }
+    // The model skips the GREETING line too often (owner, 2026-11-18): when
+    // the rep has not written to the customer yet today, the code opens with
+    // the rep's own "Hi <first name>," as the typing suggestions do.
+    if !conversation_recency(&gathered.timeline, now).is_continuing()
+        && let Some(first_name) =
+            crate::followups::style::first_name_from_customer_profile(&gathered.profile)
+    {
+        let greeting = rep_greeting(&gathered.timeline, &gathered.rep_voice.examples);
+        body = with_greeting(&body, &first_name, greeting);
+    }
     if channel == FollowupChannel::Sms {
         body = js_slice(
             trim(&re!(r"\s+", "g").replace_all(&body, " ")),
@@ -805,6 +824,7 @@ mod tests {
             text: text.into(),
             from_email: None,
             from_phone: None,
+            automated: false,
         }
     }
 

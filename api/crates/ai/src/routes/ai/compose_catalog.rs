@@ -174,7 +174,7 @@ fn edge_lines(price_list: &Value) -> Vec<String> {
                     Some(match price {
                         Some(p) if p > 0.0 && flat => format!("{name} {} flat", money(p)),
                         Some(p) if p > 0.0 => format!("{name} {}/lin ft", money(p)),
-                        Some(_) => format!("{name} included"),
+                        Some(_) => format!("{name} $0/lin ft"),
                         None => name.to_string(),
                     })
                 })
@@ -247,12 +247,77 @@ fn charge_lines(price_list: &Value) -> Vec<String> {
     lines
 }
 
+/// "Option 1", "Option 2": an item's only choice, not a name worth saying.
+fn is_unnamed_option(name: &str) -> bool {
+    name.strip_prefix("Option ")
+        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The list's own items, each a line of its own on a quote (an Edge
+/// upgrade, delivery, plumbing, a sealer): "- Edge: 1/2" bevel $200,
+/// Eased $100", "- 10 year Sealer: $6/sq ft".
+fn other_item_lines(price_list: &Value) -> Vec<String> {
+    arr(Some(price_list), "arrOtherItems")
+        .iter()
+        .filter_map(|item| {
+            if on(get(Some(item), "priceHiddenOnQuote")) {
+                return None;
+            }
+            let name = string(Some(item), "name")
+                .map(trim)
+                .filter(|n| !n.is_empty())?;
+            let options = arr(Some(item), "arrOptions");
+            let prices: Vec<String> = if options.is_empty() {
+                let unit = string(Some(item), "unitName")
+                    .map(trim)
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or("unit");
+                arr(Some(item), "arrRanges")
+                    .iter()
+                    .filter_map(|range| {
+                        let each = num(Some(range), "unitPrice").filter(|p| p.is_finite())?;
+                        let flat = num(Some(range), "flatPrice")
+                            .filter(|p| p.is_finite() && *p > 0.0)
+                            .map(|p| format!(" + {}", money(p)))
+                            .unwrap_or_default();
+                        let upto = num(Some(range), "maxDimension")
+                            .filter(|m| m.is_finite())
+                            .map(|m| format!("up to {m} {unit}: "))
+                            .unwrap_or_default();
+                        Some(format!("{upto}{}/{unit}{flat}", money(each)))
+                    })
+                    .collect()
+            } else {
+                options
+                    .iter()
+                    .map(|option| {
+                        let price = num(Some(option), "flatPrice")
+                            .filter(|p| p.is_finite())
+                            .unwrap_or(0.0);
+                        let label = string(Some(option), "name")
+                            .map(trim)
+                            .filter(|n| !n.is_empty() && !is_unnamed_option(n));
+                        match label {
+                            // "$11,999" names its own price.
+                            Some(label) if label.starts_with('$') => label.to_string(),
+                            Some(label) => format!("{label} {}", money(price)),
+                            None => money(price),
+                        }
+                    })
+                    .collect()
+            };
+            (!prices.is_empty()).then(|| format!("- {name}: {}", prices.join(", ")))
+        })
+        .collect()
+}
+
 /// What the list charges on a quote besides the stone (empty: nothing).
 pub fn format_price_list(price_list: &Value) -> String {
     [
         edge_lines(price_list),
         cutout_lines(price_list),
         charge_lines(price_list),
+        other_item_lines(price_list),
     ]
     .concat()
     .join("\n")
@@ -467,13 +532,38 @@ mod tests {
         });
         assert_eq!(
             format_price_list(&list),
-            "- Edges: Flat included, Eased $100 flat, Ogee $25/lin ft, Dupont $30/lin ft\n\
+            "- Edges: Flat $0/lin ft, Eased $100 flat, Ogee $25/lin ft, Dupont $30/lin ft\n\
              - Undermount sink cutout: up to 18\" wide $125, wider $250\n\
              - Quartz: Farmhouse sink cutout: $300\n\
              - Cooktop cutout: $200\n\
              - Fabrication (stones priced by the slab only): $12.50/sq ft"
         );
         assert_eq!(format_price_list(&json!({})), "");
+    }
+
+    #[test]
+    fn the_price_list_names_its_own_items() {
+        let list = json!({
+            "arrEdgeProfileSets": [{ "materialFilter": {}, "arrEdgeProfiles": [{ "name": "Eased", "price": 0 }] }],
+            "arrOtherItems": [
+                { "name": "Edge", "arrOptions": [
+                    { "name": "1/2\" bevel", "flatPrice": 200 },
+                    { "name": "Eased", "flatPrice": 100 }
+                ] },
+                { "name": "Plumbing - Disconnect & Reconnect", "arrOptions": [{ "name": "Option 1", "flatPrice": 450 }] },
+                { "name": "Cabinets Delivery", "arrOptions": [{ "name": "Option 2", "flatPrice": "" }, { "name": "Up to 40 mi", "flatPrice": 500 }] },
+                { "name": "10 year Sealer", "unitName": "sq ft", "arrRanges": [{ "flatPrice": 0, "unitPrice": 6, "maxDimension": null }] },
+                { "name": "Secret", "priceHiddenOnQuote": 1, "arrOptions": [{ "name": "Option 1", "flatPrice": 9 }] }
+            ]
+        });
+        assert_eq!(
+            format_price_list(&list),
+            "- Edges: Eased $0/lin ft\n\
+             - Edge: 1/2\" bevel $200, Eased $100\n\
+             - Plumbing - Disconnect & Reconnect: $450\n\
+             - Cabinets Delivery: $0, Up to 40 mi $500\n\
+             - 10 year Sealer: $6/sq ft"
+        );
     }
 
     #[test]
