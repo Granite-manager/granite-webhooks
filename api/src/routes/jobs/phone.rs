@@ -934,11 +934,12 @@ async fn finish(
     }
     tx.commit().await?;
     if let (Some(note), Some(deal_id), Some(_)) = (note, deal_id, note_id) {
-        // No user wrote it, so nobody is left out.
+        // The rep who made or took the call is not told of its note: they
+        // were on it. A colleague's call on their customer still tells them.
         notify_assignees(
             state,
             deal_id,
-            0,
+            call.user_id.unwrap_or(0),
             AI_NOTE_AUTHOR,
             note,
             Notification::NoteAdded,
