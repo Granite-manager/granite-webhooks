@@ -1,4 +1,5 @@
 DELETE /v1/auth/device-sessions/current
+DELETE /v1/customers/7
 DELETE /v1/deals/7/activities/7
 DELETE /v1/deals/7/files/7/7
 DELETE /v1/deals/7/notes/7
@@ -80,6 +81,7 @@ GET /v1/invoices
 GET /v1/me/devices
 GET /v1/me/gmail
 GET /v1/me/mfa
+GET /v1/me/positions
 GET /v1/me/quote-email-templates
 GET /v1/me/schedule
 GET /v1/me/undo-send
