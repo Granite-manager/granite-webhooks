@@ -385,10 +385,7 @@ pub async fn get(
                 ei.url, u.name AS author,
                 DATE_FORMAT(ei.created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at
            FROM projects p
-           JOIN events e ON e.deleted_date IS NULL
-                        AND (e.project_id = p.id
-                             OR (e.project_id IS NULL AND e.customer_id = p.customer_id
-                                 AND e.created_date >= p.created_at - INTERVAL 1 DAY))
+           JOIN events e ON e.deleted_date IS NULL AND e.project_id = p.id
            JOIN event_images ei ON ei.event_id = e.id AND ei.company_id = p.company_id
                                AND ei.for_customer = 1 AND ei.deleted_at IS NULL
            LEFT JOIN calendars cal ON cal.id = e.calendar_id
@@ -451,10 +448,7 @@ pub async fn get(
                   e.completed_at
              FROM projects p
              JOIN events e ON e.deleted_date IS NULL AND e.crew_status = 'completed'
-                          AND e.completed_at IS NOT NULL
-                          AND (e.project_id = p.id
-                               OR (e.project_id IS NULL AND e.customer_id = p.customer_id
-                                   AND e.created_date >= p.created_at - INTERVAL 1 DAY))
+                          AND e.completed_at IS NOT NULL AND e.project_id = p.id
              JOIN calendars cal ON cal.id = e.calendar_id
                                AND cal.slug IN ('templates', 'installations')
              LEFT JOIN users u ON u.id = e.assigned_user_id
@@ -723,9 +717,6 @@ pub async fn convert_deal(
     }))
 }
 
-/// Joins a project (`p`) to its jobs (`e`): those booked on it, and the
-/// customer's from a day before it started (as the job photos and history).
-pub(super) const PROJECT_EVENTS: &str = "e.deleted_date IS NULL
-    AND (e.project_id = p.id
-         OR (e.project_id IS NULL AND e.customer_id = p.customer_id
-             AND e.created_date >= p.created_at - INTERVAL 1 DAY))";
+/// Joins a project (`p`) to its jobs (`e`): only those linked to it (see
+/// `PROJECT_JOB_SQL`).
+pub(super) const PROJECT_EVENTS: &str = "e.deleted_date IS NULL AND e.project_id = p.id";

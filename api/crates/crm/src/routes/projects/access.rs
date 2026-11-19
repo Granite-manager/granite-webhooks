@@ -78,25 +78,17 @@ impl TryFrom<String> for Stage {
 }
 
 /// The project's Templates and Installations jobs (`events e`, `calendars
-/// cal`): linked to it, or of its customer, made since it started and
-/// linked to none.
-pub const PROJECT_JOB_SQL: &str = "e.deleted_date IS NULL
-      AND (e.project_id = p.id
-           OR (e.project_id IS NULL AND e.customer_id = p.customer_id
-               AND e.created_date >= p.created_at - INTERVAL 1 DAY))";
+/// cal`): only those linked to it. A customer's other events are never
+/// guessed in (owner, 2026-11-19: a builder's earlier job at another address
+/// became the new project's template); an event is the project's when its
+/// sold quote made it or someone linked it.
+pub const PROJECT_JOB_SQL: &str = "e.deleted_date IS NULL AND e.project_id = p.id";
 
 /// The jobs of `projects p` as a table to select `e` from: the events linked
-/// to it, and those of its customer made since it started and linked to none
-/// (deleted ones too). The same rows as `events e` under [`PROJECT_JOB_SQL`]'s
-/// OR, as two indexed lookups: with the OR, `MySQL` reads every event that has
-/// no project once per project, which made the board slower with each one.
+/// to it (deleted ones too), as in [`PROJECT_JOB_SQL`].
 macro_rules! project_events_table {
     () => {
-        "(SELECT * FROM events WHERE project_id = p.id
-          UNION ALL
-          SELECT * FROM events
-           WHERE project_id IS NULL AND customer_id = p.customer_id
-             AND created_date >= p.created_at - INTERVAL 1 DAY)"
+        "(SELECT * FROM events WHERE project_id = p.id)"
     };
 }
 
@@ -111,12 +103,6 @@ macro_rules! part_events_table {
           UNION ALL
           SELECT * FROM events
            WHERE project_part_id IS NULL AND project_id = p.id
-             AND pp.id = (SELECT MIN(fp.id) FROM project_parts fp WHERE fp.project_id = p.id)
-          UNION ALL
-          SELECT * FROM events
-           WHERE project_part_id IS NULL AND project_id IS NULL
-             AND customer_id = p.customer_id
-             AND created_date >= p.created_at - INTERVAL 1 DAY
              AND pp.id = (SELECT MIN(fp.id) FROM project_parts fp WHERE fp.project_id = p.id))"
     };
 }
@@ -175,9 +161,7 @@ macro_rules! part_events_sql {
         "(e.project_part_id = pp.id
           OR (e.project_part_id IS NULL
               AND pp.id = (SELECT MIN(fp.id) FROM project_parts fp WHERE fp.project_id = p.id)
-              AND (e.project_id = p.id
-                   OR (e.project_id IS NULL AND e.customer_id = p.customer_id
-                       AND e.created_date >= p.created_at - INTERVAL 1 DAY))))"
+              AND e.project_id = p.id))"
     };
 }
 
