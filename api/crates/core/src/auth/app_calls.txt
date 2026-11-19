@@ -9,7 +9,9 @@ DELETE /v1/emails/7
 DELETE /v1/emails/drafts/7
 DELETE /v1/events/7
 DELETE /v1/events/7/attachments/7
+DELETE /v1/events/7/comments/7
 DELETE /v1/events/7/issues/7
+DELETE /v1/events/7/photos/7
 DELETE /v1/me/devices/7
 DELETE /v1/me/gmail
 DELETE /v1/me/photo
@@ -268,6 +270,7 @@ PUT /v1/delayed/7/7
 PUT /v1/email-templates/7
 PUT /v1/emails/drafts/7
 PUT /v1/events/7
+PUT /v1/events/7/comments/7
 PUT /v1/events/7/issues/7
 PUT /v1/invoices/7/status
 PUT /v1/me/quote-email-templates/7

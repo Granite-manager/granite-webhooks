@@ -149,8 +149,9 @@ async fn check_sections(
 /// (the app's To do tab); `/v1/me/undo-send` is the caller's Undo send (Settings ›
 /// General); `/v1/me/photo` is the caller's own picture (the app's Profile);
 /// `/v1/me/mfa` is the caller's two-step sign-in (Settings › Security);
-/// `/v1/me/gmail` is the caller's own Gmail for sending (Settings › Emails).
-pub const DEVICE_ROUTES: [&str; 11] = [
+/// `/v1/me/gmail` is the caller's own Gmail for sending (Settings › Emails);
+/// `/v1/me/template-order` is the caller's order of the Use Template lists.
+pub const DEVICE_ROUTES: [&str; 12] = [
     "/v1/emails",
     "/v1/schedule",
     "/v1/events",
@@ -162,6 +163,7 @@ pub const DEVICE_ROUTES: [&str; 11] = [
     "/v1/me/photo",
     "/v1/me/mfa",
     "/v1/me/gmail",
+    "/v1/me/template-order",
 ];
 
 /// CRM routes the app reads with its device token, `GET` only (my texts
@@ -173,10 +175,11 @@ pub const DEVICE_ROUTES: [&str; 11] = [
 /// notification a push names; the shop's maintenance checks a push says are
 /// due; the customer stones page the typing
 /// suggestion offers to link; the sales reps that Assign a sales rep lists;
-/// and the customer to-do lists a crew job sends).
+/// the customer to-do lists a crew job sends; and my positions, which show
+/// the contact card's Mark invalid and Delete to whom the web shows them).
 /// These prefixes and everything under them; writes there still need the CRM
 /// session.
-pub const DEVICE_READ_ROUTES: [&str; 20] = [
+pub const DEVICE_READ_ROUTES: [&str; 21] = [
     "/v1/sms/mine",
     "/v1/ai/compose/inventory-url",
     "/v1/calendars",
@@ -197,6 +200,7 @@ pub const DEVICE_READ_ROUTES: [&str; 20] = [
     "/v1/shop/maintenance",
     "/v1/users/sales-reps",
     "/v1/customer-checklists",
+    "/v1/me/positions",
 ];
 
 /// CRM actions the app's composer calls with its device token: exactly these
@@ -245,9 +249,11 @@ fn is_id(segment: &str) -> bool {
 /// win, lose or reopen it (`PUT .../outcome`), its to-dos (`POST
 /// .../activities`, `PATCH|DELETE .../activities/{id}`), its notes and their
 /// comments, its files (`POST .../files`, `DELETE .../files/{source}/{id}`,
-/// `PATCH .../documents/{id}`), and the to-do name suggestions
-/// (`/v1/deal-activities/suggestions`). Deleting a deal, reordering the
-/// board and the pipeline and stage setup stay with the CRM session.
+/// `PATCH .../documents/{id}`), the to-do name suggestions
+/// (`/v1/deal-activities/suggestions`), deleting a deal (`DELETE
+/// /v1/deals/{id}`) and a deal's place in its list (`POST
+/// /v1/deals/reorder`). The pipeline and stage setup stay with the CRM
+/// session.
 fn deal_write(method: &Method, path: &str) -> bool {
     if let Some(rest) = path.strip_prefix("/v1/deal-activities/suggestions") {
         return (rest.is_empty() && method == Method::GET)
@@ -270,7 +276,8 @@ fn deal_write(method: &Method, path: &str) -> bool {
         method == Method::DELETE,
     );
     match parts.as_slice() {
-        [id] => is_id(id) && patch,
+        ["reorder"] => post,
+        [id] => is_id(id) && (patch || delete),
         [id, "outcome"] => is_id(id) && put,
         [id, "activities" | "notes" | "files"] => is_id(id) && post,
         [id, "activities" | "notes", item] => is_id(id) && is_id(item) && (patch || delete),
@@ -292,16 +299,59 @@ fn deal_write(method: &Method, path: &str) -> bool {
 /// saving its customer as the website's deal edit does (`PUT
 /// /v1/customers/{id}`: name, emails, phones, address, source, sales rep,
 /// company and notes; a new sales rep gets the customer's deals and is told).
-/// Creating, merging or deleting a customer stays with the CRM session.
+/// The contact card's: its temperature (`PUT .../temperature`), linking it to
+/// another customer's family (`PUT .../parent`), deleting it (`DELETE
+/// /v1/customers/{id}`, sales managers and managers, as on the web), starting
+/// an automated follow-up (`POST .../flow`) and editing a QuickBooks invoice
+/// (`PUT .../qbo-invoices/{invoice_id}`). Creating or merging a customer stays
+/// with the CRM session.
 fn customer_write(method: &Method, path: &str) -> bool {
-    method == Method::PUT
-        && path.strip_prefix("/v1/customers/").is_some_and(|rest| {
-            is_id(rest)
-                || rest
-                    .strip_suffix("/sales-rep")
-                    .or_else(|| rest.strip_suffix("/invalid"))
-                    .is_some_and(is_id)
-        })
+    let Some(rest) = path.strip_prefix("/v1/customers/") else {
+        return false;
+    };
+    let (post, put, delete) = (
+        method == Method::POST,
+        method == Method::PUT,
+        method == Method::DELETE,
+    );
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [id] => is_id(id) && (put || delete),
+        [id, "sales-rep" | "invalid" | "temperature" | "parent"] => is_id(id) && put,
+        [id, "flow"] => is_id(id) && post,
+        [id, "qbo-invoices", invoice] => is_id(id) && !invoice.is_empty() && put,
+        _ => false,
+    }
+}
+
+/// `POST /v1/email-attachments/{id}/deal`: an email's file added to the
+/// deal's files, from the app's email conversation.
+fn email_attachment_to_deal(method: &Method, path: &str) -> bool {
+    method == Method::POST
+        && path
+            .strip_prefix("/v1/email-attachments/")
+            .and_then(|rest| rest.strip_suffix("/deal"))
+            .is_some_and(is_id)
+}
+
+/// A text conversation's changes the app's Text tab makes besides sending:
+/// deleting a failed text (`DELETE /v1/sms/{provider}/messages/{id}`) and
+/// the running automated follow-up (`GET|POST
+/// /v1/sms/{provider}/threads/{phone}/flow`: see it, Stop, Send now).
+fn sms_thread_write(method: &Method, path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/v1/sms/") else {
+        return false;
+    };
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [provider, "messages", id] => {
+            SMS_SEND_PROVIDERS.contains(provider) && is_id(id) && method == Method::DELETE
+        }
+        [provider, "threads", phone, "flow"] => {
+            SMS_SEND_PROVIDERS.contains(provider)
+                && is_id(phone)
+                && (method == Method::GET || method == Method::POST)
+        }
+        _ => false,
+    }
 }
 
 /// What the deal's Edit reads with the device token to save its customer,
@@ -452,10 +502,14 @@ fn place_read(method: &Method, path: &str) -> bool {
 
 /// `GET /v1/sales/{id}`: a sale's rooms and notes, the Project of an event in
 /// the app (and what an installer or template maker keeps on the phone for
-/// places without service). The sales list and every change stay with the CRM
-/// session.
+/// places without service), and its filled-in contract PDF (`GET
+/// /v1/sales/{id}/contract`, the Transactions screen's Contract). The sales
+/// list and every change stay with the CRM session.
 fn sale_read(method: &Method, path: &str) -> bool {
-    method == Method::GET && path.strip_prefix("/v1/sales/").is_some_and(is_id)
+    method == Method::GET
+        && path
+            .strip_prefix("/v1/sales/")
+            .is_some_and(|rest| is_id(rest) || rest.strip_suffix("/contract").is_some_and(is_id))
 }
 
 /// The changes the app's native sale form and invoice editor make with the
@@ -531,7 +585,9 @@ fn own_invoice(method: &Method, path: &str) -> bool {
 /// .../notes|files`, `DELETE .../notes|files/{id}`), checking a step off (`PUT
 /// .../steps/{id}`), its parts (`GET /v1/projects/part-types`, `POST
 /// .../parts`, `PATCH|DELETE .../parts/{id}`, `PUT
-/// .../appointments/{id}/part`), and starting a deal's project (`POST
+/// .../appointments/{id}/part`), an event's project link (`GET|PUT
+/// /v1/projects/event-links/{event_id}`, the event's Link to project), and
+/// starting a deal's project (`POST
 /// /v1/deals/{id}/project`; reading it is under [`DEVICE_READ_ROUTES`]). The
 /// handlers keep their own position checks ([`sections`] and [`skills`]
 /// still apply); setting up the company's steps stays with the CRM session.
@@ -562,6 +618,7 @@ fn project_route(method: &Method, path: &str) -> bool {
     match parts.as_slice() {
         ["payments" | "process-steps" | "part-types"] => get,
         ["reorder"] => post,
+        ["event-links", event] => is_id(event) && (get || put),
         [id] => is_id(id) && (get || delete),
         [id, "actions" | "tasks" | "notes" | "files"] => is_id(id) && post,
         [id, "task-times", "reset"] => is_id(id) && post,
@@ -599,6 +656,8 @@ fn device_route(method: &Method, path: &str) -> bool {
         || (method == Method::POST && (DEVICE_ACTIONS.contains(&path) || sms_send(path)))
         || deal_write(method, path)
         || customer_write(method, path)
+        || email_attachment_to_deal(method, path)
+        || sms_thread_write(method, path)
         || (method == Method::GET && path == DEVICE_CUSTOMER_SOURCES)
         || template_write(method, path)
         || promise_route(method, path)
@@ -621,8 +680,9 @@ fn device_route(method: &Method, path: &str) -> bool {
 /// A transaction's slab changes, as the website's Transactions dialog makes
 /// them: Cut, Uncut, Partially cut, Remove and Replace (`POST
 /// /v1/transactions/{id}/slabs/{slab}/...`), a room's square feet (`PUT
-/// .../slabs/{slab}/square-feet`) and Add slab (`POST
-/// /v1/transactions/{id}/slabs`). The Edit transactions skill
+/// .../slabs/{slab}/square-feet`), Add slab (`POST
+/// /v1/transactions/{id}/slabs`) and Mark as Installed (`POST
+/// /v1/transactions/{id}/installed`). The Edit transactions skill
 /// ([`skills`]) still applies.
 fn transaction_write(method: &Method, path: &str) -> bool {
     let Some(rest) = path.strip_prefix("/v1/transactions/") else {
@@ -630,7 +690,7 @@ fn transaction_write(method: &Method, path: &str) -> bool {
     };
     let (post, put) = (method == Method::POST, method == Method::PUT);
     match rest.split('/').collect::<Vec<_>>().as_slice() {
-        [id, "slabs"] => is_id(id) && post,
+        [id, "slabs" | "installed"] => is_id(id) && post,
         [
             id,
             "slabs",
@@ -1124,13 +1184,15 @@ mod tests {
             (Method::PATCH, "/v1/deals/7/documents/4"),
             (Method::GET, "/v1/deal-activities/suggestions"),
             (Method::POST, "/v1/deal-activities/suggestions/hidden"),
+            (Method::DELETE, "/v1/deals/7"),
+            (Method::POST, "/v1/deals/reorder"),
         ] {
             assert!(device_route(&method, path), "{method} {path}");
         }
         for (method, path) in [
-            (Method::DELETE, "/v1/deals/7"),
             (Method::PUT, "/v1/deals/7"),
-            (Method::POST, "/v1/deals/reorder"),
+            (Method::PATCH, "/v1/deals/reorder"),
+            (Method::DELETE, "/v1/deals/x"),
             (Method::POST, "/v1/deals/7"),
             (Method::PATCH, "/v1/deals/x"),
             (Method::POST, "/v1/deals/7/activities/3"),
@@ -1149,6 +1211,48 @@ mod tests {
     }
 
     #[test]
+    fn the_app_has_the_websites_item_buttons() {
+        for (method, path) in [
+            (Method::GET, "/v1/me/positions"),
+            (Method::PUT, "/v1/me/template-order/sms"),
+            (Method::DELETE, "/v1/me/template-order/email"),
+            (Method::PUT, "/v1/customers/7/temperature"),
+            (Method::PUT, "/v1/customers/7/parent"),
+            (Method::DELETE, "/v1/customers/7"),
+            (Method::GET, "/v1/customers/7/flow"),
+            (Method::POST, "/v1/customers/7/flow"),
+            (Method::POST, "/v1/email-attachments/7/deal"),
+            (Method::DELETE, "/v1/sms/cloudtalk/messages/7"),
+            (Method::DELETE, "/v1/sms/ringcentral/messages/7"),
+            (Method::GET, "/v1/sms/telnyx/threads/3175551234/flow"),
+            (Method::POST, "/v1/sms/cloudtalk/threads/3175551234/flow"),
+            (Method::GET, "/v1/projects/event-links/7"),
+            (Method::PUT, "/v1/projects/event-links/7"),
+            (Method::POST, "/v1/transactions/7/installed"),
+        ] {
+            assert!(device_route(&method, path), "{method} {path}");
+        }
+        for (method, path) in [
+            (Method::PUT, "/v1/me/positions"),
+            (Method::POST, "/v1/customers/7/temperature"),
+            (Method::DELETE, "/v1/customers/7/parent"),
+            (Method::DELETE, "/v1/customers/x"),
+            (Method::DELETE, "/v1/customers/7/flow"),
+            (Method::GET, "/v1/email-attachments/7/deal"),
+            (Method::POST, "/v1/email-attachments/x/deal"),
+            (Method::DELETE, "/v1/sms/other/messages/7"),
+            (Method::DELETE, "/v1/sms/cloudtalk/messages/x"),
+            (Method::PUT, "/v1/sms/cloudtalk/threads/3175551234/flow"),
+            (Method::POST, "/v1/sms/cloudtalk/threads/31755x/flow"),
+            (Method::DELETE, "/v1/projects/event-links/7"),
+            (Method::PUT, "/v1/projects/event-links/x"),
+            (Method::POST, "/v1/transactions/7/installedx"),
+        ] {
+            assert!(!device_route(&method, path), "{method} {path}");
+        }
+    }
+
+    #[test]
     fn the_phone_assigns_a_sales_rep() {
         assert!(device_route(&Method::GET, "/v1/users/sales-reps"));
         assert!(device_route(&Method::PUT, "/v1/customers/7/sales-rep"));
@@ -1161,11 +1265,9 @@ mod tests {
             (Method::PUT, "/v1/customers/x/sales-rep"),
             (Method::PUT, "/v1/customers//sales-rep"),
             (Method::PUT, "/v1/customers/7/8/sales-rep"),
-            (Method::PUT, "/v1/customers/7/temperature"),
             (Method::POST, "/v1/customers/7/invalid"),
             (Method::PUT, "/v1/customers/x/invalid"),
             (Method::PUT, "/v1/customers/7/invalidx"),
-            (Method::DELETE, "/v1/customers/7"),
         ] {
             assert!(!device_route(&method, path), "{method} {path}");
         }
@@ -1181,12 +1283,10 @@ mod tests {
             (Method::POST, "/v1/customers"),
             (Method::POST, "/v1/customers/7"),
             (Method::PATCH, "/v1/customers/7"),
-            (Method::DELETE, "/v1/customers/7"),
             (Method::PUT, "/v1/customers"),
             (Method::PUT, "/v1/customers/"),
             (Method::PUT, "/v1/customers/x"),
             (Method::PUT, "/v1/customers/7/8"),
-            (Method::PUT, "/v1/customers/7/temperature"),
             (Method::PUT, "/v1/customers/merge"),
             (Method::PUT, "/v1/customersx/7"),
             (Method::POST, "/v1/customer-sources"),
@@ -1394,8 +1494,11 @@ mod tests {
             (Method::GET, "/v1/customers/7/qbo-invoices/9/pdf"),
             (Method::GET, "/v1/quotes/7/invoice-sync"),
             (Method::GET, "/v1/quotes/inventory-slabs"),
-            // A sale's rooms and notes: an event's Project.
+            // A sale's rooms and notes: an event's Project; its contract PDF.
             (Method::GET, "/v1/sales/7"),
+            (Method::GET, "/v1/sales/7/contract"),
+            // Edit invoice on the contact card.
+            (Method::PUT, "/v1/customers/7/qbo-invoices/9"),
         ] {
             assert!(device_route(&method, path), "{method} {path}");
         }
@@ -1404,7 +1507,7 @@ mod tests {
             (Method::PUT, "/v1/sales/7"),
             (Method::POST, "/v1/sales/7/unsell"),
             (Method::GET, "/v1/sales"),
-            (Method::GET, "/v1/sales/7/contract"),
+            (Method::GET, "/v1/sales/x/contract"),
             (Method::GET, "/v1/sales/abc"),
             (Method::POST, "/v1/salesx"),
             (Method::POST, "/v1/sinks"),
@@ -1421,8 +1524,8 @@ mod tests {
             (Method::POST, "/v1/places/autocomplete"),
             (Method::GET, "/v1/places/a/b"),
             (Method::GET, "/v1/places/"),
-            // Editing an invoice and the invoice settings stay with the CRM.
-            (Method::PUT, "/v1/customers/7/qbo-invoices/9"),
+            // The invoice settings stay with the CRM.
+            (Method::DELETE, "/v1/customers/7/qbo-invoices/9"),
             (Method::POST, "/v1/customers/x/qbo-invoices"),
             (Method::POST, "/v1/customers/7/qbo-invoices/9"),
             (Method::POST, "/v1/qbo/items"),
