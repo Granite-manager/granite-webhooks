@@ -403,13 +403,48 @@ pub struct BillingNotice {
     pub days_remaining: i64,
     /// Access is paused: only billing pages work.
     pub restricted: bool,
+    /// A company that signed itself up and has not paid for its first
+    /// subscription yet: `restricted` too, and the billing page asks it to
+    /// pay for the features it picked (`POST /v1/billing/features/checkout`).
+    pub first_payment_due: bool,
 }
 
 pub const NO_BILLING_NOTICE: BillingNotice = BillingNotice {
     show_warning: false,
     days_remaining: 0,
     restricted: false,
+    first_payment_due: false,
 };
+
+/// The company has a Stripe subscription that is still going (paying,
+/// trialing, or past due in its grace period): no second one may start.
+pub fn has_running_subscription(record: Option<&CompanyBilling>) -> bool {
+    record.is_some_and(|record| {
+        record.stripe_subscription_id.is_some()
+            && record.subscription_status != "incomplete"
+            && !is_ended_subscription_status(&record.subscription_status)
+    })
+}
+
+/// The subscription is paid as `auth::paywall::BLOCKED_SQL` reads it:
+/// active (or a Stripe trial), or a failed renewal still in its grace
+/// period. Keep the two in step.
+pub fn pays_for_access(record: Option<&CompanyBilling>, now: NaiveDateTime) -> bool {
+    record.is_some_and(|record| {
+        record.stripe_subscription_id.is_some()
+            && matches!(
+                record.subscription_status.as_str(),
+                "active" | "trialing" | "past_due"
+            )
+            && match record.payment_status {
+                PaymentStatus::Active => true,
+                PaymentStatus::PastDue => {
+                    record.grace_period_ends_at.is_some_and(|ends| ends > now)
+                }
+                PaymentStatus::Suspended | PaymentStatus::None => false,
+            }
+    })
+}
 
 /// Stripe as the gate sees it; both calls are throttled and swallow errors.
 #[allow(async_fn_in_trait)] // used with concrete types only
@@ -429,10 +464,25 @@ pub async fn evaluate_gate<S: BillingStore, G: GateStripe>(
     user_id: i32,
     now: NaiveDateTime,
 ) -> StoreResult<BillingNotice> {
+    let mut existing = store.by_company(company_id).await?;
+    // From the sign-up page: nothing until it has paid, billing switch or not.
+    if store.from_signup_page(company_id).await? && !pays_for_access(existing.as_ref(), now) {
+        // Paid a moment ago and Stripe's webhook has not come yet: ask Stripe.
+        if let Some(record) = existing.take_if(|r| r.stripe_customer_id.is_some()) {
+            existing = Some(stripe.refresh(record).await);
+        }
+        if !pays_for_access(existing.as_ref(), now) {
+            return Ok(BillingNotice {
+                restricted: true,
+                first_payment_due: !has_running_subscription(existing.as_ref()),
+                ..NO_BILLING_NOTICE
+            });
+        }
+    }
     if !store.billing_required(company_id).await? {
         return Ok(NO_BILLING_NOTICE);
     }
-    let Some(existing) = store.by_company(company_id).await? else {
+    let Some(existing) = existing else {
         return Ok(NO_BILLING_NOTICE);
     };
     let mut current = if matches!(
@@ -457,9 +507,8 @@ pub async fn evaluate_gate<S: BillingStore, G: GateStripe>(
     }
     if current.payment_status == PaymentStatus::Suspended {
         return Ok(BillingNotice {
-            show_warning: false,
-            days_remaining: 0,
             restricted: true,
+            ..NO_BILLING_NOTICE
         });
     }
     if current.payment_status != PaymentStatus::PastDue {
@@ -470,7 +519,7 @@ pub async fn evaluate_gate<S: BillingStore, G: GateStripe>(
         days_remaining: current
             .grace_period_ends_at
             .map_or(0, |ends| days_remaining(ends, now)),
-        restricted: false,
+        ..NO_BILLING_NOTICE
     })
 }
 
@@ -490,6 +539,7 @@ mod tests {
         users: RefCell<Vec<(i32, i32, bool)>>,
         notifications: RefCell<Vec<(BillingNotification, bool)>>,
         not_required: RefCell<HashSet<i32>>,
+        signed_up: RefCell<HashSet<i32>>,
     }
 
     #[allow(clippy::unused_async_trait_impl)] // the trait's signature
@@ -583,6 +633,9 @@ mod tests {
         }
         async fn billing_required(&self, company_id: i32) -> StoreResult<bool> {
             Ok(!self.not_required.borrow().contains(&company_id))
+        }
+        async fn from_signup_page(&self, company_id: i32) -> StoreResult<bool> {
+            Ok(self.signed_up.borrow().contains(&company_id))
         }
     }
 
@@ -965,6 +1018,8 @@ mod tests {
     struct FakeStripe {
         live: Option<StripeLiveState>,
         refresh_to: Option<PaymentStatus>,
+        /// The subscription status Stripe has (a missed webhook).
+        refresh_status: Option<&'static str>,
     }
 
     #[allow(clippy::unused_async_trait_impl)] // the trait's signature
@@ -973,6 +1028,9 @@ mod tests {
             match self.refresh_to {
                 Some(status) => CompanyBilling {
                     payment_status: status,
+                    subscription_status: self
+                        .refresh_status
+                        .map_or(record.subscription_status.clone(), str::to_string),
                     ..record
                 },
                 None => record,
@@ -986,6 +1044,7 @@ mod tests {
     const NO_STRIPE: FakeStripe = FakeStripe {
         live: None,
         refresh_to: None,
+        refresh_status: None,
     };
 
     fn past_due() -> CompanyBilling {
@@ -1012,6 +1071,7 @@ mod tests {
                 open_invoice_cents: cents,
             }),
             refresh_to: None,
+            refresh_status: None,
         }
     }
 
@@ -1078,6 +1138,7 @@ mod tests {
         let stripe = FakeStripe {
             live: None,
             refresh_to: Some(PaymentStatus::Active),
+            refresh_status: None,
         };
         let notice = evaluate_gate(&store, &stripe, 1, 10, after_grace())
             .await
@@ -1105,7 +1166,7 @@ mod tests {
             BillingNotice {
                 show_warning: true,
                 days_remaining: 8,
-                restricted: false
+                ..NO_BILLING_NOTICE
             }
         );
         assert!(!admin.show_warning);
@@ -1118,5 +1179,97 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(notice, NO_BILLING_NOTICE);
+    }
+    fn subscribed(status: &str) -> CompanyBilling {
+        CompanyBilling {
+            stripe_customer_id: Some("cus_1".into()),
+            stripe_subscription_id: Some("sub_1".into()),
+            subscription_status: status.into(),
+            payment_status: PaymentStatus::Active,
+            ..CompanyBilling::empty(1)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_signed_up_company_has_no_access_until_it_pays() {
+        let store = Memory::default();
+        store.signed_up.borrow_mut().insert(1);
+        let now = at("2026-09-20 12:00:00");
+        let unpaid = BillingNotice {
+            restricted: true,
+            first_payment_due: true,
+            ..NO_BILLING_NOTICE
+        };
+        assert_eq!(
+            evaluate_gate(&store, &NO_STRIPE, 1, 10, now).await.unwrap(),
+            unpaid
+        );
+        // A Checkout that started but never paid does not count.
+        store
+            .records
+            .borrow_mut()
+            .insert(1, subscribed("incomplete"));
+        assert_eq!(
+            evaluate_gate(&store, &NO_STRIPE, 1, 10, now).await.unwrap(),
+            unpaid
+        );
+        // Nor does a subscription that ended.
+        store.records.borrow_mut().insert(1, subscribed("canceled"));
+        assert_eq!(
+            evaluate_gate(&store, &NO_STRIPE, 1, 10, now).await.unwrap(),
+            unpaid
+        );
+        for status in ["active", "trialing"] {
+            store.records.borrow_mut().insert(1, subscribed(status));
+            let notice = evaluate_gate(&store, &NO_STRIPE, 1, 10, now).await.unwrap();
+            assert_eq!(notice, NO_BILLING_NOTICE, "{status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_payment_stripe_has_but_the_webhook_missed_lets_it_in() {
+        let store = Memory::default();
+        store.signed_up.borrow_mut().insert(1);
+        store
+            .records
+            .borrow_mut()
+            .insert(1, subscribed("incomplete"));
+        let stripe = FakeStripe {
+            live: None,
+            refresh_to: Some(PaymentStatus::Active),
+            refresh_status: Some("active"),
+        };
+        let notice = evaluate_gate(&store, &stripe, 1, 10, at("2026-09-20 12:00:00"))
+            .await
+            .unwrap();
+        assert!(!notice.restricted, "{notice:?}");
+    }
+
+    #[tokio::test]
+    async fn the_billing_switch_never_opens_a_signed_up_company() {
+        let store = Memory::default();
+        store.not_required.borrow_mut().insert(1);
+        store.signed_up.borrow_mut().insert(1);
+        let notice = evaluate_gate(&store, &NO_STRIPE, 1, 10, at("2026-12-01 00:00:00"))
+            .await
+            .unwrap();
+        assert!(notice.restricted && notice.first_payment_due);
+    }
+
+    #[tokio::test]
+    async fn a_signed_up_company_past_its_grace_is_shut_again() {
+        let store = Memory::default();
+        store.signed_up.borrow_mut().insert(1);
+        store.records.borrow_mut().insert(1, past_due());
+        let notice = evaluate_gate(&store, &NO_STRIPE, 1, 10, after_grace())
+            .await
+            .unwrap();
+        assert!(notice.restricted);
+        // It paid once: the page asks to fix the card, not to pick features.
+        assert!(!notice.first_payment_due);
+        let during = evaluate_gate(&store, &NO_STRIPE, 1, 10, at("2026-09-03 00:00:00"))
+            .await
+            .unwrap();
+        assert!(!during.restricted);
     }
 }

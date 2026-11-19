@@ -26,6 +26,9 @@ pub trait BillingStore {
     async fn clear_payment_notifications(&self, company_id: i32) -> StoreResult<()>;
     /// `company.billing_required`.
     async fn billing_required(&self, company_id: i32) -> StoreResult<bool>;
+    /// The company came from the sign-up page (`company.source`): it has no
+    /// access until its subscription is paid (`auth::paywall`).
+    async fn from_signup_page(&self, company_id: i32) -> StoreResult<bool>;
 }
 
 /// The MySQL tables.
@@ -327,5 +330,14 @@ impl BillingStore for MySqlBillingStore<'_> {
                 .fetch_optional(self.0)
                 .await?;
         Ok(required.unwrap_or(false))
+    }
+
+    async fn from_signup_page(&self, company_id: i32) -> StoreResult<bool> {
+        let signed_up: Option<bool> =
+            sqlx::query_scalar("SELECT source = 'signup_page' FROM company WHERE id = ? LIMIT 1")
+                .bind(company_id)
+                .fetch_optional(self.0)
+                .await?;
+        Ok(signed_up.unwrap_or(false))
     }
 }
