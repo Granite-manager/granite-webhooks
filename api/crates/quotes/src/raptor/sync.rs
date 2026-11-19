@@ -306,7 +306,7 @@ pub async fn load_plan(
 ) -> sqlx::Result<Result<Plan, String>> {
     let Some(project) = sqlx::query(
         "SELECT p.customer_id, CAST(p.source_deal_id AS SIGNED), p.project_address, cu.name, cu.phone,
-                cu.company_name
+                cu.company_name, p.title
            FROM projects p JOIN customers cu ON cu.id = p.customer_id
           WHERE p.id = ? AND p.company_id = ?",
     )
@@ -323,6 +323,7 @@ pub async fn load_plan(
     let customer_name: String = project.get(3);
     let phone: Option<String> = project.get(4);
     let company_name: Option<String> = project.get(5);
+    let title: Option<String> = project.get(6);
     // The deal's quote first, sold ones first; then the customer's newest.
     let Some(quote) = sqlx::query(
         "SELECT q.sales_rep, q.address, q.customer_accepted_option_id, q.price_list_revision_id,
@@ -357,7 +358,7 @@ pub async fn load_plan(
     else {
         return Ok(Err("The quote has no drawing".into()));
     };
-    let sq_ft_up = match revision {
+    let price_list: Option<serde_json::Value> = match revision {
         Some(id) => sqlx::query_scalar::<_, Option<String>>(
             "SELECT CAST(info_json AS CHAR) FROM price_list_revisions WHERE id = ?",
         )
@@ -365,13 +366,23 @@ pub async fn load_plan(
         .fetch_optional(pool)
         .await?
         .flatten()
-        .and_then(|info| serde_json::from_str::<serde_json::Value>(&info).ok())
-        .is_some_and(|info| info["materialRounding"] == "up"),
-        None => false,
+        .and_then(|info| serde_json::from_str(&info).ok()),
+        None => None,
     };
+    let sq_ft_up = price_list
+        .as_ref()
+        .is_some_and(|info| info["materialRounding"] == "up");
+    let edge_names = price_list.as_ref().map(edge_names).unwrap_or_default();
     let notes: Vec<String> = sqlx::query_scalar(
         "SELECT content FROM project_notes
           WHERE project_id = ? AND deleted_at IS NULL ORDER BY created_at, id",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await?;
+    let event_titles: Vec<String> = sqlx::query_scalar(
+        "SELECT title FROM events
+          WHERE project_id = ? AND deleted_date IS NULL AND title IS NOT NULL",
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -387,7 +398,26 @@ pub async fn load_plan(
         option_index: option.and_then(|o| usize::try_from(o).ok()).unwrap_or(0),
         project_notes: &notes,
         sq_ft_up,
+        project_title: title.as_deref(),
+        event_titles: &event_titles,
+        edge_names: &edge_names,
     })))
+}
+
+/// The price list's edge names in its order ("Flat", "Eased", …), each once.
+fn edge_names(info: &serde_json::Value) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for set in info["arrEdgeProfileSets"].as_array().into_iter().flatten() {
+        for profile in set["arrEdgeProfiles"].as_array().into_iter().flatten() {
+            if let Some(name) = profile["name"].as_str().map(str::trim)
+                && !name.is_empty()
+                && !names.iter().any(|n| n.eq_ignore_ascii_case(name))
+            {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
 }
 
 /// Makes the plan's jobs that `done` does not have yet; `done` grows as it goes.
