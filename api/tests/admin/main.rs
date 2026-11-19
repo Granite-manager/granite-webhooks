@@ -23,6 +23,7 @@ mod posthog_autofix_callback;
 mod posthog_autofix_intake;
 mod questionnaires;
 mod reports;
+mod signup;
 mod superuser;
 mod superuser_companies;
 mod survey_results;

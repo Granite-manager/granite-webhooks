@@ -67,6 +67,7 @@ pub mod agent;
 pub mod cookie;
 pub mod device;
 pub mod job;
+pub mod paywall;
 pub mod sections;
 pub mod session;
 pub mod skills;
@@ -80,7 +81,9 @@ use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use cookie::{SESSION_COOKIE_NAME, cookie_values, decode_session};
 use sections::Access;
-use session::{SUPER_ADMIN_POSITION, SessionUser, effective_user, find_session_user, user_positions};
+use session::{
+    SUPER_ADMIN_POSITION, SessionUser, effective_user, find_session_user, user_positions,
+};
 
 async fn authenticate(parts: &Parts, state: &AppState) -> Result<SessionUser, ApiError> {
     authenticate_with_access(parts, state)
@@ -124,8 +127,9 @@ async fn check_sections(
     state: &AppState,
     user: &SessionUser,
 ) -> Result<(), ApiError> {
-    let positions = user_positions(&state.pool, user.id).await?;
     let path = parts.uri.path();
+    paywall::check(state, user, path).await?;
+    let positions = user_positions(&state.pool, user.id).await?;
     if !sections::user_access(&state.pool, user, &positions)
         .await?
         .allows(path)
@@ -145,8 +149,9 @@ async fn check_sections(
 /// (the app's To do tab); `/v1/me/undo-send` is the caller's Undo send (Settings ›
 /// General); `/v1/me/photo` is the caller's own picture (the app's Profile);
 /// `/v1/me/mfa` is the caller's two-step sign-in (Settings › Security);
-/// `/v1/me/gmail` is the caller's own Gmail for sending (Settings › Emails).
-pub const DEVICE_ROUTES: [&str; 11] = [
+/// `/v1/me/gmail` is the caller's own Gmail for sending (Settings › Emails);
+/// `/v1/me/template-order` is the caller's order of the Use Template lists.
+pub const DEVICE_ROUTES: [&str; 12] = [
     "/v1/emails",
     "/v1/schedule",
     "/v1/events",
@@ -158,6 +163,7 @@ pub const DEVICE_ROUTES: [&str; 11] = [
     "/v1/me/photo",
     "/v1/me/mfa",
     "/v1/me/gmail",
+    "/v1/me/template-order",
 ];
 
 /// CRM routes the app reads with its device token, `GET` only (my texts
@@ -168,10 +174,12 @@ pub const DEVICE_ROUTES: [&str; 11] = [
 /// Suppliers, Images (with its folders), Transactions and Quotes; the CRM
 /// notification a push names; the shop's maintenance checks a push says are
 /// due; the customer stones page the typing
-/// suggestion offers to link; and the sales reps that Assign a sales rep lists).
+/// suggestion offers to link; the sales reps that Assign a sales rep lists;
+/// the customer to-do lists a crew job sends; and my positions, which show
+/// the contact card's Mark invalid and Delete to whom the web shows them).
 /// These prefixes and everything under them; writes there still need the CRM
 /// session.
-pub const DEVICE_READ_ROUTES: [&str; 19] = [
+pub const DEVICE_READ_ROUTES: [&str; 21] = [
     "/v1/sms/mine",
     "/v1/ai/compose/inventory-url",
     "/v1/calendars",
@@ -191,6 +199,8 @@ pub const DEVICE_READ_ROUTES: [&str; 19] = [
     "/v1/notifications",
     "/v1/shop/maintenance",
     "/v1/users/sales-reps",
+    "/v1/customer-checklists",
+    "/v1/me/positions",
 ];
 
 /// CRM actions the app's composer calls with its device token: exactly these
@@ -198,8 +208,9 @@ pub const DEVICE_READ_ROUTES: [&str; 19] = [
 /// to send, Improve message, AI reply, the suggestion that continues what the
 /// rep types and what it learns from the text they sent instead, a
 /// template's `{{variables}}` filled for Use Template, and the crew's
-/// position for the automatic On my way and Arrived).
-pub const DEVICE_ACTIONS: [&str; 8] = [
+/// position for the automatic On my way and Arrived, and the installer's
+/// post-installation checklist the customer signs).
+pub const DEVICE_ACTIONS: [&str; 9] = [
     "/v1/uploads",
     "/v1/sms/attachments",
     "/v1/ai/improve",
@@ -208,6 +219,7 @@ pub const DEVICE_ACTIONS: [&str; 8] = [
     "/v1/ai/compose/learn",
     "/v1/templates/fill",
     "/v1/me/location",
+    "/v1/checklists",
 ];
 
 /// `path` is `prefix` or under it (`/v1/emailsx` is not under `/v1/emails`).
@@ -237,9 +249,11 @@ fn is_id(segment: &str) -> bool {
 /// win, lose or reopen it (`PUT .../outcome`), its to-dos (`POST
 /// .../activities`, `PATCH|DELETE .../activities/{id}`), its notes and their
 /// comments, its files (`POST .../files`, `DELETE .../files/{source}/{id}`,
-/// `PATCH .../documents/{id}`), and the to-do name suggestions
-/// (`/v1/deal-activities/suggestions`). Deleting a deal, reordering the
-/// board and the pipeline and stage setup stay with the CRM session.
+/// `PATCH .../documents/{id}`), the to-do name suggestions
+/// (`/v1/deal-activities/suggestions`), deleting a deal (`DELETE
+/// /v1/deals/{id}`) and a deal's place in its list (`POST
+/// /v1/deals/reorder`). The pipeline and stage setup stay with the CRM
+/// session.
 fn deal_write(method: &Method, path: &str) -> bool {
     if let Some(rest) = path.strip_prefix("/v1/deal-activities/suggestions") {
         return (rest.is_empty() && method == Method::GET)
@@ -262,7 +276,8 @@ fn deal_write(method: &Method, path: &str) -> bool {
         method == Method::DELETE,
     );
     match parts.as_slice() {
-        [id] => is_id(id) && patch,
+        ["reorder"] => post,
+        [id] => is_id(id) && (patch || delete),
         [id, "outcome"] => is_id(id) && put,
         [id, "activities" | "notes" | "files"] => is_id(id) && post,
         [id, "activities" | "notes", item] => is_id(id) && is_id(item) && (patch || delete),
@@ -284,16 +299,59 @@ fn deal_write(method: &Method, path: &str) -> bool {
 /// saving its customer as the website's deal edit does (`PUT
 /// /v1/customers/{id}`: name, emails, phones, address, source, sales rep,
 /// company and notes; a new sales rep gets the customer's deals and is told).
-/// Creating, merging or deleting a customer stays with the CRM session.
+/// The contact card's: its temperature (`PUT .../temperature`), linking it to
+/// another customer's family (`PUT .../parent`), deleting it (`DELETE
+/// /v1/customers/{id}`, sales managers and managers, as on the web), starting
+/// an automated follow-up (`POST .../flow`) and editing a QuickBooks invoice
+/// (`PUT .../qbo-invoices/{invoice_id}`). Creating or merging a customer stays
+/// with the CRM session.
 fn customer_write(method: &Method, path: &str) -> bool {
-    method == Method::PUT
-        && path.strip_prefix("/v1/customers/").is_some_and(|rest| {
-            is_id(rest)
-                || rest
-                    .strip_suffix("/sales-rep")
-                    .or_else(|| rest.strip_suffix("/invalid"))
-                    .is_some_and(is_id)
-        })
+    let Some(rest) = path.strip_prefix("/v1/customers/") else {
+        return false;
+    };
+    let (post, put, delete) = (
+        method == Method::POST,
+        method == Method::PUT,
+        method == Method::DELETE,
+    );
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [id] => is_id(id) && (put || delete),
+        [id, "sales-rep" | "invalid" | "temperature" | "parent"] => is_id(id) && put,
+        [id, "flow"] => is_id(id) && post,
+        [id, "qbo-invoices", invoice] => is_id(id) && !invoice.is_empty() && put,
+        _ => false,
+    }
+}
+
+/// `POST /v1/email-attachments/{id}/deal`: an email's file added to the
+/// deal's files, from the app's email conversation.
+fn email_attachment_to_deal(method: &Method, path: &str) -> bool {
+    method == Method::POST
+        && path
+            .strip_prefix("/v1/email-attachments/")
+            .and_then(|rest| rest.strip_suffix("/deal"))
+            .is_some_and(is_id)
+}
+
+/// A text conversation's changes the app's Text tab makes besides sending:
+/// deleting a failed text (`DELETE /v1/sms/{provider}/messages/{id}`) and
+/// the running automated follow-up (`GET|POST
+/// /v1/sms/{provider}/threads/{phone}/flow`: see it, Stop, Send now).
+fn sms_thread_write(method: &Method, path: &str) -> bool {
+    let Some(rest) = path.strip_prefix("/v1/sms/") else {
+        return false;
+    };
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [provider, "messages", id] => {
+            SMS_SEND_PROVIDERS.contains(provider) && is_id(id) && method == Method::DELETE
+        }
+        [provider, "threads", phone, "flow"] => {
+            SMS_SEND_PROVIDERS.contains(provider)
+                && is_id(phone)
+                && (method == Method::GET || method == Method::POST)
+        }
+        _ => false,
+    }
 }
 
 /// What the deal's Edit reads with the device token to save its customer,
@@ -444,10 +502,14 @@ fn place_read(method: &Method, path: &str) -> bool {
 
 /// `GET /v1/sales/{id}`: a sale's rooms and notes, the Project of an event in
 /// the app (and what an installer or template maker keeps on the phone for
-/// places without service). The sales list and every change stay with the CRM
-/// session.
+/// places without service), and its filled-in contract PDF (`GET
+/// /v1/sales/{id}/contract`, the Transactions screen's Contract). The sales
+/// list and every change stay with the CRM session.
 fn sale_read(method: &Method, path: &str) -> bool {
-    method == Method::GET && path.strip_prefix("/v1/sales/").is_some_and(is_id)
+    method == Method::GET
+        && path
+            .strip_prefix("/v1/sales/")
+            .is_some_and(|rest| is_id(rest) || rest.strip_suffix("/contract").is_some_and(is_id))
 }
 
 /// The changes the app's native sale form and invoice editor make with the
@@ -488,8 +550,17 @@ fn qbo_invoice_pdf(method: &Method, path: &str) -> bool {
     method == Method::GET
         && path
             .strip_prefix("/v1/qbo/invoices/")
-            .and_then(|rest| rest.strip_suffix("/pdf"))
+            .and_then(|rest| {
+                rest.strip_suffix("/pdf")
+                    .or_else(|| rest.strip_suffix("/balance"))
+            })
             .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// `PUT /v1/customer-todos/{id}`: the crew ticks one of the customer's
+/// to-dos done (or not done) on the job page.
+fn customer_todo_done(method: &Method, path: &str) -> bool {
+    method == Method::PUT && path.strip_prefix("/v1/customer-todos/").is_some_and(is_id)
 }
 
 fn own_invoice(method: &Method, path: &str) -> bool {
@@ -514,7 +585,9 @@ fn own_invoice(method: &Method, path: &str) -> bool {
 /// .../notes|files`, `DELETE .../notes|files/{id}`), checking a step off (`PUT
 /// .../steps/{id}`), its parts (`GET /v1/projects/part-types`, `POST
 /// .../parts`, `PATCH|DELETE .../parts/{id}`, `PUT
-/// .../appointments/{id}/part`), and starting a deal's project (`POST
+/// .../appointments/{id}/part`), an event's project link (`GET|PUT
+/// /v1/projects/event-links/{event_id}`, the event's Link to project), and
+/// starting a deal's project (`POST
 /// /v1/deals/{id}/project`; reading it is under [`DEVICE_READ_ROUTES`]). The
 /// handlers keep their own position checks ([`sections`] and [`skills`]
 /// still apply); setting up the company's steps stays with the CRM session.
@@ -545,12 +618,20 @@ fn project_route(method: &Method, path: &str) -> bool {
     match parts.as_slice() {
         ["payments" | "process-steps" | "part-types"] => get,
         ["reorder"] => post,
+        ["event-links", event] => is_id(event) && (get || put),
         [id] => is_id(id) && (get || delete),
         [id, "actions" | "tasks" | "notes" | "files"] => is_id(id) && post,
+        [id, "event-links"] => is_id(id) && (get || put),
         [id, "task-times", "reset"] => is_id(id) && post,
         [id, "tasks", task] => is_id(id) && is_id(task) && (patch || delete),
         [id, "notes" | "files", item] => is_id(id) && is_id(item) && delete,
         [id, "steps", step] => is_id(id) && is_id(step) && put,
+        [id, "steps", step, "note" | "owner"] => is_id(id) && is_id(step) && put,
+        [id, "step-items", item] => is_id(id) && is_id(item) && put,
+        [id, "tasks", task, "items", item] => is_id(id) && is_id(task) && is_id(item) && put,
+        [id, "questions"] => is_id(id) && post,
+        [id, "questions", question] => is_id(id) && is_id(question) && (get || put),
+        [id, "questions", question, "messages"] => is_id(id) && is_id(question) && post,
         [id, "parts"] => is_id(id) && post,
         [id, "parts", part] => is_id(id) && is_id(part) && (patch || delete),
         [id, "appointments", event, "part"] => is_id(id) && is_id(event) && put,
@@ -576,6 +657,8 @@ fn device_route(method: &Method, path: &str) -> bool {
         || (method == Method::POST && (DEVICE_ACTIONS.contains(&path) || sms_send(path)))
         || deal_write(method, path)
         || customer_write(method, path)
+        || email_attachment_to_deal(method, path)
+        || sms_thread_write(method, path)
         || (method == Method::GET && path == DEVICE_CUSTOMER_SOURCES)
         || template_write(method, path)
         || promise_route(method, path)
@@ -592,13 +675,15 @@ fn device_route(method: &Method, path: &str) -> bool {
         || stone_samples(method, path)
         || maintenance_write(method, path)
         || transaction_write(method, path)
+        || customer_todo_done(method, path)
 }
 
 /// A transaction's slab changes, as the website's Transactions dialog makes
 /// them: Cut, Uncut, Partially cut, Remove and Replace (`POST
 /// /v1/transactions/{id}/slabs/{slab}/...`), a room's square feet (`PUT
-/// .../slabs/{slab}/square-feet`) and Add slab (`POST
-/// /v1/transactions/{id}/slabs`). The Edit transactions skill
+/// .../slabs/{slab}/square-feet`), Add slab (`POST
+/// /v1/transactions/{id}/slabs`) and Mark as Installed (`POST
+/// /v1/transactions/{id}/installed`). The Edit transactions skill
 /// ([`skills`]) still applies.
 fn transaction_write(method: &Method, path: &str) -> bool {
     let Some(rest) = path.strip_prefix("/v1/transactions/") else {
@@ -606,10 +691,13 @@ fn transaction_write(method: &Method, path: &str) -> bool {
     };
     let (post, put) = (method == Method::POST, method == Method::PUT);
     match rest.split('/').collect::<Vec<_>>().as_slice() {
-        [id, "slabs"] => is_id(id) && post,
-        [id, "slabs", slab, "cut" | "uncut" | "partial-cut" | "remove" | "replace"] => {
-            is_id(id) && is_id(slab) && post
-        }
+        [id, "slabs" | "installed"] => is_id(id) && post,
+        [
+            id,
+            "slabs",
+            slab,
+            "cut" | "uncut" | "partial-cut" | "remove" | "replace",
+        ] => is_id(id) && is_id(slab) && post,
         [id, "slabs", slab, "square-feet"] => is_id(id) && is_id(slab) && put,
         _ => false,
     }
@@ -657,6 +745,7 @@ async fn identify(
         && let Some(token) = device::device_token(parts)
     {
         let device = device::authenticate_device(&token, state).await?;
+        paywall::check(state, &device.user, parts.uri.path()).await?;
         let positions = user_positions(&state.pool, device.user.id).await?;
         return Ok((device.user, positions));
     }
@@ -669,7 +758,11 @@ async fn identify(
         .find_map(|value| decode_session(&value, &state.session_secret));
     let session = match (session, agent::bearer_token(&parts.headers)) {
         (Some(session), _) => session,
-        (None, Some(token)) => return agent::authenticate(parts, state, token).await,
+        (None, Some(token)) => {
+            let (user, positions) = agent::authenticate(parts, state, token).await?;
+            paywall::check(state, &user, parts.uri.path()).await?;
+            return Ok((user, positions));
+        }
         // The phone's token on a route it may not use: refused, but not "signed out" (401), which
         // would sign the phone out although its token is good (an app newer than the API, say).
         (None, None) if device::device_token(parts).is_some() => return Err(ApiError::Forbidden),
@@ -681,6 +774,7 @@ async fn identify(
         .ok_or(ApiError::Unauthorized)?;
     let positions = user_positions(&state.pool, user.id).await?;
     let user = effective_user(user, &positions, session.active_company_id);
+    paywall::check(state, &user, parts.uri.path()).await?;
     Ok((user, positions))
 }
 
@@ -824,9 +918,10 @@ impl FromRequestParts<AppState> for UserManager {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
-        let manager = positions
-            .iter()
-            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
+        let manager = positions.iter().any(|row| {
+            row.company_id == user.company_id
+                && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION)
+        });
         if user.is_superuser || ((user.is_admin) && manager) {
             Ok(Self(user))
         } else {
@@ -844,9 +939,10 @@ impl FromRequestParts<AppState> for BillingManager {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
-        let manager = positions
-            .iter()
-            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
+        let manager = positions.iter().any(|row| {
+            row.company_id == user.company_id
+                && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION)
+        });
         if user.is_superuser || ((user.is_employee || user.is_admin) && manager) {
             Ok(Self(user))
         } else {
@@ -866,9 +962,10 @@ impl FromRequestParts<AppState> for CompanyManager {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
-        let manager = positions
-            .iter()
-            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
+        let manager = positions.iter().any(|row| {
+            row.company_id == user.company_id
+                && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION)
+        });
         if manager {
             Ok(Self(user))
         } else {
@@ -1013,6 +1110,16 @@ mod tests {
     }
 
     #[test]
+    fn the_crew_checklist_is_open_to_the_app() {
+        assert!(device_route(&Method::POST, "/v1/checklists"));
+        assert!(!device_route(&Method::GET, "/v1/checklists"));
+        assert!(!device_route(&Method::GET, "/v1/checklists/7/pdf"));
+        assert!(device_route(&Method::GET, "/v1/customer-checklists"));
+        assert!(!device_route(&Method::POST, "/v1/customer-checklists"));
+        assert!(!device_route(&Method::PUT, "/v1/customer-checklists/7"));
+    }
+
+    #[test]
     fn the_composer_lists_are_read_only() {
         for path in [
             "/v1/calendars",
@@ -1078,13 +1185,15 @@ mod tests {
             (Method::PATCH, "/v1/deals/7/documents/4"),
             (Method::GET, "/v1/deal-activities/suggestions"),
             (Method::POST, "/v1/deal-activities/suggestions/hidden"),
+            (Method::DELETE, "/v1/deals/7"),
+            (Method::POST, "/v1/deals/reorder"),
         ] {
             assert!(device_route(&method, path), "{method} {path}");
         }
         for (method, path) in [
-            (Method::DELETE, "/v1/deals/7"),
             (Method::PUT, "/v1/deals/7"),
-            (Method::POST, "/v1/deals/reorder"),
+            (Method::PATCH, "/v1/deals/reorder"),
+            (Method::DELETE, "/v1/deals/x"),
             (Method::POST, "/v1/deals/7"),
             (Method::PATCH, "/v1/deals/x"),
             (Method::POST, "/v1/deals/7/activities/3"),
@@ -1103,6 +1212,50 @@ mod tests {
     }
 
     #[test]
+    fn the_app_has_the_websites_item_buttons() {
+        for (method, path) in [
+            (Method::GET, "/v1/me/positions"),
+            (Method::PUT, "/v1/me/template-order/sms"),
+            (Method::DELETE, "/v1/me/template-order/email"),
+            (Method::PUT, "/v1/customers/7/temperature"),
+            (Method::PUT, "/v1/customers/7/parent"),
+            (Method::DELETE, "/v1/customers/7"),
+            (Method::GET, "/v1/customers/7/flow"),
+            (Method::POST, "/v1/customers/7/flow"),
+            (Method::POST, "/v1/email-attachments/7/deal"),
+            (Method::DELETE, "/v1/sms/cloudtalk/messages/7"),
+            (Method::DELETE, "/v1/sms/ringcentral/messages/7"),
+            (Method::GET, "/v1/sms/telnyx/threads/3175551234/flow"),
+            (Method::POST, "/v1/sms/cloudtalk/threads/3175551234/flow"),
+            (Method::GET, "/v1/projects/event-links/7"),
+            (Method::PUT, "/v1/projects/event-links/7"),
+            (Method::GET, "/v1/projects/7/event-links"),
+            (Method::PUT, "/v1/projects/7/event-links"),
+            (Method::POST, "/v1/transactions/7/installed"),
+        ] {
+            assert!(device_route(&method, path), "{method} {path}");
+        }
+        for (method, path) in [
+            (Method::PUT, "/v1/me/positions"),
+            (Method::POST, "/v1/customers/7/temperature"),
+            (Method::DELETE, "/v1/customers/7/parent"),
+            (Method::DELETE, "/v1/customers/x"),
+            (Method::DELETE, "/v1/customers/7/flow"),
+            (Method::GET, "/v1/email-attachments/7/deal"),
+            (Method::POST, "/v1/email-attachments/x/deal"),
+            (Method::DELETE, "/v1/sms/other/messages/7"),
+            (Method::DELETE, "/v1/sms/cloudtalk/messages/x"),
+            (Method::PUT, "/v1/sms/cloudtalk/threads/3175551234/flow"),
+            (Method::POST, "/v1/sms/cloudtalk/threads/31755x/flow"),
+            (Method::DELETE, "/v1/projects/event-links/7"),
+            (Method::PUT, "/v1/projects/event-links/x"),
+            (Method::POST, "/v1/transactions/7/installedx"),
+        ] {
+            assert!(!device_route(&method, path), "{method} {path}");
+        }
+    }
+
+    #[test]
     fn the_phone_assigns_a_sales_rep() {
         assert!(device_route(&Method::GET, "/v1/users/sales-reps"));
         assert!(device_route(&Method::PUT, "/v1/customers/7/sales-rep"));
@@ -1115,11 +1268,9 @@ mod tests {
             (Method::PUT, "/v1/customers/x/sales-rep"),
             (Method::PUT, "/v1/customers//sales-rep"),
             (Method::PUT, "/v1/customers/7/8/sales-rep"),
-            (Method::PUT, "/v1/customers/7/temperature"),
             (Method::POST, "/v1/customers/7/invalid"),
             (Method::PUT, "/v1/customers/x/invalid"),
             (Method::PUT, "/v1/customers/7/invalidx"),
-            (Method::DELETE, "/v1/customers/7"),
         ] {
             assert!(!device_route(&method, path), "{method} {path}");
         }
@@ -1135,12 +1286,10 @@ mod tests {
             (Method::POST, "/v1/customers"),
             (Method::POST, "/v1/customers/7"),
             (Method::PATCH, "/v1/customers/7"),
-            (Method::DELETE, "/v1/customers/7"),
             (Method::PUT, "/v1/customers"),
             (Method::PUT, "/v1/customers/"),
             (Method::PUT, "/v1/customers/x"),
             (Method::PUT, "/v1/customers/7/8"),
-            (Method::PUT, "/v1/customers/7/temperature"),
             (Method::PUT, "/v1/customers/merge"),
             (Method::PUT, "/v1/customersx/7"),
             (Method::POST, "/v1/customer-sources"),
@@ -1348,8 +1497,11 @@ mod tests {
             (Method::GET, "/v1/customers/7/qbo-invoices/9/pdf"),
             (Method::GET, "/v1/quotes/7/invoice-sync"),
             (Method::GET, "/v1/quotes/inventory-slabs"),
-            // A sale's rooms and notes: an event's Project.
+            // A sale's rooms and notes: an event's Project; its contract PDF.
             (Method::GET, "/v1/sales/7"),
+            (Method::GET, "/v1/sales/7/contract"),
+            // Edit invoice on the contact card.
+            (Method::PUT, "/v1/customers/7/qbo-invoices/9"),
         ] {
             assert!(device_route(&method, path), "{method} {path}");
         }
@@ -1358,7 +1510,7 @@ mod tests {
             (Method::PUT, "/v1/sales/7"),
             (Method::POST, "/v1/sales/7/unsell"),
             (Method::GET, "/v1/sales"),
-            (Method::GET, "/v1/sales/7/contract"),
+            (Method::GET, "/v1/sales/x/contract"),
             (Method::GET, "/v1/sales/abc"),
             (Method::POST, "/v1/salesx"),
             (Method::POST, "/v1/sinks"),
@@ -1375,8 +1527,8 @@ mod tests {
             (Method::POST, "/v1/places/autocomplete"),
             (Method::GET, "/v1/places/a/b"),
             (Method::GET, "/v1/places/"),
-            // Editing an invoice and the invoice settings stay with the CRM.
-            (Method::PUT, "/v1/customers/7/qbo-invoices/9"),
+            // The invoice settings stay with the CRM.
+            (Method::DELETE, "/v1/customers/7/qbo-invoices/9"),
             (Method::POST, "/v1/customers/x/qbo-invoices"),
             (Method::POST, "/v1/customers/7/qbo-invoices/9"),
             (Method::POST, "/v1/qbo/items"),
@@ -1492,5 +1644,38 @@ mod tests {
         // The whole company's inbox stays with the CRM session.
         assert!(!device_route(&Method::GET, "/v1/sms/all/threads"));
         assert!(!device_route(&Method::GET, "/v1/sms/minex/threads"));
+    }
+}
+
+/// Every request the Granite Manager app makes must be one its device token
+/// may sign, or the app shows "Your account doesn't have access (403)".
+#[cfg(test)]
+mod app_calls {
+    use super::*;
+
+    /// Routes whose handlers take the device token themselves
+    /// (`device::DeviceUser`, `device::PhoneCaller`) or need no sign-in.
+    const TOKEN_ANYWHERE: [&str; 4] = ["/v1/phone", "/v1/auth", "/v1/me/devices", "/v1/public"];
+
+    /// `app_calls.txt` lists every request of the app's API client
+    /// (granite-phone `src/core/api/__tests__/app-calls.test.ts` keeps the
+    /// same list and fails when the app gains a call).
+    #[test]
+    fn every_call_the_app_makes_is_open_to_its_device_token() {
+        let refused: Vec<&str> = include_str!("app_calls.txt")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter(|line| {
+                let (method, path) = line.split_once(' ').expect("METHOD /path");
+                let method: Method = method.parse().expect("a method");
+                !device_route(&method, path)
+                    && !TOKEN_ANYWHERE.iter().any(|prefix| under(path, prefix))
+            })
+            .collect();
+        assert!(
+            refused.is_empty(),
+            "the app calls these, but its device token may not (add them to device_route):\n{}",
+            refused.join("\n")
+        );
     }
 }

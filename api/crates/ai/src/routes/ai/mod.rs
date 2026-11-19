@@ -7,6 +7,7 @@
 //! - `POST /v1/ai/port-details-check` → what looks wrong in a port's business details
 //! - `POST /v1/ai/port-ask` → the answer to a question about a port's step
 //! - `POST /v1/ai/port-bill-read` → a port's business details read off the carrier's bill
+//! - `POST /v1/ai/stone-colors` → a stone's colors picked from its photo
 //! - `POST /v1/ai/invoice-edit` → a QuickBooks invoice edit from an instruction
 //! - `POST /v1/ai/signature-fields` → what each blank of a contract PDF is for
 //! - `POST /v1/ai/agentic-questions`, `GET .../{id}` → questions for the agent,
@@ -46,6 +47,7 @@ pub mod port_check;
 pub mod promises;
 pub mod reply_context;
 pub mod signature_fields;
+pub mod stone_colors;
 
 use crate::openapi::{OpenApiRouter, routes};
 use crate::state::AppState;
@@ -64,6 +66,12 @@ pub fn router() -> OpenApiRouter<AppState> {
             OpenApiRouter::new()
                 .routes(routes!(port_bill::read_port_bill))
                 .layer(DefaultBodyLimit::max(port_bill::MAX_BILL_BODY_BYTES)),
+        )
+        .merge(
+            // A stone photo in base64 can be more than axum's default 2 MB.
+            OpenApiRouter::new()
+                .routes(routes!(stone_colors::pick_stone_colors))
+                .layer(DefaultBodyLimit::max(stone_colors::MAX_PHOTO_BODY_BYTES)),
         )
         .routes(routes!(invoice_edit::invoice_edit))
         .routes(routes!(signature_fields::detect))

@@ -6768,6 +6768,85 @@
         }
       }
     },
+    "/v1/superuser/customer-view/{company_id}/{customer_id}": {
+      "post": {
+        "tags": [
+          "customer-view"
+        ],
+        "summary": "Open a customer's page as a super admin",
+        "description": "Marks this browser verified for the customer's page, with no code, and\nanswers the page to open. Super admins only.",
+        "operationId": "superuser_open_customer_view",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "customer_id",
+            "in": "path",
+            "description": "Customer id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verified",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OpenedView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a super admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such customer page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/public/customer-view/{company_id}/{view_id}/contact": {
       "get": {
         "tags": [
@@ -23727,6 +23806,174 @@
           },
           "404": {
             "description": "No such event, or project the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/event-links": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "The events a project can take, from the project's side",
+        "operationId": "get_project_event_links",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The customer's events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectEventLinks"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Pick the events that are a project's",
+        "description": "The picked events (the customer's, or already this project's) are linked\nto it and leave their old project; this project's other events are\nunlinked.",
+        "operationId": "set_project_event_links",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectEventLinksInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "An event that is not the customer's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's position can't change projects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see",
             "content": {
               "application/json": {
                 "schema": {
@@ -43708,6 +43955,151 @@
         }
       }
     },
+    "/v1/company/setup-checklist": {
+      "get": {
+        "tags": [
+          "company"
+        ],
+        "summary": "Get what the company still has to set up",
+        "description": "The dashboard's \"Finish setting up\" checklist: the team, the logo and\nsales tax, the web address, the phone line, the texting registration\n(once there is a phone line), the email domain (or the user's Gmail\nmeanwhile), the website contact form, the stones on the website and\nQuickBooks (when switched on). Each item is done when the company's data\nshows it or a manager ticked it. Items with `how: contact` are done by\nGranite Manager: the page says to contact them at `contact_email`.\nManagers and superusers only.",
+        "operationId": "get_company_setup_checklist",
+        "responses": {
+          "200": {
+            "description": "The checklist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupChecklist"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a manager of the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/company/setup-checklist/{key}": {
+      "put": {
+        "tags": [
+          "company"
+        ],
+        "summary": "Tick a setup item by hand",
+        "description": "Marks the item done (or not needed) for the whole company, or takes the\ntick off; an item the company's data shows done stays done. Answers the\nchecklist. 404 for an unknown key. Managers and superusers only.",
+        "operationId": "tick_company_setup_item",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "description": "Item key, e.g. `lead_form`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupTick"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved; the checklist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetupChecklist"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a manager of the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown item",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/quote-forms": {
       "get": {
         "tags": [
@@ -48291,8 +48683,8 @@
         "tags": [
           "schedule"
         ],
-        "summary": "Edit an event",
-        "description": "Saves every field, logs what changed in the event's history, and\nre-times its appointment reminders when it moved.",
+        "summary": "Edit an event, or some repeats of a repeating one",
+        "description": "Saves every field, logs what changed in the event's history, and\nre-times its appointment reminders when it moved. For a repeating event,\n`scope=one` with `date` takes that repeat off it (`recurrence_exdates`)\nand saves the input as its own event that doesn't repeat; and\n`scope=following` with `start` ends the repeats just before that one\n(`recurrence_until`) and saves the input as a new event from it on. Both\nanswer 200 with the new event's id; it keeps the people, notifications,\ninvoice, comments and photos the input leaves out.",
         "operationId": "update_event",
         "parameters": [
           {
@@ -48303,6 +48695,33 @@
             "schema": {
               "type": "integer",
               "format": "int32"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`all` (the default): the event and, if it repeats, every repeat.\n`one`: only the repeat on `date`. `following`: the repeat that starts\nat `start` and every later one. On an event that does not repeat,\nevery scope edits the event.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date",
+            "in": "query",
+            "description": "With `scope=one`: the repeat's day, `YYYY-MM-DD`, as the calendar shows\nit (the shop's wall-clock date, like `recurrence_exdates`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "With `scope=following`: the repeat's start, UTC ISO 8601. The repeat\nat or before the first one edits the whole event.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -48317,6 +48736,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "description": "Some repeats changed: their new event",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditedRepeats"
+                }
+              }
+            }
+          },
           "204": {
             "description": "Saved"
           },
@@ -49071,13 +49500,13 @@
           "schedule"
         ],
         "summary": "Search events",
-        "description": "The company's events where every word of `q` is in the title, customer's\nname, location, description or notes; with `calendar_ids`, only those\ncalendars' events. With `id`, just that event.\n\nA word of 4+ letters also finds a title or customer name that has it with\none typo (\"deborh\" finds \"Deborah\").\n\nSmart order: the caller's own first (for their customer or assigned to\nthem), then ones they only made (a scheduler makes everyone's), then the\nrest. In each: a title or customer-name word starting with the search,\nthen containing it, then hits only in the place or notes, then typo\nhits; open jobs before ones the crew finished; then the nearest to now,\nupcoming before past (past distance counts double); unscheduled last.",
+        "description": "The company's events where every word of `q` is in the title, customer's\nname, location or notes; with `calendar_ids`, only those\ncalendars' events. With `id`, just that event.\n\nA word of 4+ letters also finds a title or customer name that has it with\none typo (\"deborh\" finds \"Deborah\").\n\nSmart order: the caller's own first (for their customer or assigned to\nthem), then ones they only made (a scheduler makes everyone's), then the\nrest. In each: a title or customer-name word starting with the search,\nthen containing it, then hits only in the place or notes, then typo\nhits; open jobs before ones the crew finished; then the nearest to now,\nupcoming before past (past distance counts double); unscheduled last.",
         "operationId": "search_events",
         "parameters": [
           {
             "name": "q",
             "in": "query",
-            "description": "Words, each in the title, customer name, location, description or\nnotes (any of them, in any order).",
+            "description": "Words, each in the title, customer name, location or\nnotes (any of them, in any order).",
             "required": false,
             "schema": {
               "type": "string"
@@ -57305,6 +57734,83 @@
         ]
       }
     },
+    "/v1/ai/stone-colors": {
+      "post": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Pick a stone's colors from its photo with AI",
+        "description": "Reads a JPEG, PNG or WebP photo of a stone (at most 4 MB, sent base64)\nand returns the colors from `GET /v1/colors` that it shows, the main\ncolor first. Nothing is saved. Company admins (and super admins,\nsuperusers) only.",
+        "operationId": "pick_stone_colors",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoneColorsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The colors the photo shows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoneColors"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not base64, empty, too big, or not a JPEG, PNG or WebP",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "OpenAI failed or answered without colors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/ai/invoice-edit": {
       "post": {
         "tags": [
@@ -63794,6 +64300,275 @@
         ]
       }
     },
+    "/v1/billing/first-payment": {
+      "get": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Get what the company pays",
+        "description": "Its monthly price, the free time Granite Manager gave it (if any) and\nwho to write to for a free month and a demo. Pay with\n`POST /v1/billing/first-payment/checkout`. Managers only.",
+        "operationId": "get_billing_first_payment",
+        "responses": {
+          "200": {
+            "description": "The price",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FirstPayment"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a manager of the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/billing/first-payment/checkout": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Pay the monthly subscription",
+        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`GET /v1/billing/first-payment`), charged now, or when the free time\nGranite Manager gave ends. Stripe returns to\n`/admin/billing?checkout=success` (or `cancel`); access opens once Stripe\nconfirms the payment. 400 when Stripe is not set up or refused, 409\nwhile a subscription is running. Managers only.",
+        "operationId": "create_billing_first_payment_checkout",
+        "responses": {
+          "200": {
+            "description": "The Checkout link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Redirect"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Stripe is not set up, or refused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a manager of the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The company already has a subscription",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/public/signup": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "What signing up costs",
+        "description": "The flat monthly price (USD cents), the address to write to for a free\nmonth and a demo instead, and the domain web addresses go under. Then\ncheck a web address with `GET /v1/public/signup/subdomain/{subdomain}`\nand sign up with `POST /v1/public/signup`. No session.",
+        "operationId": "get_signup_options",
+        "responses": {
+          "200": {
+            "description": "The price and the contact",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupOptions"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Sign up a new company",
+        "description": "Creates the company (seeded like one a superuser creates: calendars,\nstarter pipeline, email templates, a walk-in kiosk login), makes the\nperson signing up its Manager and an admin, sets its price ($800 a\nmonth) and signs them in: the answer and the session cookie are those\nof `POST /v1/auth/login`. Everything they typed is saved here, before\nany payment. Next they pay (`POST /v1/billing/first-payment/checkout`,\nto Stripe) or write to Granite Manager for a free month and a demo.\nUntil Stripe shows the payment, or a superuser gives free time, the API\nrefuses everything but sign-in and billing (`company.source =\n'signup_page'`, `auth::paywall`). The web address is kept as asked for;\nGranite Manager turns it on later, so the company starts on the main\nhost. No session.\n\n400 for a missing or bad field, 409 when the email already signs in\nsomewhere (sign in instead) or the web address is taken, 429 after\n`MAX_SIGNUPS_PER_ADDRESS` sign-ups from one address in a day.",
+        "operationId": "sign_up_company",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignupInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Created and signed in; the session cookie is set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A field is missing or bad",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The email already has an account, or the web address is taken",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many sign-ups from this address today",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/signup/subdomain/{subdomain}": {
+      "get": {
+        "tags": [
+          "public"
+        ],
+        "summary": "Check a web address",
+        "description": "Whether `subdomain` (`acme` of `acme.granite-manager.com`) is well formed\n(3 to 40 lowercase letters, numbers and single hyphens), not reserved and\nnot taken or asked for by another company. No session.",
+        "operationId": "check_signup_subdomain",
+        "parameters": [
+          {
+            "name": "subdomain",
+            "in": "path",
+            "description": "The web address to check, e.g. `acme`",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether it is available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubdomainCheck"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/public/payments/{token}": {
       "get": {
         "tags": [
@@ -64263,7 +65038,7 @@
           "superuser"
         ],
         "summary": "Features, who paid for them, and usage",
-        "description": "Every feature, the companies marked as having paid for each, and every\ncompany's usage counts over the last `usage_days` days. Superusers only.",
+        "description": "Every feature with its monthly price, the companies marked as having\npaid for each, the features self-signed-up companies picked, and every\ncompany's usage counts over the last `usage_days` days. Superusers only.",
         "operationId": "list_paid_features",
         "responses": {
           "200": {
@@ -64342,7 +65117,7 @@
             }
           },
           "400": {
-            "description": "Bad name or usage count",
+            "description": "Bad name, usage count or price",
             "content": {
               "application/json": {
                 "schema": {
@@ -64404,8 +65179,8 @@
         "tags": [
           "superuser"
         ],
-        "summary": "Rename a feature or change its usage count",
-        "description": "Superusers only.",
+        "summary": "Rename a feature, or change its usage count or price",
+        "description": "A price left out of the body stays as it is. Superusers only.",
         "operationId": "update_paid_feature",
         "parameters": [
           {
@@ -64434,7 +65209,7 @@
             "description": "Saved"
           },
           "400": {
-            "description": "Bad name or usage count",
+            "description": "Bad name, usage count or price",
             "content": {
               "application/json": {
                 "schema": {
@@ -67579,6 +68354,108 @@
         "responses": {
           "204": {
             "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a superuser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/superuser/companies/{id}/free-access": {
+      "put": {
+        "tags": [
+          "superuser"
+        ],
+        "summary": "Give a sign-up company free time",
+        "description": "A company from the sign-up page has no access until it pays; this lets\nit in free until the end of `until` (a free month with a demo), or ends\nthe free time (null). When it subscribes during the free time, its first\ncharge waits for the end. Answers the end (ISO 8601) or null. Superusers\nonly; 404 for a deleted or unknown company.",
+        "operationId": "set_platform_company_free_access",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FreeAccess"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved; the end of the free time, or null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A day in the past or too far ahead",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "401": {
             "description": "No valid session",
@@ -83028,6 +83905,7 @@
           "sms_images_enabled",
           "can_manage_company",
           "can_manage_billing",
+          "payment_required",
           "is_shop_manager",
           "has_projects_board",
           "is_template_maker",
@@ -83137,6 +84015,10 @@
           "can_manage_billing": {
             "type": "boolean",
             "description": "May manage billing (Manager)."
+          },
+          "payment_required": {
+            "type": "boolean",
+            "description": "The company signed itself up and has not paid (nor been given free\ntime): every other route answers 403, and the app shows only the\npage to pay or contact Granite Manager (`/activate`). Always false\nfor superusers."
           },
           "is_shop_manager": {
             "type": "boolean",
@@ -84174,7 +85056,8 @@
         "required": [
           "show_warning",
           "days_remaining",
-          "restricted"
+          "restricted",
+          "first_payment_due"
         ],
         "properties": {
           "show_warning": {
@@ -84189,6 +85072,10 @@
           "restricted": {
             "type": "boolean",
             "description": "Access is paused: only billing pages work."
+          },
+          "first_payment_due": {
+            "type": "boolean",
+            "description": "A company that signed itself up and has not paid for its first\nsubscription yet: `restricted` too, and the billing page asks it to\npay (`POST /v1/billing/first-payment/checkout`) or to write to\nGranite Manager for a free month."
           }
         }
       },
@@ -88099,6 +88986,7 @@
           "cloudtalk_connected",
           "quickbooks_connected",
           "billing_required",
+          "source",
           "features"
         ],
         "properties": {
@@ -88166,6 +89054,33 @@
           "billing_required": {
             "type": "boolean",
             "description": "Access depends on the Stripe subscription."
+          },
+          "source": {
+            "type": "string",
+            "description": "Where the company came from: `superuser` (created here) or\n`signup_page` (signed itself up; no access until its Stripe\nsubscription is paid)."
+          },
+          "signed_up_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the company signed itself up (ISO 8601); null when a superuser\ncreated it."
+          },
+          "requested_subdomain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The web address it asked for at sign-up (`acme`), until a superuser\nsets its subdomain; null otherwise."
+          },
+          "free_access_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "A sign-up company is let in free until then (ISO 8601); null: no free\ntime. Set with `PUT /v1/superuser/companies/{id}/free-access`."
           },
           "features": {
             "$ref": "#/components/schemas/Features"
@@ -93939,6 +94854,20 @@
         },
         "additionalProperties": false
       },
+      "EditedRepeats": {
+        "type": "object",
+        "description": "`PUT /v1/events/{id}` that changed only some repeats.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The new event holding the changed repeats."
+          }
+        }
+      },
       "EditedUser": {
         "type": "object",
         "description": "The edit form's user.",
@@ -94987,14 +95916,14 @@
               "string",
               "null"
             ],
-            "description": "Longer text."
+            "description": "Sent by old apps only: never stored, it goes on top of `notes`."
           },
           "notes": {
             "type": [
               "string",
               "null"
             ],
-            "description": "Internal notes."
+            "description": "The event's text (events have no other text field)."
           },
           "location": {
             "type": [
@@ -95145,12 +96074,15 @@
             "description": "Create only: copy comments, comment files and these attachments\nfrom this event of the company."
           },
           "copy_attachment_ids": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "type": "integer",
               "format": "int32"
             },
-            "description": "Create only: attachments of `copy_from_event_id` to copy."
+            "description": "Create only: attachments of `copy_from_event_id` to copy. On an edit\nof some repeats (`scope=one` or `following`): the repeating event's\nattachments the new event keeps (left out: all of them)."
           },
           "skipped_notification_flow_ids": {
             "type": [
@@ -95666,6 +96598,14 @@
               "null"
             ],
             "description": "The usage count shown for it (a `metrics` key); null: none."
+          },
+          "monthly_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "What it costs a month, in USD cents; null: no price. Bookkeeping for\npricing by feature later: self sign-up charges a flat price for now."
           }
         }
       },
@@ -95758,6 +96698,14 @@
               "null"
             ],
             "description": "A `metrics` key, or null for no usage count."
+          },
+          "monthly_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Monthly price in USD cents (50 to 10,000,000), or null for no price.\nLeave it out to keep the price as it is."
           }
         }
       },
@@ -96325,6 +97273,38 @@
             ],
             "format": "int32",
             "description": "The lead, when there is no deal."
+          }
+        }
+      },
+      "FirstPayment": {
+        "type": "object",
+        "description": "`GET /v1/billing/first-payment`.",
+        "required": [
+          "monthly_price_cents",
+          "contact_email",
+          "subscribed"
+        ],
+        "properties": {
+          "monthly_price_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the company pays a month, in USD cents (80000: $800)."
+          },
+          "contact_email": {
+            "type": "string",
+            "description": "Who to write to for a free month and a demo instead of paying now."
+          },
+          "free_access_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Granite Manager let the company in free until then (ISO 8601); its\nfirst charge waits for it. Null: no free time."
+          },
+          "subscribed": {
+            "type": "boolean",
+            "description": "A subscription is running already."
           }
         }
       },
@@ -96985,13 +97965,6 @@
             "type": "string",
             "description": "The event's name."
           },
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Longer text."
-          },
           "location": {
             "type": [
               "string",
@@ -97149,6 +98122,20 @@
               "null"
             ],
             "description": "Name."
+          }
+        }
+      },
+      "FreeAccess": {
+        "type": "object",
+        "description": "Body of `PUT /v1/superuser/companies/{id}/free-access`.",
+        "properties": {
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Let the company in free until the end of this day (`YYYY-MM-DD`, UTC),\nat most 400 days ahead; null ends the free time now."
           }
         }
       },
@@ -98332,6 +99319,139 @@
               "null"
             ],
             "description": "`hot`, `medium` or `cold`; null when not rated."
+          },
+          "phone_2": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A second phone; null when the lead has none."
+          },
+          "company_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The customer's company; null when the lead has none."
+          },
+          "city": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "City; null when the lead has none."
+          },
+          "postal_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Zip code; null when the lead has none."
+          },
+          "remodal_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What they remodel (\"Kitchen\"…); null when the lead has none."
+          },
+          "project_size": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How big the project is; null when the lead has none."
+          },
+          "when_start": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When they want to start; null when the lead has none."
+          },
+          "contact_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The best time to contact them; null when the lead has none."
+          },
+          "remove_and_dispose": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Whether the old countertops are removed; null when the lead has none."
+          },
+          "improve_offer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their answer to the offer question; null when the lead has none."
+          },
+          "sink": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The sink they chose; null when the lead has none."
+          },
+          "kitchen_stove": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stove they chose; null when the lead has none."
+          },
+          "backsplash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The backsplash they chose; null when the lead has none."
+          },
+          "details": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Other answers of the form (a Facebook lead); null when the lead has none."
+          },
+          "attached_file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The file they attached (a link); null when the lead has none."
+          },
+          "form_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The form the lead came from; null when the lead has none."
+          },
+          "compaign_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ad campaign; null when the lead has none."
+          },
+          "adset_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ad set; null when the lead has none."
+          },
+          "ad_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ad; null when the lead has none."
           }
         }
       },
@@ -105620,6 +106740,7 @@
           "features",
           "metrics",
           "paid",
+          "chosen",
           "usage",
           "usage_days"
         ],
@@ -105644,6 +106765,13 @@
               "$ref": "#/components/schemas/PaidMark"
             },
             "description": "Which company paid for which feature (deleted companies left out)."
+          },
+          "chosen": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PaidMark"
+            },
+            "description": "Which feature a self-signed-up company picked and pays for through\nits subscription (deleted companies left out)."
           },
           "usage": {
             "type": "array",
@@ -110316,6 +111444,44 @@
               "$ref": "#/components/schemas/Project"
             },
             "description": "The customer's jobs, oldest first: each won deal (or deal with a sale)\nwith its sales, then each sale that is not part of such a deal."
+          }
+        }
+      },
+      "ProjectEventLinks": {
+        "type": "object",
+        "description": "`GET /v1/projects/{id}/event-links`.",
+        "required": [
+          "projects",
+          "events"
+        ],
+        "properties": {
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkProject"
+            },
+            "description": "The customer's open projects the caller can see (this one included),\nto name the project an event is on now."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkEvent"
+            },
+            "description": "The customer's events and the ones linked to this project, soonest\nfirst."
+          }
+        }
+      },
+      "ProjectEventLinksInput": {
+        "type": "object",
+        "description": "`PUT /v1/projects/{id}/event-links`.",
+        "properties": {
+          "event_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "The events that are this project's: each is linked to it (leaving its\nold project); this project's other events are unlinked."
           }
         }
       },
@@ -116953,13 +118119,6 @@
             "type": "string",
             "description": "The event's name."
           },
-          "description": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Description."
-          },
           "location": {
             "type": [
               "string",
@@ -118165,6 +119324,102 @@
           }
         }
       },
+      "SetupChecklist": {
+        "type": "object",
+        "description": "`GET /v1/company/setup-checklist`.",
+        "required": [
+          "items",
+          "done_count",
+          "total_count",
+          "contact_email"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SetupItem"
+            },
+            "description": "The items, in order."
+          },
+          "done_count": {
+            "type": "integer",
+            "description": "Required items done.",
+            "minimum": 0
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Required items in all.",
+            "minimum": 0
+          },
+          "contact_email": {
+            "type": "string",
+            "description": "Granite Manager's address for the `contact` items."
+          }
+        }
+      },
+      "SetupHow": {
+        "type": "string",
+        "description": "Who does an item.",
+        "enum": [
+          "self",
+          "contact"
+        ]
+      },
+      "SetupItem": {
+        "type": "object",
+        "description": "One thing to configure.",
+        "required": [
+          "key",
+          "title",
+          "hint",
+          "done",
+          "auto_done",
+          "ticked",
+          "how",
+          "optional"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Item key, for `PUT /v1/company/setup-checklist/{key}`."
+          },
+          "title": {
+            "type": "string",
+            "description": "What to configure."
+          },
+          "hint": {
+            "type": "string",
+            "description": "What it gives, or where it stands."
+          },
+          "done": {
+            "type": "boolean",
+            "description": "Done: seen in the company's data, or ticked by hand."
+          },
+          "auto_done": {
+            "type": "boolean",
+            "description": "Seen done in the company's data."
+          },
+          "ticked": {
+            "type": "boolean",
+            "description": "Ticked by a manager (done, or not needed)."
+          },
+          "how": {
+            "$ref": "#/components/schemas/SetupHow",
+            "description": "`self` or `contact`."
+          },
+          "href": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The page to do it on (`self` items), e.g. `/admin/users`; null for\n`contact` items."
+          },
+          "optional": {
+            "type": "boolean",
+            "description": "Not every company needs it; it does not count toward `done_count`."
+          }
+        }
+      },
       "SetupPage": {
         "type": "object",
         "description": "`GET /v1/me/onboarding/setup`.",
@@ -118274,6 +119529,19 @@
           "has_permissions": {
             "type": "boolean",
             "description": "A Manager opened Position access (Company page), or the company\nexisted before the checklist asked."
+          }
+        }
+      },
+      "SetupTick": {
+        "type": "object",
+        "description": "Body of `PUT /v1/company/setup-checklist/{key}`.",
+        "required": [
+          "ticked"
+        ],
+        "properties": {
+          "ticked": {
+            "type": "boolean",
+            "description": "True: done (or not needed); false: take the tick off."
           }
         }
       },
@@ -118983,6 +120251,87 @@
               "null"
             ],
             "description": "The signed copy (API path), once signed."
+          }
+        }
+      },
+      "SignupInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/public/signup`.",
+        "required": [
+          "company_name",
+          "subdomain",
+          "name",
+          "email",
+          "phone_number",
+          "password",
+          "accept_terms"
+        ],
+        "properties": {
+          "company_name": {
+            "type": "string",
+            "description": "The company's name, 1 to 120 characters."
+          },
+          "subdomain": {
+            "type": "string",
+            "description": "The web address it wants (`acme` of `acme.granite-manager.com`); see\n`GET /v1/public/signup/subdomain/{subdomain}`."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The company's address; optional."
+          },
+          "name": {
+            "type": "string",
+            "description": "The person signing up: their name, 1 to 100 characters. They become\nthe company's Manager."
+          },
+          "email": {
+            "type": "string",
+            "description": "Their email, which they sign in with. Must not sign in anywhere yet."
+          },
+          "phone_number": {
+            "type": "string",
+            "description": "Their phone number, at least 10 digits."
+          },
+          "password": {
+            "type": "string",
+            "description": "Their password, 8 to 200 characters."
+          },
+          "accept_terms": {
+            "type": "boolean",
+            "description": "They accept the End-User License Agreement and the Privacy Policy."
+          },
+          "website": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Leave empty (a field people do not see; bots fill it in)."
+          }
+        }
+      },
+      "SignupOptions": {
+        "type": "object",
+        "description": "`GET /v1/public/signup`.",
+        "required": [
+          "monthly_price_cents",
+          "contact_email",
+          "base_domain"
+        ],
+        "properties": {
+          "monthly_price_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "What the company pays a month, in USD cents (80000: $800)."
+          },
+          "contact_email": {
+            "type": "string",
+            "description": "Who to write to for a free month and a demo instead of paying now."
+          },
+          "base_domain": {
+            "type": "string",
+            "description": "The base domain of company web addresses (`granite-manager.com`)."
           }
         }
       },
@@ -120983,6 +122332,36 @@
           }
         }
       },
+      "StoneColors": {
+        "type": "object",
+        "description": "The colors the AI picked.",
+        "required": [
+          "colorIds"
+        ],
+        "properties": {
+          "colorIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Ids from `GET /v1/colors`, the main color first; empty when the AI\ncould not tell."
+          }
+        }
+      },
+      "StoneColorsInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/ai/stone-colors`.",
+        "required": [
+          "contentBase64"
+        ],
+        "properties": {
+          "contentBase64": {
+            "type": "string",
+            "description": "The stone's photo, base64: a JPEG, PNG or WebP of at most 4 MB."
+          }
+        }
+      },
       "StoneDetail": {
         "type": "object",
         "description": "One stone with everything an edit form shows.",
@@ -121719,6 +123098,31 @@
           "url": {
             "type": "string",
             "description": "Stripe's page (Checkout or the billing portal)."
+          }
+        }
+      },
+      "SubdomainCheck": {
+        "type": "object",
+        "description": "`GET /v1/public/signup/subdomain/{subdomain}`.",
+        "required": [
+          "subdomain",
+          "available"
+        ],
+        "properties": {
+          "subdomain": {
+            "type": "string",
+            "description": "The address, lowercased."
+          },
+          "available": {
+            "type": "boolean",
+            "description": "It can be signed up with."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why not, for the form; null when available."
           }
         }
       },
@@ -128148,7 +129552,7 @@
     },
     {
       "name": "public",
-      "description": "The public showroom; no session needed"
+      "description": "The public showroom and self sign-up; no session needed"
     },
     {
       "name": "catalog",

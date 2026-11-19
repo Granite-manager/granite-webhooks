@@ -1,12 +1,12 @@
 //! Sign-in steps (`routes/login_steps.rs`) and the user's two-step sign-in
-//! (`routes/me/mfa.rs`): the password 1111 must be changed, an
+//! (`routes/me/mfa.rs`): the password 1111 never signs in, an
 //! authenticator code after the password, superusers must set one up.
 
 use crate::common;
 
 use api::app;
-use api_accounts::mfa::{base32_decode, code_at};
 use api::state::AppState;
+use api_accounts::mfa::{base32_decode, code_at};
 use axum::http::StatusCode;
 use axum_test::{TestResponse, TestServer};
 use common::{ALLOWED_ORIGIN, SECRET};
@@ -80,53 +80,47 @@ async fn enable(server: &TestServer, cookie: &str) -> String {
 }
 
 #[test_db::test(seed)]
-async fn the_password_1111_must_be_changed(pool: MySqlPool) {
+async fn the_password_1111_never_signs_in(pool: MySqlPool) {
     set_password(&pool, 100, "1111").await;
     let server = server(pool.clone());
-    let started = login(&server, "rep@acme.test", "1111").await;
-    started.assert_status(StatusCode::ACCEPTED);
-    assert!(session_cookie(&started).is_none());
-    let challenge: Value = started.json();
-    assert_eq!(challenge["step"], "new_password");
-    let token = challenge["token"].as_str().unwrap();
-
-    // Another step than the one needed is refused.
-    server
-        .post("/v1/auth/login/code")
-        .json(&json!({ "token": token, "code": "123456" }))
-        .await
-        .assert_status(StatusCode::CONFLICT);
-    server
-        .post("/v1/auth/login/password")
-        .json(&json!({ "token": token, "password": "short" }))
-        .await
-        .assert_status_bad_request();
-    let done = server
-        .post("/v1/auth/login/password")
-        .json(&json!({ "token": token, "password": "  a-new-password " }))
+    let refused = login(&server, "rep@acme.test", "1111").await;
+    refused.assert_status_forbidden();
+    assert!(session_cookie(&refused).is_none());
+    assert!(
+        refused.json::<Value>()["error"]
+            .as_str()
+            .unwrap()
+            .contains("Forgot password")
+    );
+    let app = server
+        .post("/v1/auth/device-sessions")
+        .json(&json!({
+            "email": "rep@acme.test",
+            "password": "1111",
+            "deviceName": "Rita's Pixel",
+            "platform": "android",
+            "appVersion": "1.9.0",
+            "steps": true,
+        }))
         .await;
-    done.assert_status_ok();
-    let body: Value = done.json();
-    assert_eq!(body["user"]["id"], 100);
-    let cookie = session_cookie(&done).unwrap();
-    server
-        .get("/v1/me")
-        .add_header("cookie", cookie)
+    app.assert_status_forbidden();
+    assert!(app.json::<Value>().get("token").is_none());
+    let challenges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM login_challenges")
+        .fetch_one(&pool)
         .await
-        .assert_status_ok();
+        .unwrap();
+    assert_eq!(challenges, 0);
 
-    // The token is spent; the old password no longer works, the new one does.
-    server
-        .post("/v1/auth/login/password")
-        .json(&json!({ "token": token, "password": "another-password" }))
-        .await
-        .assert_status_unauthorized();
+    // With two-step sign-in on too: refused before any step.
+    let cookie = {
+        set_password(&pool, 100, PASSWORD).await;
+        session_cookie(&login(&server, "rep@acme.test", PASSWORD).await).unwrap()
+    };
+    enable(&server, &cookie).await;
+    set_password(&pool, 100, "1111").await;
     login(&server, "rep@acme.test", "1111")
         .await
-        .assert_status_unauthorized();
-    login(&server, "rep@acme.test", "a-new-password")
-        .await
-        .assert_status_ok();
+        .assert_status_forbidden();
 }
 
 #[test_db::test(seed)]
@@ -170,11 +164,10 @@ async fn a_code_is_asked_after_the_password(pool: MySqlPool) {
     done.assert_status_ok();
     assert!(session_cookie(&done).is_some());
     // Wrong codes counted as failed sign-ins until it signed in.
-    let failures: i64 =
-        sqlx::query_scalar("SELECT CAST(COUNT(*) AS SIGNED) FROM login_attempts")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+    let failures: i64 = sqlx::query_scalar("SELECT CAST(COUNT(*) AS SIGNED) FROM login_attempts")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
     assert_eq!(failures, 0);
 
     // Off with a current code.
@@ -229,24 +222,20 @@ async fn five_wrong_codes_end_the_sign_in(pool: MySqlPool) {
 #[test_db::test(seed)]
 async fn superusers_must_set_up_two_step_sign_in(pool: MySqlPool) {
     make_superuser(&pool, 102).await;
-    set_password(&pool, 102, "1111").await;
+    set_password(&pool, 102, "a-new-password").await;
     let server = server(pool.clone());
-    let challenge: Value = login(&server, "admin@acme.test", "1111").await.json();
-    assert_eq!(challenge["step"], "new_password");
+    let started = login(&server, "admin@acme.test", "a-new-password").await;
+    started.assert_status(StatusCode::ACCEPTED);
+    assert!(session_cookie(&started).is_none());
+    let challenge: Value = started.json();
+    assert_eq!(challenge["step"], "setup_authenticator");
     let token = challenge["token"].as_str().unwrap().to_string();
-    // The QR code is not given before the password is changed.
+    // A step other than the one needed is refused.
     server
-        .post("/v1/auth/login/authenticator")
-        .json(&json!({ "token": token }))
+        .post("/v1/auth/login/code")
+        .json(&json!({ "token": token, "code": "123456" }))
         .await
         .assert_status(StatusCode::CONFLICT);
-    let next = server
-        .post("/v1/auth/login/password")
-        .json(&json!({ "token": token, "password": "a-new-password" }))
-        .await;
-    next.assert_status(StatusCode::ACCEPTED);
-    assert!(session_cookie(&next).is_none());
-    assert_eq!(next.json::<Value>()["step"], "setup_authenticator");
 
     let setup: Value = server
         .post("/v1/auth/login/authenticator")
@@ -305,33 +294,6 @@ async fn superusers_must_set_up_two_step_sign_in(pool: MySqlPool) {
         .await
         .json();
     assert_eq!(challenge["step"], "code");
-}
-
-#[test_db::test(seed)]
-async fn the_code_comes_before_the_new_password(pool: MySqlPool) {
-    let server = server(pool.clone());
-    let cookie = session_cookie(&login(&server, "rep@acme.test", PASSWORD).await).unwrap();
-    let secret = enable(&server, &cookie).await;
-    set_password(&pool, 100, "1111").await;
-    let challenge: Value = login(&server, "rep@acme.test", "1111").await.json();
-    assert_eq!(challenge["step"], "code");
-    let token = challenge["token"].as_str().unwrap();
-    server
-        .post("/v1/auth/login/password")
-        .json(&json!({ "token": token, "password": "a-new-password" }))
-        .await
-        .assert_status(StatusCode::CONFLICT);
-    let next = server
-        .post("/v1/auth/login/code")
-        .json(&json!({ "token": token, "code": code(&secret, 1) }))
-        .await;
-    next.assert_status(StatusCode::ACCEPTED);
-    assert_eq!(next.json::<Value>()["step"], "new_password");
-    server
-        .post("/v1/auth/login/password")
-        .json(&json!({ "token": token, "password": "a-new-password" }))
-        .await
-        .assert_status_ok();
 }
 
 #[test_db::test(seed)]

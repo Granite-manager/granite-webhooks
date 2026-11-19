@@ -5,7 +5,7 @@
 use super::access::{STAGE_SQL, Stage, Viewer};
 use super::schemas::{
     DoneStep, NotifyPosition, Person, ProcessStage, ProcessStep, ProcessStepAuto, ProcessStepInput,
-    ProcessStepName, ProcessStepNotify, ProcessStepOrder, StepAuto, StepDone,
+    ProcessStepName, ProcessStepNotify, ProcessStepOrder, ProjectAction, StepAuto, StepDone,
 };
 use super::service::visible_project;
 use super::step_events::StepEventRule;
@@ -23,7 +23,6 @@ use sqlx::{MySql, MySqlConnection, QueryBuilder};
 
 const NAME_MAX: usize = 120;
 
-
 /// The name to store, or why it can't be.
 fn clean_name(name: &str) -> ApiResult<&str> {
     let name = name.trim();
@@ -40,19 +39,20 @@ fn clean_name(name: &str) -> ApiResult<&str> {
 
 /// The steps a company starts with, renamed, moved or deleted as it likes,
 /// each checked off by the real work (owner, 2026-11-18): the template booked,
-/// then the template maker's Completed; moved to In Fabrication; the
+/// then the template maker's Completed; "Start fabrication" checked off by
+/// hand (no rule: a job never moves on by hand, owner 2026-11-19); the
 /// installation booked, then the installer's Completed; paid in full.
-pub const STAGE_END_STEPS: [(Stage, &str, &str); 6] = [
-    (Stage::New, "Schedule the template", "template_booked"),
-    (Stage::New, "Template", "template_completed"),
-    (Stage::Templated, "Start fabrication", "stage_moved"),
+pub const STAGE_END_STEPS: [(Stage, &str, Option<&str>); 6] = [
+    (Stage::New, "Schedule the template", Some("template_booked")),
+    (Stage::New, "Template", Some("template_completed")),
+    (Stage::Templated, "Start fabrication", None),
     (
         Stage::Fabrication,
         "Schedule the installation",
-        "install_booked",
+        Some("install_booked"),
     ),
-    (Stage::Fabrication, "Installation", "install_completed"),
-    (Stage::Installed, "Confirm full payment", "payment_full"),
+    (Stage::Fabrication, "Installation", Some("install_completed")),
+    (Stage::Installed, "Confirm full payment", Some("payment_full")),
 ];
 
 /// The stages that have steps.
@@ -79,12 +79,13 @@ async fn seed_steps(conn: &mut MySqlConnection, company_id: i32) -> sqlx::Result
         sqlx::query(
             "INSERT INTO project_process_steps
                 (company_id, stage_code, name, position, auto_trigger, auto_since)
-             SELECT ?, ?, ?, COALESCE(MAX(position) + 1, 0), ?, UTC_TIMESTAMP(3)
+             SELECT ?, ?, ?, COALESCE(MAX(position) + 1, 0), ?, IF(? IS NULL, NULL, UTC_TIMESTAMP(3))
                FROM project_process_steps WHERE company_id = ? AND stage_code = ?",
         )
         .bind(company_id)
         .bind(stage.as_str())
         .bind(name)
+        .bind(trigger)
         .bind(trigger)
         .bind(company_id)
         .bind(stage.as_str())
@@ -614,6 +615,81 @@ pub async fn set_stage_notify(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Checking off by hand the last step of the stage the project (or its part)
+/// is in moves it to the next stage (owner, 2026-11-19: "when I mark the last
+/// step in the list, it has to move to the next list"). The move is the
+/// board's, with its checks, history and notices; anyone who may check the step
+/// off moves it. A move that can't happen yet (no transaction, slabs not cut)
+/// answers why, and the step stays done.
+pub(super) async fn move_on_after_last_step(
+    state: &AppState,
+    viewer: &Viewer,
+    actor_name: Option<&str>,
+    project_id: i32,
+    step_id: i32,
+    part_id: i32,
+) -> ApiResult<()> {
+    let mut conn = state.pool.acquire().await?;
+    let steps = company_steps(&mut conn, viewer.company_id).await?;
+    let Some(stage) = steps.iter().find(|s| s.id == step_id).map(|s| s.stage_code) else {
+        return Ok(());
+    };
+    let last = steps
+        .iter()
+        .rev()
+        .find(|s| s.stage_code == stage)
+        .map(|s| s.id);
+    if last != Some(step_id) {
+        return Ok(());
+    }
+    let project = visible_project(&mut conn, viewer, project_id).await?;
+    let current = if part_id == 0 {
+        project.stage_code
+    } else {
+        let parts = super::parts::parts_of(&mut conn, viewer.company_id, &[project_id]).await?;
+        match parts.iter().find(|p| p.id == part_id) {
+            Some(part) => part.stage_code,
+            None => return Ok(()),
+        }
+    };
+    let Some(next) = Stage::ALL.into_iter().find(|s| *s > stage) else {
+        return Ok(());
+    };
+    if current != stage {
+        return Ok(());
+    }
+    let seen: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(MAX(id), 0) AS SIGNED) FROM project_stage_history WHERE project_id = ?",
+    )
+    .bind(project_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    drop(conn);
+    let mut mover = viewer.clone();
+    mover.permissions.production = true;
+    super::service::apply(
+        &state.pool,
+        &mover,
+        project_id,
+        ProjectAction::Stage {
+            version: project.version,
+            stage: next,
+            part_id: (part_id != 0).then_some(part_id),
+        },
+    )
+    .await?;
+    tell_moved_on(
+        state,
+        Some(viewer.user_id),
+        actor_name,
+        viewer.company_id,
+        project_id,
+        seen,
+    )
+    .await;
+    Ok(())
+}
+
 /// What a project's move left behind, for every stage it moved on from (the
 /// moves added to its stage history after `seen`; a part marked fabricated
 /// also finishes the Fabrication stage): sets the stage's schedule events and
@@ -845,7 +921,7 @@ const NOTIFY_POSITIONS: [(i32, &str); 7] = [
 ];
 
 /// What can check a step off by itself.
-pub const TRIGGERS: [&str; 17] = [
+pub const TRIGGERS: [&str; 16] = [
     "email_template",
     "text_template",
     "customer_replied",
@@ -862,7 +938,6 @@ pub const TRIGGERS: [&str; 17] = [
     "payment_full",
     "task_done",
     "days_after",
-    "stage_moved",
 ];
 
 /// Whether a rule with this trigger can also move the project on: not one that
@@ -1268,6 +1343,8 @@ pub async fn set_done(
                 part,
             )
             .await;
+            move_on_after_last_step(&state, &viewer, user.name.as_deref(), id, step_id, part)
+                .await?;
         }
     } else {
         sqlx::query(

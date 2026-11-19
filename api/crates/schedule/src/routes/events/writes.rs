@@ -12,6 +12,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use chrono::{NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::MySqlPool;
@@ -32,10 +33,10 @@ pub struct EventInvoice {
 pub struct EventInput {
     /// 1 to 255 characters.
     pub title: String,
-    /// Longer text.
+    /// Sent by old apps only: never stored, it goes on top of `notes`.
     #[serde(default)]
     pub description: Option<String>,
-    /// Internal notes.
+    /// The event's text (events have no other text field).
     #[serde(default)]
     pub notes: Option<String>,
     /// Address, up to 500 characters.
@@ -114,9 +115,11 @@ pub struct EventInput {
     /// from this event of the company.
     #[serde(default)]
     pub copy_from_event_id: Option<i32>,
-    /// Create only: attachments of `copy_from_event_id` to copy.
+    /// Create only: attachments of `copy_from_event_id` to copy. On an edit
+    /// of some repeats (`scope=one` or `following`): the repeating event's
+    /// attachments the new event keeps (left out: all of them).
     #[serde(default)]
-    pub copy_attachment_ids: Vec<i32>,
+    pub copy_attachment_ids: Option<Vec<i32>>,
     /// Its calendar's default notification flow, turned off for this
     /// event; leave out to keep the saved choice.
     #[serde(default)]
@@ -165,8 +168,8 @@ fn non_empty(value: Option<&String>) -> Option<&str> {
 /// The input, checked, with defaults applied.
 pub struct Checked<'a> {
     pub title: &'a str,
-    pub description: Option<&'a str>,
-    pub notes: Option<&'a str>,
+    /// The notes, with an old app's description on top.
+    pub notes: Option<String>,
     pub location: Option<&'a str>,
     pub color: &'a str,
     pub status: &'a str,
@@ -180,6 +183,19 @@ pub struct Checked<'a> {
     pub contact_email: Option<Option<&'a str>>,
     pub contact_phone_2: Option<Option<&'a str>>,
     pub contact_email_2: Option<Option<&'a str>>,
+}
+
+/// Events have only notes: a description an old app sends goes on top of them.
+pub fn notes_with_description(description: Option<&str>, notes: Option<&str>) -> Option<String> {
+    let description = description.map(str::trim).filter(|text| !text.is_empty());
+    let notes = notes.filter(|text| !text.trim().is_empty());
+    match (description, notes) {
+        (Some(description), Some(notes)) if !notes.contains(description) => {
+            Some(format!("{description}\n\n{notes}"))
+        }
+        (Some(description), None) => Some(description.to_string()),
+        (_, notes) => notes.map(str::to_string),
+    }
 }
 
 fn bad(message: &str) -> ApiError {
@@ -274,8 +290,7 @@ pub fn check<'a>(input: &'a EventInput) -> ApiResult<Checked<'a>> {
     }
     Ok(Checked {
         title: &input.title,
-        description: non_empty(input.description.as_ref()),
-        notes: non_empty(input.notes.as_ref()),
+        notes: notes_with_description(input.description.as_deref(), input.notes.as_deref()),
         location,
         color,
         status,
@@ -462,7 +477,6 @@ async fn copy_records(
 #[derive(sqlx::FromRow)]
 pub struct StoredEvent {
     pub title: String,
-    pub description: Option<String>,
     pub location: Option<String>,
     pub start_date: NaiveDateTime,
     pub end_date: NaiveDateTime,
@@ -485,7 +499,7 @@ pub async fn company_event(
     event_id: i32,
 ) -> Result<Option<StoredEvent>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT e.title, e.description, e.location, e.start_date, e.end_date,
+        "SELECT e.title, e.location, e.start_date, e.end_date,
                 COALESCE(e.all_day, 0) <> 0 AS all_day, e.unscheduled <> 0 AS unscheduled,
                 e.color, e.status, e.urgent <> 0 AS urgent, e.notes, e.calendar_id, e.rrule,
                 e.recurrence_until, e.created_user_id, e.customer_id
@@ -569,14 +583,13 @@ pub async fn create(
         None => board::sole_template_maker(pool, event.calendar_id).await?,
     };
     let id = sqlx::query(
-        "INSERT INTO events (title, description, location, start_date, end_date, all_day,
+        "INSERT INTO events (title, location, start_date, end_date, all_day,
             unscheduled, color, status, notes, created_user_id, assigned_user_id, sale_id,
             customer_id, calendar_id, rrule, recurrence_until, contact_phone, contact_email,
             contact_phone_2, contact_email_2, project_id, project_part_id, urgent)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(event.title)
-    .bind(event.description)
     .bind(event.location)
     .bind(event.start)
     .bind(event.end)
@@ -584,7 +597,7 @@ pub async fn create(
     .bind(input.unscheduled)
     .bind(event.color)
     .bind(event.status)
-    .bind(event.notes)
+    .bind(event.notes.as_deref())
     .bind(user.id)
     .bind(assignee)
     .bind(input.sale_id.filter(|id| *id > 0))
@@ -613,7 +626,8 @@ pub async fn create(
         people::save(pool, user.company_id, event_id, ids).await?;
     }
     if let Some(source) = input.copy_from_event_id.filter(|id| *id > 0) {
-        copy_records(pool, &user, event_id, source, &input.copy_attachment_ids).await?;
+        let ids = input.copy_attachment_ids.as_deref().unwrap_or(&[]);
+        copy_records(pool, &user, event_id, source, ids).await?;
     }
     if let Some(invoice) = &input.qbo_invoice {
         save_invoice(pool, user.company_id, event_id, Some(user.id), invoice).await?;
@@ -703,10 +717,7 @@ fn change_messages(
         };
         messages.push(message.into());
     }
-    if event.description != existing.description.as_deref().filter(|d| !d.is_empty()) {
-        messages.push("Description updated".into());
-    }
-    if event.notes != existing.notes.as_deref().filter(|n| !n.is_empty()) {
+    if event.notes.as_deref() != existing.notes.as_deref().filter(|n| !n.is_empty()) {
         messages.push("Notes updated".into());
     }
     if Some(event.status) != existing.status.as_deref() {
@@ -757,18 +768,61 @@ async fn calendar_name(pool: &MySqlPool, calendar_id: Option<i32>) -> sqlx::Resu
         .await
 }
 
-/// Edit an event
+/// Which repeats `PUT /v1/events/{id}` changes.
+#[derive(Debug, Default, Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct EditEventQuery {
+    /// `all` (the default): the event and, if it repeats, every repeat.
+    /// `one`: only the repeat on `date`. `following`: the repeat that starts
+    /// at `start` and every later one. On an event that does not repeat,
+    /// every scope edits the event.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// With `scope=one`: the repeat's day, `YYYY-MM-DD`, as the calendar shows
+    /// it (the shop's wall-clock date, like `recurrence_exdates`).
+    #[serde(default)]
+    pub date: Option<String>,
+    /// With `scope=following`: the repeat's start, UTC ISO 8601. The repeat
+    /// at or before the first one edits the whole event.
+    #[serde(default)]
+    pub start: Option<String>,
+}
+
+/// `PUT /v1/events/{id}` that changed only some repeats.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct EditedRepeats {
+    /// The new event holding the changed repeats.
+    pub id: i32,
+}
+
+/// Which repeats of a repeating event an edit splits off.
+#[derive(Clone, Copy)]
+enum Split {
+    /// Only the repeat on this (wall-clock) day.
+    One(NaiveDate),
+    /// The repeat starting then (UTC) and every later one.
+    Following(NaiveDateTime),
+}
+
+/// Edit an event, or some repeats of a repeating one
 ///
 /// Saves every field, logs what changed in the event's history, and
-/// re-times its appointment reminders when it moved.
+/// re-times its appointment reminders when it moved. For a repeating event,
+/// `scope=one` with `date` takes that repeat off it (`recurrence_exdates`)
+/// and saves the input as its own event that doesn't repeat; and
+/// `scope=following` with `start` ends the repeats just before that one
+/// (`recurrence_until`) and saves the input as a new event from it on. Both
+/// answer 200 with the new event's id; it keeps the people, notifications,
+/// invoice, comments and photos the input leaves out.
 #[crate::openapi::path(
     put,
     path = "/v1/events/{id}",
     operation_id = "update_event",
     tag = "schedule",
-    params(("id" = i32, Path, description = "Event id")),
+    params(("id" = i32, Path, description = "Event id"), EditEventQuery),
     request_body = EventInput,
     responses(
+        (status = 200, description = "Some repeats changed: their new event", body = EditedRepeats),
         (status = 204, description = "Saved"),
         (status = 400, description = "Invalid field, or unknown calendar or customer", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
@@ -782,8 +836,9 @@ pub async fn update(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
     Path(id): Path<i32>,
+    Query(query): Query<EditEventQuery>,
     JsonBody(input): JsonBody<EventInput>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Response> {
     let pool = &state.pool;
     let existing = company_event(pool, user.company_id, id)
         .await?
@@ -795,8 +850,47 @@ pub async fn update(
         Some(ids) => Some(people::check(pool, user.company_id, ids).await?),
         None => None,
     };
+    let repeats = existing
+        .rrule
+        .as_deref()
+        .is_some_and(|rule| !rule.trim().is_empty());
+    let split = match query.scope.as_deref().unwrap_or("all") {
+        "one" if repeats => Some(Split::One(
+            query
+                .date
+                .as_deref()
+                .and_then(|text| NaiveDate::parse_from_str(text.trim(), "%Y-%m-%d").ok())
+                .ok_or_else(|| bad("`date` must be YYYY-MM-DD."))?,
+        )),
+        "following" if repeats => {
+            let from = query
+                .start
+                .as_deref()
+                .and_then(parse_event_time)
+                .ok_or_else(|| bad("`start` must be a date and time."))?;
+            // From the first repeat on, it is the whole event.
+            (from > existing.start_date).then_some(Split::Following(from))
+        }
+        "all" | "one" | "following" => None,
+        _ => return Err(bad("`scope` must be all, one or following.")),
+    };
+    if let Some(split) = split {
+        let new_id = split_repeats(
+            pool,
+            &user,
+            id,
+            &existing,
+            &input,
+            &event,
+            customer,
+            people_ids.as_deref(),
+            split,
+        )
+        .await?;
+        return Ok((StatusCode::OK, Json(EditedRepeats { id: new_id })).into_response());
+    }
     sqlx::query(
-        "UPDATE events SET title = ?, description = ?, location = ?, start_date = ?, end_date = ?,
+        "UPDATE events SET title = ?, location = ?, start_date = ?, end_date = ?,
             all_day = ?, unscheduled = ?, color = ?, status = ?, notes = ?, assigned_user_id = ?,
             sale_id = ?, customer_id = IF(?, ?, customer_id), calendar_id = ?, rrule = ?,
             recurrence_until = ?, contact_phone = IF(?, ?, contact_phone),
@@ -807,7 +901,6 @@ pub async fn update(
           WHERE id = ?",
     )
     .bind(event.title)
-    .bind(event.description)
     .bind(event.location)
     .bind(event.start)
     .bind(event.end)
@@ -815,7 +908,7 @@ pub async fn update(
     .bind(input.unscheduled)
     .bind(event.color)
     .bind(event.status)
-    .bind(event.notes)
+    .bind(event.notes.as_deref())
     .bind(input.assigned_user_id.filter(|id| *id > 0))
     .bind(input.sale_id.filter(|id| *id > 0))
     .bind(customer.is_some())
@@ -935,7 +1028,202 @@ pub async fn update(
         )
         .await?;
     }
-    Ok(StatusCode::NO_CONTENT)
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// The repeating event's skipped days that can fall on or after `from`
+/// (a day early, as they are wall-clock days), for the new event of the
+/// following repeats.
+fn exdates_from(saved: Option<&str>, from: NaiveDateTime) -> Option<String> {
+    let first = from.date() - chrono::Duration::days(1);
+    let days: Vec<&str> = saved
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|text| NaiveDate::parse_from_str(text, "%Y-%m-%d").is_ok_and(|day| day >= first))
+        .collect();
+    (!days.is_empty()).then(|| days.join(","))
+}
+
+/// Takes some repeats off the repeating event `id` and saves the edit as a
+/// new event holding them, as TimeTree and Google Calendar do. The new event
+/// keeps what the input leaves out (people, notifications, invoice) and gets
+/// the comments, photos and attachments. Its id.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+async fn split_repeats(
+    pool: &MySqlPool,
+    user: &SessionUser,
+    id: i32,
+    existing: &StoredEvent,
+    input: &EventInput,
+    event: &Checked<'_>,
+    customer: Option<Option<i32>>,
+    people_ids: Option<&[i32]>,
+    split: Split,
+) -> ApiResult<i32> {
+    let by = user.name.as_deref();
+    let saved_exdates: Option<String> =
+        sqlx::query_scalar("SELECT recurrence_exdates FROM events WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await?;
+    let (rrule, until, exdates, line) = match split {
+        Split::One(day) => {
+            sqlx::query("UPDATE events SET recurrence_exdates = ? WHERE id = ?")
+                .bind(with_exdate(saved_exdates.as_deref(), day))
+                .bind(id)
+                .execute(pool)
+                .await?;
+            let line = format!("Repeat on {} changed on its own", day.format("%b %-d, %Y"));
+            (None, None, None, line)
+        }
+        Split::Following(from) => {
+            // The last repeat kept starts before this one.
+            let until = from - chrono::Duration::seconds(1);
+            let until = existing
+                .recurrence_until
+                .map_or(until, |saved| saved.min(until));
+            sqlx::query("UPDATE events SET recurrence_until = ? WHERE id = ?")
+                .bind(until)
+                .bind(id)
+                .execute(pool)
+                .await?;
+            let line = format!("Repeats from {} on changed", from.format("%b %-d, %Y"));
+            let exdates = event
+                .rrule
+                .and_then(|_| exdates_from(saved_exdates.as_deref(), from));
+            (event.rrule, event.recurrence_until, exdates, line)
+        }
+    };
+    let created = sqlx::query(
+        "INSERT INTO events (title, location, start_date, end_date, all_day,
+            unscheduled, color, status, notes, created_user_id, assigned_user_id, sale_id,
+            customer_id, calendar_id, rrule, recurrence_until, recurrence_exdates,
+            contact_phone, contact_email, contact_phone_2, contact_email_2, project_id,
+            project_part_id, urgent)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, created_user_id, ?, ?, IF(?, ?, customer_id), ?,
+            ?, ?, ?, IF(?, ?, contact_phone), IF(?, ?, contact_email),
+            IF(?, ?, contact_phone_2), IF(?, ?, contact_email_2), project_id, project_part_id,
+            IF(?, ?, urgent)
+           FROM events WHERE id = ?",
+    )
+    .bind(event.title)
+    .bind(event.location)
+    .bind(event.start)
+    .bind(event.end)
+    .bind(input.all_day)
+    .bind(input.unscheduled)
+    .bind(event.color)
+    .bind(event.status)
+    .bind(event.notes.as_deref())
+    .bind(input.assigned_user_id.filter(|id| *id > 0))
+    .bind(input.sale_id.filter(|id| *id > 0))
+    .bind(customer.is_some())
+    .bind(customer.flatten())
+    .bind(event.calendar_id)
+    .bind(rrule)
+    .bind(until)
+    .bind(exdates)
+    .bind(event.contact_phone.is_some())
+    .bind(event.contact_phone.flatten())
+    .bind(event.contact_email.is_some())
+    .bind(event.contact_email.flatten())
+    .bind(event.contact_phone_2.is_some())
+    .bind(event.contact_phone_2.flatten())
+    .bind(event.contact_email_2.is_some())
+    .bind(event.contact_email_2.flatten())
+    .bind(input.urgent.is_some())
+    .bind(input.urgent.unwrap_or(false))
+    .bind(id)
+    .execute(pool)
+    .await?
+    .last_insert_id();
+    let new_id = i32::try_from(created).map_err(|_| ApiError::Internal("event id".into()))?;
+    record(
+        pool,
+        &History::new(id, user.company_id, "updated", by)
+            .message(&line)
+            .by_user(user.id),
+    )
+    .await;
+    record(pool, &History::new(new_id, user.company_id, "created", by)).await;
+    match people_ids {
+        Some(ids) => {
+            people::save(pool, user.company_id, new_id, ids).await?;
+        }
+        None => {
+            sqlx::query(
+                "INSERT IGNORE INTO event_people (event_id, user_id, company_id)
+                 SELECT ?, user_id, company_id FROM event_people WHERE event_id = ?",
+            )
+            .bind(new_id)
+            .bind(id)
+            .execute(pool)
+            .await?;
+        }
+    }
+    match &input.qbo_invoice {
+        Some(invoice) => {
+            save_invoice(pool, user.company_id, new_id, Some(user.id), invoice).await?
+        }
+        None => {
+            sqlx::query(
+                "INSERT IGNORE INTO event_qbo_invoices
+                    (event_id, company_id, qbo_invoice_id, qbo_invoice_number, created_by)
+                 SELECT ?, company_id, qbo_invoice_id, qbo_invoice_number, created_by
+                   FROM event_qbo_invoices WHERE event_id = ? AND company_id = ?",
+            )
+            .bind(new_id)
+            .bind(id)
+            .bind(user.company_id)
+            .execute(pool)
+            .await?;
+        }
+    }
+    for (table, chosen) in [
+        (
+            "event_notification_skips",
+            &input.skipped_notification_flow_ids,
+        ),
+        (
+            "event_notification_picks",
+            &input.picked_notification_flow_ids,
+        ),
+    ] {
+        match chosen {
+            Some(ids) if table == "event_notification_skips" => {
+                notifications::save_event_skips(pool, user.company_id, new_id, ids).await?;
+            }
+            Some(ids) => {
+                notifications::save_event_picks(pool, user.company_id, new_id, ids).await?;
+            }
+            None => {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "INSERT IGNORE INTO {table} (event_id, flow_id)
+                     SELECT ?, flow_id FROM {table} WHERE event_id = ?"
+                )))
+                .bind(new_id)
+                .bind(id)
+                .execute(pool)
+                .await?;
+            }
+        }
+    }
+    let attachments: Vec<i32> = match &input.copy_attachment_ids {
+        Some(ids) => ids.clone(),
+        None => {
+            sqlx::query_scalar(
+                "SELECT id FROM event_attachments
+              WHERE event_id = ? AND company_id = ? AND deleted_at IS NULL",
+            )
+            .bind(id)
+            .bind(user.company_id)
+            .fetch_all(pool)
+            .await?
+        }
+    };
+    copy_records(pool, user, new_id, id, &attachments).await?;
+    Ok(new_id)
 }
 
 /// Which repeats `DELETE /v1/events/{id}` deletes.
@@ -1085,8 +1373,19 @@ fn with_exdate(saved: Option<&str>, day: NaiveDate) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_event_time, with_exdate};
+    use super::{exdates_from, parse_event_time, with_exdate};
     use chrono::NaiveDate;
+
+    #[test]
+    fn the_following_repeats_keep_their_skipped_days() {
+        let from = super::parse_event_time("2026-11-18 15:00:00").unwrap();
+        assert_eq!(
+            exdates_from(Some("2026-11-04,2026-11-17,2026-11-25"), from).as_deref(),
+            Some("2026-11-17,2026-11-25")
+        );
+        assert_eq!(exdates_from(Some("2026-11-04"), from), None);
+        assert_eq!(exdates_from(None, from), None);
+    }
 
     #[test]
     fn a_skipped_repeat_is_added_once_in_order() {
@@ -1119,5 +1418,26 @@ mod tests {
         );
         assert_eq!(parse("2026-10-20").as_deref(), Some("2026-10-20 00:00:00"));
         assert_eq!(parse("tomorrow"), None);
+    }
+
+    #[test]
+    fn an_old_apps_description_goes_on_top_of_the_notes() {
+        use super::notes_with_description as merge;
+        assert_eq!(merge(None, None), None);
+        assert_eq!(merge(Some("  "), Some("")), None);
+        assert_eq!(merge(None, Some("Gate 12")).as_deref(), Some("Gate 12"));
+        assert_eq!(
+            merge(Some(" Recut on site "), None).as_deref(),
+            Some("Recut on site")
+        );
+        assert_eq!(
+            merge(Some("Recut on site"), Some("Gate 12")).as_deref(),
+            Some("Recut on site\n\nGate 12")
+        );
+        // Already in the notes: never written twice.
+        assert_eq!(
+            merge(Some("Recut on site"), Some("Recut on site\n\nGate 12")).as_deref(),
+            Some("Recut on site\n\nGate 12")
+        );
     }
 }

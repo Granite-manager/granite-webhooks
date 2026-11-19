@@ -401,9 +401,13 @@ pub async fn login(
     if has_no_position(pool, user_id).await? {
         return Err(ApiError::Denied(NO_POSITION.into()));
     }
-    if let Some(step) = login_steps::first_step(pool, user_id, &password).await? {
-        return login_steps::begin(pool, user_id, step, &password, &email_hash, &ip_hash, None)
-            .await;
+    if login_steps::is_default_password(&password) {
+        return Err(ApiError::Denied(
+            login_steps::DEFAULT_PASSWORD_REFUSED.into(),
+        ));
+    }
+    if let Some(step) = login_steps::first_step(pool, user_id).await? {
+        return login_steps::begin(pool, user_id, step, &email_hash, &ip_hash, None).await;
     }
     sqlx::query("DELETE FROM login_attempts WHERE email_hash = ?")
         .bind(&email_hash)

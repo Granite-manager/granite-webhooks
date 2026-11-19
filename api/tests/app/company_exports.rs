@@ -656,3 +656,51 @@ async fn the_job_route_needs_the_job_key(pool: MySqlPool) {
         .json();
     assert_eq!(run["processed"], 0);
 }
+
+/// A table bigger than one read (200 rows) is read in key order chunks: every
+/// row of the company once, in id order, none of another company.
+#[test_db::test(seed)]
+async fn big_tables_are_read_in_chunks_without_gaps_or_repeats(pool: MySqlPool) {
+    set_up(&pool).await;
+    sqlx::raw_sql(
+        "INSERT INTO customers (name, company_id)
+         WITH RECURSIVE n (i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 450)
+         SELECT CONCAT('Chunk customer ', i), IF(i % 9 = 0, 101, 100) FROM n;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let expected: Vec<String> = sqlx::query_scalar(
+        "SELECT CAST(id AS CHAR) FROM customers WHERE company_id = 100 ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(expected.len() > 400, "{}", expected.len());
+    let (state, storage, _sent) = state(&pool);
+
+    let run = run_due(&state, new_york(10, 6)).await.unwrap();
+    assert_eq!((run.sent, run.failed), (1, 0), "{run:?}");
+    let keys = zips(&storage);
+    let zip = Zip::read(&storage, &keys[0]).await;
+    let (header, rows) = zip.csv("customers");
+    let id = header.iter().position(|column| column == "id").unwrap();
+    let company = header
+        .iter()
+        .position(|column| column == "company_id")
+        .unwrap();
+    let ids: Vec<String> = rows.iter().map(|row| row[id].clone().unwrap()).collect();
+    assert_eq!(ids, expected);
+    assert!(
+        rows.iter()
+            .all(|row| row[company].as_deref() == Some("100"))
+    );
+    let manifest: serde_json::Value = serde_json::from_str(&zip.text("manifest.json")).unwrap();
+    let entry = manifest["tables"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|table| table["table"] == "customers")
+        .unwrap();
+    assert_eq!(entry["rows"], expected.len());
+}

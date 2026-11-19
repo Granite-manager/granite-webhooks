@@ -133,6 +133,9 @@ pub struct Feature {
     pub name: String,
     /// The usage count shown for it (a `metrics` key); null: none.
     pub usage_metric: Option<String>,
+    /// What it costs a month, in USD cents; null: no price. Bookkeeping for
+    /// pricing by feature later: self sign-up charges a flat price for now.
+    pub monthly_price_cents: Option<i32>,
 }
 
 /// A usage count the API knows how to compute.
@@ -174,6 +177,9 @@ pub struct PaidFeatures {
     pub metrics: Vec<MetricInfo>,
     /// Which company paid for which feature (deleted companies left out).
     pub paid: Vec<PaidMark>,
+    /// Which feature a self-signed-up company picked and pays for through
+    /// its subscription (deleted companies left out).
+    pub chosen: Vec<PaidMark>,
     /// Usage of the metrics the features show, per company; no row: not used.
     pub usage: Vec<Usage>,
     /// The days the usage covers, back from now.
@@ -190,7 +196,8 @@ const fn superuser(is_superuser: bool) -> ApiResult<()> {
 
 /// Features, who paid for them, and usage
 ///
-/// Every feature, the companies marked as having paid for each, and every
+/// Every feature with its monthly price, the companies marked as having
+/// paid for each, the features self-signed-up companies picked, and every
 /// company's usage counts over the last `usage_days` days. Superusers only.
 #[crate::openapi::path(
     get,
@@ -212,14 +219,22 @@ pub async fn list_paid_features(
     superuser(user.is_superuser)?;
     // One connection for the whole screen, queries one after another.
     let mut conn = state.pool.acquire().await?;
-    let features: Vec<Feature> =
-        sqlx::query_as("SELECT id, name, usage_metric FROM features ORDER BY name, id")
-            .fetch_all(&mut *conn)
-            .await?;
+    let features: Vec<Feature> = sqlx::query_as(
+        "SELECT id, name, usage_metric, monthly_price_cents FROM features ORDER BY name, id",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     let paid: Vec<PaidMark> = sqlx::query_as(
         "SELECT cf.company_id, cf.feature_id
            FROM company_features cf
            JOIN company c ON c.id = cf.company_id AND c.deleted_at IS NULL",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    let chosen: Vec<PaidMark> = sqlx::query_as(
+        "SELECT cfc.company_id, cfc.feature_id
+           FROM company_feature_choices cfc
+           JOIN company c ON c.id = cfc.company_id AND c.deleted_at IS NULL",
     )
     .fetch_all(&mut *conn)
     .await?;
@@ -251,6 +266,7 @@ pub async fn list_paid_features(
             })
             .collect(),
         paid,
+        chosen,
         usage,
         usage_days: USAGE_DAYS,
     }))
@@ -264,6 +280,24 @@ pub struct FeatureInput {
     /// A `metrics` key, or null for no usage count.
     #[serde(default)]
     pub usage_metric: Option<String>,
+    /// Monthly price in USD cents (50 to 10,000,000), or null for no price.
+    /// Leave it out to keep the price as it is.
+    #[serde(default, deserialize_with = "crate::serde_helpers::double_option")]
+    #[schema(value_type = Option<i32>)]
+    pub monthly_price_cents: Option<Option<i32>>,
+}
+
+#[allow(clippy::option_option)] // left out / null / a price
+fn checked_price(price: Option<Option<i32>>) -> ApiResult<Option<Option<i32>>> {
+    if price
+        .flatten()
+        .is_some_and(|cents| !(50..=10_000_000).contains(&cents))
+    {
+        return Err(ApiError::BadRequest(
+            "The price must be $0.50 to $100,000 a month".into(),
+        ));
+    }
+    Ok(price)
 }
 
 fn checked(input: FeatureInput) -> ApiResult<(String, Option<String>)> {
@@ -307,7 +341,7 @@ fn duplicate_name(error: sqlx::Error) -> ApiError {
     request_body = FeatureInput,
     responses(
         (status = 201, description = "Added", body = Feature),
-        (status = 400, description = "Bad name or usage count", body = ErrorBody),
+        (status = 400, description = "Bad name, usage count or price", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not a superuser", body = ErrorBody),
         (status = 409, description = "The name is taken", body = ErrorBody),
@@ -321,14 +355,18 @@ pub async fn create_feature(
     JsonBody(input): JsonBody<FeatureInput>,
 ) -> ApiResult<(StatusCode, Json<Feature>)> {
     superuser(user.is_superuser)?;
+    let price = checked_price(input.monthly_price_cents)?.flatten();
     let (name, usage_metric) = checked(input)?;
-    let id = sqlx::query("INSERT INTO features (name, usage_metric) VALUES (?, ?)")
-        .bind(&name)
-        .bind(&usage_metric)
-        .execute(&state.pool)
-        .await
-        .map_err(duplicate_name)?
-        .last_insert_id();
+    let id = sqlx::query(
+        "INSERT INTO features (name, usage_metric, monthly_price_cents) VALUES (?, ?, ?)",
+    )
+    .bind(&name)
+    .bind(&usage_metric)
+    .bind(price)
+    .execute(&state.pool)
+    .await
+    .map_err(duplicate_name)?
+    .last_insert_id();
     Ok((
         StatusCode::CREATED,
         Json(Feature {
@@ -336,13 +374,14 @@ pub async fn create_feature(
                 .map_err(|_| ApiError::Internal("Feature id out of range".into()))?,
             name,
             usage_metric,
+            monthly_price_cents: price,
         }),
     ))
 }
 
-/// Rename a feature or change its usage count
+/// Rename a feature, or change its usage count or price
 ///
-/// Superusers only.
+/// A price left out of the body stays as it is. Superusers only.
 #[crate::openapi::path(
     put,
     path = "/v1/superuser/paid-features/{id}",
@@ -352,7 +391,7 @@ pub async fn create_feature(
     request_body = FeatureInput,
     responses(
         (status = 204, description = "Saved"),
-        (status = 400, description = "Bad name or usage count", body = ErrorBody),
+        (status = 400, description = "Bad name, usage count or price", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not a superuser", body = ErrorBody),
         (status = 404, description = "No such feature", body = ErrorBody),
@@ -368,14 +407,21 @@ pub async fn update_feature(
     JsonBody(input): JsonBody<FeatureInput>,
 ) -> ApiResult<StatusCode> {
     superuser(user.is_superuser)?;
+    let price = checked_price(input.monthly_price_cents)?;
     let (name, usage_metric) = checked(input)?;
-    sqlx::query("UPDATE features SET name = ?, usage_metric = ? WHERE id = ?")
-        .bind(&name)
-        .bind(&usage_metric)
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(duplicate_name)?;
+    sqlx::query(
+        "UPDATE features SET name = ?, usage_metric = ?,
+                monthly_price_cents = IF(?, ?, monthly_price_cents)
+          WHERE id = ?",
+    )
+    .bind(&name)
+    .bind(&usage_metric)
+    .bind(price.is_some())
+    .bind(price.flatten())
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .map_err(duplicate_name)?;
     // An unchanged row reports 0 rows affected: look it up instead.
     let exists: Option<i32> = sqlx::query_scalar("SELECT id FROM features WHERE id = ?")
         .bind(id)

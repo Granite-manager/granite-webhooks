@@ -256,7 +256,7 @@ pub async fn overview(
 
 /// The billing page on the host the request came from (the company's
 /// subdomain), else on `APP_URL`.
-fn billing_url(state: &AppState, headers: &HeaderMap) -> String {
+pub(crate) fn billing_url(state: &AppState, headers: &HeaderMap) -> String {
     let origin = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())

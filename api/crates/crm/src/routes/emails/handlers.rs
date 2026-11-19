@@ -5,8 +5,8 @@ use super::schemas::{
     SuggestScope, SuggestionRow, ThreadDetail, ThreadIds, ThreadQuery, UnreadCount,
 };
 use super::sql::{
-    Arg, Mailbox, Sql, company_scope, own_threads, received_message, thread_in_inbox,
-    unread_incoming,
+    Arg, Mailbox, Sql, company_scope, inbox_threads, own_threads, received_message,
+    thread_in_inbox, unread_incoming,
 };
 use super::thread::{readable, thread_detail};
 use crate::auth::EmployeeUser;
@@ -191,16 +191,19 @@ pub(super) async fn has_inbound_email(pool: &MySqlPool, company_id: i32) -> sqlx
 /// company's inbound email domain is checked apart (badge only).
 /// `POST /v1/emails/inbound-push` pushes a new email to the users it matches.
 pub(super) fn unread_inbox(mailbox: &Mailbox) -> Sql {
+    let threads = inbox_threads(mailbox);
     let scope = company_scope("e", mailbox.company_id);
     let incoming = unread_incoming("e", mailbox);
     let in_inbox = thread_in_inbox("e", mailbox);
-    let mut args: Vec<Arg> = vec![mailbox.company_id.into()];
+    let mut args: Vec<Arg> = threads.args;
+    args.push(mailbox.company_id.into());
     args.extend(scope.args);
     args.extend(incoming.args);
     args.extend(in_inbox.args);
     Sql::new(
         format!(
-            "FROM emails e
+            "FROM {} inbox_threads
+             JOIN emails e ON e.thread_id = inbox_threads.thread_id
              LEFT JOIN deals d ON d.id = COALESCE(
                e.deal_id,
                (SELECT MAX(td.deal_id) FROM emails td
@@ -209,7 +212,7 @@ pub(super) fn unread_inbox(mailbox: &Mailbox) -> Sql {
              ) AND d.deleted_at IS NULL
              WHERE e.deleted_at IS NULL AND e.is_draft = 0 AND e.thread_id IS NOT NULL
                AND e.employee_read_at IS NULL AND {} AND {} AND {}",
-            scope.sql, incoming.sql, in_inbox.sql
+            threads.sql, scope.sql, incoming.sql, in_inbox.sql
         ),
         args,
     )

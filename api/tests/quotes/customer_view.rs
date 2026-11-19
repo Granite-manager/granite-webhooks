@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use axum_test::TestServer;
-use common::{ALLOWED_ORIGIN, SECRET};
+use common::{ALLOWED_ORIGIN, SECRET, WithSession, sessions};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::MySqlPool;
@@ -146,22 +146,22 @@ async fn a_customer_sees_their_appointments_without_the_shops_notes(pool: MySqlP
     sqlx::raw_sql(
         "INSERT INTO calendars (id, company_id, name, slug) VALUES
            (9100, 100, 'Templates', 'templates'), (9101, 100, 'Showroom', NULL);
-         INSERT INTO events (id, title, description, notes, start_date, end_date, all_day,
+         INSERT INTO events (id, title, notes, start_date, end_date, all_day,
                              unscheduled, created_user_id, assigned_user_id, customer_id,
                              calendar_id, location, crew_status, rrule) VALUES
-           (9200, 'Alice measure', 'gate 1234', 'cash only', '2026-05-02 14:00:00',
+           (9200, 'Alice measure', 'cash only', '2026-05-02 14:00:00',
             '2026-05-02 16:00:00', 0, 0, 100, 101, 1000, 9100, ' 1 Main St ', 'on_my_way', NULL),
-           (9201, 'Alice showroom', NULL, NULL, '2026-04-20 15:00:00', '2026-04-20 16:00:00',
+           (9201, 'Alice showroom', NULL, '2026-04-20 15:00:00', '2026-04-20 16:00:00',
             0, 0, 100, NULL, 1000, 9101, NULL, NULL, NULL),
-           (9202, 'Alice install', NULL, NULL, '2026-04-01 04:00:00', '2026-04-01 04:00:00',
+           (9202, 'Alice install', NULL, '2026-04-01 04:00:00', '2026-04-01 04:00:00',
             1, 1, 100, NULL, 1000, NULL, NULL, NULL, NULL),
-           (9203, 'deleted', NULL, NULL, '2026-04-21 15:00:00', '2026-04-21 16:00:00',
+           (9203, 'deleted', NULL, '2026-04-21 15:00:00', '2026-04-21 16:00:00',
             0, 0, 100, NULL, 1000, 9100, NULL, NULL, NULL),
-           (9204, 'weekly', NULL, NULL, '2026-04-22 15:00:00', '2026-04-22 16:00:00',
+           (9204, 'weekly', NULL, '2026-04-22 15:00:00', '2026-04-22 16:00:00',
             0, 0, 100, NULL, 1000, 9100, NULL, NULL, 'FREQ=WEEKLY'),
-           (9205, 'someone else', NULL, NULL, '2026-04-23 15:00:00', '2026-04-23 16:00:00',
+           (9205, 'someone else', NULL, '2026-04-23 15:00:00', '2026-04-23 16:00:00',
             0, 0, 100, NULL, 1004, 9100, NULL, NULL, NULL),
-           (9206, 'other company', NULL, NULL, '2026-04-24 15:00:00', '2026-04-24 16:00:00',
+           (9206, 'other company', NULL, '2026-04-24 15:00:00', '2026-04-24 16:00:00',
             0, 0, 106, NULL, 1000, NULL, NULL, NULL, NULL);
          UPDATE events SET deleted_date = NOW() WHERE id = 9203;",
     )
@@ -1598,4 +1598,33 @@ async fn without_texting_a_code_cannot_be_texted(pool: MySqlPool) {
         .json(&json!({ "phone": "317-555-0100" }))
         .await
         .assert_status(StatusCode::CONFLICT);
+}
+
+#[test_db::test(seed)]
+async fn a_super_admin_opens_a_customer_page_without_a_code(pool: MySqlPool) {
+    sqlx::query("UPDATE users SET is_superuser = 1 WHERE id = 103")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (server, sent) = server(&pool).await;
+    server
+        .post("/v1/superuser/customer-view/100/1000")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    server
+        .post("/v1/superuser/customer-view/100/999999")
+        .with_session(sessions::SUPER_ADMIN)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    let opened = server
+        .post("/v1/superuser/customer-view/100/1000")
+        .with_session(sessions::SUPER_ADMIN)
+        .await;
+    opened.assert_status_ok();
+    assert_eq!(opened.json::<Value>(), json!({ "view_id": VIEW }));
+    let gate = server.get(&page("")).await;
+    assert_eq!(gate.json::<Value>()["verified"], json!(true));
+    server.get(&page("/projects")).await.assert_status_ok();
+    assert!(sent.lock().unwrap().is_empty());
 }

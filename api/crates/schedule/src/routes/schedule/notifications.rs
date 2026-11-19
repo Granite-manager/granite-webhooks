@@ -1376,10 +1376,10 @@ pub async fn set_auto_confirm_replies(
 ) -> ApiResult<StatusCode> {
     let yes = filled(input.yes_reply);
     let no = filled(input.no_reply);
-    if [&yes, &no]
-        .iter()
-        .any(|text| text.as_ref().is_some_and(|text| text.chars().count() > MAX_SMS))
-    {
+    if [&yes, &no].iter().any(|text| {
+        text.as_ref()
+            .is_some_and(|text| text.chars().count() > MAX_SMS)
+    }) {
         return Err(bad(&format!("Texts must be {MAX_SMS} characters or less")));
     }
     sqlx::query("UPDATE company SET schedule_yes_reply = ?, schedule_no_reply = ? WHERE id = ?")

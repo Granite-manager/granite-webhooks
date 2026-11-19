@@ -1,6 +1,6 @@
 //! Copies the production database (`main`) over the dev database
-//! (`duplicate`), once a night (EventBridge Scheduler `duplicate-refresh`,
-//! 2:00 America/New_York). Both live on the one RDS instance. See README.md.
+//! (`duplicate`), once a week (EventBridge Scheduler `duplicate-refresh`,
+//! Sundays 2:00 America/New_York). Both live on the one RDS instance. See README.md.
 
 use common::db::connect_options;
 use lambda_runtime::{Error, LambdaEvent, run, service_fn, tracing};

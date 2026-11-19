@@ -7,8 +7,9 @@ use super::schemas::{
     SuggestionRow,
 };
 use super::sql::{
-    Arg, Mailbox, Sql, client_read_at, company_scope, customer_name_by_email, header_match,
-    list_search, normalize_search_term, normalized, receiver_condition, sender_condition,
+    Arg, Mailbox, Sql, client_read_at, company_scope, customer_name_by_email, folder_source,
+    header_match, list_search, normalize_search_term, normalized, received_ids, receiver_condition,
+    sender_condition, sent_ids,
 };
 use sqlx::MySqlPool;
 
@@ -102,7 +103,17 @@ pub async fn list_page(
         "e.deleted_at IS NULL"
     };
     let folder_where = format!("{deleted} AND {}", folder_condition.sql);
-    let folder_args = folder_condition.args;
+    // The user's own messages first, by index; `folder_where` still decides.
+    let mine = match folder {
+        EmailFolder::Drafts => None,
+        EmailFolder::Sent => Some(sent_ids(mailbox)),
+        EmailFolder::Inbox | EmailFolder::Trash => Some(received_ids(mailbox)),
+    };
+    let from = |alias: &str| folder_source(mine.as_ref(), alias);
+    let mut folder_args = mine
+        .as_ref()
+        .map_or_else(Vec::new, |mine| mine.args.clone());
+    folder_args.extend(folder_condition.args);
     let is_inbox = folder == EmailFolder::Inbox;
 
     // Inbox search hits any message of the thread; the row previews the newest.
@@ -152,27 +163,33 @@ pub async fn list_page(
         (
             format!(
                 "SELECT t.thread_id, t.mt FROM (
-                   SELECT e2.thread_id, {thread_order} AS mt FROM emails e2
+                   SELECT e2.thread_id, {thread_order} AS mt FROM {}
                     WHERE {} GROUP BY e2.thread_id) t
                   WHERE TRUE{filter}
                   ORDER BY t.mt DESC LIMIT {PAGE_SIZE} OFFSET {offset}",
+                from("e2"),
                 alias(&folder_where, "e2")
             ),
             format!(
                 "SELECT COUNT(t.thread_id) FROM (
-                   SELECT e.thread_id FROM emails e WHERE {folder_where} GROUP BY e.thread_id) t
-                  WHERE TRUE{filter}"
+                   SELECT e.thread_id FROM {} WHERE {folder_where} GROUP BY e.thread_id) t
+                  WHERE TRUE{filter}",
+                from("e")
             ),
         )
     } else {
         let where_thread_match = format!("{folder_where}{}", search_sql.sql);
         (
             format!(
-                "SELECT e2.thread_id, {thread_order} AS mt FROM emails e2 WHERE {}
+                "SELECT e2.thread_id, {thread_order} AS mt FROM {} WHERE {}
                  GROUP BY e2.thread_id ORDER BY mt DESC LIMIT {PAGE_SIZE} OFFSET {offset}",
+                from("e2"),
                 alias(&where_thread_match, "e2")
             ),
-            format!("SELECT COUNT(DISTINCT e.thread_id) FROM emails e WHERE {where_thread_match}"),
+            format!(
+                "SELECT COUNT(DISTINCT e.thread_id) FROM {} WHERE {where_thread_match}",
+                from("e")
+            ),
         )
     };
     let columns = format!(
@@ -211,12 +228,13 @@ pub async fn list_page(
         Sql::new(
             format!(
                 "SELECT {columns}, NULL AS inbox_sort_at
-                 FROM emails e
+                 FROM {source}
                  LEFT JOIN users s ON e.sender_user_id = s.id
                  LEFT JOIN users r ON e.receiver_email = r.email
                  WHERE {folder_where}
                    AND e.thread_id IN (SELECT thread_id FROM ({thread_pick}) t)
-                 ORDER BY {list_order}, e.id DESC"
+                 ORDER BY {list_order}, e.id DESC",
+                source = from("e")
             ),
             args,
         )
@@ -369,7 +387,7 @@ pub async fn suggestions(
         return Ok(Vec::new());
     }
     let fetch = SUGGEST_LIMIT * 4;
-    let (where_sql, mut args, name_company) = if scope_kind == SuggestScope::Admin {
+    let (where_sql, mut args, name_company, source) = if scope_kind == SuggestScope::Admin {
         let company = mailbox.company_id;
         let mut args: Vec<Arg> = vec![
             company.into(),
@@ -404,10 +422,17 @@ pub async fn suggestions(
             ),
             args,
             " AND c.company_id = ?".to_string(),
+            "emails e".to_string(),
         )
     } else {
         let scope = company_scope("e", mailbox.company_id);
-        let (where_sql, args) = if folder == EmailFolder::Drafts {
+        // The user's own messages first, by index; the folder test still decides.
+        let mine = match folder {
+            EmailFolder::Drafts => None,
+            EmailFolder::Sent => Some(sent_ids(mailbox)),
+            EmailFolder::Inbox | EmailFolder::Trash => Some(received_ids(mailbox)),
+        };
+        let (where_sql, folder_args) = if folder == EmailFolder::Drafts {
             (
                 format!(
                     "e.deleted_at IS NULL AND {} AND e.sender_user_id = ? AND e.is_draft = 1",
@@ -441,7 +466,10 @@ pub async fn suggestions(
             " AND c.company_id = {} AND c.deleted_at IS NULL",
             mailbox.company_id
         );
-        (where_sql, args, name_company)
+        let source = folder_source(mine.as_ref(), "e");
+        let mut args = mine.map_or_else(Vec::new, |mine| mine.args);
+        args.extend(folder_args);
+        (where_sql, args, name_company, source)
     };
     // Admin: the two company placeholders of the name lookups come first.
     let name = |column: &str| {
@@ -466,7 +494,7 @@ pub async fn suggestions(
         format!(
             "SELECT e.thread_id, e.subject, e.body, e.sent_at, e.sender_email, e.receiver_email,
                     COALESCE(s.name, {}) AS sender_name, COALESCE(r.name, {}) AS receiver_name
-             FROM emails e
+             FROM {source}
              LEFT JOIN users s ON e.sender_user_id = s.id
              LEFT JOIN users r ON e.receiver_email = r.email
              WHERE {where_sql}{} AND e.thread_id IS NOT NULL

@@ -794,7 +794,7 @@ const MAX_SEARCH_WORDS: usize = 8;
 #[derive(Debug, Deserialize, IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct EventSearchQuery {
-    /// Words, each in the title, customer name, location, description or
+    /// Words, each in the title, customer name, location or
     /// notes (any of them, in any order).
     #[serde(default)]
     pub q: String,
@@ -815,7 +815,6 @@ pub struct EventSearchQuery {
 struct FoundRow {
     id: i32,
     title: String,
-    description: Option<String>,
     location: Option<String>,
     notes: Option<String>,
     start_date: NaiveDateTime,
@@ -857,13 +856,13 @@ fn search_tokens(text: &str) -> Vec<String> {
 }
 
 /// How well an event matches every word: 0 a word of its title or customer
-/// name starts with it, 1 the title or name contains it, 2 only the place,
-/// description or notes do, 3 the title or name has it with one typo; `None`
+/// name starts with it, 1 the title or name contains it, 2 only the place or
+/// notes do, 3 the title or name has it with one typo; `None`
 /// when a word is nowhere. The worst word decides.
 fn match_rank(
     title: &str,
     customer_name: Option<&str>,
-    others: [Option<&str>; 3],
+    others: [Option<&str>; 2],
     words: &[String],
 ) -> Option<u8> {
     let name = format!("{title} {}", customer_name.unwrap_or_default());
@@ -923,8 +922,6 @@ pub struct FoundEvent {
     pub id: i32,
     /// The event's name.
     pub title: String,
-    /// Longer text.
-    pub description: Option<String>,
     /// Address.
     pub location: Option<String>,
     /// Internal notes.
@@ -972,7 +969,7 @@ pub struct FoundEvent {
 /// Search events
 ///
 /// The company's events where every word of `q` is in the title, customer's
-/// name, location, description or notes; with `calendar_ids`, only those
+/// name, location or notes; with `calendar_ids`, only those
 /// calendars' events. With `id`, just that event.
 ///
 /// A word of 4+ letters also finds a title or customer name that has it with
@@ -1006,7 +1003,7 @@ pub async fn search(
     if let Some(event_id) = query.id {
         let own = crate::routes::schedule::own_events_only(&state.pool, &user).await?;
         let rows: Vec<FoundRow> = sqlx::query_as(
-            "SELECT e.id, e.title, e.description, e.location, e.notes, e.start_date, e.end_date,
+            "SELECT e.id, e.title, e.location, e.notes, e.start_date, e.end_date,
                     COALESCE(e.all_day, 0) <> 0 AS all_day, e.unscheduled <> 0 AS unscheduled,
                     e.color, e.status, e.calendar_id, e.rrule,
                     e.recurrence_until, e.created_user_id, e.assigned_user_id, e.sale_id,
@@ -1060,10 +1057,10 @@ pub async fn search(
             )
         })
         .collect();
-    let word_match = "(e.title LIKE ? OR c.name LIKE ? OR e.location LIKE ? OR e.description LIKE ? OR e.notes LIKE ?)";
+    let word_match = "(e.title LIKE ? OR c.name LIKE ? OR e.location LIKE ? OR e.notes LIKE ?)";
     let words_match = vec![word_match; likes.len()].join(" AND ");
     let loose_match = vec![
-        "(e.title LIKE ? OR c.name LIKE ? OR e.location LIKE ? OR e.description LIKE ? OR e.notes LIKE ?
+        "(e.title LIKE ? OR c.name LIKE ? OR e.location LIKE ? OR e.notes LIKE ?
           OR e.title LIKE ? OR c.name LIKE ? OR e.title LIKE ? OR c.name LIKE ?)";
         likes.len()
     ]
@@ -1077,7 +1074,7 @@ pub async fn search(
             .join(",")
     });
     let sql = format!(
-        "SELECT e.id, e.title, e.description, e.location, e.notes, e.start_date, e.end_date,
+        "SELECT e.id, e.title, e.location, e.notes, e.start_date, e.end_date,
                 COALESCE(e.all_day, 0) <> 0 AS all_day, e.unscheduled <> 0 AS unscheduled,
                 e.color, e.status, e.calendar_id, e.rrule,
                 e.recurrence_until, e.created_user_id, e.assigned_user_id, e.sale_id,
@@ -1113,7 +1110,7 @@ pub async fn search(
         .bind(user.id)
         .bind(user.company_id);
     for (like, (head, tail)) in likes.iter().zip(&loose) {
-        for _ in 0..5 {
+        for _ in 0..4 {
             found = found.bind(like);
         }
         found = found.bind(head).bind(head).bind(tail).bind(tail);
@@ -1126,7 +1123,7 @@ pub async fn search(
         .bind(own)
         .bind(own);
     for like in &likes {
-        for _ in 0..5 {
+        for _ in 0..4 {
             found = found.bind(like);
         }
     }
@@ -1138,11 +1135,7 @@ pub async fn search(
             let rank = match_rank(
                 &row.title,
                 row.customer_name.as_deref(),
-                [
-                    row.location.as_deref(),
-                    row.description.as_deref(),
-                    row.notes.as_deref(),
-                ],
+                [row.location.as_deref(), row.notes.as_deref()],
                 &words,
             )?;
             Some((row, rank))
@@ -1171,7 +1164,6 @@ fn found_event(row: FoundRow) -> FoundEvent {
     FoundEvent {
         id: row.id,
         title: row.title,
-        description: row.description,
         location: row.location,
         notes: row.notes,
         start_date: row.start_date.and_utc(),

@@ -844,6 +844,15 @@ pub async fn set_step_item_done(
             part,
         )
         .await;
+        super::process::move_on_after_last_step(
+            &state,
+            &viewer,
+            user.name.as_deref(),
+            id,
+            step_id,
+            part,
+        )
+        .await?;
     }
     Ok(StatusCode::NO_CONTENT)
 }

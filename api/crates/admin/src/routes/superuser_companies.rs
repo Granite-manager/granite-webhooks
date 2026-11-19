@@ -12,6 +12,7 @@
 //! - `PUT    /v1/superuser/companies/{id}/setup-checklist/items/{key}` → tick an item by hand
 //! - `PUT    /v1/superuser/companies/{id}/features/{feature}` → switch a feature
 //! - `PUT    /v1/superuser/companies/{id}/billing-required`   → require Stripe payment
+//! - `PUT    /v1/superuser/companies/{id}/free-access`        → let a sign-up company in free until a day
 //!
 //! Superusers only. Replaces the Remix `admin.superuser-dashboard.companies*`
 //! routes.
@@ -51,6 +52,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(tick_setup_item))
         .routes(routes!(switch_feature))
         .routes(routes!(set_billing_required))
+        .routes(routes!(set_free_access))
 }
 
 const CHECK_IN: i32 = 8;
@@ -135,6 +137,19 @@ pub struct CompanySummary {
     pub quickbooks_connected: bool,
     /// Access depends on the Stripe subscription.
     pub billing_required: bool,
+    /// Where the company came from: `superuser` (created here) or
+    /// `signup_page` (signed itself up; no access until its Stripe
+    /// subscription is paid).
+    pub source: String,
+    /// When the company signed itself up (ISO 8601); null when a superuser
+    /// created it.
+    pub signed_up_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The web address it asked for at sign-up (`acme`), until a superuser
+    /// sets its subdomain; null otherwise.
+    pub requested_subdomain: Option<String>,
+    /// A sign-up company is let in free until then (ISO 8601); null: no free
+    /// time. Set with `PUT /v1/superuser/companies/{id}/free-access`.
+    pub free_access_until: Option<chrono::DateTime<chrono::Utc>>,
     pub features: Features,
 }
 
@@ -152,6 +167,10 @@ struct SummaryRow {
     cloudtalk_connected: bool,
     quickbooks_connected: bool,
     billing_required: bool,
+    source: String,
+    signed_up_at: Option<chrono::NaiveDateTime>,
+    requested_subdomain: Option<String>,
+    free_access_until: Option<chrono::NaiveDateTime>,
     #[sqlx(flatten)]
     features: Features,
 }
@@ -191,6 +210,7 @@ pub async fn list_companies(
                   AS cloudtalk_connected,
                 COALESCE(TRIM(c.qbo_realm_id), '') <> '' AS quickbooks_connected,
                 COALESCE(c.billing_required, 0) <> 0 AS billing_required,
+                c.source, c.signed_up_at, c.requested_subdomain, c.free_access_until,
                 {features}
            FROM company c
            {joins}
@@ -220,6 +240,10 @@ pub async fn list_companies(
                 cloudtalk_connected: row.cloudtalk_connected,
                 quickbooks_connected: row.quickbooks_connected,
                 billing_required: row.billing_required,
+                source: row.source,
+                signed_up_at: row.signed_up_at.map(|at| at.and_utc()),
+                requested_subdomain: row.requested_subdomain,
+                free_access_until: row.free_access_until.map(|at| at.and_utc()),
                 features: row.features,
             })
             .collect(),
@@ -424,7 +448,7 @@ fn text(value: Option<&String>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn valid_subdomain(value: &str) -> bool {
+pub(crate) fn valid_subdomain(value: &str) -> bool {
     !value.is_empty()
         && value.split('-').all(|part| {
             !part.is_empty()
@@ -474,10 +498,16 @@ fn validate(input: &CompanyInput) -> ApiResult<Clean> {
     })
 }
 
-async fn subdomain_taken(state: &AppState, subdomain: &str, except: i32) -> ApiResult<bool> {
+pub(crate) async fn subdomain_taken(
+    state: &AppState,
+    subdomain: &str,
+    except: i32,
+) -> ApiResult<bool> {
     let taken: Option<i32> = sqlx::query_scalar(
-        "SELECT id FROM company WHERE subdomain = ? AND id <> ? AND deleted_at IS NULL LIMIT 1",
+        "SELECT id FROM company
+          WHERE (subdomain = ? OR requested_subdomain = ?) AND id <> ? AND deleted_at IS NULL LIMIT 1",
     )
+    .bind(subdomain)
     .bind(subdomain)
     .bind(except)
     .fetch_optional(&state.pool)
@@ -498,6 +528,78 @@ struct DefaultTemplate {
     name: String,
     subject: String,
     body: String,
+}
+
+/// Seeds a new company.
+///
+/// Its system calendars and auto-confirm texts, its own starter pipeline, the default company email
+/// templates, a `walk-in@<subdomain>.com` employee for the check-in kiosk
+/// (no password and no position: it cannot sign in until set up) and the system customer
+/// sources. Used by the superuser's create and by self sign-up.
+pub async fn seed_company(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    id: i32,
+    walk_in_subdomain: &str,
+) -> ApiResult<()> {
+    for (slug, name, color) in crate::routes::calendars::queries::SYSTEM_CALENDARS {
+        sqlx::query("INSERT INTO calendars (company_id, name, color, slug, created_by) VALUES (?, ?, ?, ?, NULL)")
+            .bind(id)
+            .bind(name)
+            .bind(color)
+            .bind(slug)
+            .execute(&mut **tx)
+            .await?;
+    }
+    crate::routes::schedule::notifications::seed_auto_confirm(tx, id).await?;
+    // Its own starter pipeline, which it may change or delete like any other.
+    let group = sqlx::query(
+        "INSERT INTO groups_list (name, created_at, company_id, is_displayed, is_default)
+         VALUES ('Default', NOW(), ?, 1, 1)",
+    )
+    .bind(id)
+    .execute(&mut **tx)
+    .await?
+    .last_insert_id();
+    for (position, stage) in (0_i32..).zip(STARTER_STAGES) {
+        sqlx::query("INSERT INTO deals_list (name, group_id, position) VALUES (?, ?, ?)")
+            .bind(stage)
+            .bind(group)
+            .bind(position)
+            .execute(&mut **tx)
+            .await?;
+    }
+    for template in DEFAULT_TEMPLATES.iter() {
+        sqlx::query(
+            "INSERT INTO email_templates (template_name, template_subject, template_body, company_id, user_id)
+             VALUES (?, ?, ?, ?, NULL)",
+        )
+        .bind(&template.name)
+        .bind(&template.subject)
+        .bind(&template.body)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO users (name, email, password, company_id, is_employee, is_admin)
+         VALUES ('Walk-in', ?, NULL, ?, 1, 0)",
+    )
+    .bind(format!("walk-in@{walk_in_subdomain}.com"))
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO customer_sources (company_id, source_key, label, is_system) VALUES
+           (?, 'check-in', 'Walk-in', 1), (?, 'leads', 'Leads', 1),
+           (?, 'call-in', 'Call-in', 1), (?, 'other', 'Other', 1)",
+    )
+    .bind(id)
+    .bind(id)
+    .bind(id)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// Create a company
@@ -532,7 +634,6 @@ pub async fn create_company(
     if subdomain_taken(&state, &clean.subdomain, 0).await? {
         return Err(ApiError::Conflict("Subdomain is already in use".into()));
     }
-    let password = bcrypt::hash("1111", 10).map_err(|e| ApiError::Internal(e.to_string()))?;
     let mut tx = state.pool.begin().await?;
     let id = sqlx::query(
         "INSERT INTO company (name, subdomain, address, state_taxes, domain, cloudtalk_access_key,
@@ -555,65 +656,7 @@ pub async fn create_company(
     .await?
     .last_insert_id();
     let id = i32::try_from(id).map_err(|_| ApiError::Internal("company id out of range".into()))?;
-    for (slug, name, color) in crate::routes::calendars::queries::SYSTEM_CALENDARS {
-        sqlx::query("INSERT INTO calendars (company_id, name, color, slug, created_by) VALUES (?, ?, ?, ?, NULL)")
-            .bind(id)
-            .bind(name)
-            .bind(color)
-            .bind(slug)
-            .execute(&mut *tx)
-            .await?;
-    }
-    crate::routes::schedule::notifications::seed_auto_confirm(&mut tx, id).await?;
-    // Its own starter pipeline, which it may change or delete like any other.
-    let group = sqlx::query(
-        "INSERT INTO groups_list (name, created_at, company_id, is_displayed, is_default)
-         VALUES ('Default', NOW(), ?, 1, 1)",
-    )
-    .bind(id)
-    .execute(&mut *tx)
-    .await?
-    .last_insert_id();
-    for (position, stage) in (0_i32..).zip(STARTER_STAGES) {
-        sqlx::query("INSERT INTO deals_list (name, group_id, position) VALUES (?, ?, ?)")
-            .bind(stage)
-            .bind(group)
-            .bind(position)
-            .execute(&mut *tx)
-            .await?;
-    }
-    for template in DEFAULT_TEMPLATES.iter() {
-        sqlx::query(
-            "INSERT INTO email_templates (template_name, template_subject, template_body, company_id, user_id)
-             VALUES (?, ?, ?, ?, NULL)",
-        )
-        .bind(&template.name)
-        .bind(&template.subject)
-        .bind(&template.body)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    }
-    sqlx::query(
-        "INSERT INTO users (name, email, password, company_id, is_employee, is_admin)
-         VALUES ('Walk-in', ?, ?, ?, 1, 0)",
-    )
-    .bind(format!("walk-in@{}.com", clean.subdomain))
-    .bind(password)
-    .bind(id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO customer_sources (company_id, source_key, label, is_system) VALUES
-           (?, 'check-in', 'Walk-in', 1), (?, 'leads', 'Leads', 1),
-           (?, 'call-in', 'Call-in', 1), (?, 'other', 'Other', 1)",
-    )
-    .bind(id)
-    .bind(id)
-    .bind(id)
-    .bind(id)
-    .execute(&mut *tx)
-    .await?;
+    seed_company(&mut tx, id, &clean.subdomain).await?;
     tx.commit().await?;
     deliverability::ensure_company_trust(&state.pool, &state.dns, id, input.domain.as_deref())
         .await?;
@@ -1367,4 +1410,68 @@ pub async fn set_billing_required(
         .execute(&state.pool)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Body of `PUT /v1/superuser/companies/{id}/free-access`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct FreeAccess {
+    /// Let the company in free until the end of this day (`YYYY-MM-DD`, UTC),
+    /// at most 400 days ahead; null ends the free time now.
+    pub until: Option<chrono::NaiveDate>,
+}
+
+/// Give a sign-up company free time
+///
+/// A company from the sign-up page has no access until it pays; this lets
+/// it in free until the end of `until` (a free month with a demo), or ends
+/// the free time (null). When it subscribes during the free time, its first
+/// charge waits for the end. Answers the end (ISO 8601) or null. Superusers
+/// only; 404 for a deleted or unknown company.
+#[crate::openapi::path(
+    put,
+    path = "/v1/superuser/companies/{id}/free-access",
+    operation_id = "set_platform_company_free_access",
+    tag = "superuser",
+    params(("id" = i32, Path, description = "Company id")),
+    request_body = FreeAccess,
+    responses(
+        (status = 200, description = "Saved; the end of the free time, or null", body = Option<String>),
+        (status = 400, description = "A day in the past or too far ahead", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not a superuser", body = ErrorBody),
+        (status = 404, description = "No such company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_free_access(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i32>,
+    JsonBody(input): JsonBody<FreeAccess>,
+) -> ApiResult<Json<Option<chrono::DateTime<chrono::Utc>>>> {
+    superuser(&user)?;
+    let until = match input.until {
+        Some(day) => {
+            let today = chrono::Utc::now().date_naive();
+            if day < today || day > today + chrono::Duration::days(400) {
+                return Err(ApiError::BadRequest(
+                    "Pick a day from today to 400 days ahead".into(),
+                ));
+            }
+            day.and_hms_opt(23, 59, 59)
+        }
+        None => None,
+    };
+    let updated =
+        sqlx::query("UPDATE company SET free_access_until = ? WHERE id = ? AND deleted_at IS NULL")
+            .bind(until)
+            .bind(id)
+            .execute(&state.pool)
+            .await?;
+    if updated.rows_affected() == 0 {
+        company_exists(&state, id).await?;
+    }
+    tracing::info!(company_id = id, by = user.id, ?until, "free access set");
+    Ok(Json(until.map(|at| at.and_utc())))
 }

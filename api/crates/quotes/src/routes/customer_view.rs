@@ -14,6 +14,7 @@
 //! - `POST   /v1/public/customer-view/{company_id}/login/code`         → email or text a code to the account's address or phone
 //! - `POST   /v1/public/customer-view/{company_id}/login/verify`       → enter it; answers the page to open
 //! - `DELETE /v1/public/customer-view/login`                           → drop a pending code
+//! - `POST   /v1/superuser/customer-view/{company_id}/{customer_id}`   → a super admin opens a page with no code
 //!
 //! A verified visitor is remembered in the signed `__customer_view` cookie
 //! (same format and secret as the CRM's, so they stay verified for 7 days).
@@ -24,6 +25,7 @@
 //! `customerViewAuth.server.ts` and the `customer.$company.$viewId` and
 //! `customer.$company.stones.account` routes.
 
+use crate::auth::CurrentUser;
 use crate::auth::cookie::{cookie_value, decode_session_map, encode_session_map};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::openapi::ToSchema;
@@ -58,6 +60,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(send_login_code))
         .routes(routes!(verify_login_code))
         .routes(routes!(cancel_code))
+        .routes(routes!(superuser_open))
         .merge(crate::routes::customer_view_extras::router())
 }
 
@@ -1471,6 +1474,51 @@ pub async fn verify_login_code(
     let result = verify(&state, &mut visitor, company_id, None, &input.code)
         .await
         .map(|view_id| Json(OpenedView { view_id }));
+    finish(&state, &visitor, result)
+}
+
+/// Open a customer's page as a super admin
+///
+/// Marks this browser verified for the customer's page, with no code, and
+/// answers the page to open. Super admins only.
+#[crate::openapi::path(
+    post,
+    path = "/v1/superuser/customer-view/{company_id}/{customer_id}",
+    operation_id = "superuser_open_customer_view",
+    tag = "customer-view",
+    params(
+        ("company_id" = i32, Path, description = "Company id"),
+        ("customer_id" = i32, Path, description = "Customer id"),
+    ),
+    responses(
+        (status = 200, description = "Verified", body = OpenedView),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not a super admin", body = ErrorBody),
+        (status = 404, description = "No such customer page", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn superuser_open(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path((company_id, customer_id)): Path<(i32, i32)>,
+    headers: HeaderMap,
+) -> Response {
+    let mut visitor = Visitor::read(&state, &headers);
+    let result = async {
+        if !user.is_superuser {
+            return Err(ApiError::Forbidden);
+        }
+        let view_id = view_of(&state, company_id, customer_id)
+            .await?
+            .ok_or(ApiError::NotFound)?;
+        visitor.clear_pending();
+        visitor.set("verifiedViewId", json!(view_id));
+        visitor.set("verifiedCompanyId", json!(company_id));
+        visitor.set("verifiedAt", json!(now_ms()));
+        Ok(Json(OpenedView { view_id }))
+    }
+    .await;
     finish(&state, &visitor, result)
 }
 

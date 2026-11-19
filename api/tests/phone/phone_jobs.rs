@@ -93,6 +93,35 @@ fn without_index(mut run: Value) -> Value {
 }
 
 #[test_db::test(seed)]
+async fn the_rep_on_the_call_is_not_told_of_its_ai_note(pool: MySqlPool) {
+    enable_calling(&pool, 100, "").await;
+    // Rita (100) is Vera's rep and took the call herself.
+    sql(&pool, "INSERT INTO customers (id, name, phone, company_id, source, sales_rep) VALUES (931002, 'Vera Customer', '317-555-0142', 100, 'leads', 100)").await;
+    sql(&pool, "INSERT INTO deals (id, customer_id, title, status, list_id, position, user_id) VALUES (931102, 931002, 'Vera kitchen', 'New', 100, 0, 100)").await;
+    add_call(&pool, 981_004, 100, Some(100), "inbound", "answered", "+13175550142", "2026-10-10 10:00:00",
+        "customer_id = 931002, deal_id = 931102, answered_at = '2026-10-10 10:00:05', ended_at = '2026-10-10 10:05:05', duration_secs = 300").await;
+    let (server, stubs, storage) = server(&pool).await;
+    recorded(&storage, &pool, 981_004, "call", b"audio-981004").await;
+    stubs.add_transcript(
+        b"audio-981004",
+        "Hi, this is Rita from Acme. Hi Rita, we want white quartz for the kitchen.",
+        &[],
+    );
+    stubs.set_chat_reply(NOTE);
+    run_job(&server).await;
+    // The note is on the deal, but Rita gets no notification of it.
+    let (status, _, _, note_id, _) = note_state(&pool, 981_004).await;
+    assert_eq!(status, "done");
+    assert!(note_id.is_some());
+    let told: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM notifications WHERE deal_id = 931102")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(told, 0);
+}
+
+#[test_db::test(seed)]
 async fn the_job_writes_ai_notes_on_calls_and_their_deals(pool: MySqlPool) {
     enable_calling(&pool, 100, "").await;
     sql(&pool, "INSERT INTO customers (id, name, phone, company_id, source, sales_rep) VALUES (931001, 'Vera Customer', '317-555-0142', 100, 'leads', 101)").await;
@@ -183,7 +212,8 @@ async fn the_job_writes_ai_notes_on_calls_and_their_deals(pool: MySqlPool) {
             "Granite Manager".to_string()
         )
     );
-    // Only the customer's rep hears about it, not the deal's owner.
+    // Only the customer's rep hears about it (Rita's call, Vera's rep is
+    // 101), not the deal's owner.
     let told: Vec<(i32, String, String)> = sqlx::query_as(
         "SELECT user_id, notification_type, actor_name FROM notifications WHERE deal_id = 931101 ORDER BY user_id",
     )

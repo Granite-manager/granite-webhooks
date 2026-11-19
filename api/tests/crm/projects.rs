@@ -801,16 +801,17 @@ async fn each_stage_starts_with_steps_checked_off_by_the_real_work(pool: MySqlPo
     win_8002(&pool).await;
     let project = projects_of_8002(&pool).await[0];
 
-    // The company starts with six steps, each checked off by the real work.
+    // The company starts with six steps, five checked off by the real work;
+    // "Start fabrication" is checked off by hand, which moves the job on.
     let seen = board(&pool, sessions::ADMIN).await;
     let steps = seen["process_steps"].as_array().unwrap().clone();
-    let starting: Vec<(&str, &str, &str, bool)> = steps
+    let starting: Vec<(&str, &str, Option<&str>, bool)> = steps
         .iter()
         .map(|step| {
             (
                 step["stage_code"].as_str().unwrap(),
                 step["name"].as_str().unwrap(),
-                step["auto"]["trigger"].as_str().unwrap(),
+                step["auto"]["trigger"].as_str(),
                 step["ends_stage"] == true,
             )
         })
@@ -818,17 +819,17 @@ async fn each_stage_starts_with_steps_checked_off_by_the_real_work(pool: MySqlPo
     assert_eq!(
         starting,
         vec![
-            ("new", "Schedule the template", "template_booked", false),
-            ("new", "Template", "template_completed", true),
-            ("templated", "Start fabrication", "stage_moved", true),
+            ("new", "Schedule the template", Some("template_booked"), false),
+            ("new", "Template", Some("template_completed"), true),
+            ("templated", "Start fabrication", None, false),
             (
                 "fabrication",
                 "Schedule the installation",
-                "install_booked",
+                Some("install_booked"),
                 false
             ),
-            ("fabrication", "Installation", "install_completed", true),
-            ("installed", "Confirm full payment", "payment_full", false),
+            ("fabrication", "Installation", Some("install_completed"), true),
+            ("installed", "Confirm full payment", Some("payment_full"), false),
         ]
     );
     let id_of = |name: &str| {
@@ -1648,4 +1649,90 @@ async fn the_template_and_installation_check_off_their_steps_when_done(pool: MyS
         .assert_status(StatusCode::NO_CONTENT);
     board(&pool, sessions::ADMIN).await;
     assert_eq!(done().await, vec![(schedule, auto)]);
+}
+
+// Link events from the project's side.
+
+#[test_db::test(seed)]
+async fn a_project_picks_the_customers_events_it_is_for(pool: MySqlPool) {
+    turn_on(&pool).await;
+    win_8002(&pool).await;
+    let id = projects_of_8002(&pool).await[0];
+    run(
+        &pool,
+        "INSERT INTO calendars (id, company_id, name, color, slug) VALUES
+           (9882, 100, 'Templates', 'blue', 'templates');
+         INSERT INTO events (id, title, start_date, end_date, all_day, unscheduled,
+                             created_user_id, assigned_user_id, calendar_id, customer_id)
+         VALUES (9872, 'Old template', NOW(), NOW(), 1, 0, 102, 101, 9882, 1004),
+                (9873, 'Install', NOW(), NOW(), 1, 0, 102, 101, 9882, 1004),
+                (9874, 'Someone else', NOW(), NOW(), 1, 0, 102, 101, 9882, NULL);",
+    )
+    .await;
+    let project_of = |event: i32| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<i32>>("SELECT project_id FROM events WHERE id = ?")
+                .bind(event)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    // The customer's events are offered; another customer's are not.
+    let res = server(pool.clone())
+        .get(&format!("/v1/projects/{id}/event-links"))
+        .with_session(sessions::ADMIN)
+        .await;
+    res.assert_status_ok();
+    let page: Value = res.json();
+    let offered: Vec<i64> = page["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_i64().unwrap())
+        .collect();
+    assert!(offered.contains(&9872) && offered.contains(&9873), "{offered:?}");
+    assert!(!offered.contains(&9874), "{offered:?}");
+    assert!(
+        page["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == id),
+        "{page}"
+    );
+
+    // Link both; the project's version moves.
+    let before = version(&pool, id).await;
+    server(pool.clone())
+        .put(&format!("/v1/projects/{id}/event-links"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "event_ids": [9872, 9873] }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(project_of(9872).await, Some(id));
+    assert_eq!(project_of(9873).await, Some(id));
+    assert!(version(&pool, id).await > before);
+
+    // Untick one: it leaves the project, the other stays.
+    server(pool.clone())
+        .put(&format!("/v1/projects/{id}/event-links"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "event_ids": [9873] }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(project_of(9872).await, None);
+    assert_eq!(project_of(9873).await, Some(id));
+
+    // Another customer's event is refused and nothing changes.
+    server(pool.clone())
+        .put(&format!("/v1/projects/{id}/event-links"))
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "event_ids": [9873, 9874] }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(project_of(9873).await, Some(id));
+    assert_eq!(project_of(9874).await, None);
 }

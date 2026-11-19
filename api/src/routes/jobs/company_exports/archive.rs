@@ -6,7 +6,6 @@ use super::tables::{self, Bucket, FileColumn, Rule};
 use crate::state::AppState;
 use chrono::{DateTime, Datelike, NaiveDate, Timelike};
 use chrono_tz::Tz;
-use futures_util::TryStreamExt as _;
 use serde::Serialize;
 use sha2::Digest as _;
 use sqlx::Row as _;
@@ -327,6 +326,9 @@ fn options_for(request: &Request<'_>, method: zip::CompressionMethod) -> SimpleF
 }
 
 /// Builds the export of `request.company_id`.
+/// Rows read per statement of a table with a one-column primary key.
+const EXPORT_CHUNK_ROWS: usize = 200;
+
 pub async fn build(state: &AppState, request: &Request<'_>) -> Result<Built, BuildError> {
     let schema = schema(&state.pool).await?;
     let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
@@ -404,15 +406,20 @@ pub async fn build(state: &AppState, request: &Request<'_>) -> Result<Built, Bui
                     .collect()
             })
             .unwrap_or_default();
-        let sql = format!(
-            "SELECT {} FROM {} WHERE {condition} ORDER BY {}",
+        let select = format!(
+            "SELECT {} FROM {} WHERE ({condition})",
             kept.iter()
                 .map(|column| select_expr(column))
                 .collect::<Vec<_>>()
                 .join(", "),
             quote_ident(table.name),
-            order.join(", "),
         );
+        // A one-column primary key reads the table in chunks after the last
+        // key: one statement open while the whole table was zipped held the
+        // database for seconds on big tables (quotes with their drawings).
+        let keyset = (order.len() == 1)
+            .then(|| order[0].clone())
+            .zip(row_id_index);
         let file_name = format!("data/{}.csv", table.name);
         zip.start_file(&file_name, deflate)?;
         zip.write_all(UTF8_BOM)?;
@@ -422,37 +429,58 @@ pub async fn build(state: &AppState, request: &Request<'_>) -> Result<Built, Bui
             .collect();
         zip.write_all(csv_line(&header).as_bytes())?;
 
-        // Names come from `TABLES` and `information_schema`, quoted; the
-        // company id is bound.
-        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
-        for _ in 0..binds {
-            query = query.bind(request.company_id);
-        }
-        let mut rows = query.fetch(&state.pool);
         let mut count = 0usize;
-        while let Some(row) = rows.try_next().await? {
-            let mut values: Vec<Option<String>> = Vec::with_capacity(kept.len());
-            for index in 0..kept.len() {
-                values.push(row.try_get::<Option<String>, _>(index)?);
+        let mut after: Option<String> = None;
+        loop {
+            let sql = match (&keyset, &after) {
+                (Some((key, _)), Some(_)) => {
+                    format!("{select} AND {key} > ? ORDER BY {key} LIMIT {EXPORT_CHUNK_ROWS}")
+                }
+                (Some((key, _)), None) => {
+                    format!("{select} ORDER BY {key} LIMIT {EXPORT_CHUNK_ROWS}")
+                }
+                (None, _) => format!("{select} ORDER BY {}", order.join(", ")),
+            };
+            // Names come from `TABLES` and `information_schema`, quoted; the
+            // company id and the last key are bound.
+            let mut query = sqlx::query(sqlx::AssertSqlSafe(sql));
+            for _ in 0..binds {
+                query = query.bind(request.company_id);
             }
-            for (index, file) in &file_indexes {
-                if let Some(value) = values[*index].as_deref().map(str::trim)
-                    && !value.is_empty()
-                    && !matches!(value, "undefined" | "null")
-                {
-                    file_refs.push(FileRef {
-                        table: table.name,
-                        column: file_column_name(file),
-                        row_id: row_id_index.and_then(|i| values[i].clone()),
-                        value: value.to_string(),
-                    });
+            if let Some(last) = &after {
+                query = query.bind(last.clone());
+            }
+            let rows = query.fetch_all(&state.pool).await?;
+            let fetched = rows.len();
+            for row in rows {
+                let mut values: Vec<Option<String>> = Vec::with_capacity(kept.len());
+                for index in 0..kept.len() {
+                    values.push(row.try_get::<Option<String>, _>(index)?);
+                }
+                for (index, file) in &file_indexes {
+                    if let Some(value) = values[*index].as_deref().map(str::trim)
+                        && !value.is_empty()
+                        && !matches!(value, "undefined" | "null")
+                    {
+                        file_refs.push(FileRef {
+                            table: table.name,
+                            column: file_column_name(file),
+                            row_id: row_id_index.and_then(|i| values[i].clone()),
+                            value: value.to_string(),
+                        });
+                    }
+                }
+                let fields: Vec<Option<&str>> = values.iter().map(Option::as_deref).collect();
+                zip.write_all(csv_line(&fields).as_bytes())?;
+                count += 1;
+                if let Some((_, key_index)) = keyset {
+                    after = values[key_index].clone();
                 }
             }
-            let fields: Vec<Option<&str>> = values.iter().map(Option::as_deref).collect();
-            zip.write_all(csv_line(&fields).as_bytes())?;
-            count += 1;
+            if keyset.is_none() || fetched < EXPORT_CHUNK_ROWS || after.is_none() {
+                break;
+            }
         }
-        drop(rows);
         manifest.row_count += count;
         manifest.tables.push(TableEntry {
             table: table.name.to_string(),

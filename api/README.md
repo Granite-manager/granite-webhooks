@@ -525,6 +525,29 @@ that flag, so copy any new variable to both. The browser reaches it at
 `time-triggered` starts the supplier files job on its function URL directly
 (`API_STREAM_URL`), so a long run is not cut by CloudFront.
 
+### PostHog relay (`/ingest/*`)
+
+The browser sends PostHog to `https://api.granite-manager.com/ingest/...` (and
+`api-dev.` on dev), so ad blockers that block PostHog's hosts let it through.
+Since 2026-11-19 CloudFront relays it itself; the Lambda never sees it. Both
+API distributions (the `api.` and `api-dev.` ones, made by hand, not in
+`infra/`) have three behaviours ahead of the default:
+
+| path | origin | cache policy |
+|---|---|---|
+| `/ingest/static/*`, `/ingest/array/*` | `us-assets.i.posthog.com` | `posthog-assets` (origin `Cache-Control`, query string, never `Host`) |
+| `/ingest/*` | `us.i.posthog.com` | Managed-CachingDisabled |
+
+All three use the CloudFront Function `posthog-ingest-path` (viewer request:
+strips `/ingest`) and the origin request policy `posthog-ingest` (only
+`Origin`, `Access-Control-Request-*`, `Content-Type`, `User-Agent` and the
+query string: no cookies, no `Authorization`; CloudFront adds
+`X-Forwarded-For`, which PostHog reads for the location). A cache policy with
+`Host` in its key (the managed `UseOriginCacheControlHeaders` ones) breaks the
+assets origin: CloudFront sends that `Host` as SNI and Cloudflare refuses it.
+`analytics_proxy.rs` still answers `/ingest/*` on the function URL; removing
+those behaviours puts the traffic back on it.
+
 ## Scheduled jobs and webhooks
 
 `time-triggered` (every minute) posts to `<API_URL>/v1/jobs/*` with
