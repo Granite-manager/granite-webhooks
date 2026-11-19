@@ -1,7 +1,7 @@
 //! The steps a sign-in may need after a right password.
 //!
 //! - `POST /v1/auth/login/code`                    → the authenticator app's code
-//! - `POST /v1/auth/login/password`                → a new password (the old one was 1111)
+//! - `POST /v1/auth/login/password`                → a new password (no sign-in asks for it now)
 //! - `POST /v1/auth/login/authenticator`           → the QR code to add to the authenticator app
 //! - `POST /v1/auth/login/authenticator/confirm`   → its first code: two-step sign-in is on
 //!
@@ -11,7 +11,10 @@
 //!
 //! 1. `code`: two-step sign-in is on; the code proves it is the user before
 //!    anything else may change.
-//! 2. `new_password`: the password was 1111; it must be changed.
+//! 2. `new_password`: kept for older challenges; no sign-in starts it now. A
+//!    password of 1111 does not sign in at all ([`is_default_password`]):
+//!    whoever typed it first could have chosen the new one, so the owner of
+//!    the account sets it from a reset link instead.
 //! 3. `setup_authenticator`: superusers must use two-step sign-in and have
 //!    not set it up yet.
 //!
@@ -48,8 +51,17 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(confirm_authenticator))
 }
 
-/// The password that must be changed at sign-in.
+/// The old default password, which never signs in.
 pub const DEFAULT_PASSWORD: &str = "1111";
+/// Said to a right password of 1111.
+pub const DEFAULT_PASSWORD_REFUSED: &str =
+    "This password no longer works. Use \"Forgot password\" to set a new one.";
+
+/// A sign-in whose (right) password is the old default 1111 is refused: the
+/// account's owner sets a new one from a reset link, which proves the mailbox.
+pub fn is_default_password(password: &str) -> bool {
+    password == DEFAULT_PASSWORD
+}
 /// A challenge works this long.
 const CHALLENGE_MINUTES: i64 = 10;
 /// Wrong codes that end a challenge.
@@ -62,7 +74,8 @@ const MIN_PASSWORD: usize = 8;
 const BCRYPT_COST: u32 = 10;
 
 const EXPIRED: &str = "Your sign-in expired. Please sign in again.";
-const WRONG_CODE: &str = "That code is not right. Check the code in your authenticator app and try again.";
+const WRONG_CODE: &str =
+    "That code is not right. Check the code in your authenticator app and try again.";
 
 /// What the sign-in needs next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
@@ -143,12 +156,8 @@ async fn next_step(
 }
 
 /// The step a sign-in with a right password needs first, if any.
-pub async fn first_step(
-    pool: &MySqlPool,
-    user_id: i32,
-    password: &str,
-) -> sqlx::Result<Option<LoginStep>> {
-    next_step(pool, user_id, false, password == DEFAULT_PASSWORD).await
+pub async fn first_step(pool: &MySqlPool, user_id: i32) -> sqlx::Result<Option<LoginStep>> {
+    next_step(pool, user_id, false, false).await
 }
 
 /// A 202 with the challenge.
@@ -167,7 +176,6 @@ pub async fn begin(
     pool: &MySqlPool,
     user_id: i32,
     step: LoginStep,
-    password: &str,
     email_hash: &str,
     ip_hash: &str,
     phone: Option<&PhoneDetails>,
@@ -186,7 +194,7 @@ pub async fn begin(
     .bind(user_id)
     .bind(email_hash)
     .bind(ip_hash)
-    .bind(password == DEFAULT_PASSWORD)
+    .bind(false)
     .bind(phone.map(|p| p.device_name.as_str()))
     .bind(phone.map(|p| p.platform.as_str()))
     .bind(phone.and_then(|p| p.app_version.as_deref()))
