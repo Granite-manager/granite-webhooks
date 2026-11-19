@@ -496,8 +496,17 @@ fn qbo_invoice_pdf(method: &Method, path: &str) -> bool {
     method == Method::GET
         && path
             .strip_prefix("/v1/qbo/invoices/")
-            .and_then(|rest| rest.strip_suffix("/pdf"))
+            .and_then(|rest| {
+                rest.strip_suffix("/pdf")
+                    .or_else(|| rest.strip_suffix("/balance"))
+            })
             .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+}
+
+/// `PUT /v1/customer-todos/{id}`: the crew ticks one of the customer's
+/// to-dos done (or not done) on the job page.
+fn customer_todo_done(method: &Method, path: &str) -> bool {
+    method == Method::PUT && path.strip_prefix("/v1/customer-todos/").is_some_and(is_id)
 }
 
 fn own_invoice(method: &Method, path: &str) -> bool {
@@ -559,6 +568,12 @@ fn project_route(method: &Method, path: &str) -> bool {
         [id, "tasks", task] => is_id(id) && is_id(task) && (patch || delete),
         [id, "notes" | "files", item] => is_id(id) && is_id(item) && delete,
         [id, "steps", step] => is_id(id) && is_id(step) && put,
+        [id, "steps", step, "note" | "owner"] => is_id(id) && is_id(step) && put,
+        [id, "step-items", item] => is_id(id) && is_id(item) && put,
+        [id, "tasks", task, "items", item] => is_id(id) && is_id(task) && is_id(item) && put,
+        [id, "questions"] => is_id(id) && post,
+        [id, "questions", question] => is_id(id) && is_id(question) && (get || put),
+        [id, "questions", question, "messages"] => is_id(id) && is_id(question) && post,
         [id, "parts"] => is_id(id) && post,
         [id, "parts", part] => is_id(id) && is_id(part) && (patch || delete),
         [id, "appointments", event, "part"] => is_id(id) && is_id(event) && put,
@@ -600,6 +615,7 @@ fn device_route(method: &Method, path: &str) -> bool {
         || stone_samples(method, path)
         || maintenance_write(method, path)
         || transaction_write(method, path)
+        || customer_todo_done(method, path)
 }
 
 /// A transaction's slab changes, as the website's Transactions dialog makes
@@ -1522,5 +1538,38 @@ mod tests {
         // The whole company's inbox stays with the CRM session.
         assert!(!device_route(&Method::GET, "/v1/sms/all/threads"));
         assert!(!device_route(&Method::GET, "/v1/sms/minex/threads"));
+    }
+}
+
+/// Every request the Granite Manager app makes must be one its device token
+/// may sign, or the app shows "Your account doesn't have access (403)".
+#[cfg(test)]
+mod app_calls {
+    use super::*;
+
+    /// Routes whose handlers take the device token themselves
+    /// (`device::DeviceUser`, `device::PhoneCaller`) or need no sign-in.
+    const TOKEN_ANYWHERE: [&str; 4] = ["/v1/phone", "/v1/auth", "/v1/me/devices", "/v1/public"];
+
+    /// `app_calls.txt` lists every request of the app's API client
+    /// (granite-phone `src/core/api/__tests__/app-calls.test.ts` keeps the
+    /// same list and fails when the app gains a call).
+    #[test]
+    fn every_call_the_app_makes_is_open_to_its_device_token() {
+        let refused: Vec<&str> = include_str!("app_calls.txt")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .filter(|line| {
+                let (method, path) = line.split_once(' ').expect("METHOD /path");
+                let method: Method = method.parse().expect("a method");
+                !device_route(&method, path)
+                    && !TOKEN_ANYWHERE.iter().any(|prefix| under(path, prefix))
+            })
+            .collect();
+        assert!(
+            refused.is_empty(),
+            "the app calls these, but its device token may not (add them to device_route):\n{}",
+            refused.join("\n")
+        );
     }
 }
