@@ -133,9 +133,8 @@ pub struct Feature {
     pub name: String,
     /// The usage count shown for it (a `metrics` key); null: none.
     pub usage_metric: Option<String>,
-    /// What it costs a month, in USD cents; null: no price yet, so self
-    /// sign-up does not offer it. A sign-up pays the sum of the features it
-    /// picks, 20% off when it picks every priced one.
+    /// What it costs a month, in USD cents; null: no price. Bookkeeping for
+    /// pricing by feature later: self sign-up charges a flat price for now.
     pub monthly_price_cents: Option<i32>,
 }
 
@@ -281,9 +280,8 @@ pub struct FeatureInput {
     /// A `metrics` key, or null for no usage count.
     #[serde(default)]
     pub usage_metric: Option<String>,
-    /// Monthly price in USD cents (50 to 10,000,000), or null for no price
-    /// (self sign-up then leaves the feature out). Leave it out to keep the
-    /// price as it is.
+    /// Monthly price in USD cents (50 to 10,000,000), or null for no price.
+    /// Leave it out to keep the price as it is.
     #[serde(default, deserialize_with = "crate::serde_helpers::double_option")]
     #[schema(value_type = Option<i32>)]
     pub monthly_price_cents: Option<Option<i32>>,
@@ -334,7 +332,7 @@ fn duplicate_name(error: sqlx::Error) -> ApiError {
 
 /// Add a feature
 ///
-/// With a monthly price, self sign-up offers it. Superusers only.
+/// Superusers only.
 #[crate::openapi::path(
     post,
     path = "/v1/superuser/paid-features",
