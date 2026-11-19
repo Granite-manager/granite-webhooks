@@ -17,52 +17,57 @@ const CUSTOMER_COLUMNS: &str = "
 /// of one business make one company.
 const COMPANY_KEY: &str = "LOWER(TRIM(c.company_name))";
 
-/// Sales of the company of `c`: of any live contact with its company name,
-/// or of their child customers (and of `c` and its children, as before).
-macro_rules! company_sales {
-    () => {
-        "
-      FROM sales s
-      JOIN customers sc ON sc.id = s.customer_id
-      LEFT JOIN customers sp ON sp.id = sc.parent_id
-      WHERE sc.company_id = c.company_id AND (
-        sc.id = c.id OR sp.id = c.id
-        OR (sc.deleted_at IS NULL AND LOWER(TRIM(sc.company_name)) = LOWER(TRIM(c.company_name)))
-        OR (sp.deleted_at IS NULL AND LOWER(TRIM(sp.company_name)) = LOWER(TRIM(c.company_name))))"
-    };
-}
-
 /// The companies view's totals over the whole company, and `company_rank`:
 /// 1 marks the row that stands for the company, the contact named like the
-/// company, else the oldest one.
-const COMPANY_TOTALS: &str = concat!(
-    ",
-    CAST((SELECT SUM(s.price)",
-    company_sales!(),
-    ") AS CHAR) AS revenue_generated,
-    (SELECT COUNT(*)",
-    company_sales!(),
-    ") AS projects_count,
+/// company, else the oldest one. Revenue and projects come from
+/// [`COMPANY_SALES_JOIN`]; the phones of every live contact of the company
+/// start with the row's own.
+const COMPANY_TOTALS: &str = ",
+    CAST(company_sales.revenue AS CHAR) AS revenue_generated,
+    COALESCE(company_sales.projects, 0) AS projects_count,
     (
       SELECT GROUP_CONCAT(
         CONCAT_WS('\\n', NULLIF(TRIM(g.phone), ''), NULLIF(TRIM(g.phone_2), ''))
         ORDER BY g.id = c.id DESC, g.id SEPARATOR '\\n')
-      FROM customers g
+      FROM customers g FORCE INDEX (idx_customers_company_key)
       WHERE g.company_id = c.company_id AND g.deleted_at IS NULL
         AND LOWER(TRIM(g.company_name)) = LOWER(TRIM(c.company_name))
     ) AS company_phones_raw,
     ROW_NUMBER() OVER (
       PARTITION BY LOWER(TRIM(c.company_name))
       ORDER BY LOWER(TRIM(c.name)) = LOWER(TRIM(c.company_name)) DESC, c.id
-    ) AS company_rank"
-);
+    ) AS company_rank";
+
+/// Each company's sales, once per company key: those of a live contact with
+/// the company's name, or of a child customer of one. The view only lists
+/// live contacts that have a company name, so this is the same as summing,
+/// per row, the sales of the row, of its children, and of those contacts.
+/// Two binds: the company id, twice.
+const COMPANY_SALES_JOIN: [&str; 3] = [
+    "
+    LEFT JOIN (
+      SELECT cs.company_key, SUM(cs.price) AS revenue, COUNT(*) AS projects
+        FROM (
+          SELECT s.id, s.price, LOWER(TRIM(sc.company_name)) AS company_key
+            FROM sales s JOIN customers sc ON sc.id = s.customer_id
+           WHERE sc.deleted_at IS NULL AND sc.company_id = ",
+    "
+          UNION
+          SELECT s.id, s.price, LOWER(TRIM(sp.company_name))
+            FROM sales s JOIN customers sc ON sc.id = s.customer_id
+            JOIN customers sp ON sp.id = sc.parent_id
+           WHERE sp.deleted_at IS NULL AND sc.company_id = ",
+    "
+        ) cs
+       GROUP BY cs.company_key
+    ) company_sales ON company_sales.company_key = LOWER(TRIM(c.company_name))",
+];
 
 const CUSTOMER_JOINS: &str = "
     FROM customers c
     LEFT JOIN customers_emails primary_email
       ON primary_email.id = c.email_id AND primary_email.customer_id = c.id
-    LEFT JOIN users u ON c.sales_rep = u.id AND u.is_deleted = 0
-    WHERE c.deleted_at IS NULL AND c.company_id = ";
+    LEFT JOIN users u ON c.sales_rep = u.id AND u.is_deleted = 0";
 
 fn list_query(company_id: i32, filter: ListFilter) -> QueryBuilder<MySql> {
     let companies = filter.view == CustomersView::Companies;
@@ -75,7 +80,7 @@ fn list_query(company_id: i32, filter: ListFilter) -> QueryBuilder<MySql> {
     if companies {
         query.push(COMPANY_TOTALS);
     }
-    push_list_filter(&mut query, company_id, filter);
+    push_list_filter(&mut query, company_id, filter, companies);
     if companies {
         // One row per company, not one per contact.
         query.push(") grouped WHERE company_rank = 1");
@@ -83,8 +88,26 @@ fn list_query(company_id: i32, filter: ListFilter) -> QueryBuilder<MySql> {
     query
 }
 
-fn push_list_filter(query: &mut QueryBuilder<MySql>, company_id: i32, filter: ListFilter) {
-    query.push(CUSTOMER_JOINS).push_bind(company_id);
+/// `FROM … WHERE` of the list; `totals` joins what [`COMPANY_TOTALS`] reads.
+fn push_list_filter(
+    query: &mut QueryBuilder<MySql>,
+    company_id: i32,
+    filter: ListFilter,
+    totals: bool,
+) {
+    query.push(CUSTOMER_JOINS);
+    if totals {
+        let [first, second, end] = COMPANY_SALES_JOIN;
+        query
+            .push(first)
+            .push_bind(company_id)
+            .push(second)
+            .push_bind(company_id)
+            .push(end);
+    }
+    query
+        .push(" WHERE c.deleted_at IS NULL AND c.company_id = ")
+        .push_bind(company_id);
     if filter.view == CustomersView::Companies {
         query.push(" AND (c.company_name IS NOT NULL AND c.company_name != '')");
     }
@@ -116,8 +139,9 @@ fn push_page_filter(
     company_id: i32,
     filter: ListFilter,
     tab: CustomersTab,
+    totals: bool,
 ) {
-    push_list_filter(query, company_id, filter);
+    push_list_filter(query, company_id, filter, totals);
     match tab {
         CustomersTab::Walkin => query.push(" AND ").push(WALKIN_SOURCE),
         CustomersTab::Leads => query.push(" AND c.source = 'leads'"),
@@ -166,7 +190,8 @@ where
         query.push(COMPANY_TOTALS);
     }
     query.push(", ").push(tab_date(tab)).push(" AS tab_date");
-    push_page_filter(&mut query, company_id, request.filter, tab);
+    let companies = request.filter.view == CustomersView::Companies;
+    push_page_filter(&mut query, company_id, request.filter, tab, companies);
     query.push(") page");
     if request.filter.view == CustomersView::Companies {
         query.push(" WHERE company_rank = 1");
@@ -199,7 +224,7 @@ async fn month_rows(
         .expect("next month exists");
     let mut query = QueryBuilder::<MySql>::new("SELECT");
     query.push(CUSTOMER_COLUMNS);
-    push_page_filter(&mut query, company_id, filter, tab);
+    push_page_filter(&mut query, company_id, filter, tab, false);
     query
         .push(" AND ")
         .push(tab_date(tab))
@@ -240,7 +265,7 @@ pub async fn customers_page(
     } else {
         "SELECT COUNT(*)".to_owned()
     });
-    push_page_filter(&mut count, company_id, request.filter, tab);
+    push_page_filter(&mut count, company_id, request.filter, tab, false);
     let total: i64 = count.build_query_scalar().fetch_one(pool).await?;
     let last_page =
         u32::try_from((total + i64::from(request.page_size) - 1) / i64::from(request.page_size))

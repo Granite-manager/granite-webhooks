@@ -205,15 +205,15 @@ static CHECKS: [UsageCheck; 22] = [
                  JOIN quotes q ON q.id = qr.quote_id AND q.company_id = {c}
                 WHERE qr.created_by IS NOT NULL [[qr.created_by]]",
     },
-    // A saved quote drawing with a sink, cooktop or other cutout on a counter.
+    // A saved quote drawing with a sink, cooktop or other cutout on a counter
+    // (`has_cutout`, stored from the drawing, so no drawing is parsed here).
     UsageCheck {
         id: "quote_cutout_added",
         kind: Kind::Data,
         rows: "SELECT qr.created_by AS user_id, qr.created_at AS ts
                  FROM quote_revisions qr
                  JOIN quotes q ON q.id = qr.quote_id AND q.company_id = {c}
-                WHERE qr.created_by IS NOT NULL
-                  AND JSON_EXTRACT(qr.drawing_json, '$.counters[*].runs[*].cutouts[0]') IS NOT NULL
+                WHERE qr.created_by IS NOT NULL AND qr.has_cutout = 1
                   [[qr.created_by]]",
     },
     // A company automation the admin set up: an email template tied to a list

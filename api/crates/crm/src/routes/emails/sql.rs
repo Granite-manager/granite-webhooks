@@ -208,6 +208,79 @@ pub fn thread_in_inbox(alias: &str, mailbox: &Mailbox) -> Sql {
     )
 }
 
+/// The threads holding a message addressed to the user, as a derived table.
+///
+/// Columns: `thread_id`; binds: their id, their address, their id, their
+/// address. Every thread [`thread_in_inbox`] accepts is in it: each of
+/// [`receiver_condition`]'s tests is one of these index lookups
+/// (`receiver_address` is the normalized receiver, so it also catches the
+/// bare and `Name <address>` spellings). Joining it first lets an unread
+/// query read the user's threads instead of every message of the company;
+/// the exact tests still run on what it finds.
+pub fn inbox_threads(mailbox: &Mailbox) -> Sql {
+    Sql::new(
+        "(SELECT x.thread_id FROM emails x WHERE x.receiver_user_id = ?
+          UNION SELECT x.thread_id FROM emails x WHERE x.receiver_address = ?
+          UNION SELECT x.thread_id FROM email_participants ep JOIN emails x ON x.id = ep.email_id
+                 WHERE ep.user_id = ? AND ep.type IN ('to', 'cc')
+          UNION SELECT x.thread_id FROM email_participants ep JOIN emails x ON x.id = ep.email_id
+                 WHERE ep.email = ? AND ep.type IN ('to', 'cc'))",
+        vec![
+            mailbox.user_id.into(),
+            mailbox.email.clone().into(),
+            mailbox.user_id.into(),
+            mailbox.email.clone().into(),
+        ],
+    )
+}
+
+/// The messages addressed to the user, as a derived table of `id`.
+///
+/// Binds: their id, their address, their id, their address. Every message
+/// [`receiver_condition`] accepts, found by index, so a folder reads the
+/// user's mail instead of the company's. The exact test still runs on it.
+pub fn received_ids(mailbox: &Mailbox) -> Sql {
+    Sql::new(
+        "(SELECT x.id FROM emails x WHERE x.receiver_user_id = ?
+          UNION SELECT x.id FROM emails x WHERE x.receiver_address = ?
+          UNION SELECT ep.email_id FROM email_participants ep
+                 WHERE ep.user_id = ? AND ep.type IN ('to', 'cc')
+          UNION SELECT ep.email_id FROM email_participants ep
+                 WHERE ep.email = ? AND ep.type IN ('to', 'cc'))",
+        vec![
+            mailbox.user_id.into(),
+            mailbox.email.clone().into(),
+            mailbox.user_id.into(),
+            mailbox.email.clone().into(),
+        ],
+    )
+}
+
+/// The messages the user sent, as a derived table of `id` (binds: their id,
+/// their address): every message [`sender_condition`] accepts, by index.
+pub fn sent_ids(mailbox: &Mailbox) -> Sql {
+    Sql::new(
+        "(SELECT x.id FROM emails x WHERE x.sender_user_id = ?
+          UNION SELECT x.id FROM emails x WHERE x.sender_address = ?)",
+        vec![mailbox.user_id.into(), mailbox.email.clone().into()],
+    )
+}
+
+/// `FROM` source of a folder's messages as `alias`: the user's own messages
+/// (`ids`, see [`received_ids`] and [`sent_ids`]) joined to `emails`, or all
+/// of `emails` without `ids` (drafts). Its binds come before the `WHERE`'s.
+pub fn folder_source(ids: Option<&Sql>, alias: &str) -> String {
+    ids.map_or_else(
+        || format!("emails {alias}"),
+        |ids| {
+            format!(
+                "{} {alias}_mine JOIN emails {alias} ON {alias}.id = {alias}_mine.id",
+                ids.sql
+            )
+        },
+    )
+}
+
 /// Sent by this user (their id, or their address in the sender column).
 pub fn sender_condition(alias: &str, mailbox: &Mailbox) -> Sql {
     let sender = normalized(&format!("{alias}.sender_email"));
