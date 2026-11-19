@@ -4,7 +4,8 @@
 //! `api.customers.set-sales-rep` and `api.customers.set-temperature`.
 
 use super::service::{
-    SALES_REP_POSITION, audit_name, ensure_open_deal, notify_assigned_rep,
+    SALES_REP_POSITION, audit_name, ensure_open_deal, ensure_open_deal_in_group,
+    notify_assigned_rep,
     record_lead_manager_assignment, record_reassignment, refuse_import_placeholder,
     refuse_taken_phones, remind_new_rep, source_allowed, sync_emails, user_name,
 };
@@ -89,6 +90,16 @@ pub struct CreatedCustomer {
 pub struct SalesRepInput {
     /// The new sales rep (user id), or null to unassign.
     pub sales_rep: Option<i32>,
+    /// The pipeline (group) whose first stage a new deal starts in; omit
+    /// for the default pipeline. Used only when the customer has no open
+    /// deal yet (the website's Leads page).
+    #[serde(default)]
+    pub group_id: Option<i32>,
+    /// The list (stage) a new deal starts in, a live list of one of the
+    /// company's pipelines; wins over `group_id`. Omit for the pipeline's
+    /// first list. Used only when the customer has no open deal yet.
+    #[serde(default)]
+    pub list_id: Option<i32>,
 }
 
 /// Lead temperature.
@@ -418,6 +429,33 @@ pub async fn set_sales_rep(
     let (previous, name) = found.ok_or(ApiError::NotFound)?;
     refuse_import_placeholder(pool, id).await?;
     check_rep(&state, user.company_id, body.sales_rep).await?;
+    if let Some(group) = body.group_id {
+        let live: Option<i32> = sqlx::query_scalar(
+            "SELECT 1 FROM groups_list WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
+        )
+        .bind(group)
+        .bind(user.company_id)
+        .fetch_optional(pool)
+        .await?;
+        if live.is_none() {
+            return Err(ApiError::BadRequest("unknown deal group".into()));
+        }
+    }
+    // A chosen list decides its own pipeline.
+    let group = if let Some(list) = body.list_id {
+        let owner: Option<i32> = sqlx::query_scalar(
+            "SELECT g.id FROM deals_list dl JOIN groups_list g ON g.id = dl.group_id
+              WHERE dl.id = ? AND dl.deleted_at IS NULL
+                AND g.company_id = ? AND g.deleted_at IS NULL",
+        )
+        .bind(list)
+        .bind(user.company_id)
+        .fetch_optional(pool)
+        .await?;
+        Some(owner.ok_or_else(|| ApiError::BadRequest("unknown deal list".into()))?)
+    } else {
+        body.group_id
+    };
     if previous != body.sales_rep {
         record_lead_manager_assignment(pool, id, previous).await?;
         let stamp = if body.sales_rep.is_some() {
@@ -437,7 +475,8 @@ pub async fn set_sales_rep(
         record_reassignment(pool, id, by.as_deref(), to.as_deref(), None).await?;
     }
     if let Some(rep) = body.sales_rep {
-        let deal = ensure_open_deal(pool, id, user.company_id, rep).await?;
+        let deal =
+            ensure_open_deal_in_group(pool, id, user.company_id, rep, group, body.list_id).await?;
         remind_new_rep(pool, rep, id).await?;
         if previous != body.sales_rep {
             // Moved from another rep: "You were reassigned the customer <name>".

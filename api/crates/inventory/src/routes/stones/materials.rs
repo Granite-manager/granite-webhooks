@@ -6,6 +6,7 @@
 //! Stones are linked to the material of their name here: on switching to
 //! materials, on listing materials, and on saving a stone.
 
+use super::locations::{LocationQuery, StoneLocation, inventory_company, locations};
 use super::queries::{list_stones, stones_with_slab_counts};
 use super::schemas::{ListStonesQuery, SlabCounts, Stone};
 use crate::auth::{AdminUser, ShopOrEmployeeUser};
@@ -14,7 +15,7 @@ use crate::extract::{JsonBody, MultiQuery};
 use crate::openapi::ToSchema;
 use crate::state::AppState;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, MySqlConnection};
@@ -47,12 +48,36 @@ impl StoneView {
     }
 }
 
-/// `GET` and `PUT /v1/stones/settings`.
+/// The company's stone view (`GET /v1/public/companies/{id}/stone-view`).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StoneSettings {
     /// `stones` (default) or `materials`.
     pub stone_view: StoneView,
+}
+
+/// `GET /v1/stones/settings`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct StaffStoneSettings {
+    /// `stones` (default) or `materials`.
+    pub stone_view: StoneView,
+    /// The company's staff can pick another location on the Stones page
+    /// (look only).
+    pub show_all_locations: bool,
+    /// Every location of the company's business, its own included, by name;
+    /// empty when it has no other locations.
+    pub locations: Vec<StoneLocation>,
+}
+
+/// `PUT /v1/stones/settings`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SaveStoneSettings {
+    /// `stones` (default) or `materials`.
+    pub stone_view: StoneView,
+    /// Show all locations' inventory to the company's staff. Omitted: kept.
+    #[serde(default)]
+    pub show_all_locations: Option<bool>,
 }
 
 /// A material with the slab counts of its stones.
@@ -159,7 +184,10 @@ pub async fn link_materials(
 
 /// The company's stone view; `stones` when unset. The public showroom shows
 /// the same view.
-pub async fn stone_view(conn: &mut MySqlConnection, company_id: i32) -> Result<StoneView, sqlx::Error> {
+pub async fn stone_view(
+    conn: &mut MySqlConnection,
+    company_id: i32,
+) -> Result<StoneView, sqlx::Error> {
     let value: Option<String> = sqlx::query_scalar("SELECT stone_view FROM company WHERE id = ?")
         .bind(company_id)
         .fetch_optional(&mut *conn)
@@ -170,14 +198,16 @@ pub async fn stone_view(conn: &mut MySqlConnection, company_id: i32) -> Result<S
 /// Get the stone settings
 ///
 /// What the company's Stones page shows first: `stones` (one card per stone,
-/// the default) or `materials` (one card per material, then its stones).
+/// the default) or `materials` (one card per material, then its stones), and
+/// whether the staff can look at the other locations of the business (with
+/// those locations).
 #[crate::openapi::path(
     get,
     path = "/v1/stones/settings",
     operation_id = "get_stone_settings",
     tag = "stones",
     responses(
-        (status = 200, description = "The settings", body = StoneSettings),
+        (status = 200, description = "The settings", body = StaffStoneSettings),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an employee, admin or of the shop", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
@@ -187,10 +217,23 @@ pub async fn stone_view(conn: &mut MySqlConnection, company_id: i32) -> Result<S
 pub async fn get_settings(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
-) -> ApiResult<Json<StoneSettings>> {
+) -> ApiResult<Json<StaffStoneSettings>> {
     let mut conn = state.pool.acquire().await?;
-    Ok(Json(StoneSettings {
-        stone_view: stone_view(&mut conn, user.company_id).await?,
+    let view = stone_view(&mut conn, user.company_id).await?;
+    let show_all: Option<bool> =
+        sqlx::query_scalar("SELECT show_all_locations_inventory = 1 FROM company WHERE id = ?")
+            .bind(user.company_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    drop(conn);
+    let mut locations = locations(&state.pool, user.company_id).await?;
+    if locations.len() < 2 {
+        locations.clear();
+    }
+    Ok(Json(StaffStoneSettings {
+        stone_view: view,
+        show_all_locations: show_all.unwrap_or(false) && !locations.is_empty(),
+        locations,
     }))
 }
 
@@ -204,7 +247,7 @@ pub async fn get_settings(
     path = "/v1/stones/settings",
     operation_id = "save_stone_settings",
     tag = "stones",
-    request_body = StoneSettings,
+    request_body = SaveStoneSettings,
     responses(
         (status = 204, description = "Saved"),
         (status = 400, description = "Unknown `stone_view`", body = ErrorBody),
@@ -217,14 +260,19 @@ pub async fn get_settings(
 pub async fn save_settings(
     State(state): State<AppState>,
     AdminUser(user): AdminUser,
-    JsonBody(input): JsonBody<StoneSettings>,
+    JsonBody(input): JsonBody<SaveStoneSettings>,
 ) -> ApiResult<StatusCode> {
     let mut tx = state.pool.begin().await?;
-    sqlx::query("UPDATE company SET stone_view = ? WHERE id = ?")
-        .bind(input.stone_view.as_str())
-        .bind(user.company_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "UPDATE company SET stone_view = ?,
+                show_all_locations_inventory = COALESCE(?, show_all_locations_inventory)
+          WHERE id = ?",
+    )
+    .bind(input.stone_view.as_str())
+    .bind(input.show_all_locations)
+    .bind(user.company_id)
+    .execute(&mut *tx)
+    .await?;
     if input.stone_view == StoneView::Materials {
         link_materials(&mut tx, user.company_id, None).await?;
     }
@@ -256,17 +304,21 @@ pub async fn save_settings(
 pub async fn list(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
-    MultiQuery(query): MultiQuery<ListStonesQuery>,
+    MultiQuery(mut query): MultiQuery<ListStonesQuery>,
 ) -> ApiResult<Json<Vec<StoneMaterial>>> {
     if query.include_hidden && !(user.is_admin || user.is_superuser) {
         return Err(ApiError::Forbidden);
     }
+    let company_id = inventory_company(&state.pool, user.company_id, query.location).await?;
+    if company_id != user.company_id {
+        query.include_hidden = false;
+    }
     let mut conn = state.pool.acquire().await?;
-    link_materials(&mut conn, user.company_id, None).await?;
+    link_materials(&mut conn, company_id, None).await?;
     let rows: Vec<MaterialRow> = sqlx::query_as(
         "SELECT id, name, type, url FROM stone_materials WHERE company_id = ? ORDER BY name, id",
     )
-    .bind(user.company_id)
+    .bind(company_id)
     .fetch_all(&mut *conn)
     .await?;
     let installed: HashMap<i32, i64> = sqlx::query_as::<_, (i32, i64)>(
@@ -276,13 +328,13 @@ pub async fn list(
            AND stones.material_id IS NOT NULL
          GROUP BY stones.material_id",
     )
-    .bind(user.company_id)
+    .bind(company_id)
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
     .collect();
     drop(conn);
-    let stones = list_stones(&state.pool, user.company_id, &query).await?;
+    let stones = list_stones(&state.pool, company_id, &query).await?;
     Ok(Json(group(rows, &stones, &installed)))
 }
 
@@ -332,7 +384,7 @@ fn group(
     path = "/v1/stones/materials/{id}",
     operation_id = "get_stone_material",
     tag = "stones",
-    params(("id" = i32, Path, description = "Material id")),
+    params(("id" = i32, Path, description = "Material id"), LocationQuery),
     responses(
         (status = 200, description = "The material", body = MaterialDetail),
         (status = 401, description = "No valid session", body = ErrorBody),
@@ -346,18 +398,20 @@ pub async fn get(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
     Path(id): Path<i32>,
+    Query(location): Query<LocationQuery>,
 ) -> ApiResult<Json<MaterialDetail>> {
+    let company_id = inventory_company(&state.pool, user.company_id, location.location).await?;
     let row: MaterialRow = sqlx::query_as(
         "SELECT id, name, type, url FROM stone_materials WHERE id = ? AND company_id = ?",
     )
     .bind(id)
-    .bind(user.company_id)
+    .bind(company_id)
     .fetch_optional(&state.pool)
     .await?
     .ok_or(ApiError::NotFound)?;
-    let mut query = stones_with_slab_counts(user.company_id);
+    let mut query = stones_with_slab_counts(company_id);
     query.push(" AND stones.material_id = ").push_bind(id);
-    if !(user.is_admin || user.is_superuser) {
+    if company_id != user.company_id || !(user.is_admin || user.is_superuser) {
         query.push(" AND stones.is_display = 1");
     }
     query.push(" GROUP BY stones.id ORDER BY stones.bundle_number IS NULL, stones.bundle_number, stones.id");
@@ -369,7 +423,7 @@ pub async fn get(
          WHERE stones.company_id = ? AND stones.material_id = ? AND stones.deleted_at IS NULL
          ORDER BY i.id DESC",
     )
-    .bind(user.company_id)
+    .bind(company_id)
     .bind(id)
     .fetch_all(&state.pool)
     .await?;

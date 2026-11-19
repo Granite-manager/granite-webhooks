@@ -26,6 +26,7 @@ on:
           - api
           - webhooks
           - time-triggered
+          - duplicate-refresh
       deploy:
         description: Deploy (unchecked only builds the zip)
         type: boolean
@@ -72,6 +73,7 @@ jobs:
             webhooks/dev)        functions="granite-webhooks-dev" ;;
             time-triggered/prod) functions="time-triggered" ;;
             time-triggered/dev)  functions="time-triggered-dev" ;;
+            duplicate-refresh/prod) functions="duplicate-refresh" ;;
             *) echo "::error::$APP has no $DEPLOY_ENV Lambda"; exit 1 ;;
           esac
           echo "FUNCTIONS=$functions" >> "$GITHUB_ENV"

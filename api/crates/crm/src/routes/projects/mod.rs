@@ -16,6 +16,7 @@
 //! - `/v1/projects/{id}/files[/{file_id}]`         → files from `POST /v1/uploads` (POST, DELETE)
 //! - `/v1/projects/process-steps[/{step_id}]`      → the company's own steps, for admins (GET, POST, PATCH, DELETE, reorder, notify, auto, ends-stage)
 //! - `PUT    /v1/projects/{id}/steps/{step_id}`    → check a step off a project
+//! - `GET`/`PUT /v1/projects/event-links/{event_id}` → which project a schedule event is for
 //! - `/v1/projects/part-types[/{type_id}]`        → the company's part types (GET; POST, PATCH, DELETE for admins)
 //! - `/v1/projects/{id}/parts[/{part_id}]`         → a project's parts (POST, PATCH, DELETE)
 //! - `PUT    /v1/projects/{id}/appointments/{event_id}/part` → which part a job is for
@@ -25,13 +26,16 @@
 //! - `PUT    /v1/projects/process-steps/{step_id}/setup` → who does a step, its due days and own list (admins)
 //! - `PUT    /v1/projects/{id}/steps/{step_id}/owner` → pick who does a step on one project
 //! - `PUT    /v1/projects/{id}/step-items/{item_id}` → tick a step's list item
+//! - `PUT    /v1/projects/{id}/steps/{step_id}/note` → a step's optional note (its files: `POST .../files` with `step_id`)
 //! - `/v1/projects/{id}/questions[/{question_id}[/messages]]` → questions to chosen people (POST, GET, PUT)
 //!
 //! Who sees what is in [`access`].
 
 pub mod access;
+mod arrivals;
 mod auto;
 pub use auto::log_sent_template;
+mod event_link;
 mod handlers;
 mod issues;
 mod lists;
@@ -79,6 +83,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(process::set_auto))
         .routes(routes!(step_events::set_events))
         .routes(routes!(process::set_done))
+        .routes(routes!(event_link::get, event_link::set))
         .routes(routes!(parts::list_types, parts::create_type))
         .routes(routes!(parts::update_type, parts::delete_type))
         .routes(routes!(parts::add_part))
@@ -92,6 +97,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(lists::set_step_setup))
         .routes(routes!(lists::set_step_owner))
         .routes(routes!(lists::set_step_item_done))
+        .routes(routes!(lists::set_step_note))
         .routes(routes!(questions::ask))
         .routes(routes!(questions::get, questions::change))
         .routes(routes!(questions::reply))

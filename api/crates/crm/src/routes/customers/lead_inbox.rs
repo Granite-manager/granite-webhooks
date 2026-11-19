@@ -10,6 +10,10 @@
 //!
 //! Everyone, a sales rep too, gets `team`: how many leads each of the
 //! company's sales reps got this month, for the screen a lead push opens.
+//!
+//! The website's Leads page (Deals › Leads, sales managers only) reads the
+//! same inbox, with each lead's email, source and form message, and the
+//! company's pipelines (`groups`) to choose where an assigned lead goes.
 
 use crate::auth::EmployeeUser;
 use crate::error::{ApiResult, ErrorBody};
@@ -51,6 +55,39 @@ pub struct InboxLead {
     pub sales_rep_name: Option<String>,
     /// Its newest live deal, the one the app opens.
     pub deal_id: Option<i64>,
+    /// The customer's primary email (null when none).
+    pub email: Option<String>,
+    /// How they found the company ("Google", "Facebook"…; null when unknown).
+    pub referral_source: Option<String>,
+    /// What the customer wrote in the lead form (null when nothing).
+    pub your_message: Option<String>,
+    /// The customer's address (null when none).
+    pub address: Option<String>,
+    /// `hot`, `medium` or `cold`; null when not rated.
+    pub customer_temperature: Option<String>,
+}
+
+/// A live pipeline (group) of the company, for the website's Leads page.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InboxGroup {
+    /// The group id (`PUT /v1/customers/{id}/sales-rep` takes it as `group_id`).
+    pub id: i32,
+    /// Its name.
+    pub name: Option<String>,
+    /// The pipeline new leads go to ("Assign leads here").
+    pub is_default: bool,
+    /// Its live lists (stages) in board order; `PUT /v1/customers/{id}/sales-rep`
+    /// takes one as `list_id`.
+    pub lists: Vec<InboxList>,
+}
+
+/// A live list (stage) of a pipeline, for the website's Leads page.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InboxList {
+    /// The list id.
+    pub id: i32,
+    /// Its name.
+    pub name: Option<String>,
 }
 
 /// A sales rep of the company and their lead count this month.
@@ -82,6 +119,10 @@ pub struct LeadInbox {
     /// everyone, a sales rep too, so they can compare their count with the
     /// team's; the same numbers as `reps`.
     pub team: Vec<InboxRep>,
+    /// The company's live pipelines, oldest first (managers only; empty for
+    /// a sales rep). When none is the default, the Leads page asks which
+    /// list a lead goes to.
+    pub groups: Vec<InboxGroup>,
 }
 
 /// List my lead notifications
@@ -133,13 +174,14 @@ pub async fn lead_inbox(
         .await?
     };
     let team = reps(pool, user.company_id).await?;
-    let (unassigned, reps) = if is_manager {
+    let (unassigned, reps, groups) = if is_manager {
         (
             leads(pool, user.company_id, None, "c.created_date").await?,
             team.clone(),
+            groups(pool, user.company_id).await?,
         )
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new())
     };
     Ok(Json(LeadInbox {
         is_manager,
@@ -147,6 +189,7 @@ pub async fn lead_inbox(
         assigned,
         reps,
         team,
+        groups,
     }))
 }
 
@@ -170,9 +213,12 @@ async fn leads(
                 -- deals.id is BIGINT UNSIGNED, which decodes only as u64.
                 (SELECT CAST(d.id AS SIGNED) FROM deals d
                   WHERE d.customer_id = c.id AND d.deleted_at IS NULL
-                  ORDER BY d.id DESC LIMIT 1) AS deal_id
+                  ORDER BY d.id DESC LIMIT 1) AS deal_id,
+                e.email, c.referral_source, c.your_message, c.address,
+                CAST(c.customer_temperature AS CHAR) AS customer_temperature
            FROM customers c
            LEFT JOIN users u ON u.id = c.sales_rep
+           LEFT JOIN customers_emails e ON e.id = c.email_id AND e.customer_id = c.id
           WHERE c.company_id = ? AND c.source = 'leads' AND c.deleted_at IS NULL
             AND (c.invalid_lead IS NULL OR c.invalid_lead = '')
             AND c.id != ? AND (c.name IS NULL OR c.name != ?)
@@ -189,6 +235,43 @@ async fn leads(
         query = query.bind(id);
     }
     query.bind(LIMIT).fetch_all(pool).await
+}
+
+/// The company's live pipelines, oldest first, each with its live lists.
+async fn groups(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<InboxGroup>> {
+    let rows: Vec<(i32, Option<String>, Option<bool>)> = sqlx::query_as(
+        "SELECT id, name, is_default FROM groups_list
+          WHERE company_id = ? AND deleted_at IS NULL
+          ORDER BY created_at, id",
+    )
+    .bind(company_id)
+    .fetch_all(pool)
+    .await?;
+    let lists: Vec<(i32, i32, Option<String>)> = sqlx::query_as(
+        "SELECT dl.group_id, dl.id, dl.name FROM deals_list dl
+           JOIN groups_list g ON g.id = dl.group_id
+          WHERE g.company_id = ? AND g.deleted_at IS NULL AND dl.deleted_at IS NULL
+          ORDER BY dl.position, dl.id",
+    )
+    .bind(company_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, default)| InboxGroup {
+            id,
+            name,
+            is_default: default.unwrap_or(false),
+            lists: lists
+                .iter()
+                .filter(|(group, _, _)| *group == id)
+                .map(|(_, list, name)| InboxList {
+                    id: *list,
+                    name: name.clone(),
+                })
+                .collect(),
+        })
+        .collect())
 }
 
 /// The company's sales reps with this month's leads, as the Telegram lead

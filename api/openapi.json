@@ -8773,6 +8773,16 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "description": "Another location's company id: its displayed stones, look only (see\n`GET /v1/stones/settings`). Omitted: the caller's own company.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
           }
         ],
         "responses": {
@@ -8810,7 +8820,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an employee or shop staff, or asks for hidden stones without being an admin",
+            "description": "Caller is not an employee or shop staff, asks for hidden stones without being an admin, or for a location that is not shared",
             "content": {
               "application/json": {
                 "schema": {
@@ -8968,6 +8978,16 @@
               "format": "int32",
               "minimum": 0
             }
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "description": "Another location's company id: search its displayed stones, look\nonly. Omitted: the caller's own company.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
           }
         ],
         "responses": {
@@ -9038,7 +9058,7 @@
           "stones"
         ],
         "summary": "Get the stone settings",
-        "description": "What the company's Stones page shows first: `stones` (one card per stone,\nthe default) or `materials` (one card per material, then its stones).",
+        "description": "What the company's Stones page shows first: `stones` (one card per stone,\nthe default) or `materials` (one card per material, then its stones), and\nwhether the staff can look at the other locations of the business (with\nthose locations).",
         "operationId": "get_stone_settings",
         "responses": {
           "200": {
@@ -9046,7 +9066,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/StoneSettings"
+                  "$ref": "#/components/schemas/StaffStoneSettings"
                 }
               }
             }
@@ -9099,7 +9119,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/StoneSettings"
+                "$ref": "#/components/schemas/SaveStoneSettings"
               }
             }
           },
@@ -9243,6 +9263,16 @@
             "schema": {
               "type": "boolean"
             }
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "description": "Another location's company id: its displayed stones, look only (see\n`GET /v1/stones/settings`). Omitted: the caller's own company.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
           }
         ],
         "responses": {
@@ -9321,6 +9351,16 @@
             "in": "path",
             "description": "Material id",
             "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "description": "Another location's company id (`GET /v1/stones/settings` lists them).\nOmitted or the caller's own company: their own stones.",
+            "required": false,
             "schema": {
               "type": "integer",
               "format": "int32"
@@ -9481,6 +9521,16 @@
               "type": "integer",
               "format": "int32"
             }
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "description": "Another location's company id (`GET /v1/stones/settings` lists them).\nOmitted or the caller's own company: their own stones.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
           }
         ],
         "responses": {
@@ -9505,7 +9555,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an employee or admin",
+            "description": "Caller is not an employee or admin, or the location is not shared",
             "content": {
               "application/json": {
                 "schema": {
@@ -9739,6 +9789,16 @@
               "type": "integer",
               "format": "int32"
             }
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "description": "Another location's company id (`GET /v1/stones/settings` lists them).\nOmitted or the caller's own company: their own stones.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
           }
         ],
         "responses": {
@@ -9766,7 +9826,7 @@
             }
           },
           "403": {
-            "description": "Caller is not an employee, admin or of the shop",
+            "description": "Caller is not an employee, admin or of the shop, or the location is not shared",
             "content": {
               "application/json": {
                 "schema": {
@@ -20267,7 +20327,7 @@
           "deals"
         ],
         "summary": "Change a pipeline",
-        "description": "Shows or hides a pipeline, or makes it the company's default.",
+        "description": "Renames a pipeline, shows or hides it, or makes it the company's default.",
         "operationId": "update_deal_pipeline",
         "parameters": [
           {
@@ -20296,7 +20356,7 @@
             "description": "Changed"
           },
           "400": {
-            "description": "`is_default: false`",
+            "description": "An empty name",
             "content": {
               "application/json": {
                 "schema": {
@@ -20567,6 +20627,96 @@
         "responses": {
           "204": {
             "description": "Deleted"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such stage of the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "deals"
+        ],
+        "summary": "Rename a stage",
+        "description": "Renames a stage of one of the company's pipelines. Deals stay in it.",
+        "operationId": "rename_deal_stage",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "List id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NameInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Renamed"
+          },
+          "400": {
+            "description": "Empty name, or another list of the group has it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "401": {
             "description": "No valid session",
@@ -23445,6 +23595,174 @@
         ]
       }
     },
+    "/v1/projects/event-links/{event_id}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "The project an event is for, and what it can be linked to",
+        "operationId": "get_event_project_link",
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The link and the choices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventProjectLink"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Link an event, and the customer's other events picked, to a project",
+        "description": "Null unlinks them. The events must be this event's customer's; each one\nleaves the part of its old project.",
+        "operationId": "set_event_project_link",
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventProjectLinkInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "An event that is not the customer's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's position can't change projects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event, or project the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/projects/part-types": {
       "get": {
         "tags": [
@@ -25058,6 +25376,108 @@
           },
           "404": {
             "description": "No such project the caller may see, or item in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/steps/{step_id}/note": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Write a step's note on a project",
+        "description": "Optional, like the step's files (owner, 2026-11-18). Anyone who can see\nthe project, while it is not archived or cancelled. An empty note removes it.",
+        "operationId": "set_project_step_note",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepNoteInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "A note over 5,000 characters, or a part not on the project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see, or step in the company",
             "content": {
               "application/json": {
                 "schema": {
@@ -94939,6 +95359,60 @@
           }
         }
       },
+      "EventProjectLink": {
+        "type": "object",
+        "description": "`GET /v1/projects/event-links/{event_id}`.",
+        "required": [
+          "projects",
+          "events"
+        ],
+        "properties": {
+          "project_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The project the event is linked to."
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkProject"
+            },
+            "description": "The customer's open projects the caller can see."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkEvent"
+            },
+            "description": "The customer's events (this one included), soonest first; only this\none when the event has no customer."
+          }
+        }
+      },
+      "EventProjectLinkInput": {
+        "type": "object",
+        "description": "`PUT /v1/projects/event-links/{event_id}`.",
+        "properties": {
+          "project_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The project; null unlinks."
+          },
+          "event_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "The customer's other events to link (or unlink) with it."
+          }
+        }
+      },
       "EventSale": {
         "type": "object",
         "description": "`GET /v1/events/{id}/sale`.",
@@ -97725,6 +98199,40 @@
           }
         }
       },
+      "InboxGroup": {
+        "type": "object",
+        "description": "A live pipeline (group) of the company, for the website's Leads page.",
+        "required": [
+          "id",
+          "is_default",
+          "lists"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The group id (`PUT /v1/customers/{id}/sales-rep` takes it as `group_id`)."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its name."
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "The pipeline new leads go to (\"Assign leads here\")."
+          },
+          "lists": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InboxList"
+            },
+            "description": "Its live lists (stages) in board order; `PUT /v1/customers/{id}/sales-rep`\ntakes one as `list_id`."
+          }
+        }
+      },
       "InboxLead": {
         "type": "object",
         "description": "A lead of the inbox.",
@@ -97789,6 +98297,62 @@
             ],
             "format": "int64",
             "description": "Its newest live deal, the one the app opens."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The customer's primary email (null when none)."
+          },
+          "referral_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How they found the company (\"Google\", \"Facebook\"…; null when unknown)."
+          },
+          "your_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the customer wrote in the lead form (null when nothing)."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The customer's address (null when none)."
+          },
+          "customer_temperature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`hot`, `medium` or `cold`; null when not rated."
+          }
+        }
+      },
+      "InboxList": {
+        "type": "object",
+        "description": "A live list (stage) of a pipeline, for the website's Leads page.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The list id."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its name."
           }
         }
       },
@@ -99657,7 +100221,8 @@
           "unassigned",
           "assigned",
           "reps",
-          "team"
+          "team",
+          "groups"
         ],
         "properties": {
           "is_manager": {
@@ -99691,6 +100256,13 @@
               "$ref": "#/components/schemas/InboxRep"
             },
             "description": "Every sales rep of the company with the leads given to them this\nmonth (since the 1st, server time), sorted by name. Filled in for\neveryone, a sales rep too, so they can compare their count with the\nteam's; the same numbers as `reps`."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InboxGroup"
+            },
+            "description": "The company's live pipelines, oldest first (managers only; empty for\na sales rep). When none is the default, the Leads page asks which\nlist a lead goes to."
           }
         }
       },
@@ -100343,6 +100915,47 @@
           }
         }
       },
+      "LinkEvent": {
+        "type": "object",
+        "description": "One of the customer's events.",
+        "required": [
+          "id",
+          "title",
+          "all_day",
+          "calendar_name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": {
+            "type": "string"
+          },
+          "start_date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "UTC, `YYYY-MM-DDTHH:MM:SSZ`; null for an unscheduled event."
+          },
+          "all_day": {
+            "type": "boolean"
+          },
+          "calendar_name": {
+            "type": "string",
+            "description": "Its calendar's name."
+          },
+          "project_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The project it is linked to."
+          }
+        }
+      },
       "LinkInput": {
         "type": "object",
         "description": "Body of the link routes.",
@@ -100357,6 +100970,28 @@
           }
         },
         "additionalProperties": false
+      },
+      "LinkProject": {
+        "type": "object",
+        "description": "A project the event can be linked to.",
+        "required": [
+          "id",
+          "title",
+          "stage_code"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "title": {
+            "type": "string"
+          },
+          "stage_code": {
+            "type": "string",
+            "description": "Its stage code (`new`, `templated`, …)."
+          }
+        }
       },
       "LinkableSale": {
         "type": "object",
@@ -102300,6 +102935,22 @@
               "$ref": "#/components/schemas/NewProjectFile"
             },
             "description": "Its files."
+          },
+          "step_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Added on this step of the project (they still show with its files)."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part of that step, on a project with parts; left out: its least\nfinished part."
           }
         }
       },
@@ -106371,6 +107022,13 @@
         "type": "object",
         "description": "Body of `PATCH /v1/deal-pipelines/{id}`.",
         "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New name (1–255 characters)."
+          },
           "is_displayed": {
             "type": [
               "boolean",
@@ -106383,7 +107041,7 @@
               "boolean",
               "null"
             ],
-            "description": "`true` makes it the company's default (only `true` is accepted)."
+            "description": "`true` makes it the company's default (\"Assign leads here\");\n`false` turns that off, leaving the company with no default: its\nsales managers then pick the pipeline of each lead on the website's\nLeads page (Telegram and phone assignments use the oldest pipeline)."
           }
         },
         "additionalProperties": false
@@ -109698,6 +110356,22 @@
           "created_at": {
             "type": "string",
             "description": "When it was made, UTC ISO."
+          },
+          "step_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The step it was added on; null for one added to the project itself."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part of that step, on a project with parts."
           }
         }
       },
@@ -110280,6 +110954,7 @@
           "user_id",
           "step_owners",
           "step_items_done",
+          "step_notes",
           "lists",
           "questions",
           "involved"
@@ -110423,6 +111098,13 @@
               "$ref": "#/components/schemas/StepItemDone"
             },
             "description": "Ticks of the steps' own to-do lists on this project."
+          },
+          "step_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepNote"
+            },
+            "description": "The steps' notes on this project."
           },
           "lists": {
             "type": "array",
@@ -115889,6 +116571,22 @@
             ],
             "format": "int32",
             "description": "The new sales rep (user id), or null to unassign."
+          },
+          "group_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The pipeline (group) whose first stage a new deal starts in; omit\nfor the default pipeline. Used only when the customer has no open\ndeal yet (the website's Leads page)."
+          },
+          "list_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The list (stage) a new deal starts in, a live list of one of the\ncompany's pipelines; wins over `group_id`. Omit for the pipeline's\nfirst list. Used only when the customer has no open deal yet."
           }
         },
         "additionalProperties": false
@@ -116019,6 +116717,27 @@
               "format": "int32"
             },
             "description": "Every template of the picker, in the new order."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SaveStoneSettings": {
+        "type": "object",
+        "description": "`PUT /v1/stones/settings`.",
+        "required": [
+          "stone_view"
+        ],
+        "properties": {
+          "stone_view": {
+            "$ref": "#/components/schemas/StoneView",
+            "description": "`stones` (default) or `materials`."
+          },
+          "show_all_locations": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Show all locations' inventory to the company's staff. Omitted: kept."
           }
         },
         "additionalProperties": false
@@ -119324,6 +120043,32 @@
         },
         "additionalProperties": false
       },
+      "StaffStoneSettings": {
+        "type": "object",
+        "description": "`GET /v1/stones/settings`.",
+        "required": [
+          "stone_view",
+          "show_all_locations",
+          "locations"
+        ],
+        "properties": {
+          "stone_view": {
+            "$ref": "#/components/schemas/StoneView",
+            "description": "`stones` (default) or `materials`."
+          },
+          "show_all_locations": {
+            "type": "boolean",
+            "description": "The company's staff can pick another location on the Stones page\n(look only)."
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoneLocation"
+            },
+            "description": "Every location of the company's business, its own included, by name;\nempty when it has no other locations."
+          }
+        }
+      },
       "Stage": {
         "type": "string",
         "description": "Where a project is: the board's four lists, and Paid & Completed.",
@@ -119887,6 +120632,66 @@
           "label": {
             "type": "string",
             "description": "1 to 200 characters."
+          }
+        }
+      },
+      "StepNote": {
+        "type": "object",
+        "description": "A step's note on a project (optional, like its files).",
+        "required": [
+          "step_id",
+          "note",
+          "updated_at"
+        ],
+        "properties": {
+          "step_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The step."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part; null on a project without parts."
+          },
+          "note": {
+            "type": "string",
+            "description": "The text."
+          },
+          "updated_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who wrote it last."
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "When, UTC ISO."
+          }
+        }
+      },
+      "StepNoteInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/projects/{id}/steps/{step_id}/note`.",
+        "required": [
+          "note"
+        ],
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "Up to 5,000 characters; empty removes the note."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part, on a project with parts; left out: its least finished part."
           }
         }
       },
@@ -120560,6 +121365,25 @@
           }
         }
       },
+      "StoneLocation": {
+        "type": "object",
+        "description": "A location of the caller's business.",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Company id; pass it as `location`."
+          },
+          "name": {
+            "type": "string",
+            "description": "Company name, e.g. \"GMQ TOPS Mobile\"."
+          }
+        }
+      },
       "StoneMaterial": {
         "type": "object",
         "description": "A material with the slab counts of its stones.",
@@ -120648,7 +121472,7 @@
       },
       "StoneSettings": {
         "type": "object",
-        "description": "`GET` and `PUT /v1/stones/settings`.",
+        "description": "The company's stone view (`GET /v1/public/companies/{id}/stone-view`).",
         "required": [
           "stone_view"
         ],

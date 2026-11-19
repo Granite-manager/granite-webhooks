@@ -34,6 +34,9 @@ pub struct ListStonesQuery {
     /// false). Admins only (403 otherwise). Default `false`.
     #[serde(default)]
     pub include_hidden: bool,
+    /// Another location's company id: its displayed stones, look only (see
+    /// `GET /v1/stones/settings`). Omitted: the caller's own company.
+    pub location: Option<i32>,
 }
 
 /// A stone (a color/material the company sells) with its slab inventory.
@@ -282,6 +285,9 @@ pub struct SearchStonesQuery {
     pub include_hidden: bool,
     /// Most stones to return, 1 to 50. Default 25.
     pub limit: Option<u32>,
+    /// Another location's company id: search its displayed stones, look
+    /// only. Omitted: the caller's own company.
+    pub location: Option<i32>,
 }
 
 /// Body of `POST /v1/stones/quick`.

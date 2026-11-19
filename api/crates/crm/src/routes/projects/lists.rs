@@ -9,8 +9,8 @@
 
 use super::access::{Stage, Viewer};
 use super::schemas::{
-    ItemDone, ListItem, Project, ProjectList, ProjectListInput, StepItemDone, StepOwner,
-    StepOwnerInput, StepSetup,
+    ItemDone, ListItem, Project, ProjectList, ProjectListInput, StepItemDone, StepNote,
+    StepNoteInput, StepOwner, StepOwnerInput, StepSetup,
 };
 use super::service::visible_project;
 use super::tasks::{clip, list_items};
@@ -507,6 +507,104 @@ pub(super) async fn step_items_done(
     .bind(project_id)
     .fetch_all(&mut *conn)
     .await
+}
+
+/// The steps' notes on a project.
+pub(super) async fn step_notes(
+    conn: &mut MySqlConnection,
+    project_id: i32,
+) -> sqlx::Result<Vec<StepNote>> {
+    sqlx::query_as(
+        "SELECT n.step_id, NULLIF(n.part_id, 0) AS part_id, n.note,
+                COALESCE(NULLIF(TRIM(u.name), ''), u.email) AS updated_by,
+                DATE_FORMAT(n.updated_at, '%Y-%m-%dT%H:%i:%sZ') AS updated_at
+           FROM project_step_notes n LEFT JOIN users u ON u.id = n.updated_by
+          WHERE n.project_id = ?",
+    )
+    .bind(project_id)
+    .fetch_all(&mut *conn)
+    .await
+}
+
+/// Write a step's note on a project
+///
+/// Optional, like the step's files (owner, 2026-11-18). Anyone who can see
+/// the project, while it is not archived or cancelled. An empty note removes it.
+#[crate::openapi::path(
+    put,
+    path = "/v1/projects/{id}/steps/{step_id}/note",
+    operation_id = "set_project_step_note",
+    tag = "projects",
+    params(
+        ("id" = i32, Path, description = "Project id"),
+        ("step_id" = i32, Path, description = "Step id"),
+    ),
+    request_body = StepNoteInput,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "A note over 5,000 characters, or a part not on the project", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 404, description = "No such project the caller may see, or step in the company", body = ErrorBody),
+        (status = 409, description = "The project is archived or cancelled", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_step_note(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    Path((id, step_id)): Path<(i32, i32)>,
+    JsonBody(input): JsonBody<StepNoteInput>,
+) -> ApiResult<StatusCode> {
+    let note = input.note.trim();
+    if note.chars().count() > 5000 {
+        return Err(ApiError::BadRequest(
+            "A step's note can be 5,000 characters at most".into(),
+        ));
+    }
+    let viewer = Viewer::load(&state.pool, &user).await?;
+    let mut conn = state.pool.acquire().await?;
+    let project = visible_project(&mut conn, &viewer, id).await?;
+    if project.archived_at.is_some()
+        || project.cancelled_at.is_some()
+        || project.sale_cancelled_at.is_some()
+    {
+        return Err(ApiError::Conflict(
+            "This project is archived or cancelled, so its steps can't change.".into(),
+        ));
+    }
+    super::process::require_step(&mut conn, viewer.company_id, step_id).await?;
+    let parts = super::parts::parts_of(&mut conn, viewer.company_id, &[id]).await?;
+    let part = if parts.is_empty() {
+        0
+    } else {
+        super::parts::target(&parts, input.part_id)?.id
+    };
+    if note.is_empty() {
+        sqlx::query(
+            "DELETE FROM project_step_notes WHERE project_id = ? AND step_id = ? AND part_id = ?",
+        )
+        .bind(id)
+        .bind(step_id)
+        .bind(part)
+        .execute(&mut *conn)
+        .await?;
+    } else {
+        sqlx::query(
+            "INSERT INTO project_step_notes (project_id, step_id, part_id, note, updated_by, updated_at)
+             VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(3))
+             ON DUPLICATE KEY UPDATE note = VALUES(note), updated_by = VALUES(updated_by),
+                                     updated_at = VALUES(updated_at)",
+        )
+        .bind(id)
+        .bind(step_id)
+        .bind(part)
+        .bind(note)
+        .bind(user.id)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The people involved in a project: its sales rep and owner, the people on

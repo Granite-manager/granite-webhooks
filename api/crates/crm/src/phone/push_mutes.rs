@@ -85,7 +85,7 @@ pub fn setting_of_notification(notification_type: &str) -> Option<&'static str> 
         "project_task_assigned" => "task_assigned",
         "project_task_reminder" => "task_due",
         "project_task_done" => "task_done",
-        "project_step_done" => "step_done",
+        "project_step_done" | "project_step_next" => "step_done",
         "project_step_assigned" => "task_assigned",
         "project_question" | "project_question_reply" => "project_question",
         "sales_order" => "sales_order",

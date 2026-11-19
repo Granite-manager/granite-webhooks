@@ -1,3 +1,4 @@
+use super::locations::{LocationQuery, inventory_company};
 use super::queries::{
     company_has_stone_type, find_stone, list_stone_slabs, list_stones, quick_add_stone,
     search_stones,
@@ -10,7 +11,7 @@ use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::{JsonBody, MultiQuery};
 use crate::state::AppState;
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 
 /// List the company's stones with slab availability
@@ -32,7 +33,7 @@ use axum::http::StatusCode;
         (status = 200, description = "Stones sorted by name", body = Vec<Stone>),
         (status = 400, description = "A filter has the wrong type, e.g. `supplier_id=abc`", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not an employee or shop staff, or asks for hidden stones without being an admin", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or shop staff, asks for hidden stones without being an admin, or for a location that is not shared", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
     security(("session_cookie" = []))
@@ -40,14 +41,16 @@ use axum::http::StatusCode;
 pub async fn list(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
-    MultiQuery(query): MultiQuery<ListStonesQuery>,
+    MultiQuery(mut query): MultiQuery<ListStonesQuery>,
 ) -> ApiResult<Json<Vec<Stone>>> {
     if query.include_hidden && !(user.is_admin || user.is_superuser) {
         return Err(ApiError::Forbidden);
     }
-    Ok(Json(
-        list_stones(&state.pool, user.company_id, &query).await?,
-    ))
+    let company_id = inventory_company(&state.pool, user.company_id, query.location).await?;
+    if company_id != user.company_id {
+        query.include_hidden = false;
+    }
+    Ok(Json(list_stones(&state.pool, company_id, &query).await?))
 }
 
 /// Get one stone
@@ -61,11 +64,11 @@ pub async fn list(
     path = "/v1/stones/{id}",
     operation_id = "get_stone",
     tag = "stones",
-    params(("id" = i32, Path, description = "Stone id")),
+    params(("id" = i32, Path, description = "Stone id"), LocationQuery),
     responses(
         (status = 200, description = "The stone", body = StoneDetail),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee or admin, or the location is not shared", body = ErrorBody),
         (status = 404, description = "No such stone in the caller's company", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
@@ -75,9 +78,13 @@ pub async fn get(
     State(state): State<AppState>,
     EmployeeUser(user): EmployeeUser,
     Path(id): Path<i32>,
+    Query(location): Query<LocationQuery>,
 ) -> ApiResult<Json<StoneDetail>> {
-    find_stone(&state.pool, user.company_id, id)
+    let company_id = inventory_company(&state.pool, user.company_id, location.location).await?;
+    find_stone(&state.pool, company_id, id)
         .await?
+        // Another location shows only its displayed stones.
+        .filter(|stone| company_id == user.company_id || stone.is_display)
         .map(Json)
         .ok_or(ApiError::NotFound)
 }
@@ -96,11 +103,11 @@ pub async fn get(
     path = "/v1/stones/{id}/slabs",
     operation_id = "list_stone_slabs",
     tag = "stones",
-    params(("id" = i32, Path, description = "Stone id")),
+    params(("id" = i32, Path, description = "Stone id"), LocationQuery),
     responses(
         (status = 200, description = "Slabs by id", body = Vec<StoneSlab>),
         (status = 401, description = "No valid session", body = ErrorBody),
-        (status = 403, description = "Caller is not an employee, admin or of the shop", body = ErrorBody),
+        (status = 403, description = "Caller is not an employee, admin or of the shop, or the location is not shared", body = ErrorBody),
         (status = 404, description = "No such stone in the caller's company", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
     ),
@@ -110,16 +117,16 @@ pub async fn slabs(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
     Path(id): Path<i32>,
+    Query(location): Query<LocationQuery>,
 ) -> ApiResult<Json<Vec<StoneSlab>>> {
-    if find_stone(&state.pool, user.company_id, id)
+    let company_id = inventory_company(&state.pool, user.company_id, location.location).await?;
+    let shown = find_stone(&state.pool, company_id, id)
         .await?
-        .is_none()
-    {
+        .is_some_and(|stone| company_id == user.company_id || stone.is_display);
+    if !shown {
         return Err(ApiError::NotFound);
     }
-    Ok(Json(
-        list_stone_slabs(&state.pool, user.company_id, id).await?,
-    ))
+    Ok(Json(list_stone_slabs(&state.pool, company_id, id).await?))
 }
 
 /// Search the company's stones by name
@@ -147,11 +154,13 @@ pub async fn slabs(
 pub async fn search(
     State(state): State<AppState>,
     ShopOrEmployeeUser(user): ShopOrEmployeeUser,
-    MultiQuery(query): MultiQuery<SearchStonesQuery>,
+    MultiQuery(mut query): MultiQuery<SearchStonesQuery>,
 ) -> ApiResult<Json<Vec<Stone>>> {
-    Ok(Json(
-        search_stones(&state.pool, user.company_id, &query).await?,
-    ))
+    let company_id = inventory_company(&state.pool, user.company_id, query.location).await?;
+    if company_id != user.company_id {
+        query.include_hidden = false;
+    }
+    Ok(Json(search_stones(&state.pool, company_id, &query).await?))
 }
 
 /// Add a stone with its slabs in one step

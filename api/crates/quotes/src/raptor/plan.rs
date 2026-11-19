@@ -30,6 +30,14 @@ pub struct Source<'a> {
     pub project_notes: &'a [String],
     /// The price list's Material Rounding is "up".
     pub sq_ft_up: bool,
+    /// The project's title ("Northpoint Management - unit 3046"); the office
+    /// names the job by it when it is more than the customer's name.
+    pub project_title: Option<&'a str>,
+    /// The titles of the project's events: "Deborah Lashbrook - Pick up" is a pick-up.
+    pub event_titles: &'a [String],
+    /// The price list's edge names, its default ("Flat") first. An edge the
+    /// list does not have ("55") is that default, as the office writes it.
+    pub edge_names: &'a [String],
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,8 +83,13 @@ static FULL_HEIGHT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)full\s*-?\s*height|\bfhbs\b|\bfh\b").expect("regex"));
 static PICK_UP: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bpick\s*-?\s*up\b|\bno\s+install").expect("regex"));
-static LAYOUT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\blayout\s*[:\-–]?\s*(yes|no)\b").expect("regex"));
+// "Layout yes", "Layout: no", "Layout - yes", "L/O YES".
+static LAYOUT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:\blayout|\bl\s*/\s*o)\s*[:\-–]?\s*(yes|no)\b").expect("regex")
+});
+/// A name that starts with a builder's short name ("IHDC Kim Keyser") stays as it is.
+static ACRONYM_FIRST: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Z]{3,}\s+\S*[a-z]").expect("regex"));
 static ZIP: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(\d{5})(?:-\d{4})?\s*$").expect("regex"));
 static TRAILING_STATE: LazyLock<Regex> =
@@ -211,6 +224,50 @@ pub fn layout_from_notes(notes: &[String]) -> Option<&'static str> {
         })
 }
 
+fn words(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// The project's title when it says more than the customer's name ("Brad
+/// Wilson", "Brad Wilson project" say nothing).
+fn own_title<'a>(title: Option<&'a str>, customer: &str) -> Option<&'a str> {
+    let title = title.map(str::trim).filter(|t| !t.is_empty())?;
+    let (t, c) = (words(title), words(customer));
+    (t != c && t != format!("{c} project")).then_some(title)
+}
+
+/// `title` without the customer's name in front ("Drew Fairchild Shower" →
+/// "Shower"); `None` when it does not start with it.
+fn after_name<'a>(title: &'a str, customer: &str) -> Option<&'a str> {
+    let name: Vec<&str> = customer.split_whitespace().collect();
+    let mut rest = title.trim_start();
+    for word in &name {
+        let next = rest.get(..word.len())?;
+        let after = &rest[word.len()..];
+        if !next.eq_ignore_ascii_case(word) || after.starts_with(char::is_alphanumeric) {
+            return None;
+        }
+        rest = after.trim_start();
+    }
+    (!name.is_empty()).then_some(rest)
+}
+
+/// The price list's spelling of `edge`; its default edge when `edge` has no
+/// letters ("55", nothing); else `edge` as the seller typed it.
+fn known_edge(edge: &str, names: &[String]) -> String {
+    let edge = edge.trim();
+    if let Some(name) = names.iter().find(|n| n.trim().eq_ignore_ascii_case(edge)) {
+        return name.trim().to_string();
+    }
+    match names.first() {
+        Some(default) if !edge.chars().any(char::is_alphabetic) => default.trim().to_string(),
+        _ => edge.to_string(),
+    }
+}
+
 /// A number as JavaScript prints it: 4 → "4", 19.2 → "19.2".
 fn num(v: f64) -> String {
     let r = round1(v);
@@ -304,12 +361,32 @@ pub fn plan(src: &Source) -> Plan {
             .items
             .iter()
             .any(|i| mentions(i, &PICK_UP) && !mentions(i, &DISCOUNT))
-        || src.project_notes.iter().any(|n| PICK_UP.is_match(n));
+        || src.project_notes.iter().any(|n| PICK_UP.is_match(n))
+        // "Deborah Lashbrook - Pick up"; a "Cabinet Pick up" is no countertop's.
+        || src
+            .event_titles
+            .iter()
+            .any(|t| PICK_UP.is_match(t) && !CABINET.is_match(t));
 
     let (full_height, main): (Vec<&Area>, Vec<&Area>) = doc
         .areas
         .iter()
         .partition(|a| FULL_HEIGHT.is_match(&a.name));
+    // One unnamed area ("Area #1") is the kitchen, as the office writes it
+    // ("Kitchen(59) Vanity(31.6)"); several keep their own names.
+    let one_generic = main
+        .iter()
+        .filter(|a| GENERIC_AREA.is_match(&a.name))
+        .count()
+        == 1;
+    let room_of = |a: &Area| -> String {
+        let name = a.name.trim();
+        if one_generic && GENERIC_AREA.is_match(name) {
+            "Kitchen".into()
+        } else {
+            name.to_string()
+        }
+    };
     let takeoffs: HashMap<&str, RoundedTakeoff> = doc
         .areas
         .iter()
@@ -385,9 +462,9 @@ pub fn plan(src: &Source) -> Plan {
 
     // One area: its sq ft; several: each, as "63.5(Area #1) 9.5(Area #2)".
     let sq_ft_text = |areas: &[&Area]| -> String {
-        let parts: Vec<(f64, &str)> = areas
+        let parts: Vec<(f64, String)> = areas
             .iter()
-            .map(|a| (sq_ft(&[*a]), a.name.trim()))
+            .map(|a| (sq_ft(&[*a]), room_of(a)))
             .filter(|(v, _)| *v > 0.0)
             .collect();
         if parts.len() > 1 {
@@ -461,11 +538,10 @@ pub fn plan(src: &Source) -> Plan {
             let m = Material {
                 brand: pick.product.trim().to_string(),
                 color: pick.color.trim().to_string(),
-                edge: pick
-                    .edges
-                    .first()
-                    .map(|e| e.trim().to_string())
-                    .unwrap_or_default(),
+                edge: known_edge(
+                    pick.edges.first().map_or("", String::as_str),
+                    src.edge_names,
+                ),
             };
             if !out.contains(&m) {
                 out.push(m);
@@ -476,35 +552,44 @@ pub fn plan(src: &Source) -> Plan {
     // Each sink once with its count ("CP x2"); the room after it when the
     // sinks are in several named rooms ("CP (Kitchen)"), as the office writes.
     let cutouts_for = |areas: &[&Area]| -> Vec<Cutout> {
-        let mut found: Vec<(String, &str, i64)> = Vec::new();
+        let mut found: Vec<(String, String, i64)> = Vec::new();
         for counter in &doc.counters {
             let Some(area) = areas.iter().find(|a| a.id == counter.area_id) else {
                 continue;
             };
-            let room = area.name.trim();
-            let room = if GENERIC_AREA.is_match(room) {
-                ""
+            let room = room_of(area);
+            let room = if GENERIC_AREA.is_match(&room) {
+                String::new()
             } else {
                 room
             };
-            for cut in counter.runs.iter().flat_map(|r| &r.cutouts).filter(|c| {
-                c.kind == CutoutKind::Sink
-                    || (c.kind == CutoutKind::Other
-                        && c.sink_model
-                            .as_deref()
-                            .is_some_and(|m| !m.trim().is_empty()))
-            }) {
-                let model = sink_model(cut.sink_model.as_deref(), cut.sink_type, cut.width);
+            for cut in counter.runs.iter().flat_map(|r| &r.cutouts) {
+                let given = cut.sink_model.as_deref().filter(|m| !m.trim().is_empty());
+                // "Customer Provides a sink - custom cutout" as an other cutout.
+                let customer_sink = cut.kind == CutoutKind::Other
+                    && given.is_none()
+                    && CUSTOMER_SINK.is_match(&cut.name);
+                if !(cut.kind == CutoutKind::Sink
+                    || (cut.kind == CutoutKind::Other && given.is_some())
+                    || customer_sink)
+                {
+                    continue;
+                }
+                let model = if customer_sink {
+                    "CP".to_string()
+                } else {
+                    sink_model(given, cut.sink_type, cut.width)
+                };
                 let count = area.quantity.max(1);
                 match found.iter_mut().find(|(m, r, _)| *m == model && *r == room) {
                     Some(f) => f.2 += count,
-                    None => found.push((model, room, count)),
+                    None => found.push((model, room.clone(), count)),
                 }
             }
         }
         let mut rooms: Vec<&str> = found
             .iter()
-            .map(|f| f.1)
+            .map(|f| f.1.as_str())
             .filter(|r| !r.is_empty())
             .collect();
         rooms.sort_unstable();
@@ -526,21 +611,41 @@ pub fn plan(src: &Source) -> Plan {
     };
 
     // A builder's job is "Company (street)", as the office names them; a
-    // person's is "Last First Room".
+    // person's is "Last First Room". A project title that says more than the
+    // customer's name names the job instead: a builder's as it is
+    // ("Northpoint Management - unit 3046"), a person's "Last First" first
+    // ("Drew Fairchild Shower" → "Fairchild Drew Shower").
     let address = split_address(src.address);
     let business = src.company_name.map(str::trim).filter(|c| !c.is_empty());
-    let base = match business {
-        Some(company) if !address.street.is_empty() => format!("{company} ({})", address.street),
-        Some(company) => company.to_string(),
-        None if BUSINESS.is_match(src.customer_name) => src.customer_name.trim().to_string(),
-        None => last_name_first(src.customer_name),
+    let named_as_is =
+        BUSINESS.is_match(src.customer_name) || ACRONYM_FIRST.is_match(src.customer_name.trim());
+    let titled: Option<String> = own_title(src.project_title, src.customer_name).map(|title| {
+        match after_name(title, src.customer_name) {
+            Some(rest) if business.is_none() && !named_as_is => {
+                format!("{} {rest}", last_name_first(src.customer_name))
+                    .trim()
+                    .to_string()
+            }
+            _ => title.to_string(),
+        }
+    });
+    let base = match (&titled, business) {
+        (Some(title), _) => title.clone(),
+        (None, Some(company)) if !address.street.is_empty() => {
+            format!("{company} ({})", address.street)
+        }
+        (None, Some(company)) => company.to_string(),
+        (None, None) if named_as_is => src.customer_name.trim().to_string(),
+        (None, None) => last_name_first(src.customer_name),
     };
     let job = |room: &str, areas: &[&Area]| {
         let job_sq_ft = sq_ft(areas);
-        let room = if business.is_some() && room == "Kitchen" {
-            ""
-        } else {
-            room
+        let room = match &titled {
+            // The title names the room; only a pick-up or the FHBS is added.
+            Some(title) if room == "Pick up" && PICK_UP.is_match(title) => "",
+            Some(_) if room != "Pick up" && room != "FHBS" => "",
+            _ if business.is_some() && room == "Kitchen" => "",
+            _ => room,
         };
         Job {
             name: format!("{base} {room}").trim().to_string(),
@@ -553,11 +658,13 @@ pub fn plan(src: &Source) -> Plan {
     let mut jobs = Vec::new();
     if !main.is_empty() || full_height.is_empty() {
         // The rooms the areas name ("Vanity", "Kitchen/Master bath"); else Kitchen.
-        let rooms: Vec<&str> = main
-            .iter()
-            .map(|a| a.name.trim())
-            .filter(|n| !n.is_empty() && !GENERIC_AREA.is_match(n))
-            .collect();
+        let mut rooms: Vec<String> = Vec::new();
+        for a in &main {
+            let room = room_of(a);
+            if !room.is_empty() && !GENERIC_AREA.is_match(&room) && !rooms.contains(&room) {
+                rooms.push(room);
+            }
+        }
         let room = if pick_up {
             "Pick up".to_string()
         } else if rooms.is_empty() {
@@ -627,6 +734,9 @@ mod tests {
             option_index: 0,
             project_notes: notes,
             sq_ft_up: false,
+            project_title: None,
+            event_titles: &[],
+            edge_names: &[],
         })
     }
 
@@ -818,6 +928,9 @@ mod tests {
                 option_index: 0,
                 project_notes: &[],
                 sq_ft_up: false,
+                project_title: None,
+                event_titles: &[],
+                edge_names: &[],
             })
             .jobs
             .remove(0)
@@ -851,6 +964,9 @@ mod tests {
             option_index: 0,
             project_notes: &[],
             sq_ft_up: false,
+            project_title: None,
+            event_titles: &[],
+            edge_names: &[],
         });
         assert_eq!(p.jobs[0].name, "GTP Holdings Kitchen");
         // No installation is a pick-up; a tear out the customer does is not ours.
@@ -984,6 +1100,235 @@ mod tests {
                 model: "CP x2".into(),
                 quantity: 2
             }]
+        );
+    }
+
+    /// Like `run`, with the project's title, event titles and price list edges.
+    fn titled(
+        d: &QuoteDoc,
+        customer: &str,
+        company: Option<&str>,
+        title: &str,
+        events: &[String],
+    ) -> Plan {
+        let edges = ["Flat".to_string(), "Eased".to_string()];
+        plan(&Source {
+            customer_name: customer,
+            company_name: company,
+            phone: None,
+            address: Some("1 Main St, Indianapolis, IN 46237"),
+            salesperson: Some("Liza"),
+            doc: d,
+            option_index: 0,
+            project_notes: &[],
+            sq_ft_up: false,
+            project_title: Some(title),
+            event_titles: events,
+            edge_names: &edges,
+        })
+    }
+
+    #[test]
+    fn layout_as_the_office_writes_it() {
+        assert_eq!(layout_from_notes(&["L/O YES".into()]), Some("Yes"));
+        assert_eq!(layout_from_notes(&["Layout - no".into()]), Some("no"));
+        assert_eq!(layout_from_notes(&["Layout: Yes".into()]), Some("Yes"));
+    }
+
+    #[test]
+    fn a_pick_up_event_makes_a_pick_up() {
+        let d = doc(&json!({"counters": [counter("c1", "a1", 96.0, 0.0, &json!([]))]}));
+        let p = titled(
+            &d,
+            "Deborah Lashbrook",
+            None,
+            "Deborah Lashbrook",
+            &["Deborah Lashbrook - Pick up".into()],
+        );
+        assert_eq!(p.jobs[0].name, "Lashbrook Deborah Pick up");
+        assert!(
+            p.jobs[0].notes.starts_with("10-year sealer:"),
+            "{}",
+            p.jobs[0].notes
+        );
+        let p = titled(
+            &d,
+            "April Deloney",
+            None,
+            "April Deloney",
+            &["Cabinet Pick up - April Deloney".into()],
+        );
+        assert_eq!(p.jobs[0].name, "Deloney April Kitchen");
+    }
+
+    #[test]
+    fn an_other_cutout_the_customer_provides_is_cp() {
+        let d = doc(&json!({"counters": [counter("c1", "a1", 96.0, 4.0, &json!([
+            {"id": "o1", "kind": "other", "width": 30, "depth": 18, "sinkModel": null,
+             "name": "Customer Provides a sink - custom cutout"},
+            {"id": "o2", "kind": "other", "width": 4, "depth": 4, "name": "Outlet"},
+        ]))]}));
+        let job = run(&d, &[], "Liza").jobs.remove(0);
+        assert_eq!(
+            job.cutouts,
+            vec![Cutout {
+                model: "CP".into(),
+                quantity: 1
+            }]
+        );
+    }
+
+    #[test]
+    fn an_edge_the_price_list_has_not_is_its_default() {
+        let d = doc(&json!({
+            "colorOptions": [{"id": "option-1", "byArea": {"a1": {"product": "Quartz", "color": "Frost White", "edges": ["55"]}}}],
+            "counters": [counter("c1", "a1", 96.0, 0.0, &json!([]))],
+        }));
+        assert_eq!(
+            titled(&d, "Jane Doe", None, "", &[]).jobs[0].materials[0].edge,
+            "Flat"
+        );
+        let d = doc(&json!({
+            "colorOptions": [{"id": "option-1", "byArea": {"a1": {"product": "Quartz", "color": "Frost White", "edges": ["eased"]}}}],
+            "counters": [counter("c1", "a1", 96.0, 0.0, &json!([]))],
+        }));
+        assert_eq!(
+            titled(&d, "Jane Doe", None, "", &[]).jobs[0].materials[0].edge,
+            "Eased"
+        );
+        let d = doc(&json!({
+            "colorOptions": [{"id": "option-1", "byArea": {"a1": {"product": "Quartz", "color": "Frost White", "edges": ["Mitered 2in"]}}}],
+            "counters": [counter("c1", "a1", 96.0, 0.0, &json!([]))],
+        }));
+        assert_eq!(
+            titled(&d, "Jane Doe", None, "", &[]).jobs[0].materials[0].edge,
+            "Mitered 2in"
+        );
+    }
+
+    #[test]
+    fn a_project_title_names_the_job() {
+        let d = doc(&json!({
+            "areas": [{"id": "a1", "name": "Unit 3046", "quantity": 1}],
+            "colorOptions": [{"id": "option-1", "byArea": {"a1": {"product": "Granite", "color": "Luna Pearl", "edges": ["Flat"]}}}],
+            "counters": [counter("c1", "a1", 96.0, 4.0, &json!([]))],
+        }));
+        let name = |customer: &str, company: Option<&str>, title: &str| {
+            titled(&d, customer, company, title, &[])
+                .jobs
+                .remove(0)
+                .name
+        };
+        assert_eq!(
+            name(
+                "Rachel Howard",
+                Some("Northpoint Management"),
+                "Northpoint Management - unit 3046"
+            ),
+            "Northpoint Management - unit 3046"
+        );
+        assert_eq!(
+            name(
+                "Jayde Hernandez",
+                Some("JTC Enterprises, Inc."),
+                "Jayde Hernandez - N 175 W"
+            ),
+            "Jayde Hernandez - N 175 W"
+        );
+        assert_eq!(
+            name("Drew Fairchild", None, "Drew Fairchild Shower"),
+            "Fairchild Drew Shower"
+        );
+        assert_eq!(
+            name("Drew Fairchild", None, "Drew Fairchildson"),
+            "Drew Fairchildson"
+        );
+        // The customer's name alone, or "… project", says nothing.
+        assert_eq!(
+            name("Brad Wilson", None, "brad  wilson"),
+            "Wilson Brad Unit 3046"
+        );
+        assert_eq!(
+            name("Brad Wilson", None, "Brad Wilson project"),
+            "Wilson Brad Unit 3046"
+        );
+        assert_eq!(
+            name("Darreld Smith", Some("TBG"), ""),
+            "TBG (1 Main St) Unit 3046"
+        );
+        // A pick-up title is not said twice; another gets "Pick up".
+        let pick = ["I - Lashbrook - Pick up".to_string()];
+        assert_eq!(
+            titled(
+                &d,
+                "Deborah Lashbrook",
+                None,
+                "Deborah Lashbrook Pick up",
+                &pick
+            )
+            .jobs[0]
+                .name,
+            "Lashbrook Deborah Pick up"
+        );
+        assert_eq!(
+            titled(
+                &d,
+                "Deborah Lashbrook",
+                None,
+                "Deborah Lashbrook Bar",
+                &pick
+            )
+            .jobs[0]
+                .name,
+            "Lashbrook Deborah Bar Pick up"
+        );
+    }
+
+    #[test]
+    fn a_builder_short_name_stays_first() {
+        let d = doc(&json!({"counters": [counter("c1", "a1", 96.0, 0.0, &json!([]))]}));
+        assert_eq!(
+            titled(&d, "IHDC Kim Keyser", None, "IHDC Kim Keyser", &[]).jobs[0].name,
+            "IHDC Kim Keyser Kitchen"
+        );
+        assert_eq!(
+            titled(&d, "JOHN SMITH", None, "", &[]).jobs[0].name,
+            "SMITH JOHN Kitchen"
+        );
+    }
+
+    #[test]
+    fn one_unnamed_area_is_the_kitchen() {
+        let d = doc(&json!({
+            "areas": [{"id": "a1", "name": "Area #1", "quantity": 1}, {"id": "a2", "name": "Vanity", "quantity": 1}],
+            "colorOptions": [{"id": "option-1", "byArea": {
+                "a1": {"product": "Quartz", "color": "Sparkling White", "edges": ["Eased"]},
+                "a2": {"product": "Quartz", "color": "Sparkling White", "edges": ["Eased"]},
+            }}],
+            "counters": [counter("c1", "a1", 120.0, 4.0, &json!([])), counter("c2", "a2", 60.0, 4.0, &json!([]))],
+        }));
+        let job = run(&d, &[], "Kyle").jobs.remove(0);
+        assert_eq!(job.name, "Doe Jane Kitchen/Vanity");
+        let sq_ft = line(&job.notes, "Estimated sqft").unwrap();
+        assert!(
+            sq_ft.contains("(Kitchen) ") && sq_ft.ends_with("(Vanity)"),
+            "{sq_ft}"
+        );
+        // Two unnamed areas keep their names.
+        let d = doc(&json!({
+            "areas": [{"id": "a1", "name": "Area #1", "quantity": 1}, {"id": "a2", "name": "Area #2", "quantity": 1}],
+            "colorOptions": [{"id": "option-1", "byArea": {
+                "a1": {"product": "Quartz", "color": "Bianco", "edges": ["Flat"]},
+                "a2": {"product": "Quartz", "color": "Bianco", "edges": ["Flat"]},
+            }}],
+            "counters": [counter("c1", "a1", 120.0, 4.0, &json!([])), counter("c2", "a2", 60.0, 4.0, &json!([]))],
+        }));
+        let job = run(&d, &[], "Kyle").jobs.remove(0);
+        assert_eq!(job.name, "Doe Jane Kitchen");
+        assert!(
+            line(&job.notes, "Estimated sqft")
+                .unwrap()
+                .ends_with("(Area #2)")
         );
     }
 }

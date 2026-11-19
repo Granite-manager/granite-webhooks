@@ -7,6 +7,7 @@ members = [
     "webhooks/crates/leads",
     "webhooks/crates/phone",
     "time-triggered",
+    "duplicate-refresh",
     "api",
     "api/crates/accounts",
     "api/crates/admin",
@@ -79,7 +80,3 @@ opt-level = 3
 
 [profile.dev.package.miniz_oxide]
 opt-level = 3
-
-# sqlx-core 0.9.0 with TCP_NODELAY on its TCP sockets: see vendor/sqlx-core/PATCHED.md.
-[patch.crates-io]
-sqlx-core = { path = "vendor/sqlx-core" }
