@@ -1325,6 +1325,7 @@ dependencies = [
  "common",
  "lambda_runtime",
  "serde_json",
+ "sha2",
  "sqlx",
  "tokio",
 ]

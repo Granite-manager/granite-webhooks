@@ -14,7 +14,13 @@ instance (`database-1-copy`), so the copy never leaves the server.
 3. Builds `duplicate_next` from scratch: for each table of `main`, its
    `SHOW CREATE TABLE` and `INSERT INTO duplicate_next.t (...) SELECT ... FROM main.t`
    (generated columns are left out; they are computed).
-4. Swaps in one atomic `RENAME TABLE`: `duplicate`'s tables move to
+4. Re-encrypts the two-step sign-in secrets in `duplicate_next.user_mfa`
+   from production's key to dev's (both read from the API secrets
+   `granite/granite-api` and `granite/granite-api-dev`), so an authenticator
+   set up on production gives working codes on dev too. Dev never gets
+   production's `AES_KEY`, which also opens the copied Gmail, QuickBooks and
+   RingCentral tokens: those stay unusable on dev.
+5. Swaps in one atomic `RENAME TABLE`: `duplicate`'s tables move to
    `duplicate_old`, `duplicate_next`'s to `duplicate`. Then drops
    `duplicate_old` and `duplicate_next`. The `duplicate` database itself is
    never dropped, so the grants on it stay.

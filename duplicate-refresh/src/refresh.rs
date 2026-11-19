@@ -24,6 +24,7 @@ use sqlx::mysql::MySqlRow;
 use sqlx::{AssertSqlSafe, MySqlConnection, Row};
 
 use crate::grants;
+use crate::reseal::Reseal;
 
 pub struct Schemas {
     /// Read only.
@@ -69,6 +70,7 @@ SET SESSION foreign_key_checks = 0, sql_mode = 'NO_AUTO_VALUE_ON_ZERO', max_exec
 pub async fn run(
     conn: &mut MySqlConnection,
     schemas: &Schemas,
+    reseal: &Reseal,
     check_only: bool,
 ) -> Result<Report, String> {
     let source = schemas.source;
@@ -97,7 +99,7 @@ pub async fn run(
     if locked != Some(1) {
         return Err("another refresh is running".to_string());
     }
-    let result = copy(conn, schemas, check_only).await;
+    let result = copy(conn, schemas, reseal, check_only).await;
     let _ = sqlx::query("SELECT RELEASE_LOCK(?)")
         .bind(LOCK_NAME)
         .execute(&mut *conn)
@@ -108,6 +110,7 @@ pub async fn run(
 async fn copy(
     conn: &mut MySqlConnection,
     schemas: &Schemas,
+    reseal: &Reseal,
     check_only: bool,
 ) -> Result<Report, String> {
     let started = Instant::now();
@@ -224,6 +227,10 @@ async fn copy(
             names.len()
         ));
     }
+
+    // Two-step sign-in secrets, from production's key to dev's, before
+    // dev can see them.
+    reseal.apply(conn, staging, &ident(staging)).await?;
 
     // The swap. Views in the target cannot move to another database; the
     // source has none, so the target keeps none.
