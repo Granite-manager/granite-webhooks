@@ -461,6 +461,34 @@ async fn send_and_record_scheduled_email(
     Ok(())
 }
 
+/// Minute of the hour (UTC) at which each hourly job runs. These keep data
+/// that nobody waits on by the minute (call logs read back from `RingCentral`
+/// and `CloudTalk`, call points of those calls, contacts pushed to the
+/// providers, the PostHog auto-fix intake), each at its own minute so they
+/// never pile up, and away from `:00`. Everything else still runs every
+/// minute.
+const CALL_HISTORY_MINUTE: u32 = 7;
+const CALL_POINTS_MINUTE: u32 = 22;
+const CONTACT_SYNC_MINUTE: u32 = 37;
+const POSTHOG_AUTOFIX_MINUTE: u32 = 52;
+
+/// The minute of the hour of an `EventBridge` event time
+/// (`2026-11-19T20:34:00Z`); `None` when it is not in that form.
+fn minute_of_hour(time: &str) -> Option<u32> {
+    let (_, clock) = time.split_once('T')?;
+    let minute = clock.get(3..5)?;
+    (clock.get(2..3) == Some(":"))
+        .then(|| minute.parse().ok())
+        .flatten()
+        .filter(|minute| *minute < 60)
+}
+
+/// Whether an hourly job runs on this tick: at its minute, or on every tick
+/// whose time is unknown (an invocation by hand).
+fn hourly_due(minute: Option<u32>, job_minute: u32) -> bool {
+    minute.is_none_or(|minute| minute == job_minute)
+}
+
 /// There are some code example in the following URLs:
 /// - https://github.com/awslabs/aws-lambda-rust-runtime/tree/main/examples
 /// - https://github.com/aws-samples/serverless-rust-demo/
@@ -470,6 +498,7 @@ pub(crate) async fn function_handler(
 ) -> Result<OutgoingMessage, Error> {
     // This will now print the full JSON structure to your CloudWatch logs
     tracing::info!("Received event: {:?}", event.payload);
+    let minute = minute_of_hour(&event.payload.time);
 
     reported(
         "cancel-pending-emails",
@@ -561,12 +590,16 @@ pub(crate) async fn function_handler(
     start_promises_job().await;
     start_raptor_jobs().await;
     start_company_exports_job().await;
-    let call_points_count = match report_job("call-points", process_call_points().await).await {
-        Ok(count) => count,
-        Err(error) => {
-            tracing::error!(?error, "Failed to process call points; continuing");
-            0
+    let call_points_count = if hourly_due(minute, CALL_POINTS_MINUTE) {
+        match report_job("call-points", process_call_points().await).await {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::error!(?error, "Failed to process call points; continuing");
+                0
+            }
         }
+    } else {
+        0
     };
     let signature_reminder_count =
         match report_job("signature-reminders", process_signature_reminders().await).await {
@@ -579,30 +612,41 @@ pub(crate) async fn function_handler(
                 0
             }
         };
-    let contact_sync_count = match report_job("contact-sync", process_contact_sync().await).await {
-        Ok(count) => count,
-        Err(error) => {
-            tracing::error!(?error, "Failed to sync contacts; continuing");
-            0
+    let contact_sync_count = if hourly_due(minute, CONTACT_SYNC_MINUTE) {
+        match report_job("contact-sync", process_contact_sync().await).await {
+            Ok(count) => count,
+            Err(error) => {
+                tracing::error!(?error, "Failed to sync contacts; continuing");
+                0
+            }
         }
+    } else {
+        0
     };
-    let call_history_count = or_logged(
-        "call-history",
-        post_api_job("call-history", "call history").await,
-        "call history",
-    )
-    .await;
+    let call_history_count = if hourly_due(minute, CALL_HISTORY_MINUTE) {
+        or_logged(
+            "call-history",
+            post_api_job("call-history", "call history").await,
+            "call history",
+        )
+        .await
+    } else {
+        0
+    };
     if let Err(error) = report_job("phone", post_api_job("phone", "Phone").await).await {
         tracing::error!(?error, "Failed to process Phone; continuing");
     }
-    let posthog_autofix_count =
+    let posthog_autofix_count = if hourly_due(minute, POSTHOG_AUTOFIX_MINUTE) {
         match report_job("posthog-autofix", process_posthog_autofix().await).await {
             Ok(count) => count,
             Err(error) => {
                 tracing::error!(?error, "Failed to process PostHog auto-fix; continuing");
                 0
             }
-        };
+        }
+    } else {
+        0
+    };
     let message = format!(
         "Successfully processed {} emails, {} activity deadline reminders, {} estimate appointment reminders, {} maintenance due reminders, {} sms follow-ups, {} checklist surveys, {} call points, {} e-signature reminders, {} contact syncs, {} saved calls, and {} PostHog auto-fix changes",
         processed_email_count,
@@ -714,6 +758,29 @@ mod tests {
             "Checklist surveys should run on the same scheduled tick as SMS follow-ups"
         );
         assert!(source.contains("checklist surveys"));
+    }
+
+    #[test]
+    fn hourly_jobs_run_at_their_minute() {
+        assert_eq!(minute_of_hour("2026-11-19T20:34:00Z"), Some(34));
+        assert_eq!(minute_of_hour("2026-11-19T20:07:00Z"), Some(7));
+        assert_eq!(minute_of_hour("2026-11-19T20:7:00Z"), None);
+        assert_eq!(minute_of_hour("2026-11-19T20:99:00Z"), None);
+        assert_eq!(minute_of_hour(""), None);
+        assert!(hourly_due(Some(7), 7));
+        assert!(!hourly_due(Some(8), 7));
+        // An invocation by hand without a usual time runs everything.
+        assert!(hourly_due(None, 7));
+        let minutes = [
+            CALL_HISTORY_MINUTE,
+            CALL_POINTS_MINUTE,
+            CONTACT_SYNC_MINUTE,
+            POSTHOG_AUTOFIX_MINUTE,
+        ];
+        for (i, minute) in minutes.iter().enumerate() {
+            assert!((1..60).contains(minute));
+            assert!(!minutes[i + 1..].contains(minute));
+        }
     }
 
     #[test]
