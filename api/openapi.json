@@ -57311,7 +57311,7 @@
           "ai"
         ],
         "summary": "Pick a stone's colors from its photo with AI",
-        "description": "Reads a JPEG, PNG or WebP photo of a stone (at most 4 MB, sent base64)\nand returns the colors from `GET /v1/colors` that it shows, the main\ncolor first. Nothing is saved. Company admins (and super admins,\nsuperusers) only.",
+        "description": "Reads a JPEG, PNG or WebP photo of a stone (at most 4 MB, sent base64)\nand returns the colors from `GET /v1/colors` that it shows: the main\ncolor first, then up to 3 more, surest first. Nothing is saved. Company\nadmins (and super admins, superusers) only.",
         "operationId": "pick_stone_colors",
         "requestBody": {
           "content": {
@@ -121073,7 +121073,7 @@
               "type": "integer",
               "format": "int32"
             },
-            "description": "Ids from `GET /v1/colors`, the main color first; empty when the AI\ncould not tell."
+            "description": "Ids from `GET /v1/colors`: the main color first, then the other\ncolors the stone likely shows, surest first; at most 4. Empty when\nthe AI could not tell."
           }
         }
       },

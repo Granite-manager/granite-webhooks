@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 const CHAT_URL: &str = "https://api.openai.com/v1/chat/completions";
 const IMAGE_EDITS_URL: &str = "https://api.openai.com/v1/images/edits";
+const DECISIONS_URL: &str = "https://api.openai.com/v1/decisions";
 /// The CRM's main chat model (`GPT_MINI_MODEL`).
 pub const MINI_MODEL: &str = "gpt-6-luna";
 /// When the key may not use [`MINI_MODEL`] (`GPT_MINI_FALLBACK_MODEL`).
@@ -22,12 +23,16 @@ pub const LARGE_MODEL: &str = "gpt-6.1-sol";
 pub const LARGE_FALLBACK_MODEL: &str = "gpt-6.1-terra";
 /// AI Design's kitchen pictures (`OPENAI_IMAGE_MODEL`).
 pub const IMAGE_MODEL: &str = "gpt-image-2.5-sunburst";
+/// The only model of the Decisions API (`POST /v1/decisions`): typed
+/// answers (probabilities) to questions about text and images.
+pub const DECISIONS_MODEL: &str = "gpt-6-luna";
 
 #[derive(Clone)]
 pub struct Ai {
     key: Option<Arc<str>>,
     url: Arc<str>,
     images_url: Arc<str>,
+    decisions_url: Arc<str>,
     http: reqwest::Client,
 }
 
@@ -197,12 +202,20 @@ impl Ai {
             &env("OPENAI_CHAT_URL", CHAT_URL),
         )
         .with_images_url(&env("OPENAI_IMAGES_URL", IMAGE_EDITS_URL))
+        .with_decisions_url(&env("OPENAI_DECISIONS_URL", DECISIONS_URL))
     }
 
     /// The image edits endpoint (a stub in tests).
     #[must_use]
     pub fn with_images_url(mut self, url: &str) -> Self {
         self.images_url = Arc::from(url);
+        self
+    }
+
+    /// The Decisions endpoint (a stub in tests).
+    #[must_use]
+    pub fn with_decisions_url(mut self, url: &str) -> Self {
+        self.decisions_url = Arc::from(url);
         self
     }
 
@@ -215,6 +228,7 @@ impl Ai {
                 .map(Arc::from),
             url: Arc::from(url),
             images_url: Arc::from(IMAGE_EDITS_URL),
+            decisions_url: Arc::from(DECISIONS_URL),
             http: common::http::client(),
         }
     }
@@ -313,6 +327,55 @@ impl Ai {
 }
 
 impl Ai {
+    /// One Decisions API call (`POST /v1/decisions`) with a body built by the
+    /// caller (`model`, `input`, `questions`): the whole `Decision` reply, its
+    /// `answers` in question order. Usage is logged like [`Ai::chat`]; output
+    /// tokens are not charged by this API, so they are logged as 0.
+    pub async fn decide(
+        &self,
+        pool: &MySqlPool,
+        caller: Caller<'_>,
+        body: &Value,
+        timeout: Duration,
+    ) -> Result<Value, AiError> {
+        let key = self.key.as_ref().ok_or(AiError::NotConfigured)?;
+        let model = body["model"].as_str().unwrap_or(DECISIONS_MODEL).to_owned();
+        let started = Instant::now();
+        let result = async {
+            let response = self
+                .http
+                .post(&*self.decisions_url)
+                .bearer_auth(&**key)
+                .timeout(timeout)
+                .json(body)
+                .send_retrying()
+                .await?;
+            let status = response.status();
+            if !status.is_success() {
+                let text = response.text().await.unwrap_or_default();
+                return Err(AiError::Status {
+                    status: status.as_u16(),
+                    body: text.chars().take(300).collect(),
+                });
+            }
+            let reply: Value = response.json().await.map_err(request_failed)?;
+            let usage = decision_usage(&reply["usage"]);
+            Ok((reply, usage))
+        }
+        .await;
+        let elapsed = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+        match result {
+            Ok((reply, usage)) => {
+                log(pool, caller, &model, Some(usage), None, elapsed).await;
+                Ok(reply)
+            }
+            Err(err) => {
+                log(pool, caller, &model, None, Some(&err.to_string()), elapsed).await;
+                Err(err)
+            }
+        }
+    }
+
     /// One completion with a request body built by the caller (tools,
     /// content parts): the first choice's `message`, usage logged like
     /// [`Ai::chat`]. `model` is the body's model, for the log.
@@ -660,6 +723,24 @@ pub async fn log_chat(
         }),
     });
     log(pool, caller, model, usage, error, duration_ms).await;
+}
+
+/// A Decisions reply's `usage` (`input_tokens`, `input_tokens_details.
+/// cached_tokens`) as chat usage; output is free, so 0.
+fn decision_usage(usage: &Value) -> Usage {
+    let count = |value: &Value| {
+        value
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0)
+    };
+    Usage {
+        prompt_tokens: count(&usage["input_tokens"]),
+        completion_tokens: 0,
+        prompt_tokens_details: Some(CachedTokens {
+            cached_tokens: Some(count(&usage["input_tokens_details"]["cached_tokens"])),
+        }),
+    }
 }
 
 /// One `ai_usage_log` row; a failure to log is only traced.
