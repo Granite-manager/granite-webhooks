@@ -97108,7 +97108,8 @@
         "description": "A live pipeline (group) of the company, for the website's Leads page.",
         "required": [
           "id",
-          "is_default"
+          "is_default",
+          "lists"
         ],
         "properties": {
           "id": {
@@ -97126,6 +97127,13 @@
           "is_default": {
             "type": "boolean",
             "description": "The pipeline new leads go to (\"Assign leads here\")."
+          },
+          "lists": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InboxList"
+            },
+            "description": "Its live lists (stages) in board order; `PUT /v1/customers/{id}/sales-rep`\ntakes one as `list_id`."
           }
         }
       },
@@ -97228,6 +97236,27 @@
               "null"
             ],
             "description": "`hot`, `medium` or `cold`; null when not rated."
+          }
+        }
+      },
+      "InboxList": {
+        "type": "object",
+        "description": "A live list (stage) of a pipeline, for the website's Leads page.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The list id."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its name."
           }
         }
       },
@@ -99137,7 +99166,7 @@
             "items": {
               "$ref": "#/components/schemas/InboxGroup"
             },
-            "description": "The company's live pipelines, oldest first (managers only; empty for\na sales rep). When none is the default, the Leads page asks which\none a lead goes to."
+            "description": "The company's live pipelines, oldest first (managers only; empty for\na sales rep). When none is the default, the Leads page asks which\nlist a lead goes to."
           }
         }
       },
@@ -115279,6 +115308,14 @@
             ],
             "format": "int32",
             "description": "The pipeline (group) whose first stage a new deal starts in; omit\nfor the default pipeline. Used only when the customer has no open\ndeal yet (the website's Leads page)."
+          },
+          "list_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The list (stage) a new deal starts in, a live list of one of the\ncompany's pipelines; wins over `group_id`. Omit for the pipeline's\nfirst list. Used only when the customer has no open deal yet."
           }
         },
         "additionalProperties": false

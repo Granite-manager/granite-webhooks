@@ -151,3 +151,70 @@ async fn another_companys_group_is_refused(pool: MySqlPool) {
         .unwrap();
     assert_eq!(rep, None);
 }
+
+#[test_db::test(seed)]
+async fn each_pipeline_lists_its_live_lists_in_board_order(pool: MySqlPool) {
+    let res = server(pool)
+        .get("/v1/customers/lead-inbox")
+        .with_session(sessions::MANAGER)
+        .await;
+    res.assert_status(StatusCode::OK);
+    let inbox: Value = res.json();
+    let groups = inbox["groups"].as_array().unwrap();
+    let sales = groups.iter().find(|g| g["id"] == 100).unwrap();
+    // 102 "Archived" is deleted.
+    assert_eq!(
+        sales["lists"],
+        serde_json::json!([{ "id": 100, "name": "New" }, { "id": 101, "name": "Quoted" }])
+    );
+    let remodel = groups.iter().find(|g| g["id"] == 104).unwrap();
+    assert_eq!(ids_of(&remodel["lists"]), vec![104, 105]);
+}
+
+fn ids_of(list: &Value) -> Vec<i64> {
+    list.as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_i64().unwrap())
+        .collect()
+}
+
+#[test_db::test(seed)]
+async fn assigning_with_a_list_starts_the_deal_in_that_list(pool: MySqlPool) {
+    seed_leads(&pool).await;
+    let server = server(pool.clone());
+    // List 105 "Install" (pipeline 104) wins over the group.
+    server
+        .put("/v1/customers/9100/sales-rep")
+        .with_session(sessions::MANAGER)
+        .json(&serde_json::json!({ "sales_rep": 100, "group_id": 100, "list_id": 105 }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let (list, status): (i32, Option<String>) = sqlx::query_as(
+        "SELECT list_id, status FROM deals WHERE customer_id = 9100 AND deleted_at IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((list, status.as_deref()), (105, Some("Install")));
+}
+
+#[test_db::test(seed)]
+async fn another_companys_or_a_deleted_list_is_refused(pool: MySqlPool) {
+    seed_leads(&pool).await;
+    let server = server(pool.clone());
+    // 103 is company 101's; 102 "Archived" is deleted.
+    for list in [103, 102] {
+        server
+            .put("/v1/customers/9100/sales-rep")
+            .with_session(sessions::MANAGER)
+            .json(&serde_json::json!({ "sales_rep": 100, "list_id": list }))
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+    }
+    let rep: Option<i32> = sqlx::query_scalar("SELECT sales_rep FROM customers WHERE id = 9100")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(rep, None);
+}

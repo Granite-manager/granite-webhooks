@@ -76,6 +76,18 @@ pub struct InboxGroup {
     pub name: Option<String>,
     /// The pipeline new leads go to ("Assign leads here").
     pub is_default: bool,
+    /// Its live lists (stages) in board order; `PUT /v1/customers/{id}/sales-rep`
+    /// takes one as `list_id`.
+    pub lists: Vec<InboxList>,
+}
+
+/// A live list (stage) of a pipeline, for the website's Leads page.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InboxList {
+    /// The list id.
+    pub id: i32,
+    /// Its name.
+    pub name: Option<String>,
 }
 
 /// A sales rep of the company and their lead count this month.
@@ -109,7 +121,7 @@ pub struct LeadInbox {
     pub team: Vec<InboxRep>,
     /// The company's live pipelines, oldest first (managers only; empty for
     /// a sales rep). When none is the default, the Leads page asks which
-    /// one a lead goes to.
+    /// list a lead goes to.
     pub groups: Vec<InboxGroup>,
 }
 
@@ -225,12 +237,21 @@ async fn leads(
     query.bind(LIMIT).fetch_all(pool).await
 }
 
-/// The company's live pipelines, oldest first.
+/// The company's live pipelines, oldest first, each with its live lists.
 async fn groups(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<InboxGroup>> {
     let rows: Vec<(i32, Option<String>, Option<bool>)> = sqlx::query_as(
         "SELECT id, name, is_default FROM groups_list
           WHERE company_id = ? AND deleted_at IS NULL
           ORDER BY created_at, id",
+    )
+    .bind(company_id)
+    .fetch_all(pool)
+    .await?;
+    let lists: Vec<(i32, i32, Option<String>)> = sqlx::query_as(
+        "SELECT dl.group_id, dl.id, dl.name FROM deals_list dl
+           JOIN groups_list g ON g.id = dl.group_id
+          WHERE g.company_id = ? AND g.deleted_at IS NULL AND dl.deleted_at IS NULL
+          ORDER BY dl.position, dl.id",
     )
     .bind(company_id)
     .fetch_all(pool)
@@ -241,6 +262,14 @@ async fn groups(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Vec<InboxGrou
             id,
             name,
             is_default: default.unwrap_or(false),
+            lists: lists
+                .iter()
+                .filter(|(group, _, _)| *group == id)
+                .map(|(_, list, name)| InboxList {
+                    id: *list,
+                    name: name.clone(),
+                })
+                .collect(),
         })
         .collect())
 }
