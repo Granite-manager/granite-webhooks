@@ -110,6 +110,7 @@ GET /v1/places/autocomplete
 GET /v1/places/check
 GET /v1/projects
 GET /v1/projects/7
+GET /v1/projects/7/event-links
 GET /v1/projects/7/questions/7
 GET /v1/projects/payments
 GET /v1/projects/process-steps
@@ -284,6 +285,7 @@ PUT /v1/phone/contact-groups/7/members
 PUT /v1/phone/devices/7/push-token
 PUT /v1/phone/push-settings
 PUT /v1/phone/settings
+PUT /v1/projects/7/event-links
 PUT /v1/projects/7/questions/7
 PUT /v1/projects/7/step-items/7
 PUT /v1/projects/7/steps/7

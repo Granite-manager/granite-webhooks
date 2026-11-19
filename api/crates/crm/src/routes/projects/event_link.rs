@@ -64,6 +64,198 @@ pub struct EventProjectLinkInput {
     pub event_ids: Vec<i32>,
 }
 
+/// `GET /v1/projects/{id}/event-links`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ProjectEventLinks {
+    /// The customer's open projects the caller can see (this one included),
+    /// to name the project an event is on now.
+    pub projects: Vec<LinkProject>,
+    /// The customer's events and the ones linked to this project, soonest
+    /// first.
+    pub events: Vec<LinkEvent>,
+}
+
+/// `PUT /v1/projects/{id}/event-links`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ProjectEventLinksInput {
+    /// The events that are this project's: each is linked to it (leaving its
+    /// old project); this project's other events are unlinked.
+    #[serde(default)]
+    pub event_ids: Vec<i32>,
+}
+
+/// The customer's open projects the caller can see, newest first.
+async fn customer_projects(
+    conn: &mut MySqlConnection,
+    viewer: &Viewer,
+    customer: i32,
+) -> ApiResult<Vec<LinkProject>> {
+    let sql = format!(
+        "SELECT p.id, p.title, CAST(p.stage_code AS CHAR) AS stage_code FROM projects p
+          WHERE p.company_id = ? AND p.customer_id = ?
+            AND p.archived_at IS NULL AND p.cancelled_at IS NULL AND {}
+          ORDER BY p.id DESC",
+        viewer.visible_sql()
+    );
+    Ok(sqlx::query_as(sqlx::AssertSqlSafe(sql))
+        .bind(viewer.company_id)
+        .bind(customer)
+        .fetch_all(&mut *conn)
+        .await?)
+}
+
+/// The events a project can take, from the project's side
+#[crate::openapi::path(
+    get,
+    path = "/v1/projects/{id}/event-links",
+    operation_id = "get_project_event_links",
+    tag = "projects",
+    params(("id" = i32, Path, description = "Project id")),
+    responses(
+        (status = 200, description = "The customer's events", body = ProjectEventLinks),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 404, description = "No such project the caller may see", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn get_for_project(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    Path(id): Path<i32>,
+) -> ApiResult<Json<ProjectEventLinks>> {
+    let viewer = Viewer::load(&state.pool, &user).await?;
+    let company = viewer.company_id;
+    let mut conn = state.pool.acquire().await?;
+    let customer = visible_project(&mut conn, &viewer, id).await?.customer_id;
+    let projects = customer_projects(&mut conn, &viewer, customer).await?;
+    let events: Vec<LinkEvent> = sqlx::query_as(
+        "SELECT e.id, e.title,
+                IF(COALESCE(e.unscheduled, 0) <> 0, NULL,
+                   DATE_FORMAT(e.start_date, '%Y-%m-%dT%H:%i:%sZ')) AS start_date,
+                COALESCE(e.all_day, 0) <> 0 AS all_day,
+                cal.name AS calendar_name, e.project_id
+           FROM events e
+           JOIN calendars cal ON cal.id = e.calendar_id AND cal.deleted_at IS NULL
+                             AND cal.company_id = ?
+          WHERE e.deleted_date IS NULL AND (e.customer_id = ? OR e.project_id = ?)
+          ORDER BY COALESCE(e.unscheduled, 0) <> 0, e.start_date, e.id",
+    )
+    .bind(company)
+    .bind(customer)
+    .bind(id)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(Json(ProjectEventLinks { projects, events }))
+}
+
+/// Pick the events that are a project's
+///
+/// The picked events (the customer's, or already this project's) are linked
+/// to it and leave their old project; this project's other events are
+/// unlinked.
+#[crate::openapi::path(
+    put,
+    path = "/v1/projects/{id}/event-links",
+    operation_id = "set_project_event_links",
+    tag = "projects",
+    params(("id" = i32, Path, description = "Project id")),
+    request_body = ProjectEventLinksInput,
+    responses(
+        (status = 204, description = "Saved"),
+        (status = 400, description = "An event that is not the customer's", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "The caller's position can't change projects", body = ErrorBody),
+        (status = 404, description = "No such project the caller may see", body = ErrorBody),
+        (status = 409, description = "The project is archived or cancelled", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_for_project(
+    State(state): State<AppState>,
+    EmployeeUser(user): EmployeeUser,
+    Path(id): Path<i32>,
+    JsonBody(input): JsonBody<ProjectEventLinksInput>,
+) -> ApiResult<StatusCode> {
+    let viewer = Viewer::load(&state.pool, &user).await?;
+    let company = viewer.company_id;
+    let mut tx = state.pool.begin().await?;
+    let customer = editable(&mut tx, &viewer, id).await?;
+    let mut picked: Vec<i32> = Vec::new();
+    for event in input.event_ids {
+        if !picked.contains(&event) {
+            picked.push(event);
+        }
+    }
+    let mut touched = vec![id];
+    if !picked.is_empty() {
+        // Every picked event: the company's, not deleted, the customer's or
+        // already this project's.
+        let mut sql = QueryBuilder::<MySql>::new(
+            "SELECT e.id, e.customer_id, e.project_id FROM events e
+               JOIN calendars cal ON cal.id = e.calendar_id AND cal.company_id = ",
+        );
+        sql.push_bind(company);
+        sql.push(" WHERE e.deleted_date IS NULL");
+        crate::sql::push_in(&mut sql, "e.id", &picked);
+        let rows: Vec<(i32, Option<i32>, Option<i32>)> =
+            sql.build_query_as().fetch_all(&mut *tx).await?;
+        if rows.len() != picked.len()
+            || rows
+                .iter()
+                .any(|(_, owner, project)| *owner != Some(customer) && *project != Some(id))
+        {
+            return Err(ApiError::BadRequest(
+                "Pick only this customer's events".into(),
+            ));
+        }
+        // The projects the events leave must be the caller's to change too.
+        for (_, _, old) in &rows {
+            if let Some(old) = old
+                && !touched.contains(old)
+            {
+                editable(&mut tx, &viewer, *old).await?;
+                touched.push(*old);
+            }
+        }
+    }
+    // This project's events that were not picked leave it.
+    let mut sql = QueryBuilder::<MySql>::new(
+        "UPDATE events SET project_id = NULL, project_part_id = NULL
+          WHERE deleted_date IS NULL AND project_id = ",
+    );
+    sql.push_bind(id);
+    if !picked.is_empty() {
+        sql.push(" AND id NOT IN (");
+        let mut list = sql.separated(", ");
+        for event in &picked {
+            list.push_bind(*event);
+        }
+        sql.push(")");
+    }
+    sql.build().execute(&mut *tx).await?;
+    if !picked.is_empty() {
+        let mut sql =
+            QueryBuilder::<MySql>::new("UPDATE events SET project_part_id = IF(project_id <=> ");
+        sql.push_bind(id);
+        sql.push(", project_part_id, NULL), project_id = ");
+        sql.push_bind(id);
+        sql.push(" WHERE deleted_date IS NULL");
+        crate::sql::push_in(&mut sql, "id", &picked);
+        sql.build().execute(&mut *tx).await?;
+    }
+    for project in touched {
+        sqlx::query("UPDATE projects SET version = version + 1 WHERE id = ? AND company_id = ?")
+            .bind(project)
+            .bind(company)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// The event's customer and project; 404 for another company's or a deleted event.
 async fn event_row(
     conn: &mut MySqlConnection,
