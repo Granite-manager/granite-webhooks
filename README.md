@@ -19,6 +19,14 @@ sqlx migrate run --source migrations --database-url 'mysql://...@<rds>/main?ssl-
 make deploy api prod
 ```
 
+Each Lambda signs in to MySQL as its own user, named after the function
+(`granite_api`, `granite_webhooks_dev`, ...), with only `SELECT, INSERT,
+UPDATE, DELETE` on its own database (`main` or `duplicate`) and `REQUIRE SSL`;
+its `DATABASE_URL` is in its `granite/<function>` secret. So a Lambda cannot
+run migrations: use the master user's URL from the `granite/rds-admin` secret
+for `sqlx migrate run`. A new Lambda gets a new user the same way, never
+`admin`.
+
 uvx cargo-lambda lambda build --release
 uvx cargo-lambda lambda deploy --iam-role arn:aws:iam::741448943665:role/cargo-lambda-role-2ed5069c-8882-460d-bdc8-192d9b724756
 
