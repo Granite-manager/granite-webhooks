@@ -15,7 +15,7 @@ openapi = ["dep:utoipa", "dep:utoipa-axum", "api-crm/openapi", "api-schedule/ope
 [dependencies]
 api-crm = { path = "../crm" }
 api-schedule = { path = "../schedule" }
-getrandom = "0.3"
+getrandom = "0.4"
 common = { path = "../../../common" }
 axum = "0.8"
 base64 = "0.22"

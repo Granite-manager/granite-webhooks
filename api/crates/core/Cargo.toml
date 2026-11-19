@@ -13,10 +13,10 @@ doctest = false
 openapi = ["dep:utoipa", "dep:utoipa-axum", "api-macros/openapi"]
 
 [dependencies]
-getrandom = "0.3"
+getrandom = "0.4"
 common = { path = "../../../common" }
 axum = "0.8"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 hmac = "0.13"

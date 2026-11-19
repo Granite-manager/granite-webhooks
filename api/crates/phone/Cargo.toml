@@ -15,7 +15,7 @@ openapi = ["dep:utoipa", "dep:utoipa-axum", "api-crm/openapi", "api-accounts/ope
 [dependencies]
 api-crm = { path = "../crm" }
 api-accounts = { path = "../accounts" }
-getrandom = "0.3"
+getrandom = "0.4"
 axum = "0.8"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }

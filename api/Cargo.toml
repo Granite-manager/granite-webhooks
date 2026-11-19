@@ -47,11 +47,11 @@ api-phone = { path = "crates/phone" }
 api-admin = { path = "crates/admin" }
 api-ai = { path = "crates/ai" }
 ammonia = "4.1"
-bcrypt = "0.17"
-getrandom = "0.3"
+bcrypt = "0.19"
+getrandom = "0.4"
 common = { path = "../common" }
 axum = "0.8"
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"

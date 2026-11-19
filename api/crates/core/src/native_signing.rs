@@ -8,7 +8,7 @@
 //! `SIGNATURE_INVITATION_SECRET`), and the signing link's token is an HMAC
 //! of the request's identity, so neither is ever stored in clear.
 
-use aes_gcm::aead::{Aead, KeyInit as _};
+use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -118,7 +118,7 @@ impl NativeSigning {
         let nonce_bytes: [u8; 12] = rand_bytes();
         let plaintext = serde_json::to_vec(value).expect("serializable");
         let sealed = cipher
-            .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_slice())
+            .encrypt(&Nonce::from(nonce_bytes), plaintext.as_slice())
             .expect("AES-GCM encrypts");
         let mut out = nonce_bytes.to_vec();
         out.extend(sealed);
@@ -132,9 +132,8 @@ impl NativeSigning {
             return None;
         }
         let cipher = Aes256Gcm::new(&self.key.into());
-        let plaintext = cipher
-            .decrypt(Nonce::from_slice(&bytes[..12]), &bytes[12..])
-            .ok()?;
+        let nonce = Nonce::try_from(&bytes[..12]).ok()?;
+        let plaintext = cipher.decrypt(&nonce, &bytes[12..]).ok()?;
         serde_json::from_slice(&plaintext).ok()
     }
 
