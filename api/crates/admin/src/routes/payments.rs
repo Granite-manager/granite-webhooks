@@ -49,7 +49,7 @@ pub fn router() -> OpenApiRouter<AppState> {
 pub const DEFAULT_APP_URL: &str = "https://payments.granite-manager.com";
 /// The Stripe product every subscription is sold under (created on first use).
 pub const PRODUCT_ID: &str = "granite_manager_subscription";
-const PRODUCT_NAME: &str = "Granite Manager subscription";
+pub const PRODUCT_NAME: &str = "Granite Manager subscription";
 /// Stripe's tax code for "Software as a service (SaaS) - business use".
 pub const PRODUCT_TAX_CODE: &str = "txcd_10103001";
 /// Bytes of the HMAC kept in a link: 128 bits, 22 characters.

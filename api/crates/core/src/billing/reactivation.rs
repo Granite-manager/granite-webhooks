@@ -182,7 +182,11 @@ fn due(
 
 impl GateStripe for LiveGate<'_> {
     async fn refresh(&self, record: CompanyBilling) -> CompanyBilling {
-        let every = if record.payment_status == PaymentStatus::Suspended {
+        // Suspended, or a signed-up company waiting for its first payment.
+        let every = if matches!(
+            record.payment_status,
+            PaymentStatus::Suspended | PaymentStatus::None
+        ) {
             SUSPENDED_REFRESH_SECS
         } else {
             PAST_DUE_REFRESH_SECS

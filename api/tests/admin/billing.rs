@@ -923,7 +923,7 @@ async fn only_managers_see_billing_and_everyone_sees_the_gate(pool: MySqlPool) {
         .json();
     assert_eq!(
         rep,
-        json!({ "show_warning": false, "days_remaining": 0, "restricted": true, "can_manage": false })
+        json!({ "show_warning": false, "days_remaining": 0, "restricted": true, "first_payment_due": false, "can_manage": false })
     );
     let manager: Value = server
         .get("/v1/billing/gate")

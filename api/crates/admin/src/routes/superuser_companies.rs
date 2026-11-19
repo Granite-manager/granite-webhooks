@@ -131,6 +131,16 @@ pub struct CompanySummary {
     pub quickbooks_connected: bool,
     /// Access depends on the Stripe subscription.
     pub billing_required: bool,
+    /// Where the company came from: `superuser` (created here) or
+    /// `signup_page` (signed itself up; no access until its Stripe
+    /// subscription is paid).
+    pub source: String,
+    /// When the company signed itself up (ISO 8601); null when a superuser
+    /// created it.
+    pub signed_up_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// The web address it asked for at sign-up (`acme`), until a superuser
+    /// sets its subdomain; null otherwise.
+    pub requested_subdomain: Option<String>,
     pub features: Features,
 }
 
@@ -148,6 +158,9 @@ struct SummaryRow {
     cloudtalk_connected: bool,
     quickbooks_connected: bool,
     billing_required: bool,
+    source: String,
+    signed_up_at: Option<chrono::NaiveDateTime>,
+    requested_subdomain: Option<String>,
     #[sqlx(flatten)]
     features: Features,
 }
@@ -187,6 +200,7 @@ pub async fn list_companies(
                   AS cloudtalk_connected,
                 COALESCE(TRIM(c.qbo_realm_id), '') <> '' AS quickbooks_connected,
                 COALESCE(c.billing_required, 0) <> 0 AS billing_required,
+                c.source, c.signed_up_at, c.requested_subdomain,
                 {features}
            FROM company c
            {joins}
@@ -216,6 +230,9 @@ pub async fn list_companies(
                 cloudtalk_connected: row.cloudtalk_connected,
                 quickbooks_connected: row.quickbooks_connected,
                 billing_required: row.billing_required,
+                source: row.source,
+                signed_up_at: row.signed_up_at.map(|at| at.and_utc()),
+                requested_subdomain: row.requested_subdomain,
                 features: row.features,
             })
             .collect(),
@@ -416,7 +433,7 @@ fn text(value: Option<&String>) -> Option<String> {
         .map(str::to_string)
 }
 
-fn valid_subdomain(value: &str) -> bool {
+pub(crate) fn valid_subdomain(value: &str) -> bool {
     !value.is_empty()
         && value.split('-').all(|part| {
             !part.is_empty()
@@ -466,10 +483,16 @@ fn validate(input: &CompanyInput) -> ApiResult<Clean> {
     })
 }
 
-async fn subdomain_taken(state: &AppState, subdomain: &str, except: i32) -> ApiResult<bool> {
+pub(crate) async fn subdomain_taken(
+    state: &AppState,
+    subdomain: &str,
+    except: i32,
+) -> ApiResult<bool> {
     let taken: Option<i32> = sqlx::query_scalar(
-        "SELECT id FROM company WHERE subdomain = ? AND id <> ? AND deleted_at IS NULL LIMIT 1",
+        "SELECT id FROM company
+          WHERE (subdomain = ? OR requested_subdomain = ?) AND id <> ? AND deleted_at IS NULL LIMIT 1",
     )
+    .bind(subdomain)
     .bind(subdomain)
     .bind(except)
     .fetch_optional(&state.pool)
@@ -490,6 +513,80 @@ struct DefaultTemplate {
     name: String,
     subject: String,
     body: String,
+}
+
+/// Seeds a new company.
+///
+/// Its system calendars and auto-confirm texts, its own starter pipeline, the default company email
+/// templates, a `walk-in@<subdomain>.com` employee for the check-in kiosk
+/// (password 1111, changed at its first sign-in) and the system customer
+/// sources. Used by the superuser's create and by self sign-up.
+pub async fn seed_company(
+    tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
+    id: i32,
+    walk_in_subdomain: &str,
+) -> ApiResult<()> {
+    let password = bcrypt::hash("1111", 10).map_err(|e| ApiError::Internal(e.to_string()))?;
+    for (slug, name, color) in crate::routes::calendars::queries::SYSTEM_CALENDARS {
+        sqlx::query("INSERT INTO calendars (company_id, name, color, slug, created_by) VALUES (?, ?, ?, ?, NULL)")
+            .bind(id)
+            .bind(name)
+            .bind(color)
+            .bind(slug)
+            .execute(&mut **tx)
+            .await?;
+    }
+    crate::routes::schedule::notifications::seed_auto_confirm(tx, id).await?;
+    // Its own starter pipeline, which it may change or delete like any other.
+    let group = sqlx::query(
+        "INSERT INTO groups_list (name, created_at, company_id, is_displayed, is_default)
+         VALUES ('Default', NOW(), ?, 1, 1)",
+    )
+    .bind(id)
+    .execute(&mut **tx)
+    .await?
+    .last_insert_id();
+    for (position, stage) in (0_i32..).zip(STARTER_STAGES) {
+        sqlx::query("INSERT INTO deals_list (name, group_id, position) VALUES (?, ?, ?)")
+            .bind(stage)
+            .bind(group)
+            .bind(position)
+            .execute(&mut **tx)
+            .await?;
+    }
+    for template in DEFAULT_TEMPLATES.iter() {
+        sqlx::query(
+            "INSERT INTO email_templates (template_name, template_subject, template_body, company_id, user_id)
+             VALUES (?, ?, ?, ?, NULL)",
+        )
+        .bind(&template.name)
+        .bind(&template.subject)
+        .bind(&template.body)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    }
+    sqlx::query(
+        "INSERT INTO users (name, email, password, company_id, is_employee, is_admin)
+         VALUES ('Walk-in', ?, ?, ?, 1, 0)",
+    )
+    .bind(format!("walk-in@{walk_in_subdomain}.com"))
+    .bind(password)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO customer_sources (company_id, source_key, label, is_system) VALUES
+           (?, 'check-in', 'Walk-in', 1), (?, 'leads', 'Leads', 1),
+           (?, 'call-in', 'Call-in', 1), (?, 'other', 'Other', 1)",
+    )
+    .bind(id)
+    .bind(id)
+    .bind(id)
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 /// Create a company
@@ -524,7 +621,6 @@ pub async fn create_company(
     if subdomain_taken(&state, &clean.subdomain, 0).await? {
         return Err(ApiError::Conflict("Subdomain is already in use".into()));
     }
-    let password = bcrypt::hash("1111", 10).map_err(|e| ApiError::Internal(e.to_string()))?;
     let mut tx = state.pool.begin().await?;
     let id = sqlx::query(
         "INSERT INTO company (name, subdomain, address, state_taxes, domain, cloudtalk_access_key,
@@ -547,65 +643,7 @@ pub async fn create_company(
     .await?
     .last_insert_id();
     let id = i32::try_from(id).map_err(|_| ApiError::Internal("company id out of range".into()))?;
-    for (slug, name, color) in crate::routes::calendars::queries::SYSTEM_CALENDARS {
-        sqlx::query("INSERT INTO calendars (company_id, name, color, slug, created_by) VALUES (?, ?, ?, ?, NULL)")
-            .bind(id)
-            .bind(name)
-            .bind(color)
-            .bind(slug)
-            .execute(&mut *tx)
-            .await?;
-    }
-    crate::routes::schedule::notifications::seed_auto_confirm(&mut tx, id).await?;
-    // Its own starter pipeline, which it may change or delete like any other.
-    let group = sqlx::query(
-        "INSERT INTO groups_list (name, created_at, company_id, is_displayed, is_default)
-         VALUES ('Default', NOW(), ?, 1, 1)",
-    )
-    .bind(id)
-    .execute(&mut *tx)
-    .await?
-    .last_insert_id();
-    for (position, stage) in (0_i32..).zip(STARTER_STAGES) {
-        sqlx::query("INSERT INTO deals_list (name, group_id, position) VALUES (?, ?, ?)")
-            .bind(stage)
-            .bind(group)
-            .bind(position)
-            .execute(&mut *tx)
-            .await?;
-    }
-    for template in DEFAULT_TEMPLATES.iter() {
-        sqlx::query(
-            "INSERT INTO email_templates (template_name, template_subject, template_body, company_id, user_id)
-             VALUES (?, ?, ?, ?, NULL)",
-        )
-        .bind(&template.name)
-        .bind(&template.subject)
-        .bind(&template.body)
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    }
-    sqlx::query(
-        "INSERT INTO users (name, email, password, company_id, is_employee, is_admin)
-         VALUES ('Walk-in', ?, ?, ?, 1, 0)",
-    )
-    .bind(format!("walk-in@{}.com", clean.subdomain))
-    .bind(password)
-    .bind(id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "INSERT INTO customer_sources (company_id, source_key, label, is_system) VALUES
-           (?, 'check-in', 'Walk-in', 1), (?, 'leads', 'Leads', 1),
-           (?, 'call-in', 'Call-in', 1), (?, 'other', 'Other', 1)",
-    )
-    .bind(id)
-    .bind(id)
-    .bind(id)
-    .bind(id)
-    .execute(&mut *tx)
-    .await?;
+    seed_company(&mut tx, id, &clean.subdomain).await?;
     tx.commit().await?;
     deliverability::ensure_company_trust(&state.pool, &state.dns, id, input.domain.as_deref())
         .await?;

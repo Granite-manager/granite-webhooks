@@ -67,6 +67,7 @@ pub mod agent;
 pub mod cookie;
 pub mod device;
 pub mod job;
+pub mod paywall;
 pub mod sections;
 pub mod session;
 pub mod skills;
@@ -80,7 +81,9 @@ use axum::http::header::COOKIE;
 use axum::http::request::Parts;
 use cookie::{SESSION_COOKIE_NAME, cookie_values, decode_session};
 use sections::Access;
-use session::{SUPER_ADMIN_POSITION, SessionUser, effective_user, find_session_user, user_positions};
+use session::{
+    SUPER_ADMIN_POSITION, SessionUser, effective_user, find_session_user, user_positions,
+};
 
 async fn authenticate(parts: &Parts, state: &AppState) -> Result<SessionUser, ApiError> {
     authenticate_with_access(parts, state)
@@ -124,8 +127,9 @@ async fn check_sections(
     state: &AppState,
     user: &SessionUser,
 ) -> Result<(), ApiError> {
-    let positions = user_positions(&state.pool, user.id).await?;
     let path = parts.uri.path();
+    paywall::check(&state.pool, user, path).await?;
+    let positions = user_positions(&state.pool, user.id).await?;
     if !sections::user_access(&state.pool, user, &positions)
         .await?
         .allows(path)
@@ -607,9 +611,12 @@ fn transaction_write(method: &Method, path: &str) -> bool {
     let (post, put) = (method == Method::POST, method == Method::PUT);
     match rest.split('/').collect::<Vec<_>>().as_slice() {
         [id, "slabs"] => is_id(id) && post,
-        [id, "slabs", slab, "cut" | "uncut" | "partial-cut" | "remove" | "replace"] => {
-            is_id(id) && is_id(slab) && post
-        }
+        [
+            id,
+            "slabs",
+            slab,
+            "cut" | "uncut" | "partial-cut" | "remove" | "replace",
+        ] => is_id(id) && is_id(slab) && post,
         [id, "slabs", slab, "square-feet"] => is_id(id) && is_id(slab) && put,
         _ => false,
     }
@@ -657,6 +664,7 @@ async fn identify(
         && let Some(token) = device::device_token(parts)
     {
         let device = device::authenticate_device(&token, state).await?;
+        paywall::check(&state.pool, &device.user, parts.uri.path()).await?;
         let positions = user_positions(&state.pool, device.user.id).await?;
         return Ok((device.user, positions));
     }
@@ -669,7 +677,11 @@ async fn identify(
         .find_map(|value| decode_session(&value, &state.session_secret));
     let session = match (session, agent::bearer_token(&parts.headers)) {
         (Some(session), _) => session,
-        (None, Some(token)) => return agent::authenticate(parts, state, token).await,
+        (None, Some(token)) => {
+            let (user, positions) = agent::authenticate(parts, state, token).await?;
+            paywall::check(&state.pool, &user, parts.uri.path()).await?;
+            return Ok((user, positions));
+        }
         // The phone's token on a route it may not use: refused, but not "signed out" (401), which
         // would sign the phone out although its token is good (an app newer than the API, say).
         (None, None) if device::device_token(parts).is_some() => return Err(ApiError::Forbidden),
@@ -681,6 +693,7 @@ async fn identify(
         .ok_or(ApiError::Unauthorized)?;
     let positions = user_positions(&state.pool, user.id).await?;
     let user = effective_user(user, &positions, session.active_company_id);
+    paywall::check(&state.pool, &user, parts.uri.path()).await?;
     Ok((user, positions))
 }
 
@@ -824,9 +837,10 @@ impl FromRequestParts<AppState> for UserManager {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
-        let manager = positions
-            .iter()
-            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
+        let manager = positions.iter().any(|row| {
+            row.company_id == user.company_id
+                && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION)
+        });
         if user.is_superuser || ((user.is_admin) && manager) {
             Ok(Self(user))
         } else {
@@ -844,9 +858,10 @@ impl FromRequestParts<AppState> for BillingManager {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
-        let manager = positions
-            .iter()
-            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
+        let manager = positions.iter().any(|row| {
+            row.company_id == user.company_id
+                && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION)
+        });
         if user.is_superuser || ((user.is_employee || user.is_admin) && manager) {
             Ok(Self(user))
         } else {
@@ -866,9 +881,10 @@ impl FromRequestParts<AppState> for CompanyManager {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
         let (user, positions) = authenticate_with_positions(parts, state).await?;
-        let manager = positions
-            .iter()
-            .any(|row| row.company_id == user.company_id && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION));
+        let manager = positions.iter().any(|row| {
+            row.company_id == user.company_id
+                && (row.position_id == MANAGER_POSITION || row.position_id == SUPER_ADMIN_POSITION)
+        });
         if manager {
             Ok(Self(user))
         } else {
