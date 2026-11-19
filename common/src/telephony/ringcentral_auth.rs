@@ -60,7 +60,8 @@ pub fn env_key() -> Option<[u8; 32]> {
     parse_hex_key(std::env::var("AES_KEY").ok()?.trim())
 }
 
-fn parse_hex_key(hex: &str) -> Option<[u8; 32]> {
+/// A 256-bit key written as 64 hex digits (the form of `AES_KEY`).
+pub fn parse_hex_key(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 {
         return None;
     }

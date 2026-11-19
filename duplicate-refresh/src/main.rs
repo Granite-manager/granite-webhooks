@@ -9,10 +9,16 @@ use sqlx::{Connection, MySqlConnection};
 
 mod grants;
 mod refresh;
+mod reseal;
 
 /// The secret (`SECRETS_ID`) holds it: the `duplicate_refresh` MySQL user,
 /// which may only read `main`.
 const URL_VAR: &str = "REFRESH_DATABASE_URL";
+
+/// The API secrets whose keys encrypt two-step sign-in secrets: production
+/// (reads `main`) and dev (reads `duplicate`). See `reseal.rs`.
+const SOURCE_API_SECRET: &str = "granite/granite-api";
+const TARGET_API_SECRET: &str = "granite/granite-api-dev";
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -30,8 +36,22 @@ async fn handler(event: LambdaEvent<Value>) -> Result<Value, Error> {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let url = std::env::var(URL_VAR).map_err(|_| format!("{URL_VAR} is not set"))?;
+    let mut keys = Vec::new();
+    for name in [SOURCE_API_SECRET, TARGET_API_SECRET] {
+        let pairs = common::amazon::secrets::get(name).await?;
+        keys.push(reseal::Keys::from_secret(name, &pairs)?);
+    }
+    let target = keys.pop().ok_or("no dev keys")?;
+    let source = keys.pop().ok_or("no production keys")?;
+    let reseal = reseal::Reseal { source, target };
     let mut conn = MySqlConnection::connect_with(&connect_options(&url)?).await?;
-    let result = refresh::run(&mut conn, &refresh::Schemas::PRODUCTION, check_only).await;
+    let result = refresh::run(
+        &mut conn,
+        &refresh::Schemas::PRODUCTION,
+        &reseal,
+        check_only,
+    )
+    .await;
     let _ = conn.close().await;
     match result {
         Ok(report) => {

@@ -37,6 +37,12 @@ pub async fn load_into_env() -> Result<(), String> {
     Ok(())
 }
 
+/// The secret `id` as its `{"NAME": "value"}` pairs, without touching the
+/// environment (a Lambda that needs another service's keys).
+pub async fn get(id: &str) -> Result<BTreeMap<String, String>, String> {
+    parse(&fetch(id).await?)
+}
+
 /// The secret's JSON object; every value must be a string.
 fn parse(text: &str) -> Result<BTreeMap<String, String>, String> {
     serde_json::from_str(text)
