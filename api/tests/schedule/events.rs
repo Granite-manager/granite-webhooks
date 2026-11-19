@@ -764,6 +764,101 @@ async fn a_repeating_event_deletes_one_repeat_the_following_or_all(pool: MySqlPo
 }
 
 #[test_db::test(seed)]
+async fn a_repeating_event_edits_one_repeat_the_following_or_all(pool: MySqlPool) {
+    sqlx::raw_sql(WEEKLY).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO event_comments (event_id, company_id, content, created_by) VALUES (8970, 100, 'Bring coffee', 'Rep')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let server = server(pool.clone());
+    let body = |title: &str, start: &str, end: &str| {
+        json!({
+            "title": title,
+            "calendar_id": 8804,
+            "rrule": "FREQ=WEEKLY",
+            "start_date": start,
+            "end_date": end,
+        })
+    };
+    server
+        .put("/v1/events/8970?scope=some")
+        .json(&body("x", "2026-11-09 15:00:00", "2026-11-09 16:00:00"))
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+
+    // This event only: the day is skipped, the edit is its own event that
+    // doesn't repeat and keeps the comments.
+    let one = server
+        .put("/v1/events/8970?scope=one&date=2026-11-09")
+        .json(&body(
+            "Moved meeting",
+            "2026-11-10 17:00:00",
+            "2026-11-10 18:00:00",
+        ))
+        .with_session(sessions::REP)
+        .await;
+    one.assert_status(StatusCode::OK);
+    let one_id = one.json::<Value>()["id"].as_i64().unwrap();
+    assert_eq!(
+        repeat_state(&pool, 8970).await,
+        (Some("2026-11-09,2026-11-23".into()), None, false)
+    );
+    let (title, rrule, comments): (String, Option<String>, i64) = sqlx::query_as(
+        "SELECT title, rrule, (SELECT COUNT(*) FROM event_comments c WHERE c.event_id = e.id)
+           FROM events e WHERE id = ?",
+    )
+    .bind(one_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (title.as_str(), rrule, comments),
+        ("Moved meeting", None, 1)
+    );
+
+    // This and future events: the series ends before, the new one repeats
+    // on and keeps the later skipped day.
+    let following = server
+        .put("/v1/events/8970?scope=following&start=2026-11-16T15:00:00.000Z")
+        .json(&body(
+            "Later meeting",
+            "2026-11-16 16:00:00",
+            "2026-11-16 17:00:00",
+        ))
+        .with_session(sessions::REP)
+        .await;
+    following.assert_status(StatusCode::OK);
+    let following_id = following.json::<Value>()["id"].as_i64().unwrap();
+    assert_eq!(
+        repeat_state(&pool, 8970).await.1.as_deref(),
+        Some("2026-11-16 14:59:59")
+    );
+    assert_eq!(
+        repeat_state(&pool, following_id).await,
+        (Some("2026-11-23".into()), None, false)
+    );
+
+    // All repeating events, or this and future from the first one: the
+    // event itself.
+    server
+        .put("/v1/events/8970?scope=following&start=2026-11-02T15:00:00.000Z")
+        .json(&body(
+            "Team sync",
+            "2026-11-02 15:00:00",
+            "2026-11-02 16:00:00",
+        ))
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let title: String = sqlx::query_scalar("SELECT title FROM events WHERE id = 8970")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(title, "Team sync");
+}
+
+#[test_db::test(seed)]
 async fn people_are_added_to_events_and_see_them_on_their_schedule(pool: MySqlPool) {
     sqlx::raw_sql(SETUP).execute(&pool).await.unwrap();
     let server = server(pool.clone());
