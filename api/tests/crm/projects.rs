@@ -801,16 +801,17 @@ async fn each_stage_starts_with_steps_checked_off_by_the_real_work(pool: MySqlPo
     win_8002(&pool).await;
     let project = projects_of_8002(&pool).await[0];
 
-    // The company starts with six steps, each checked off by the real work.
+    // The company starts with six steps, five checked off by the real work;
+    // "Start fabrication" is checked off by hand, which moves the job on.
     let seen = board(&pool, sessions::ADMIN).await;
     let steps = seen["process_steps"].as_array().unwrap().clone();
-    let starting: Vec<(&str, &str, &str, bool)> = steps
+    let starting: Vec<(&str, &str, Option<&str>, bool)> = steps
         .iter()
         .map(|step| {
             (
                 step["stage_code"].as_str().unwrap(),
                 step["name"].as_str().unwrap(),
-                step["auto"]["trigger"].as_str().unwrap(),
+                step["auto"]["trigger"].as_str(),
                 step["ends_stage"] == true,
             )
         })
@@ -818,17 +819,17 @@ async fn each_stage_starts_with_steps_checked_off_by_the_real_work(pool: MySqlPo
     assert_eq!(
         starting,
         vec![
-            ("new", "Schedule the template", "template_booked", false),
-            ("new", "Template", "template_completed", true),
-            ("templated", "Start fabrication", "stage_moved", true),
+            ("new", "Schedule the template", Some("template_booked"), false),
+            ("new", "Template", Some("template_completed"), true),
+            ("templated", "Start fabrication", None, false),
             (
                 "fabrication",
                 "Schedule the installation",
-                "install_booked",
+                Some("install_booked"),
                 false
             ),
-            ("fabrication", "Installation", "install_completed", true),
-            ("installed", "Confirm full payment", "payment_full", false),
+            ("fabrication", "Installation", Some("install_completed"), true),
+            ("installed", "Confirm full payment", Some("payment_full"), false),
         ]
     );
     let id_of = |name: &str| {

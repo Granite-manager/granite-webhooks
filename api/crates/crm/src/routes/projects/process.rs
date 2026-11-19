@@ -39,19 +39,20 @@ fn clean_name(name: &str) -> ApiResult<&str> {
 
 /// The steps a company starts with, renamed, moved or deleted as it likes,
 /// each checked off by the real work (owner, 2026-11-18): the template booked,
-/// then the template maker's Completed; moved to In Fabrication; the
+/// then the template maker's Completed; "Start fabrication" checked off by
+/// hand (no rule: a job never moves on by hand, owner 2026-11-19); the
 /// installation booked, then the installer's Completed; paid in full.
-pub const STAGE_END_STEPS: [(Stage, &str, &str); 6] = [
-    (Stage::New, "Schedule the template", "template_booked"),
-    (Stage::New, "Template", "template_completed"),
-    (Stage::Templated, "Start fabrication", "stage_moved"),
+pub const STAGE_END_STEPS: [(Stage, &str, Option<&str>); 6] = [
+    (Stage::New, "Schedule the template", Some("template_booked")),
+    (Stage::New, "Template", Some("template_completed")),
+    (Stage::Templated, "Start fabrication", None),
     (
         Stage::Fabrication,
         "Schedule the installation",
-        "install_booked",
+        Some("install_booked"),
     ),
-    (Stage::Fabrication, "Installation", "install_completed"),
-    (Stage::Installed, "Confirm full payment", "payment_full"),
+    (Stage::Fabrication, "Installation", Some("install_completed")),
+    (Stage::Installed, "Confirm full payment", Some("payment_full")),
 ];
 
 /// The stages that have steps.
@@ -78,12 +79,13 @@ async fn seed_steps(conn: &mut MySqlConnection, company_id: i32) -> sqlx::Result
         sqlx::query(
             "INSERT INTO project_process_steps
                 (company_id, stage_code, name, position, auto_trigger, auto_since)
-             SELECT ?, ?, ?, COALESCE(MAX(position) + 1, 0), ?, UTC_TIMESTAMP(3)
+             SELECT ?, ?, ?, COALESCE(MAX(position) + 1, 0), ?, IF(? IS NULL, NULL, UTC_TIMESTAMP(3))
                FROM project_process_steps WHERE company_id = ? AND stage_code = ?",
         )
         .bind(company_id)
         .bind(stage.as_str())
         .bind(name)
+        .bind(trigger)
         .bind(trigger)
         .bind(company_id)
         .bind(stage.as_str())
@@ -919,7 +921,7 @@ const NOTIFY_POSITIONS: [(i32, &str); 7] = [
 ];
 
 /// What can check a step off by itself.
-pub const TRIGGERS: [&str; 17] = [
+pub const TRIGGERS: [&str; 16] = [
     "email_template",
     "text_template",
     "customer_replied",
@@ -936,7 +938,6 @@ pub const TRIGGERS: [&str; 17] = [
     "payment_full",
     "task_done",
     "days_after",
-    "stage_moved",
 ];
 
 /// Whether a rule with this trigger can also move the project on: not one that
