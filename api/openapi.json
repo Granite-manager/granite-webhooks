@@ -47684,8 +47684,8 @@
         "tags": [
           "schedule"
         ],
-        "summary": "Edit an event",
-        "description": "Saves every field, logs what changed in the event's history, and\nre-times its appointment reminders when it moved.",
+        "summary": "Edit an event, or some repeats of a repeating one",
+        "description": "Saves every field, logs what changed in the event's history, and\nre-times its appointment reminders when it moved. For a repeating event,\n`scope=one` with `date` takes that repeat off it (`recurrence_exdates`)\nand saves the input as its own event that doesn't repeat; and\n`scope=following` with `start` ends the repeats just before that one\n(`recurrence_until`) and saves the input as a new event from it on. Both\nanswer 200 with the new event's id; it keeps the people, notifications,\ninvoice, comments and photos the input leaves out.",
         "operationId": "update_event",
         "parameters": [
           {
@@ -47696,6 +47696,33 @@
             "schema": {
               "type": "integer",
               "format": "int32"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "`all` (the default): the event and, if it repeats, every repeat.\n`one`: only the repeat on `date`. `following`: the repeat that starts\nat `start` and every later one. On an event that does not repeat,\nevery scope edits the event.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "date",
+            "in": "query",
+            "description": "With `scope=one`: the repeat's day, `YYYY-MM-DD`, as the calendar shows\nit (the shop's wall-clock date, like `recurrence_exdates`).",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start",
+            "in": "query",
+            "description": "With `scope=following`: the repeat's start, UTC ISO 8601. The repeat\nat or before the first one edits the whole event.",
+            "required": false,
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -47710,6 +47737,16 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "description": "Some repeats changed: their new event",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditedRepeats"
+                }
+              }
+            }
+          },
           "204": {
             "description": "Saved"
           },
@@ -93481,6 +93518,20 @@
         },
         "additionalProperties": false
       },
+      "EditedRepeats": {
+        "type": "object",
+        "description": "`PUT /v1/events/{id}` that changed only some repeats.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The new event holding the changed repeats."
+          }
+        }
+      },
       "EditedUser": {
         "type": "object",
         "description": "The edit form's user.",
@@ -94687,12 +94738,15 @@
             "description": "Create only: copy comments, comment files and these attachments\nfrom this event of the company."
           },
           "copy_attachment_ids": {
-            "type": "array",
+            "type": [
+              "array",
+              "null"
+            ],
             "items": {
               "type": "integer",
               "format": "int32"
             },
-            "description": "Create only: attachments of `copy_from_event_id` to copy."
+            "description": "Create only: attachments of `copy_from_event_id` to copy. On an edit\nof some repeats (`scope=one` or `following`): the repeating event's\nattachments the new event keeps (left out: all of them)."
           },
           "skipped_notification_flow_ids": {
             "type": [
