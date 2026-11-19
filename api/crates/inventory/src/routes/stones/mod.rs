@@ -8,10 +8,14 @@
 //! - `GET /v1/stones/{id}/slabs` → its slabs (own + linked) with sale details
 //! - `PATCH /v1/stones/{id}/samples` → samples on hand and how many to keep
 //!
+//! The reads take `?location=` for another location's stones (look only),
+//! see `locations`.
+//!
 //! Replaces the loader of the Remix `employee.stones.tsx` route
 //! (`stoneQueryBuilder` in `app/utils/queries.server.ts`).
 
 mod handlers;
+pub mod locations;
 pub mod materials;
 mod media;
 pub mod queries;
