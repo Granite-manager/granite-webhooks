@@ -78,7 +78,7 @@ pub fn encrypt(key: &[u8; 32], plain: &str) -> String {
     let iv: [u8; 12] = rand::random();
     // aes-gcm appends the tag to the ciphertext; the CRM puts it first.
     let sealed = cipher
-        .encrypt(Nonce::from_slice(&iv), plain.as_bytes())
+        .encrypt(&Nonce::from(iv), plain.as_bytes())
         .unwrap_or_default();
     let (body, tag) = sealed.split_at(sealed.len().saturating_sub(16));
     let mut packed = Vec::with_capacity(12 + sealed.len());
@@ -100,9 +100,8 @@ pub fn decrypt(key: &[u8; 32], blob: &[u8]) -> Option<String> {
     let mut sealed = body.to_vec();
     sealed.extend_from_slice(tag);
     let cipher = Aes256Gcm::new(key.into());
-    let plain = cipher
-        .decrypt(Nonce::from_slice(iv), sealed.as_ref())
-        .ok()?;
+    let nonce = Nonce::try_from(iv).ok()?;
+    let plain = cipher.decrypt(&nonce, sealed.as_ref()).ok()?;
     let plain = String::from_utf8(plain).ok()?.trim().to_string();
     (!plain.is_empty()).then_some(plain)
 }

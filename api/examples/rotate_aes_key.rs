@@ -95,8 +95,9 @@ fn open(key: &[u8; 32], blob: &[u8]) -> Option<String> {
     let (tag, body) = rest.split_at(16);
     let mut sealed = body.to_vec();
     sealed.extend_from_slice(tag);
+    let nonce = Nonce::try_from(iv).ok()?;
     let plain = Aes256Gcm::new(key.into())
-        .decrypt(Nonce::from_slice(iv), sealed.as_ref())
+        .decrypt(&nonce, sealed.as_ref())
         .ok()?;
     String::from_utf8(plain).ok()
 }
