@@ -19465,7 +19465,7 @@
             "description": "Changed"
           },
           "400": {
-            "description": "`is_default: false`, or an empty name",
+            "description": "An empty name",
             "content": {
               "application/json": {
                 "schema": {
@@ -24317,6 +24317,108 @@
           },
           "404": {
             "description": "No such project the caller may see, or item in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/steps/{step_id}/note": {
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Write a step's note on a project",
+        "description": "Optional, like the step's files (owner, 2026-11-18). Anyone who can see\nthe project, while it is not archived or cancelled. An empty note removes it.",
+        "operationId": "set_project_step_note",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "step_id",
+            "in": "path",
+            "description": "Step id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StepNoteInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "A note over 5,000 characters, or a part not on the project",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see, or step in the company",
             "content": {
               "application/json": {
                 "schema": {
@@ -96719,6 +96821,32 @@
           }
         }
       },
+      "InboxGroup": {
+        "type": "object",
+        "description": "A live pipeline (group) of the company, for the website's Leads page.",
+        "required": [
+          "id",
+          "is_default"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The group id (`PUT /v1/customers/{id}/sales-rep` takes it as `group_id`)."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its name."
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "The pipeline new leads go to (\"Assign leads here\")."
+          }
+        }
+      },
       "InboxLead": {
         "type": "object",
         "description": "A lead of the inbox.",
@@ -96783,6 +96911,41 @@
             ],
             "format": "int64",
             "description": "Its newest live deal, the one the app opens."
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The customer's primary email (null when none)."
+          },
+          "referral_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How they found the company (\"Google\", \"Facebook\"…; null when unknown)."
+          },
+          "your_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the customer wrote in the lead form (null when nothing)."
+          },
+          "address": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The customer's address (null when none)."
+          },
+          "customer_temperature": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`hot`, `medium` or `cold`; null when not rated."
           }
         }
       },
@@ -98651,7 +98814,8 @@
           "unassigned",
           "assigned",
           "reps",
-          "team"
+          "team",
+          "groups"
         ],
         "properties": {
           "is_manager": {
@@ -98685,6 +98849,13 @@
               "$ref": "#/components/schemas/InboxRep"
             },
             "description": "Every sales rep of the company with the leads given to them this\nmonth (since the 1st, server time), sorted by name. Filled in for\neveryone, a sales rep too, so they can compare their count with the\nteam's; the same numbers as `reps`."
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InboxGroup"
+            },
+            "description": "The company's live pipelines, oldest first (managers only; empty for\na sales rep). When none is the default, the Leads page asks which\none a lead goes to."
           }
         }
       },
@@ -101269,6 +101440,22 @@
               "$ref": "#/components/schemas/NewProjectFile"
             },
             "description": "Its files."
+          },
+          "step_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Added on this step of the project (they still show with its files)."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part of that step, on a project with parts; left out: its least\nfinished part."
           }
         }
       },
@@ -105209,7 +105396,7 @@
               "boolean",
               "null"
             ],
-            "description": "`true` makes it the company's default (only `true` is accepted)."
+            "description": "`true` makes it the company's default (\"Assign leads here\");\n`false` turns that off, leaving the company with no default: its\nsales managers then pick the pipeline of each lead on the website's\nLeads page (Telegram and phone assignments use the oldest pipeline)."
           }
         },
         "additionalProperties": false
@@ -108524,6 +108711,22 @@
           "created_at": {
             "type": "string",
             "description": "When it was made, UTC ISO."
+          },
+          "step_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The step it was added on; null for one added to the project itself."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part of that step, on a project with parts."
           }
         }
       },
@@ -109106,6 +109309,7 @@
           "user_id",
           "step_owners",
           "step_items_done",
+          "step_notes",
           "lists",
           "questions",
           "involved"
@@ -109249,6 +109453,13 @@
               "$ref": "#/components/schemas/StepItemDone"
             },
             "description": "Ticks of the steps' own to-do lists on this project."
+          },
+          "step_notes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StepNote"
+            },
+            "description": "The steps' notes on this project."
           },
           "lists": {
             "type": "array",
@@ -114715,6 +114926,14 @@
             ],
             "format": "int32",
             "description": "The new sales rep (user id), or null to unassign."
+          },
+          "group_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The pipeline (group) whose first stage a new deal starts in; omit\nfor the default pipeline. Used only when the customer has no open\ndeal yet (the website's Leads page)."
           }
         },
         "additionalProperties": false
@@ -118713,6 +118932,66 @@
           "label": {
             "type": "string",
             "description": "1 to 200 characters."
+          }
+        }
+      },
+      "StepNote": {
+        "type": "object",
+        "description": "A step's note on a project (optional, like its files).",
+        "required": [
+          "step_id",
+          "note",
+          "updated_at"
+        ],
+        "properties": {
+          "step_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The step."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part; null on a project without parts."
+          },
+          "note": {
+            "type": "string",
+            "description": "The text."
+          },
+          "updated_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who wrote it last."
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "When, UTC ISO."
+          }
+        }
+      },
+      "StepNoteInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/projects/{id}/steps/{step_id}/note`.",
+        "required": [
+          "note"
+        ],
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "Up to 5,000 characters; empty removes the note."
+          },
+          "part_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The part, on a project with parts; left out: its least finished part."
           }
         }
       },
