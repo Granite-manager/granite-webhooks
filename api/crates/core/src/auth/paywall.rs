@@ -3,7 +3,8 @@
 //! `company.source = 'signup_page'` (ENG-90): every authenticated request in
 //! such a company is refused with 403, whichever credential it came with
 //! (session cookie, agent token, the phone's device token), until Stripe
-//! shows its subscription paid. Open meanwhile: sign-in and sign-out
+//! shows its subscription paid, or while a superuser gave it free time
+//! (`company.free_access_until`, a free month with a demo). Open meanwhile: sign-in and sign-out
 //! (`/v1/auth/...`), billing (`/v1/billing...`, where it pays) and the app
 //! shell the billing page is drawn in. Superusers are never stopped.
 //!
@@ -13,15 +14,16 @@
 //! A database error refuses the request (the caller gets a 500), never lets
 //! it through; `company.billing_required` plays no part.
 //!
-//! A company found paid is remembered for `PAID_CACHE_SECS` per Lambda
-//! instance, so the check costs one primary-key query a minute per company;
+//! A company found paid is remembered for `PAID_CACHE_SECS` per `AppState`
+//! (one per Lambda instance), so the check costs one primary-key query a minute per company;
 //! an unpaid one is never remembered, so paying opens access at once.
 
 use super::session::SessionUser;
 use crate::error::ApiError;
+use crate::state::AppState;
 use sqlx::MySqlPool;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// `company.source` of a company that signed itself up.
@@ -31,7 +33,9 @@ const PAID_CACHE_SECS: u64 = 60;
 /// What a refused request is told.
 pub const PAYMENT_REQUIRED: &str = "Your Granite Manager subscription is not paid yet. Pay on the Billing page to open your account.";
 
-static OPEN: LazyLock<Mutex<HashMap<i32, Instant>>> = LazyLock::new(Mutex::default);
+/// Companies found open, and when: per `AppState` (one per Lambda instance).
+#[derive(Default)]
+struct OpenCompanies(Mutex<HashMap<i32, Instant>>);
 
 /// The routes a company that has not paid may still call.
 pub fn open_while_unpaid(path: &str) -> bool {
@@ -41,10 +45,14 @@ pub fn open_while_unpaid(path: &str) -> bool {
         || path == "/v1/app/shell"
 }
 
-/// The SQL rule, also for tests: the company came from the sign-up page and
-/// has no paid Stripe subscription (active, a Stripe trial a superuser
-/// granted, or a failed renewal still in its grace period).
-pub const BLOCKED_SQL: &str = "SELECT c.source = 'signup_page' AND NOT EXISTS (
+/// Whether a company is kept out, in SQL.
+///
+/// It came from the sign-up page, has no free time a superuser gave it
+/// (`free_access_until` in the future) and no paid Stripe subscription
+/// (active, a Stripe trial, or a failed renewal still in its grace period).
+pub const BLOCKED_SQL: &str = "SELECT c.source = 'signup_page'
+       AND NOT COALESCE(c.free_access_until > UTC_TIMESTAMP(), FALSE)
+       AND NOT EXISTS (
         SELECT 1 FROM company_billing cb
          WHERE cb.company_id = c.id
            AND cb.stripe_subscription_id IS NOT NULL
@@ -63,30 +71,37 @@ pub async fn company_blocked(pool: &MySqlPool, company_id: i32) -> sqlx::Result<
     Ok(blocked.unwrap_or(false))
 }
 
-fn remembered_open(company_id: i32) -> bool {
-    let open = OPEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    open.get(&company_id)
-        .is_some_and(|at| at.elapsed() < Duration::from_secs(PAID_CACHE_SECS))
-}
+impl OpenCompanies {
+    fn remembered(&self, company_id: i32) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&company_id)
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(PAID_CACHE_SECS))
+    }
 
-fn remember_open(company_id: i32) {
-    OPEN.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(company_id, Instant::now());
+    fn remember(&self, company_id: i32) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(company_id, Instant::now());
+    }
 }
 
 /// Refuses `user`'s request to `path` while their acting company has to pay
 /// first.
-pub async fn check(pool: &MySqlPool, user: &SessionUser, path: &str) -> Result<(), ApiError> {
-    if user.is_superuser || open_while_unpaid(path) || remembered_open(user.company_id) {
+pub async fn check(state: &AppState, user: &SessionUser, path: &str) -> Result<(), ApiError> {
+    if user.is_superuser || open_while_unpaid(path) {
         return Ok(());
     }
-    if company_blocked(pool, user.company_id).await? {
+    let open = state.extensions.get_or_insert_with(OpenCompanies::default);
+    if open.remembered(user.company_id) {
+        return Ok(());
+    }
+    if company_blocked(&state.pool, user.company_id).await? {
         return Err(ApiError::Denied(PAYMENT_REQUIRED.into()));
     }
-    remember_open(user.company_id);
+    open.remember(user.company_id);
     Ok(())
 }
 
@@ -101,7 +116,7 @@ mod tests {
             "/v1/auth/logout",
             "/v1/billing",
             "/v1/billing/gate",
-            "/v1/billing/features/checkout",
+            "/v1/billing/first-payment/checkout",
             "/v1/app/shell",
         ] {
             assert!(open_while_unpaid(open), "{open}");

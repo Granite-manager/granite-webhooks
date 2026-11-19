@@ -1,15 +1,16 @@
 //! Self sign-up (ENG-90): a company Granite Manager does not know creates
 //! its own account from the landing page.
 //!
-//! - `GET  /v1/public/signup`                      → the features to pick and their prices
+//! - `GET  /v1/public/signup`                      → the monthly price and who to contact
 //! - `GET  /v1/public/signup/subdomain/{subdomain}` → is a web address free
 //! - `POST /v1/public/signup`                       → create the company and its manager, sign in
 //!
 //! No session. The new company is seeded like one a superuser creates
-//! (`superuser_companies::seed_company`) and pays for the features it picks
-//! right away (`billing_features`: their prices added up, 20% off for every
-//! feature). There is no free month: until Stripe confirms the first
-//! payment the billing gate keeps it on `/admin/billing`.
+//! (`superuser_companies::seed_company`) and pays a flat
+//! `SIGNUP_MONTHLY_PRICE_CENTS` a month (`first_payment`). Until Stripe
+//! confirms the first payment, or a superuser gives it free time
+//! (`company.free_access_until`, after it reached out for a demo), the API
+//! keeps it out (`auth::paywall`).
 //! The web address it asks for is kept as `requested_subdomain` until a
 //! superuser has DNS and Caddy serve it. Granite Manager's support inbox
 //! hears of every sign-up.
@@ -23,10 +24,6 @@ use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
 use crate::openapi::{OpenApiRouter, routes};
 use crate::routes::auth::{client_ip, start_session};
-use crate::routes::billing_features::{
-    ALL_FEATURES_DISCOUNT_PERCENT, FeatureQuote, PricedFeature, priced_features, quote,
-    save_choices,
-};
 use crate::routes::superuser_companies::{seed_company, subdomain_taken, valid_subdomain};
 use crate::state::AppState;
 use crate::webhooks_client::OutgoingEmail;
@@ -52,6 +49,10 @@ const MIN_PASSWORD: usize = 8;
 const BCRYPT_COST: u32 = 10;
 /// Where Granite Manager hears of new sign-ups.
 const SIGNUP_NOTICE_TO: &str = "support@granite-manager.com";
+/// Who a new company writes to for a free month and a demo.
+pub const SALES_EMAIL: &str = "sales@granite-manager.com";
+/// What a company from the sign-up page pays a month, in USD cents ($800).
+pub const SIGNUP_MONTHLY_PRICE_CENTS: i32 = 80_000;
 /// `positions.id` of a manager.
 const MANAGER: i32 = 5;
 /// Web addresses no company may have.
@@ -63,42 +64,35 @@ const RESERVED_SUBDOMAINS: [&str; 20] = [
 /// `GET /v1/public/signup`.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SignupOptions {
-    /// Sign-up is open: some feature has a price. False: the page says to
-    /// contact Granite Manager.
-    pub open: bool,
-    /// The features to pick from, each with its monthly price, by name.
-    pub features: Vec<PricedFeature>,
-    /// Percent off when every feature is picked (20).
-    pub all_features_discount_percent: i64,
+    /// What the company pays a month, in USD cents (80000: $800).
+    pub monthly_price_cents: i32,
+    /// Who to write to for a free month and a demo instead of paying now.
+    pub contact_email: String,
     /// The base domain of company web addresses (`granite-manager.com`).
     pub base_domain: String,
 }
 
-/// What signing up offers
+/// What signing up costs
 ///
-/// The features a new company can pay for, each with its monthly price
-/// (USD cents); a company pays the sum of those it picks, 20% off when it
-/// picks all of them, from the day it signs up. Then check a web address
-/// with `GET /v1/public/signup/subdomain/{subdomain}` and sign up with
-/// `POST /v1/public/signup`. No session.
+/// The flat monthly price (USD cents), the address to write to for a free
+/// month and a demo instead, and the domain web addresses go under. Then
+/// check a web address with `GET /v1/public/signup/subdomain/{subdomain}`
+/// and sign up with `POST /v1/public/signup`. No session.
 #[crate::openapi::path(
     get,
     path = "/v1/public/signup",
     operation_id = "get_signup_options",
     tag = "public",
     responses(
-        (status = 200, description = "The features and their prices", body = SignupOptions),
-        (status = 500, description = "Database error", body = ErrorBody),
+        (status = 200, description = "The price and the contact", body = SignupOptions),
     )
 )]
-pub async fn signup_options(State(state): State<AppState>) -> ApiResult<Json<SignupOptions>> {
-    let features = priced_features(&state.pool).await?;
-    Ok(Json(SignupOptions {
-        open: !features.is_empty(),
-        features,
-        all_features_discount_percent: ALL_FEATURES_DISCOUNT_PERCENT,
+pub async fn signup_options(State(state): State<AppState>) -> Json<SignupOptions> {
+    Json(SignupOptions {
+        monthly_price_cents: SIGNUP_MONTHLY_PRICE_CENTS,
+        contact_email: SALES_EMAIL.into(),
         base_domain: crate::setup_checklist::base_domain(&state),
-    }))
+    })
 }
 
 /// Why a web address cannot be had, or None when it is fine to ask for.
@@ -177,12 +171,10 @@ pub struct SignupInput {
     pub name: String,
     /// Their email, which they sign in with. Must not sign in anywhere yet.
     pub email: String,
+    /// Their phone number, at least 10 digits.
+    pub phone_number: String,
     /// Their password, 8 to 200 characters.
     pub password: String,
-    /// Ids of the features (`GET /v1/public/signup`) the company pays for; at
-    /// least one. Unknown and unpriced ids are left out.
-    #[serde(default)]
-    pub feature_ids: Vec<i32>,
     /// They accept the End-User License Agreement and the Privacy Policy.
     pub accept_terms: bool,
     /// Leave empty (a field people do not see; bots fill it in).
@@ -208,6 +200,7 @@ struct CleanSignup {
     address: Option<String>,
     name: String,
     email: String,
+    phone: String,
     password: String,
 }
 
@@ -260,6 +253,10 @@ fn clean(input: &SignupInput) -> ApiResult<CleanSignup> {
     if !plausible_email(&email) {
         return Err(bad("Enter a valid email"));
     }
+    let phone = input.phone_number.trim().to_string();
+    if phone.chars().filter(char::is_ascii_digit).count() < 10 || phone.len() > 32 {
+        return Err(bad("Enter a phone number with at least 10 digits"));
+    }
     let password = input.password.trim().to_string();
     if password.chars().count() < MIN_PASSWORD || password.len() > 200 {
         return Err(bad("The password must be 8 to 200 characters"));
@@ -275,6 +272,7 @@ fn clean(input: &SignupInput) -> ApiResult<CleanSignup> {
         address,
         name,
         email,
+        phone,
         password,
     })
 }
@@ -283,18 +281,18 @@ fn clean(input: &SignupInput) -> ApiResult<CleanSignup> {
 ///
 /// Creates the company (seeded like one a superuser creates: calendars,
 /// starter pipeline, email templates, a walk-in kiosk login), makes the
-/// person signing up its Manager and an admin, saves the features it pays
-/// for and their price, and signs them in: the answer and the session
-/// cookie are those of `POST /v1/auth/login`. Next call
-/// `POST /v1/billing/features/checkout` and send them to Stripe: there is
-/// no free month, and until the first payment the billing gate keeps the
-/// company on `/admin/billing` and the API refuses everything but sign-in
-/// and billing (`company.source = 'signup_page'`, `auth::paywall`). The web address is kept as asked for;
+/// person signing up its Manager and an admin, sets its price ($800 a
+/// month) and signs them in: the answer and the session cookie are those
+/// of `POST /v1/auth/login`. Everything they typed is saved here, before
+/// any payment. Next they pay (`POST /v1/billing/first-payment/checkout`,
+/// to Stripe) or write to Granite Manager for a free month and a demo.
+/// Until Stripe shows the payment, or a superuser gives free time, the API
+/// refuses everything but sign-in and billing (`company.source =
+/// 'signup_page'`, `auth::paywall`). The web address is kept as asked for;
 /// Granite Manager turns it on later, so the company starts on the main
 /// host. No session.
 ///
-/// 400 for a missing or bad field or no priced feature picked (also while
-/// no feature has a price: sign-up is closed), 409 when the email already signs in
+/// 400 for a missing or bad field, 409 when the email already signs in
 /// somewhere (sign in instead) or the web address is taken, 429 after
 /// `MAX_SIGNUPS_PER_ADDRESS` sign-ups from one address in a day.
 #[crate::openapi::path(
@@ -318,12 +316,6 @@ pub async fn sign_up(
 ) -> ApiResult<Response> {
     let signup = clean(&input)?;
     let pool = &state.pool;
-    let picked = quote(&priced_features(pool).await?, &input.feature_ids);
-    if picked.features.is_empty() {
-        return Err(ApiError::BadRequest(
-            "Pick at least one feature to pay for".into(),
-        ));
-    }
     let ip_hash = crate::auth::sha256_hex(&client_ip(&headers));
     let recent: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM company
@@ -361,8 +353,9 @@ pub async fn sign_up(
     let mut tx = pool.begin().await?;
     let company_id = sqlx::query(
         "INSERT INTO company (name, address, requested_subdomain, statistics_widgets_hidden,
-                              billing_required, source, signed_up_at, signup_ip_hash)
-         VALUES (?, ?, ?, 1, 1, ?, ?, ?)",
+                              billing_required, source, signed_up_at, signup_ip_hash,
+                              subscription_price_cents)
+         VALUES (?, ?, ?, 1, 1, ?, ?, ?, ?)",
     )
     .bind(&signup.company_name)
     .bind(&signup.address)
@@ -370,6 +363,7 @@ pub async fn sign_up(
     .bind(crate::auth::paywall::SIGNUP_PAGE)
     .bind(now)
     .bind(&ip_hash)
+    .bind(SIGNUP_MONTHLY_PRICE_CENTS)
     .execute(&mut *tx)
     .await?
     .last_insert_id();
@@ -377,11 +371,12 @@ pub async fn sign_up(
         .map_err(|_| ApiError::Internal("company id out of range".into()))?;
     seed_company(&mut tx, company_id, &signup.subdomain).await?;
     let user_id = sqlx::query(
-        "INSERT INTO users (name, email, password, company_id, is_employee, is_admin)
-         VALUES (?, ?, ?, ?, 1, 1)",
+        "INSERT INTO users (name, email, phone_number, password, company_id, is_employee, is_admin)
+         VALUES (?, ?, ?, ?, ?, 1, 1)",
     )
     .bind(&signup.name)
     .bind(&signup.email)
+    .bind(&signup.phone)
     .bind(&hash)
     .bind(company_id)
     .execute(&mut *tx)
@@ -395,58 +390,38 @@ pub async fn sign_up(
         .bind(company_id)
         .execute(&mut *tx)
         .await?;
-    save_choices(&mut tx, company_id, &picked).await?;
     tx.commit().await?;
 
     let base = crate::setup_checklist::base_domain(&state);
-    send_notices(&state, company_id, &signup, &picked, &base).await;
+    send_notices(&state, company_id, &signup, &base).await;
     tracing::info!(company_id, user_id, "company signed itself up");
     start_session(&state, user_id).await
 }
 
 /// Tells Granite Manager about the sign-up and welcomes the new manager.
 /// Failures are logged, never shown: the account exists either way.
-async fn send_notices(
-    state: &AppState,
-    company_id: i32,
-    signup: &CleanSignup,
-    picked: &FeatureQuote,
-    base_domain: &str,
-) {
-    let features = picked
-        .features
-        .iter()
-        .map(|f| f.name.as_str())
-        .collect::<Vec<_>>()
-        .join(", ");
-    let price = format!(
-        "${:.2} a month{}",
-        cents_to_dollars(picked.total_cents),
-        if picked.all_features {
-            format!(" (every feature, {}% off)", picked.discount_percent)
-        } else {
-            String::new()
-        }
-    );
+async fn send_notices(state: &AppState, company_id: i32, signup: &CleanSignup, base_domain: &str) {
+    let price = format!("${} a month", SIGNUP_MONTHLY_PRICE_CENTS / 100);
     let notice = email(
         SIGNUP_NOTICE_TO,
         format!("New sign-up: {}", signup.company_name),
         format!(
             r#"<div style="font-family: Arial, sans-serif;">
   <h2>{company} signed up</h2>
-  <p>Company id {company_id}. Manager: {name} &lt;{email}&gt;.</p>
+  <p>Company id {company_id}. Manager: {name} &lt;{email}&gt;, {phone}.</p>
   <p>Web address asked for: <b>{subdomain}.{base}</b> (set the subdomain once DNS and Caddy serve it).</p>
   <p>Address: {address}</p>
-  <p>Pays for: {features}, {price}. They are sent to Stripe to pay now; access opens once they have paid.</p>
+  <p>Price: {price}. They are asked to pay with Stripe now, or to write to {sales} for a free month and a demo. Their account stays locked until they pay or you give them free time (Superuser &gt; Companies &gt; Free month).</p>
   <p>Still to set up for them: the web address, a phone line (Telnyx), the email domain, the website lead form and the stones on their website.</p>
 </div>"#,
             company = escape_html(&signup.company_name),
             name = escape_html(&signup.name),
             email = escape_html(&signup.email),
+            phone = escape_html(&signup.phone),
+            sales = SALES_EMAIL,
             subdomain = escape_html(&signup.subdomain),
             base = escape_html(base_domain),
             address = escape_html(signup.address.as_deref().unwrap_or("not given")),
-            features = escape_html(&features),
             price = escape_html(&price),
         ),
     );
@@ -457,14 +432,14 @@ async fn send_notices(
         format!(
             r#"<div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto;">
   <h2 style="color: #1e293b;">Welcome, {name}</h2>
-  <p style="color: #475569; line-height: 1.6;">{company} is set up on Granite Manager with {features} for {price}. If you did not finish paying, sign in and pay on the Billing page to open your account.</p>
+  <p style="color: #475569; line-height: 1.6;">{company} is set up on Granite Manager ({price}). If you did not pay yet, sign in and pay on the Billing page to open your account, or write to {sales} for a free month and a demo.</p>
   <p style="color: #475569; line-height: 1.6;">Your dashboard lists what is left to set up. For a phone line, your company email and your website, our team will help: reply to this email or write to {support}.</p>
   <a href="{app}/login" style="display: inline-block; background-color: #2563eb; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: 600; margin: 16px 0;">Open Granite Manager</a>
 </div>"#,
             name = escape_html(&signup.name),
             company = escape_html(&signup.company_name),
-            features = escape_html(&features),
             price = escape_html(&price),
+            sales = SALES_EMAIL,
             support = SIGNUP_NOTICE_TO,
         ),
     );
@@ -478,11 +453,6 @@ async fn send_notices(
     if let Err(err) = sent_welcome {
         tracing::warn!(?err, company_id, "sign-up welcome email failed");
     }
-}
-
-#[allow(clippy::cast_precision_loss)] // cents of a monthly price
-fn cents_to_dollars(cents: i64) -> f64 {
-    cents as f64 / 100.0
 }
 
 fn email(to: &str, subject: String, body: String) -> OutgoingEmail {
@@ -514,8 +484,8 @@ mod tests {
             address: Some(" ".into()),
             name: " Ann Lee ".into(),
             email: " Ann@Acme.COM ".into(),
+            phone_number: " (317) 555-0100 ".into(),
             password: " secret-pass ".into(),
-            feature_ids: vec![1, 1, 2],
             accept_terms: true,
             website: None,
         }
@@ -531,6 +501,7 @@ mod tests {
                 address: None,
                 name: "Ann Lee".into(),
                 email: "ann@acme.com".into(),
+                phone: "(317) 555-0100".into(),
                 password: "secret-pass".into(),
             }
         );
@@ -551,6 +522,7 @@ mod tests {
         assert!(refused(|i| i.name = String::new()));
         assert!(refused(|i| i.email = "ann@acme".into()));
         assert!(refused(|i| i.email = "ann acme.com".into()));
+        assert!(refused(|i| i.phone_number = "555-0100".into()));
         assert!(refused(|i| i.password = "short".into()));
         assert!(refused(|i| i.accept_terms = false));
         assert!(refused(|i| i.website = Some("http://spam".into())));

@@ -15,35 +15,15 @@ fn server(pool: &MySqlPool) -> TestServer {
     TestServer::new(app(AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN)))
 }
 
-/// Prices three seeded features: Texting $100, Projects $50, AI Chat $25.
-async fn price_features(pool: &MySqlPool) -> Vec<i64> {
-    let mut ids = Vec::new();
-    for (name, cents) in [("Texting", 10_000), ("Projects", 5_000), ("AI Chat", 2_500)] {
-        sqlx::query("UPDATE features SET monthly_price_cents = ? WHERE name = ?")
-            .bind(cents)
-            .bind(name)
-            .execute(pool)
-            .await
-            .unwrap();
-        let id: i32 = sqlx::query_scalar("SELECT id FROM features WHERE name = ?")
-            .bind(name)
-            .fetch_one(pool)
-            .await
-            .unwrap();
-        ids.push(i64::from(id));
-    }
-    ids
-}
-
-fn signup(email: &str, subdomain: &str, feature_ids: &[i64]) -> Value {
+fn signup(email: &str, subdomain: &str) -> Value {
     json!({
         "company_name": "Fresh Stone",
         "subdomain": subdomain,
         "address": "1 Main St",
         "name": "Fay Fresh",
         "email": email,
+        "phone_number": "(317) 555-0199",
         "password": "a-good-password",
-        "feature_ids": feature_ids,
         "accept_terms": true,
     })
 }
@@ -83,32 +63,11 @@ async fn mark_paid(pool: &MySqlPool, company_id: i32, status: &str, payment: &st
 }
 
 #[test_db::test(seed)]
-async fn sign_up_is_closed_until_a_feature_has_a_price(pool: MySqlPool) {
+async fn signing_up_saves_everything_at_800_a_month(pool: MySqlPool) {
     let server = server(&pool);
     let options: Value = server.get("/v1/public/signup").await.json();
-    assert_eq!(options["open"], false);
-    assert_eq!(options["features"], json!([]));
-    server
-        .post("/v1/public/signup")
-        .json(&signup("fay@fresh.test", "fresh-stone", &[1, 2]))
-        .await
-        .assert_status(StatusCode::BAD_REQUEST);
-}
-
-#[test_db::test(seed)]
-async fn signing_up_prices_the_picked_features(pool: MySqlPool) {
-    let ids = price_features(&pool).await;
-    let server = server(&pool);
-    let options: Value = server.get("/v1/public/signup").await.json();
-    assert_eq!(options["open"], true);
-    assert_eq!(options["all_features_discount_percent"], 20);
-    let names: Vec<&str> = options["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| f["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, ["AI Chat", "Projects", "Texting"]);
+    assert_eq!(options["monthly_price_cents"], 80_000);
+    assert_eq!(options["contact_email"], "sales@granite-manager.com");
 
     let check: Value = server
         .get("/v1/public/signup/subdomain/Fresh-Stone")
@@ -117,14 +76,9 @@ async fn signing_up_prices_the_picked_features(pool: MySqlPool) {
     assert_eq!(check["available"], true);
     assert_eq!(check["subdomain"], "fresh-stone");
 
-    // Texting and AI Chat: $125 a month, no discount.
     let response = server
         .post("/v1/public/signup")
-        .json(&signup(
-            " Fay@Fresh.test ",
-            "fresh-stone",
-            &[ids[0], ids[2], 999_999],
-        ))
+        .json(&signup(" Fay@Fresh.test ", "fresh-stone"))
         .await;
     response.assert_status_ok();
     let body: Value = response.json();
@@ -132,14 +86,16 @@ async fn signing_up_prices_the_picked_features(pool: MySqlPool) {
     assert!(response.maybe_header("set-cookie").is_some());
 
     let (company_id, session) = signed_up(&pool, "fay@fresh.test").await;
-    let (source, requested, subdomain, price, required): (
+    let (source, name, address, requested, subdomain, price, required): (
         String,
+        String,
+        Option<String>,
         Option<String>,
         Option<String>,
         i32,
         bool,
     ) = sqlx::query_as(
-        "SELECT source, requested_subdomain, subdomain, subscription_price_cents,
+        "SELECT source, name, address, requested_subdomain, subdomain, subscription_price_cents,
                 billing_required <> 0
            FROM company WHERE id = ?",
     )
@@ -148,10 +104,19 @@ async fn signing_up_prices_the_picked_features(pool: MySqlPool) {
     .await
     .unwrap();
     assert_eq!(source, "signup_page");
+    assert_eq!(name, "Fresh Stone");
+    assert_eq!(address.as_deref(), Some("1 Main St"));
     assert_eq!(requested.as_deref(), Some("fresh-stone"));
     assert_eq!(subdomain, None);
-    assert_eq!(price, 12_500);
+    assert_eq!(price, 80_000);
     assert!(required);
+    let (user_name, phone): (String, Option<String>) =
+        sqlx::query_as("SELECT name, phone_number FROM users WHERE email = 'fay@fresh.test'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(user_name, "Fay Fresh");
+    assert_eq!(phone.as_deref(), Some("(317) 555-0199"));
     let manager: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM users_positions up JOIN users u ON u.id = up.user_id
           WHERE u.email = 'fay@fresh.test' AND up.company_id = ? AND up.position_id = 5",
@@ -168,47 +133,112 @@ async fn signing_up_prices_the_picked_features(pool: MySqlPool) {
         .unwrap();
     assert!(calendars > 0, "seeded like a superuser's company");
 
-    let features: Value = server
-        .get("/v1/billing/features")
+    let first: Value = server
+        .get("/v1/billing/first-payment")
         .with_session(&session)
         .await
         .json();
-    assert_eq!(features["quote"]["total_cents"], 12_500);
-    assert_eq!(features["quote"]["all_features"], false);
-    assert_eq!(features["subscribed"], false);
+    assert_eq!(first["monthly_price_cents"], 80_000);
+    assert_eq!(first["contact_email"], "sales@granite-manager.com");
+    assert_eq!(first["free_access_until"], Value::Null);
+    assert_eq!(first["subscribed"], false);
+}
 
-    // Every feature: 20% off $175.
-    let quote: Value = server
-        .put("/v1/billing/features")
-        .with_session(&session)
-        .json(&json!({ "feature_ids": ids }))
-        .await
-        .json();
-    assert_eq!(quote["subtotal_cents"], 17_500);
-    assert_eq!(quote["discount_cents"], 3_500);
-    assert_eq!(quote["total_cents"], 14_000);
-    let price: i32 =
-        sqlx::query_scalar("SELECT subscription_price_cents FROM company WHERE id = ?")
-            .bind(company_id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(price, 14_000);
+#[test_db::test(seed)]
+async fn a_free_month_from_a_superuser_lets_it_in(pool: MySqlPool) {
+    let server = server(&pool);
     server
-        .put("/v1/billing/features")
+        .post("/v1/public/signup")
+        .json(&signup("fay@fresh.test", "fresh-stone"))
+        .await
+        .assert_status_ok();
+    let (company_id, session) = signed_up(&pool, "fay@fresh.test").await;
+    server
+        .get("/v1/customers")
         .with_session(&session)
-        .json(&json!({ "feature_ids": [] }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    sqlx::query("UPDATE users SET is_superuser = 1 WHERE id = 102")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let path = format!("/v1/superuser/companies/{company_id}/free-access");
+    // Only superusers, and only days from today on.
+    server
+        .put(&path)
+        .with_session(&session)
+        .json(&json!({ "until": "2099-01-01" }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    server
+        .put(&path)
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "until": "2020-01-01" }))
         .await
         .assert_status(StatusCode::BAD_REQUEST);
+    let in_a_month = (chrono::Utc::now() + chrono::Duration::days(30))
+        .date_naive()
+        .to_string();
+    server
+        .put(&path)
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "until": in_a_month }))
+        .await
+        .assert_status_ok();
+    server
+        .get("/v1/customers")
+        .with_session(&session)
+        .await
+        .assert_status_ok();
+    let gate: Value = server
+        .get("/v1/billing/gate")
+        .with_session(&session)
+        .await
+        .json();
+    assert_eq!(gate["restricted"], false);
+    let first: Value = server
+        .get("/v1/billing/first-payment")
+        .with_session(&session)
+        .await
+        .json();
+    assert!(first["free_access_until"].is_string());
+    let companies: Value = server
+        .get("/v1/superuser/companies")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    let listed = companies
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == company_id)
+        .unwrap();
+    assert_eq!(listed["source"], "signup_page");
+    assert!(listed["free_access_until"].is_string());
+
+    // Free time over (ended by hand here): shut again, without any cache.
+    sqlx::query(
+        "UPDATE company SET free_access_until = UTC_TIMESTAMP() - INTERVAL 1 MINUTE WHERE id = ?",
+    )
+    .bind(company_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let gate: Value = server
+        .get("/v1/billing/gate")
+        .with_session(&session)
+        .await
+        .json();
+    assert_eq!(gate["restricted"], true);
+    assert_eq!(gate["first_payment_due"], true);
 }
 
 #[test_db::test(seed)]
 async fn an_unpaid_company_gets_nothing_but_billing(pool: MySqlPool) {
-    let ids = price_features(&pool).await;
     let server = server(&pool);
     server
         .post("/v1/public/signup")
-        .json(&signup("fay@fresh.test", "fresh-stone", &ids[..1]))
+        .json(&signup("fay@fresh.test", "fresh-stone"))
         .await
         .assert_status_ok();
     let (company_id, session) = signed_up(&pool, "fay@fresh.test").await;
@@ -297,7 +327,6 @@ async fn an_unpaid_company_gets_nothing_but_billing(pool: MySqlPool) {
 
 #[test_db::test(seed)]
 async fn bad_and_repeated_sign_ups_are_refused(pool: MySqlPool) {
-    let ids = price_features(&pool).await;
     let server = server(&pool);
     // An email that already signs in somewhere.
     let taken_email: String = sqlx::query_scalar("SELECT email FROM users WHERE id = 100")
@@ -306,7 +335,7 @@ async fn bad_and_repeated_sign_ups_are_refused(pool: MySqlPool) {
         .unwrap();
     server
         .post("/v1/public/signup")
-        .json(&signup(&taken_email.to_uppercase(), "fresh-stone", &ids))
+        .json(&signup(&taken_email.to_uppercase(), "fresh-stone"))
         .await
         .assert_status(StatusCode::CONFLICT);
     // A web address another company has.
@@ -317,19 +346,19 @@ async fn bad_and_repeated_sign_ups_are_refused(pool: MySqlPool) {
     if let Some(taken) = taken {
         server
             .post("/v1/public/signup")
-            .json(&signup("new@fresh.test", &taken, &ids))
+            .json(&signup("new@fresh.test", &taken))
             .await
             .assert_status(StatusCode::CONFLICT);
     }
     // The honeypot, and no terms.
-    let mut bot = signup("bot@fresh.test", "bot-stone", &ids);
+    let mut bot = signup("bot@fresh.test", "bot-stone");
     bot["website"] = json!("http://spam.test");
     server
         .post("/v1/public/signup")
         .json(&bot)
         .await
         .assert_status(StatusCode::BAD_REQUEST);
-    let mut no_terms = signup("terms@fresh.test", "terms-stone", &ids);
+    let mut no_terms = signup("terms@fresh.test", "terms-stone");
     no_terms["accept_terms"] = json!(false);
     server
         .post("/v1/public/signup")
@@ -342,18 +371,14 @@ async fn bad_and_repeated_sign_ups_are_refused(pool: MySqlPool) {
         server
             .post("/v1/public/signup")
             .add_header("x-forwarded-for", "203.0.113.77")
-            .json(&signup(
-                &format!("n{n}@fresh.test"),
-                &format!("fresh-{n}"),
-                &ids,
-            ))
+            .json(&signup(&format!("n{n}@fresh.test"), &format!("fresh-{n}")))
             .await
             .assert_status_ok();
     }
     server
         .post("/v1/public/signup")
         .add_header("x-forwarded-for", "203.0.113.77")
-        .json(&signup("n9@fresh.test", "fresh-9", &ids))
+        .json(&signup("n9@fresh.test", "fresh-9"))
         .await
         .assert_status(StatusCode::TOO_MANY_REQUESTS);
     // The asked-for address is now taken too.

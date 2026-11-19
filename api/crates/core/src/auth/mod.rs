@@ -128,7 +128,7 @@ async fn check_sections(
     user: &SessionUser,
 ) -> Result<(), ApiError> {
     let path = parts.uri.path();
-    paywall::check(&state.pool, user, path).await?;
+    paywall::check(state, user, path).await?;
     let positions = user_positions(&state.pool, user.id).await?;
     if !sections::user_access(&state.pool, user, &positions)
         .await?
@@ -664,7 +664,7 @@ async fn identify(
         && let Some(token) = device::device_token(parts)
     {
         let device = device::authenticate_device(&token, state).await?;
-        paywall::check(&state.pool, &device.user, parts.uri.path()).await?;
+        paywall::check(state, &device.user, parts.uri.path()).await?;
         let positions = user_positions(&state.pool, device.user.id).await?;
         return Ok((device.user, positions));
     }
@@ -679,7 +679,7 @@ async fn identify(
         (Some(session), _) => session,
         (None, Some(token)) => {
             let (user, positions) = agent::authenticate(parts, state, token).await?;
-            paywall::check(&state.pool, &user, parts.uri.path()).await?;
+            paywall::check(state, &user, parts.uri.path()).await?;
             return Ok((user, positions));
         }
         // The phone's token on a route it may not use: refused, but not "signed out" (401), which
@@ -693,7 +693,7 @@ async fn identify(
         .ok_or(ApiError::Unauthorized)?;
     let positions = user_positions(&state.pool, user.id).await?;
     let user = effective_user(user, &positions, session.active_company_id);
-    paywall::check(&state.pool, &user, parts.uri.path()).await?;
+    paywall::check(state, &user, parts.uri.path()).await?;
     Ok((user, positions))
 }
 

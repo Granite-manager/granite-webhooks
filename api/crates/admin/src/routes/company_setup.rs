@@ -1,6 +1,8 @@
-//! The dashboard's "Finish setting up" checklist: what a company still has
-//! to configure (ENG-90). A company that signed itself up starts with none
-//! of the integrations Granite Manager used to set up by hand.
+//! The dashboard's "Finish setting up" checklist (ENG-90).
+//!
+//! What a company still has to configure: a company that signed itself up
+//! starts with none of the integrations Granite Manager used to set up by
+//! hand.
 //!
 //! - `GET /v1/company/setup-checklist`        → the items, done or not
 //! - `PUT /v1/company/setup-checklist/{key}`  → tick (or untick) an item by hand

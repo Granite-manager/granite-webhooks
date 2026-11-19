@@ -12,6 +12,7 @@
 //! - `PUT    /v1/superuser/companies/{id}/setup-checklist/items/{key}` → tick an item by hand
 //! - `PUT    /v1/superuser/companies/{id}/features/{feature}` → switch a feature
 //! - `PUT    /v1/superuser/companies/{id}/billing-required`   → require Stripe payment
+//! - `PUT    /v1/superuser/companies/{id}/free-access`        → let a sign-up company in free until a day
 //!
 //! Superusers only. Replaces the Remix `admin.superuser-dashboard.companies*`
 //! routes.
@@ -51,6 +52,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(tick_setup_item))
         .routes(routes!(switch_feature))
         .routes(routes!(set_billing_required))
+        .routes(routes!(set_free_access))
 }
 
 const CHECK_IN: i32 = 8;
@@ -141,6 +143,9 @@ pub struct CompanySummary {
     /// The web address it asked for at sign-up (`acme`), until a superuser
     /// sets its subdomain; null otherwise.
     pub requested_subdomain: Option<String>,
+    /// A sign-up company is let in free until then (ISO 8601); null: no free
+    /// time. Set with `PUT /v1/superuser/companies/{id}/free-access`.
+    pub free_access_until: Option<chrono::DateTime<chrono::Utc>>,
     pub features: Features,
 }
 
@@ -161,6 +166,7 @@ struct SummaryRow {
     source: String,
     signed_up_at: Option<chrono::NaiveDateTime>,
     requested_subdomain: Option<String>,
+    free_access_until: Option<chrono::NaiveDateTime>,
     #[sqlx(flatten)]
     features: Features,
 }
@@ -200,7 +206,7 @@ pub async fn list_companies(
                   AS cloudtalk_connected,
                 COALESCE(TRIM(c.qbo_realm_id), '') <> '' AS quickbooks_connected,
                 COALESCE(c.billing_required, 0) <> 0 AS billing_required,
-                c.source, c.signed_up_at, c.requested_subdomain,
+                c.source, c.signed_up_at, c.requested_subdomain, c.free_access_until,
                 {features}
            FROM company c
            {joins}
@@ -233,6 +239,7 @@ pub async fn list_companies(
                 source: row.source,
                 signed_up_at: row.signed_up_at.map(|at| at.and_utc()),
                 requested_subdomain: row.requested_subdomain,
+                free_access_until: row.free_access_until.map(|at| at.and_utc()),
                 features: row.features,
             })
             .collect(),
@@ -1394,4 +1401,68 @@ pub async fn set_billing_required(
         .execute(&state.pool)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Body of `PUT /v1/superuser/companies/{id}/free-access`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct FreeAccess {
+    /// Let the company in free until the end of this day (`YYYY-MM-DD`, UTC),
+    /// at most 400 days ahead; null ends the free time now.
+    pub until: Option<chrono::NaiveDate>,
+}
+
+/// Give a sign-up company free time
+///
+/// A company from the sign-up page has no access until it pays; this lets
+/// it in free until the end of `until` (a free month with a demo), or ends
+/// the free time (null). When it subscribes during the free time, its first
+/// charge waits for the end. Answers the end (ISO 8601) or null. Superusers
+/// only; 404 for a deleted or unknown company.
+#[crate::openapi::path(
+    put,
+    path = "/v1/superuser/companies/{id}/free-access",
+    operation_id = "set_platform_company_free_access",
+    tag = "superuser",
+    params(("id" = i32, Path, description = "Company id")),
+    request_body = FreeAccess,
+    responses(
+        (status = 200, description = "Saved; the end of the free time, or null", body = Option<String>),
+        (status = 400, description = "A day in the past or too far ahead", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not a superuser", body = ErrorBody),
+        (status = 404, description = "No such company", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_free_access(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(id): Path<i32>,
+    JsonBody(input): JsonBody<FreeAccess>,
+) -> ApiResult<Json<Option<chrono::DateTime<chrono::Utc>>>> {
+    superuser(&user)?;
+    let until = match input.until {
+        Some(day) => {
+            let today = chrono::Utc::now().date_naive();
+            if day < today || day > today + chrono::Duration::days(400) {
+                return Err(ApiError::BadRequest(
+                    "Pick a day from today to 400 days ahead".into(),
+                ));
+            }
+            day.and_hms_opt(23, 59, 59)
+        }
+        None => None,
+    };
+    let updated =
+        sqlx::query("UPDATE company SET free_access_until = ? WHERE id = ? AND deleted_at IS NULL")
+            .bind(until)
+            .bind(id)
+            .execute(&state.pool)
+            .await?;
+    if updated.rows_affected() == 0 {
+        company_exists(&state, id).await?;
+    }
+    tracing::info!(company_id = id, by = user.id, ?until, "free access set");
+    Ok(Json(until.map(|at| at.and_utc())))
 }

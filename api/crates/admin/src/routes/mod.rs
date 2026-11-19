@@ -6,7 +6,6 @@ pub use api_schedule::routes::*;
 
 pub mod billing;
 pub mod billing_account;
-pub mod billing_features;
 pub mod bug_reports;
 pub mod checklists;
 pub mod company_frame;
@@ -14,6 +13,7 @@ pub mod company_setup;
 pub mod customer_sources;
 pub mod dashboard;
 pub mod delayed;
+pub mod first_payment;
 pub mod integrations;
 pub mod maintenance;
 pub mod marketing;

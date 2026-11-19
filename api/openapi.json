@@ -63187,21 +63187,21 @@
         ]
       }
     },
-    "/v1/billing/features": {
+    "/v1/billing/first-payment": {
       "get": {
         "tags": [
           "billing"
         ],
-        "summary": "Get the features the company pays for",
-        "description": "The priced features, the ones the company picked and what they cost a\nmonth (20% off with every feature). Change the picks with\n`PUT /v1/billing/features` and pay with\n`POST /v1/billing/features/checkout`. Managers only.",
-        "operationId": "get_billing_features",
+        "summary": "Get what the company pays",
+        "description": "Its monthly price, the free time Granite Manager gave it (if any) and\nwho to write to for a free month and a demo. Pay with\n`POST /v1/billing/first-payment/checkout`. Managers only.",
+        "operationId": "get_billing_first_payment",
         "responses": {
           "200": {
-            "description": "Features, picks and price",
+            "description": "The price",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/BillingFeatures"
+                  "$ref": "#/components/schemas/FirstPayment"
                 }
               }
             }
@@ -63218,91 +63218,6 @@
           },
           "403": {
             "description": "Caller is not a manager of the company",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Database error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "session_cookie": []
-          }
-        ]
-      },
-      "put": {
-        "tags": [
-          "billing"
-        ],
-        "summary": "Change the features to pay for",
-        "description": "Replaces the company's picks (priced features only, unknown ids left out)\nand its monthly price; answers what they cost. Only before the first\npayment: 409 once the company has a running subscription. Managers only.",
-        "operationId": "set_billing_features",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FeatureChoice"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Saved; what they cost",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FeatureQuote"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "No priced feature picked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "No valid session",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Caller is not a manager of the company",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "The company already has a subscription",
             "content": {
               "application/json": {
                 "schema": {
@@ -63329,14 +63244,14 @@
         ]
       }
     },
-    "/v1/billing/features/checkout": {
+    "/v1/billing/first-payment/checkout": {
       "post": {
         "tags": [
           "billing"
         ],
-        "summary": "Pay for the picked features",
-        "description": "A Stripe Checkout link for a monthly subscription at the price of the\ncompany's picked features (`GET /v1/billing/features`), charged now.\nStripe returns to `/admin/billing?checkout=success` (or `cancel`); access\nopens once Stripe confirms the payment. 400 when nothing priced is picked\nor Stripe is not set up, 409 while a subscription is running. Managers\nonly.",
-        "operationId": "create_billing_features_checkout",
+        "summary": "Pay the monthly subscription",
+        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`GET /v1/billing/first-payment`), charged now, or when the free time\nGranite Manager gave ends. Stripe returns to\n`/admin/billing?checkout=success` (or `cancel`); access opens once Stripe\nconfirms the payment. 400 when Stripe is not set up or refused, 409\nwhile a subscription is running. Managers only.",
+        "operationId": "create_billing_first_payment_checkout",
         "responses": {
           "200": {
             "description": "The Checkout link",
@@ -63349,7 +63264,7 @@
             }
           },
           "400": {
-            "description": "Nothing to pay for, or Stripe refused",
+            "description": "Stripe is not set up, or refused",
             "content": {
               "application/json": {
                 "schema": {
@@ -63411,26 +63326,16 @@
         "tags": [
           "public"
         ],
-        "summary": "What signing up offers",
-        "description": "The features a new company can pay for, each with its monthly price\n(USD cents); a company pays the sum of those it picks, 20% off when it\npicks all of them, from the day it signs up. Then check a web address\nwith `GET /v1/public/signup/subdomain/{subdomain}` and sign up with\n`POST /v1/public/signup`. No session.",
+        "summary": "What signing up costs",
+        "description": "The flat monthly price (USD cents), the address to write to for a free\nmonth and a demo instead, and the domain web addresses go under. Then\ncheck a web address with `GET /v1/public/signup/subdomain/{subdomain}`\nand sign up with `POST /v1/public/signup`. No session.",
         "operationId": "get_signup_options",
         "responses": {
           "200": {
-            "description": "The features and their prices",
+            "description": "The price and the contact",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SignupOptions"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Database error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -63442,7 +63347,7 @@
           "public"
         ],
         "summary": "Sign up a new company",
-        "description": "Creates the company (seeded like one a superuser creates: calendars,\nstarter pipeline, email templates, a walk-in kiosk login), makes the\nperson signing up its Manager and an admin, saves the features it pays\nfor and their price, and signs them in: the answer and the session\ncookie are those of `POST /v1/auth/login`. Next call\n`POST /v1/billing/features/checkout` and send them to Stripe: there is\nno free month, and until the first payment the billing gate keeps the\ncompany on `/admin/billing` and the API refuses everything but sign-in\nand billing (`company.source = 'signup_page'`, `auth::paywall`). The web address is kept as asked for;\nGranite Manager turns it on later, so the company starts on the main\nhost. No session.\n\n400 for a missing or bad field or no priced feature picked (also while\nno feature has a price: sign-up is closed), 409 when the email already signs in\nsomewhere (sign in instead) or the web address is taken, 429 after\n`MAX_SIGNUPS_PER_ADDRESS` sign-ups from one address in a day.",
+        "description": "Creates the company (seeded like one a superuser creates: calendars,\nstarter pipeline, email templates, a walk-in kiosk login), makes the\nperson signing up its Manager and an admin, sets its price ($800 a\nmonth) and signs them in: the answer and the session cookie are those\nof `POST /v1/auth/login`. Everything they typed is saved here, before\nany payment. Next they pay (`POST /v1/billing/first-payment/checkout`,\nto Stripe) or write to Granite Manager for a free month and a demo.\nUntil Stripe shows the payment, or a superuser gives free time, the API\nrefuses everything but sign-in and billing (`company.source =\n'signup_page'`, `auth::paywall`). The web address is kept as asked for;\nGranite Manager turns it on later, so the company starts on the main\nhost. No session.\n\n400 for a missing or bad field, 409 when the email already signs in\nsomewhere (sign in instead) or the web address is taken, 429 after\n`MAX_SIGNUPS_PER_ADDRESS` sign-ups from one address in a day.",
         "operationId": "sign_up_company",
         "requestBody": {
           "content": {
@@ -64075,7 +63980,7 @@
           "superuser"
         ],
         "summary": "Add a feature",
-        "description": "With a monthly price, self sign-up offers it. Superusers only.",
+        "description": "Superusers only.",
         "operationId": "create_paid_feature",
         "requestBody": {
           "content": {
@@ -67336,6 +67241,108 @@
         "responses": {
           "204": {
             "description": "Saved"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a superuser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/superuser/companies/{id}/free-access": {
+      "put": {
+        "tags": [
+          "superuser"
+        ],
+        "summary": "Give a sign-up company free time",
+        "description": "A company from the sign-up page has no access until it pays; this lets\nit in free until the end of `until` (a free month with a demo), or ends\nthe free time (null). When it subscribes during the free time, its first\ncharge waits for the end. Answers the end (ISO 8601) or null. Superusers\nonly; 404 for a deleted or unknown company.",
+        "operationId": "set_platform_company_free_access",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FreeAccess"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved; the end of the free time, or null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "A day in the past or too far ahead",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
           },
           "401": {
             "description": "No valid session",
@@ -83856,41 +83863,6 @@
           }
         }
       },
-      "BillingFeatures": {
-        "type": "object",
-        "description": "`GET /v1/billing/features`.",
-        "required": [
-          "available",
-          "chosen_ids",
-          "quote",
-          "subscribed"
-        ],
-        "properties": {
-          "available": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PricedFeature"
-            },
-            "description": "Every feature that has a price, by name."
-          },
-          "chosen_ids": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32"
-            },
-            "description": "Ids of the features the company picked."
-          },
-          "quote": {
-            "$ref": "#/components/schemas/FeatureQuote",
-            "description": "What the picks cost a month."
-          },
-          "subscribed": {
-            "type": "boolean",
-            "description": "The company has a running subscription: the picks can no longer be\nchanged here (Granite Manager changes them)."
-          }
-        }
-      },
       "BillingGate": {
         "allOf": [
           {
@@ -83936,7 +83908,7 @@
           },
           "first_payment_due": {
             "type": "boolean",
-            "description": "A company that signed itself up and has not paid for its first\nsubscription yet: `restricted` too, and the billing page asks it to\npay for the features it picked (`POST /v1/billing/features/checkout`)."
+            "description": "A company that signed itself up and has not paid for its first\nsubscription yet: `restricted` too, and the billing page asks it to\npay (`POST /v1/billing/first-payment/checkout`) or to write to\nGranite Manager for a free month."
           }
         }
       },
@@ -87906,6 +87878,14 @@
               "null"
             ],
             "description": "The web address it asked for at sign-up (`acme`), until a superuser\nsets its subdomain; null otherwise."
+          },
+          "free_access_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "A sign-up company is let in free until then (ISO 8601); null: no free\ntime. Set with `PUT /v1/superuser/companies/{id}/free-access`."
           },
           "features": {
             "$ref": "#/components/schemas/Features"
@@ -95230,7 +95210,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "What it costs a month, in USD cents; null: no price yet, so self\nsign-up does not offer it. A sign-up pays the sum of the features it\npicks, 20% off when it picks every priced one."
+            "description": "What it costs a month, in USD cents; null: no price. Bookkeeping for\npricing by feature later: self sign-up charges a flat price for now."
           }
         }
       },
@@ -95306,23 +95286,6 @@
           }
         }
       },
-      "FeatureChoice": {
-        "type": "object",
-        "description": "Body of `PUT /v1/billing/features`.",
-        "required": [
-          "feature_ids"
-        ],
-        "properties": {
-          "feature_ids": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32"
-            },
-            "description": "Ids of the priced features to pay for; at least one."
-          }
-        }
-      },
       "FeatureInput": {
         "type": "object",
         "description": "Body of `POST /v1/superuser/paid-features` and `PUT .../{id}`.",
@@ -95347,7 +95310,7 @@
               "null"
             ],
             "format": "int32",
-            "description": "Monthly price in USD cents (50 to 10,000,000), or null for no price\n(self sign-up then leaves the feature out). Leave it out to keep the\nprice as it is."
+            "description": "Monthly price in USD cents (50 to 10,000,000), or null for no price.\nLeave it out to keep the price as it is."
           }
         }
       },
@@ -95398,51 +95361,6 @@
             "type": "number",
             "format": "double",
             "description": "Total cost (USD)."
-          }
-        }
-      },
-      "FeatureQuote": {
-        "type": "object",
-        "description": "What a set of picked features costs a month.",
-        "required": [
-          "features",
-          "subtotal_cents",
-          "all_features",
-          "discount_percent",
-          "discount_cents",
-          "total_cents"
-        ],
-        "properties": {
-          "features": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PricedFeature"
-            },
-            "description": "The picked features that have a price, by name."
-          },
-          "subtotal_cents": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Their prices added up, in USD cents."
-          },
-          "all_features": {
-            "type": "boolean",
-            "description": "Every priced feature is picked: `discount_percent` off."
-          },
-          "discount_percent": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Percent off for picking every priced feature (20)."
-          },
-          "discount_cents": {
-            "type": "integer",
-            "format": "int64",
-            "description": "Taken off the subtotal, in cents (0 unless `all_features`)."
-          },
-          "total_cents": {
-            "type": "integer",
-            "format": "int64",
-            "description": "What the company pays a month, in USD cents."
           }
         }
       },
@@ -95955,6 +95873,38 @@
             ],
             "format": "int32",
             "description": "The lead, when there is no deal."
+          }
+        }
+      },
+      "FirstPayment": {
+        "type": "object",
+        "description": "`GET /v1/billing/first-payment`.",
+        "required": [
+          "monthly_price_cents",
+          "contact_email",
+          "subscribed"
+        ],
+        "properties": {
+          "monthly_price_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What the company pays a month, in USD cents (80000: $800)."
+          },
+          "contact_email": {
+            "type": "string",
+            "description": "Who to write to for a free month and a demo instead of paying now."
+          },
+          "free_access_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Granite Manager let the company in free until then (ISO 8601); its\nfirst charge waits for it. Null: no free time."
+          },
+          "subscribed": {
+            "type": "boolean",
+            "description": "A subscription is running already."
           }
         }
       },
@@ -96779,6 +96729,20 @@
               "null"
             ],
             "description": "Name."
+          }
+        }
+      },
+      "FreeAccess": {
+        "type": "object",
+        "description": "Body of `PUT /v1/superuser/companies/{id}/free-access`.",
+        "properties": {
+          "until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date",
+            "description": "Let the company in free until the end of this day (`YYYY-MM-DD`, UTC),\nat most 400 days ahead; null ends the free time now."
           }
         }
       },
@@ -109080,31 +109044,6 @@
           "slab"
         ]
       },
-      "PricedFeature": {
-        "type": "object",
-        "description": "A feature with a monthly price.",
-        "required": [
-          "id",
-          "name",
-          "monthly_price_cents"
-        ],
-        "properties": {
-          "id": {
-            "type": "integer",
-            "format": "int32",
-            "description": "Feature id."
-          },
-          "name": {
-            "type": "string",
-            "description": "Its name, e.g. \"Texting\"."
-          },
-          "monthly_price_cents": {
-            "type": "integer",
-            "format": "int64",
-            "description": "What it costs a month, in USD cents."
-          }
-        }
-      },
       "PrintPreview": {
         "type": "object",
         "description": "Where the printed PDF goes, and where to open it.",
@@ -118724,6 +118663,7 @@
           "subdomain",
           "name",
           "email",
+          "phone_number",
           "password",
           "accept_terms"
         ],
@@ -118751,17 +118691,13 @@
             "type": "string",
             "description": "Their email, which they sign in with. Must not sign in anywhere yet."
           },
+          "phone_number": {
+            "type": "string",
+            "description": "Their phone number, at least 10 digits."
+          },
           "password": {
             "type": "string",
             "description": "Their password, 8 to 200 characters."
-          },
-          "feature_ids": {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32"
-            },
-            "description": "Ids of the features (`GET /v1/public/signup`) the company pays for; at\nleast one. Unknown and unpriced ids are left out."
           },
           "accept_terms": {
             "type": "boolean",
@@ -118780,27 +118716,19 @@
         "type": "object",
         "description": "`GET /v1/public/signup`.",
         "required": [
-          "open",
-          "features",
-          "all_features_discount_percent",
+          "monthly_price_cents",
+          "contact_email",
           "base_domain"
         ],
         "properties": {
-          "open": {
-            "type": "boolean",
-            "description": "Sign-up is open: some feature has a price. False: the page says to\ncontact Granite Manager."
-          },
-          "features": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PricedFeature"
-            },
-            "description": "The features to pick from, each with its monthly price, by name."
-          },
-          "all_features_discount_percent": {
+          "monthly_price_cents": {
             "type": "integer",
-            "format": "int64",
-            "description": "Percent off when every feature is picked (20)."
+            "format": "int32",
+            "description": "What the company pays a month, in USD cents (80000: $800)."
+          },
+          "contact_email": {
+            "type": "string",
+            "description": "Who to write to for a free month and a demo instead of paying now."
           },
           "base_domain": {
             "type": "string",

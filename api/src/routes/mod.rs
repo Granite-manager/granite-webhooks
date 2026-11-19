@@ -105,7 +105,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(suppliers::router())
         .merge(billing::router())
         .merge(billing_account::router())
-        .merge(billing_features::router())
+        .merge(first_payment::router())
         .merge(signup::router())
         .merge(payments::router())
         .merge(paid_features::router())

@@ -405,7 +405,8 @@ pub struct BillingNotice {
     pub restricted: bool,
     /// A company that signed itself up and has not paid for its first
     /// subscription yet: `restricted` too, and the billing page asks it to
-    /// pay for the features it picked (`POST /v1/billing/features/checkout`).
+    /// pay (`POST /v1/billing/first-payment/checkout`) or to write to
+    /// Granite Manager for a free month.
     pub first_payment_due: bool,
 }
 
@@ -466,7 +467,7 @@ pub async fn evaluate_gate<S: BillingStore, G: GateStripe>(
 ) -> StoreResult<BillingNotice> {
     let mut existing = store.by_company(company_id).await?;
     // From the sign-up page: nothing until it has paid, billing switch or not.
-    if store.from_signup_page(company_id).await? && !pays_for_access(existing.as_ref(), now) {
+    if store.must_pay_first(company_id).await? && !pays_for_access(existing.as_ref(), now) {
         // Paid a moment ago and Stripe's webhook has not come yet: ask Stripe.
         if let Some(record) = existing.take_if(|r| r.stripe_customer_id.is_some()) {
             existing = Some(stripe.refresh(record).await);
@@ -634,7 +635,7 @@ mod tests {
         async fn billing_required(&self, company_id: i32) -> StoreResult<bool> {
             Ok(!self.not_required.borrow().contains(&company_id))
         }
-        async fn from_signup_page(&self, company_id: i32) -> StoreResult<bool> {
+        async fn must_pay_first(&self, company_id: i32) -> StoreResult<bool> {
             Ok(self.signed_up.borrow().contains(&company_id))
         }
     }
@@ -1030,7 +1031,7 @@ mod tests {
                     payment_status: status,
                     subscription_status: self
                         .refresh_status
-                        .map_or(record.subscription_status.clone(), str::to_string),
+                        .map_or_else(|| record.subscription_status.clone(), str::to_string),
                     ..record
                 },
                 None => record,
