@@ -454,6 +454,7 @@ fn type_title(kind: &str) -> Option<&'static str> {
         "project_task_reminder" => "Task Due",
         "project_task_done" => "Finished Your Task",
         "project_step_done" => "Finished a Step",
+        "project_step_next" => "Your Step Is Up",
         "project_step_assigned" => "Gave You a Step",
         "project_question" => "Asked You a Question",
         "project_question_reply" => "Answered a Question",
