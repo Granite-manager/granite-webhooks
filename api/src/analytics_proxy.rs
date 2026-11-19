@@ -1,6 +1,10 @@
 //! `/ingest/*`: the browser's PostHog traffic, relayed so ad blockers that
 //! block PostHog's hosts still let it through. Port of the Remix
 //! `ingest.$` route. Not part of the API spec: it is PostHog's protocol.
+//!
+//! On `api.granite-manager.com` CloudFront relays `/ingest/*` to PostHog
+//! itself (README "PostHog relay"), so this answers only requests made to
+//! the function URL directly, and is the fallback if those behaviours go.
 
 use crate::state::AppState;
 use axum::body::{Body, Bytes};
