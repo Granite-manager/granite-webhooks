@@ -1,7 +1,7 @@
 # duplicate-refresh
 
 Copies the production database (`main`) over the dev database (`duplicate`)
-every night at **2:00 AM America/New_York**. Both are databases on the one RDS
+once a week, every **Sunday at 2:00 AM America/New_York** (Saturday night). Both are databases on the one RDS
 instance (`database-1-copy`), so the copy never leaves the server.
 
 ## How a run works
@@ -38,7 +38,7 @@ instance (`database-1-copy`), so the copy never leaves the server.
   a minute or two.
 
 If a run fails before the swap, `duplicate` keeps its old tables and the next
-night starts over. Each table is its own snapshot, seconds apart, so a row
+weekly run starts over. Each table is its own snapshot, seconds apart, so a row
 written mid-run may be in one table and not another (foreign keys are not
 checked while copying). Routines, triggers and events are not copied (`main`
 has none); a view in `main` stops the run.
@@ -49,7 +49,7 @@ has none); a view in `main` stops the run.
 | --- | --- |
 | Lambda | `duplicate-refresh` (x86_64, 128 MB, timeout 900 s, reserved concurrency 1, async retries 0) |
 | Secret | `granite/duplicate-refresh` (`REFRESH_DATABASE_URL`), loaded through `SECRETS_ID` |
-| Schedule | EventBridge Scheduler `duplicate-refresh`, `cron(0 2 * * ? *)`, America/New_York, no retries |
+| Schedule | EventBridge Scheduler `duplicate-refresh`, `cron(0 2 ? * SUN *)` (Sundays), America/New_York, no retries |
 | Scheduler role | `duplicate-refresh-scheduler` (invoke this Lambda only) |
 | MySQL user | `duplicate_refresh`, `REQUIRE SSL` |
 
@@ -71,5 +71,5 @@ aws --profile personal --region us-east-2 lambda invoke --function-name duplicat
   --cli-binary-format raw-in-base64-out --payload '{"check_only":true}' /dev/stdout
 ```
 
-A run started by hand with `{}` copies right away; prefer the night. Logs are
+A run started by hand with `{}` copies right away; prefer the night (any night works). Logs are
 in CloudWatch, `/aws/lambda/duplicate-refresh` (one line per table).

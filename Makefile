@@ -35,7 +35,7 @@ FUNCTION_time-triggered_prod := time-triggered
 # On the duplicate database and the dev API. Its schedule (process-time-based-dev)
 # is disabled: it sends real email to the recipients copied from production.
 FUNCTION_time-triggered_dev := time-triggered-dev
-# Copies main over duplicate every night at 2 AM New York (duplicate-refresh/README.md).
+# Copies main over duplicate every Sunday at 2 AM New York (Saturday night) (duplicate-refresh/README.md).
 # Prod only: it reads the production database.
 FUNCTION_duplicate-refresh_prod := duplicate-refresh
 FUNCTION = $(FUNCTION_$(APP)_$(ENV))
