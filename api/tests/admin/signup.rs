@@ -262,6 +262,12 @@ async fn an_unpaid_company_gets_nothing_but_billing(pool: MySqlPool) {
             .await
             .assert_status_ok();
     }
+    let shell: Value = server
+        .get("/v1/app/shell")
+        .with_session(&session)
+        .await
+        .json();
+    assert_eq!(shell["payment_required"], true);
     let gate: Value = server
         .get("/v1/billing/gate")
         .with_session(&session)
@@ -310,6 +316,12 @@ async fn an_unpaid_company_gets_nothing_but_billing(pool: MySqlPool) {
         .with_session(&session)
         .await
         .assert_status_ok();
+    let shell: Value = server
+        .get("/v1/app/shell")
+        .with_session(&session)
+        .await
+        .json();
+    assert_eq!(shell["payment_required"], false);
     let gate: Value = server
         .get("/v1/billing/gate")
         .with_session(&session)
