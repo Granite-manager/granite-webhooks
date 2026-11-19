@@ -1322,6 +1322,8 @@ async fn picked_extra_events(
 
 /// Adds `job` for `quote` to the schedule's Unscheduled list, assigned to
 /// the calendar's only template maker when it has one, with a history line.
+/// When the quote's deal already has its project, the job is that project's
+/// (an event is a project's only by such a link, never by its customer).
 async fn insert_job(
     pool: &MySqlPool,
     quote: &Quote,
@@ -1333,8 +1335,11 @@ async fn insert_job(
     let id = sqlx::query(
         "INSERT INTO events (title, location, notes, start_date, end_date, all_day, unscheduled,
             color, status, created_user_id, assigned_user_id, customer_id, calendar_id, urgent,
-            quote_id, planned_part_type_id)
-         VALUES (?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            quote_id, planned_part_type_id, project_id)
+         VALUES (?, ?, ?, UTC_TIMESTAMP(), UTC_TIMESTAMP(), 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                 (SELECT p.id FROM projects p
+                   WHERE p.source_deal_id = ? AND p.company_id = ?
+                   ORDER BY p.id DESC LIMIT 1))",
     )
     .bind(&job.title)
     .bind(address)
@@ -1349,6 +1354,8 @@ async fn insert_job(
     .bind(job.urgent)
     .bind(quote.id)
     .bind(job.part_type_id)
+    .bind(quote.deal_id)
+    .bind(quote.company_id)
     .execute(pool)
     .await?
     .last_insert_id();
