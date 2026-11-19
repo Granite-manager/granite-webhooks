@@ -61,8 +61,6 @@ pub struct ScheduleEvent {
     pub id: i32,
     /// The event's name.
     pub title: String,
-    /// Description.
-    pub description: Option<String>,
     /// Address.
     pub location: Option<String>,
     /// Start (UTC, ISO 8601).
@@ -253,7 +251,7 @@ async fn load_events(
     let start = query.start.naive_utc();
     let end = query.end.naive_utc();
     let mut events: Vec<ScheduleEvent> = sqlx::query_as(
-        "SELECT e.id, e.title, e.description, e.location,
+        "SELECT e.id, e.title, e.location,
                 DATE_FORMAT(e.start_date, '%Y-%m-%dT%H:%i:%sZ') AS start_date,
                 DATE_FORMAT(e.end_date, '%Y-%m-%dT%H:%i:%sZ') AS end_date,
                 COALESCE(e.all_day, 0) <> 0 AS all_day, e.color, e.status, e.notes,
@@ -382,7 +380,7 @@ pub async fn unscheduled(
 ) -> ApiResult<Json<Vec<ScheduleEvent>>> {
     let own = super::own_events_only(&state.pool, &user).await?;
     let mut events: Vec<ScheduleEvent> = sqlx::query_as(
-        "SELECT e.id, e.title, e.description, e.location,
+        "SELECT e.id, e.title, e.location,
                 DATE_FORMAT(e.start_date, '%Y-%m-%dT%H:%i:%sZ') AS start_date,
                 DATE_FORMAT(e.end_date, '%Y-%m-%dT%H:%i:%sZ') AS end_date,
                 COALESCE(e.all_day, 0) <> 0 AS all_day, e.color, e.status, e.notes,
