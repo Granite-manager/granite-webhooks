@@ -65,6 +65,44 @@ pub struct InboxLead {
     pub address: Option<String>,
     /// `hot`, `medium` or `cold`; null when not rated.
     pub customer_temperature: Option<String>,
+    /// A second phone; null when the lead has none.
+    pub phone_2: Option<String>,
+    /// The customer's company; null when the lead has none.
+    pub company_name: Option<String>,
+    /// City; null when the lead has none.
+    pub city: Option<String>,
+    /// Zip code; null when the lead has none.
+    pub postal_code: Option<String>,
+    /// What they remodel ("Kitchen"…); null when the lead has none.
+    pub remodal_type: Option<String>,
+    /// How big the project is; null when the lead has none.
+    pub project_size: Option<String>,
+    /// When they want to start; null when the lead has none.
+    pub when_start: Option<String>,
+    /// The best time to contact them; null when the lead has none.
+    pub contact_time: Option<String>,
+    /// Whether the old countertops are removed; null when the lead has none.
+    pub remove_and_dispose: Option<String>,
+    /// Their answer to the offer question; null when the lead has none.
+    pub improve_offer: Option<String>,
+    /// The sink they chose; null when the lead has none.
+    pub sink: Option<String>,
+    /// The stove they chose; null when the lead has none.
+    pub kitchen_stove: Option<String>,
+    /// The backsplash they chose; null when the lead has none.
+    pub backsplash: Option<String>,
+    /// Other answers of the form (a Facebook lead); null when the lead has none.
+    pub details: Option<String>,
+    /// The file they attached (a link); null when the lead has none.
+    pub attached_file: Option<String>,
+    /// The form the lead came from; null when the lead has none.
+    pub form_name: Option<String>,
+    /// The ad campaign; null when the lead has none.
+    pub compaign_name: Option<String>,
+    /// The ad set; null when the lead has none.
+    pub adset_name: Option<String>,
+    /// The ad; null when the lead has none.
+    pub ad_name: Option<String>,
 }
 
 /// A live pipeline (group) of the company, for the website's Leads page.
@@ -215,7 +253,17 @@ async fn leads(
                   WHERE d.customer_id = c.id AND d.deleted_at IS NULL
                   ORDER BY d.id DESC LIMIT 1) AS deal_id,
                 e.email, c.referral_source, c.your_message, c.address,
-                CAST(c.customer_temperature AS CHAR) AS customer_temperature
+                CAST(c.customer_temperature AS CHAR) AS customer_temperature,
+                CAST(c.phone_2 AS CHAR) AS phone_2, CAST(c.company_name AS CHAR) AS company_name,
+                CAST(c.city AS CHAR) AS city, CAST(c.postal_code AS CHAR) AS postal_code,
+                CAST(c.remodal_type AS CHAR) AS remodal_type, CAST(c.project_size AS CHAR) AS project_size,
+                CAST(c.when_start AS CHAR) AS when_start, CAST(c.contact_time AS CHAR) AS contact_time,
+                CAST(c.remove_and_dispose AS CHAR) AS remove_and_dispose, CAST(c.improve_offer AS CHAR) AS improve_offer,
+                CAST(c.sink AS CHAR) AS sink, CAST(c.kitchen_stove AS CHAR) AS kitchen_stove,
+                CAST(c.backsplash AS CHAR) AS backsplash, CAST(c.details AS CHAR) AS details,
+                CAST(c.attached_file AS CHAR) AS attached_file, CAST(c.form_name AS CHAR) AS form_name,
+                CAST(c.compaign_name AS CHAR) AS compaign_name, CAST(c.adset_name AS CHAR) AS adset_name,
+                CAST(c.ad_name AS CHAR) AS ad_name
            FROM customers c
            LEFT JOIN users u ON u.id = c.sales_rep
            LEFT JOIN customers_emails e ON e.id = c.email_id AND e.customer_id = c.id
