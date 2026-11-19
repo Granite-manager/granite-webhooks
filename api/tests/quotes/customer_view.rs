@@ -146,22 +146,22 @@ async fn a_customer_sees_their_appointments_without_the_shops_notes(pool: MySqlP
     sqlx::raw_sql(
         "INSERT INTO calendars (id, company_id, name, slug) VALUES
            (9100, 100, 'Templates', 'templates'), (9101, 100, 'Showroom', NULL);
-         INSERT INTO events (id, title, description, notes, start_date, end_date, all_day,
+         INSERT INTO events (id, title, notes, start_date, end_date, all_day,
                              unscheduled, created_user_id, assigned_user_id, customer_id,
                              calendar_id, location, crew_status, rrule) VALUES
-           (9200, 'Alice measure', 'gate 1234', 'cash only', '2026-05-02 14:00:00',
+           (9200, 'Alice measure', 'cash only', '2026-05-02 14:00:00',
             '2026-05-02 16:00:00', 0, 0, 100, 101, 1000, 9100, ' 1 Main St ', 'on_my_way', NULL),
-           (9201, 'Alice showroom', NULL, NULL, '2026-04-20 15:00:00', '2026-04-20 16:00:00',
+           (9201, 'Alice showroom', NULL, '2026-04-20 15:00:00', '2026-04-20 16:00:00',
             0, 0, 100, NULL, 1000, 9101, NULL, NULL, NULL),
-           (9202, 'Alice install', NULL, NULL, '2026-04-01 04:00:00', '2026-04-01 04:00:00',
+           (9202, 'Alice install', NULL, '2026-04-01 04:00:00', '2026-04-01 04:00:00',
             1, 1, 100, NULL, 1000, NULL, NULL, NULL, NULL),
-           (9203, 'deleted', NULL, NULL, '2026-04-21 15:00:00', '2026-04-21 16:00:00',
+           (9203, 'deleted', NULL, '2026-04-21 15:00:00', '2026-04-21 16:00:00',
             0, 0, 100, NULL, 1000, 9100, NULL, NULL, NULL),
-           (9204, 'weekly', NULL, NULL, '2026-04-22 15:00:00', '2026-04-22 16:00:00',
+           (9204, 'weekly', NULL, '2026-04-22 15:00:00', '2026-04-22 16:00:00',
             0, 0, 100, NULL, 1000, 9100, NULL, NULL, 'FREQ=WEEKLY'),
-           (9205, 'someone else', NULL, NULL, '2026-04-23 15:00:00', '2026-04-23 16:00:00',
+           (9205, 'someone else', NULL, '2026-04-23 15:00:00', '2026-04-23 16:00:00',
             0, 0, 100, NULL, 1004, 9100, NULL, NULL, NULL),
-           (9206, 'other company', NULL, NULL, '2026-04-24 15:00:00', '2026-04-24 16:00:00',
+           (9206, 'other company', NULL, '2026-04-24 15:00:00', '2026-04-24 16:00:00',
             0, 0, 106, NULL, 1000, NULL, NULL, NULL, NULL);
          UPDATE events SET deleted_date = NOW() WHERE id = 9203;",
     )

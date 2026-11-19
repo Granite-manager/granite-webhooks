@@ -6,7 +6,7 @@ holds, and delete its section below.
 
 | File | Apply when |
 |---|---|
-| _(none pending)_ | |
+| `20270219090000_events-drop-description.sql` | The API release that never reads or writes `events.description` (PR "Events have only notes") is deployed to every Lambda; until then the live API still selects the column. |
 
 ## History
 

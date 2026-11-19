@@ -33,10 +33,10 @@ pub struct EventInvoice {
 pub struct EventInput {
     /// 1 to 255 characters.
     pub title: String,
-    /// Longer text.
+    /// Sent by old apps only: never stored, it goes on top of `notes`.
     #[serde(default)]
     pub description: Option<String>,
-    /// Internal notes.
+    /// The event's text (events have no other text field).
     #[serde(default)]
     pub notes: Option<String>,
     /// Address, up to 500 characters.
@@ -168,8 +168,8 @@ fn non_empty(value: Option<&String>) -> Option<&str> {
 /// The input, checked, with defaults applied.
 pub struct Checked<'a> {
     pub title: &'a str,
-    pub description: Option<&'a str>,
-    pub notes: Option<&'a str>,
+    /// The notes, with an old app's description on top.
+    pub notes: Option<String>,
     pub location: Option<&'a str>,
     pub color: &'a str,
     pub status: &'a str,
@@ -183,6 +183,19 @@ pub struct Checked<'a> {
     pub contact_email: Option<Option<&'a str>>,
     pub contact_phone_2: Option<Option<&'a str>>,
     pub contact_email_2: Option<Option<&'a str>>,
+}
+
+/// Events have only notes: a description an old app sends goes on top of them.
+pub fn notes_with_description(description: Option<&str>, notes: Option<&str>) -> Option<String> {
+    let description = description.map(str::trim).filter(|text| !text.is_empty());
+    let notes = notes.filter(|text| !text.trim().is_empty());
+    match (description, notes) {
+        (Some(description), Some(notes)) if !notes.contains(description) => {
+            Some(format!("{description}\n\n{notes}"))
+        }
+        (Some(description), None) => Some(description.to_string()),
+        (_, notes) => notes.map(str::to_string),
+    }
 }
 
 fn bad(message: &str) -> ApiError {
@@ -277,8 +290,7 @@ pub fn check<'a>(input: &'a EventInput) -> ApiResult<Checked<'a>> {
     }
     Ok(Checked {
         title: &input.title,
-        description: non_empty(input.description.as_ref()),
-        notes: non_empty(input.notes.as_ref()),
+        notes: notes_with_description(input.description.as_deref(), input.notes.as_deref()),
         location,
         color,
         status,
@@ -465,7 +477,6 @@ async fn copy_records(
 #[derive(sqlx::FromRow)]
 pub struct StoredEvent {
     pub title: String,
-    pub description: Option<String>,
     pub location: Option<String>,
     pub start_date: NaiveDateTime,
     pub end_date: NaiveDateTime,
@@ -488,7 +499,7 @@ pub async fn company_event(
     event_id: i32,
 ) -> Result<Option<StoredEvent>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT e.title, e.description, e.location, e.start_date, e.end_date,
+        "SELECT e.title, e.location, e.start_date, e.end_date,
                 COALESCE(e.all_day, 0) <> 0 AS all_day, e.unscheduled <> 0 AS unscheduled,
                 e.color, e.status, e.urgent <> 0 AS urgent, e.notes, e.calendar_id, e.rrule,
                 e.recurrence_until, e.created_user_id, e.customer_id
@@ -572,14 +583,13 @@ pub async fn create(
         None => board::sole_template_maker(pool, event.calendar_id).await?,
     };
     let id = sqlx::query(
-        "INSERT INTO events (title, description, location, start_date, end_date, all_day,
+        "INSERT INTO events (title, location, start_date, end_date, all_day,
             unscheduled, color, status, notes, created_user_id, assigned_user_id, sale_id,
             customer_id, calendar_id, rrule, recurrence_until, contact_phone, contact_email,
             contact_phone_2, contact_email_2, project_id, project_part_id, urgent)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(event.title)
-    .bind(event.description)
     .bind(event.location)
     .bind(event.start)
     .bind(event.end)
@@ -587,7 +597,7 @@ pub async fn create(
     .bind(input.unscheduled)
     .bind(event.color)
     .bind(event.status)
-    .bind(event.notes)
+    .bind(event.notes.as_deref())
     .bind(user.id)
     .bind(assignee)
     .bind(input.sale_id.filter(|id| *id > 0))
@@ -707,10 +717,7 @@ fn change_messages(
         };
         messages.push(message.into());
     }
-    if event.description != existing.description.as_deref().filter(|d| !d.is_empty()) {
-        messages.push("Description updated".into());
-    }
-    if event.notes != existing.notes.as_deref().filter(|n| !n.is_empty()) {
+    if event.notes.as_deref() != existing.notes.as_deref().filter(|n| !n.is_empty()) {
         messages.push("Notes updated".into());
     }
     if Some(event.status) != existing.status.as_deref() {
@@ -883,7 +890,7 @@ pub async fn update(
         return Ok((StatusCode::OK, Json(EditedRepeats { id: new_id })).into_response());
     }
     sqlx::query(
-        "UPDATE events SET title = ?, description = ?, location = ?, start_date = ?, end_date = ?,
+        "UPDATE events SET title = ?, location = ?, start_date = ?, end_date = ?,
             all_day = ?, unscheduled = ?, color = ?, status = ?, notes = ?, assigned_user_id = ?,
             sale_id = ?, customer_id = IF(?, ?, customer_id), calendar_id = ?, rrule = ?,
             recurrence_until = ?, contact_phone = IF(?, ?, contact_phone),
@@ -894,7 +901,6 @@ pub async fn update(
           WHERE id = ?",
     )
     .bind(event.title)
-    .bind(event.description)
     .bind(event.location)
     .bind(event.start)
     .bind(event.end)
@@ -902,7 +908,7 @@ pub async fn update(
     .bind(input.unscheduled)
     .bind(event.color)
     .bind(event.status)
-    .bind(event.notes)
+    .bind(event.notes.as_deref())
     .bind(input.assigned_user_id.filter(|id| *id > 0))
     .bind(input.sale_id.filter(|id| *id > 0))
     .bind(customer.is_some())
@@ -1090,19 +1096,18 @@ async fn split_repeats(
         }
     };
     let created = sqlx::query(
-        "INSERT INTO events (title, description, location, start_date, end_date, all_day,
+        "INSERT INTO events (title, location, start_date, end_date, all_day,
             unscheduled, color, status, notes, created_user_id, assigned_user_id, sale_id,
             customer_id, calendar_id, rrule, recurrence_until, recurrence_exdates,
             contact_phone, contact_email, contact_phone_2, contact_email_2, project_id,
             project_part_id, urgent)
-         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, created_user_id, ?, ?, IF(?, ?, customer_id), ?,
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, created_user_id, ?, ?, IF(?, ?, customer_id), ?,
             ?, ?, ?, IF(?, ?, contact_phone), IF(?, ?, contact_email),
             IF(?, ?, contact_phone_2), IF(?, ?, contact_email_2), project_id, project_part_id,
             IF(?, ?, urgent)
            FROM events WHERE id = ?",
     )
     .bind(event.title)
-    .bind(event.description)
     .bind(event.location)
     .bind(event.start)
     .bind(event.end)
@@ -1110,7 +1115,7 @@ async fn split_repeats(
     .bind(input.unscheduled)
     .bind(event.color)
     .bind(event.status)
-    .bind(event.notes)
+    .bind(event.notes.as_deref())
     .bind(input.assigned_user_id.filter(|id| *id > 0))
     .bind(input.sale_id.filter(|id| *id > 0))
     .bind(customer.is_some())
@@ -1413,5 +1418,26 @@ mod tests {
         );
         assert_eq!(parse("2026-10-20").as_deref(), Some("2026-10-20 00:00:00"));
         assert_eq!(parse("tomorrow"), None);
+    }
+
+    #[test]
+    fn an_old_apps_description_goes_on_top_of_the_notes() {
+        use super::notes_with_description as merge;
+        assert_eq!(merge(None, None), None);
+        assert_eq!(merge(Some("  "), Some("")), None);
+        assert_eq!(merge(None, Some("Gate 12")).as_deref(), Some("Gate 12"));
+        assert_eq!(
+            merge(Some(" Recut on site "), None).as_deref(),
+            Some("Recut on site")
+        );
+        assert_eq!(
+            merge(Some("Recut on site"), Some("Gate 12")).as_deref(),
+            Some("Recut on site\n\nGate 12")
+        );
+        // Already in the notes: never written twice.
+        assert_eq!(
+            merge(Some("Recut on site"), Some("Recut on site\n\nGate 12")).as_deref(),
+            Some("Recut on site\n\nGate 12")
+        );
     }
 }

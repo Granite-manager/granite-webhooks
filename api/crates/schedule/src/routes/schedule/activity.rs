@@ -162,7 +162,7 @@ pub async fn activity(
     }
 
     let mut sql = sqlx::QueryBuilder::<sqlx::MySql>::new(
-        "SELECT e.id, e.title, e.description, e.location,
+        "SELECT e.id, e.title, e.location,
                 DATE_FORMAT(e.start_date, '%Y-%m-%dT%H:%i:%sZ') AS start_date,
                 DATE_FORMAT(e.end_date, '%Y-%m-%dT%H:%i:%sZ') AS end_date,
                 COALESCE(e.all_day, 0) <> 0 AS all_day, e.color, e.status,

@@ -167,19 +167,18 @@ pub async fn book(
     let (customer_name, calendar_id) = check_booking(pool, user.company_id, &input).await?;
     let event = check(&input.event)?;
     let id = sqlx::query(
-        "INSERT INTO events (title, description, location, start_date, end_date, all_day, color,
+        "INSERT INTO events (title, location, start_date, end_date, all_day, color,
             status, notes, created_user_id, customer_id, calendar_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(event.title)
-    .bind(event.description)
     .bind(event.location)
     .bind(event.start)
     .bind(event.end)
     .bind(input.event.all_day)
     .bind(event.color)
     .bind(event.status)
-    .bind(event.notes)
+    .bind(event.notes.as_deref())
     .bind(user.id)
     .bind(input.customer_id)
     .bind(calendar_id)

@@ -133,7 +133,11 @@ fn event_project(
 
 /// The event's project sales, newest first (see [`event_project`]); empty
 /// when it has none, 404 when the event is not the company's.
-pub async fn find_event_sales(pool: &MySqlPool, company_id: i32, event_id: i32) -> ApiResult<Vec<i32>> {
+pub async fn find_event_sales(
+    pool: &MySqlPool,
+    company_id: i32,
+    event_id: i32,
+) -> ApiResult<Vec<i32>> {
     let event: Option<(Option<i32>, Option<i32>, Option<String>)> = sqlx::query_as(
         "SELECT e.sale_id, e.customer_id, e.location
            FROM events e JOIN users u ON e.created_user_id = u.id
