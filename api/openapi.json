@@ -23011,6 +23011,174 @@
         ]
       }
     },
+    "/v1/projects/{id}/event-links": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "The events a project can take, from the project's side",
+        "operationId": "get_project_event_links",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The customer's events",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectEventLinks"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "Pick the events that are a project's",
+        "description": "The picked events (the customer's, or already this project's) are linked\nto it and leave their old project; this project's other events are\nunlinked.",
+        "operationId": "set_project_event_links",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Project id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectEventLinksInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "An event that is not the customer's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's position can't change projects",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such project the caller may see",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The project is archived or cancelled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/projects/part-types": {
       "get": {
         "tags": [
@@ -109928,6 +110096,44 @@
               "$ref": "#/components/schemas/Project"
             },
             "description": "The customer's jobs, oldest first: each won deal (or deal with a sale)\nwith its sales, then each sale that is not part of such a deal."
+          }
+        }
+      },
+      "ProjectEventLinks": {
+        "type": "object",
+        "description": "`GET /v1/projects/{id}/event-links`.",
+        "required": [
+          "projects",
+          "events"
+        ],
+        "properties": {
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkProject"
+            },
+            "description": "The customer's open projects the caller can see (this one included),\nto name the project an event is on now."
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkEvent"
+            },
+            "description": "The customer's events and the ones linked to this project, soonest\nfirst."
+          }
+        }
+      },
+      "ProjectEventLinksInput": {
+        "type": "object",
+        "description": "`PUT /v1/projects/{id}/event-links`.",
+        "properties": {
+          "event_ids": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "The events that are this project's: each is linked to it (leaving its\nold project); this project's other events are unlinked."
           }
         }
       },

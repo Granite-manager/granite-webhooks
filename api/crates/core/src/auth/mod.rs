@@ -621,6 +621,7 @@ fn project_route(method: &Method, path: &str) -> bool {
         ["event-links", event] => is_id(event) && (get || put),
         [id] => is_id(id) && (get || delete),
         [id, "actions" | "tasks" | "notes" | "files"] => is_id(id) && post,
+        [id, "event-links"] => is_id(id) && (get || put),
         [id, "task-times", "reset"] => is_id(id) && post,
         [id, "tasks", task] => is_id(id) && is_id(task) && (patch || delete),
         [id, "notes" | "files", item] => is_id(id) && is_id(item) && delete,
@@ -1228,6 +1229,8 @@ mod tests {
             (Method::POST, "/v1/sms/cloudtalk/threads/3175551234/flow"),
             (Method::GET, "/v1/projects/event-links/7"),
             (Method::PUT, "/v1/projects/event-links/7"),
+            (Method::GET, "/v1/projects/7/event-links"),
+            (Method::PUT, "/v1/projects/7/event-links"),
             (Method::POST, "/v1/transactions/7/installed"),
         ] {
             assert!(device_route(&method, path), "{method} {path}");

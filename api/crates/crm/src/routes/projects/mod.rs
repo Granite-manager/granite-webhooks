@@ -17,6 +17,7 @@
 //! - `/v1/projects/process-steps[/{step_id}]`      → the company's own steps, for admins (GET, POST, PATCH, DELETE, reorder, notify, auto, ends-stage)
 //! - `PUT    /v1/projects/{id}/steps/{step_id}`    → check a step off a project
 //! - `GET`/`PUT /v1/projects/event-links/{event_id}` → which project a schedule event is for
+//! - `GET`/`PUT /v1/projects/{id}/event-links`      → the same from the project: which events are its
 //! - `/v1/projects/part-types[/{type_id}]`        → the company's part types (GET; POST, PATCH, DELETE for admins)
 //! - `/v1/projects/{id}/parts[/{part_id}]`         → a project's parts (POST, PATCH, DELETE)
 //! - `PUT    /v1/projects/{id}/appointments/{event_id}/part` → which part a job is for
@@ -84,6 +85,10 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(step_events::set_events))
         .routes(routes!(process::set_done))
         .routes(routes!(event_link::get, event_link::set))
+        .routes(routes!(
+            event_link::get_for_project,
+            event_link::set_for_project
+        ))
         .routes(routes!(parts::list_types, parts::create_type))
         .routes(routes!(parts::update_type, parts::delete_type))
         .routes(routes!(parts::add_part))
