@@ -1,5 +1,6 @@
 DELETE /v1/auth/device-sessions/current
 DELETE /v1/customers/7
+DELETE /v1/deals/7
 DELETE /v1/deals/7/activities/7
 DELETE /v1/deals/7/files/7/7
 DELETE /v1/deals/7/notes/7
@@ -31,6 +32,7 @@ DELETE /v1/quotes/7/sale
 DELETE /v1/shop/maintenance/checks/7
 DELETE /v1/shop/maintenance/items/7
 DELETE /v1/sms-templates/7
+DELETE /v1/sms/cloudtalk/messages/7
 GET /v1/ai/compose/inventory-url
 GET /v1/ai/promises
 GET /v1/calendars
@@ -40,6 +42,7 @@ GET /v1/customer-checklists
 GET /v1/customer-sources
 GET /v1/customers/7
 GET /v1/customers/7/customer-todos
+GET /v1/customers/7/estimate-time
 GET /v1/customers/7/history
 GET /v1/customers/7/projects
 GET /v1/customers/7/qbo-invoices
@@ -61,11 +64,13 @@ GET /v1/deals/7/notes
 GET /v1/deals/7/project
 GET /v1/deals/7/stage-history
 GET /v1/deals/by-customer
+GET /v1/deals/file-urls
 GET /v1/delayed/emails
 GET /v1/delayed/sms
 GET /v1/documents
 GET /v1/email-templates
 GET /v1/emails/drafts/7
+GET /v1/emails/7/reads
 GET /v1/emails/folder-counts
 GET /v1/emails/threads
 GET /v1/emails/threads/7
@@ -112,6 +117,7 @@ GET /v1/projects
 GET /v1/projects/7
 GET /v1/projects/7/event-links
 GET /v1/projects/7/questions/7
+GET /v1/projects/event-links/7
 GET /v1/projects/payments
 GET /v1/projects/process-steps
 GET /v1/public/companies/7/stones/7/images
@@ -194,11 +200,13 @@ POST /v1/deals/7/notes
 POST /v1/deals/7/notes/7/comments
 POST /v1/deals/7/project
 POST /v1/delayed/7/7/send-now
+POST /v1/email-attachments/7/deal
 POST /v1/email-templates
 POST /v1/emails
 POST /v1/emails/threads/7
 POST /v1/emails/threads/7/read
 POST /v1/events
+POST /v1/events/estimates
 POST /v1/events/7/comments
 POST /v1/events/7/confirmation
 POST /v1/events/7/crew-status
@@ -292,6 +300,7 @@ PUT /v1/projects/7/steps/7
 PUT /v1/projects/7/steps/7/note
 PUT /v1/projects/7/steps/7/owner
 PUT /v1/projects/7/tasks/7/items/7
+PUT /v1/projects/event-links/7
 PUT /v1/quotes/7/autosave
 PUT /v1/quotes/7/drawing
 PUT /v1/quotes/7/invoice-sync
