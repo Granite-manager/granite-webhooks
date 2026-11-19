@@ -82792,6 +82792,7 @@
           "sms_images_enabled",
           "can_manage_company",
           "can_manage_billing",
+          "payment_required",
           "is_shop_manager",
           "has_projects_board",
           "is_template_maker",
@@ -82901,6 +82902,10 @@
           "can_manage_billing": {
             "type": "boolean",
             "description": "May manage billing (Manager)."
+          },
+          "payment_required": {
+            "type": "boolean",
+            "description": "The company signed itself up and has not paid (nor been given free\ntime): every other route answers 403, and the app shows only the\npage to pay or contact Granite Manager (`/activate`). Always false\nfor superusers."
           },
           "is_shop_manager": {
             "type": "boolean",

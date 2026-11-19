@@ -109,6 +109,11 @@ pub struct AppShell {
     pub can_manage_company: bool,
     /// May manage billing (Manager).
     pub can_manage_billing: bool,
+    /// The company signed itself up and has not paid (nor been given free
+    /// time): every other route answers 403, and the app shows only the
+    /// page to pay or contact Granite Manager (`/activate`). Always false
+    /// for superusers.
+    pub payment_required: bool,
     /// Holds the Shop Manager position in the company.
     pub is_shop_manager: bool,
     /// Projects is on and the caller's position has a Projects board (admin,
@@ -302,6 +307,8 @@ pub async fn shell(
             .unwrap_or(0);
     let user_ai_promises = ai_promises == 1;
     let user_ai_promises_available = matches!(ai_promises, 1 | 2);
+    let payment_required = !user.is_superuser
+        && crate::auth::paywall::company_blocked(&state.pool, user.company_id).await?;
     Ok(Json(AppShell {
         user_is_super_admin,
         superadmin_companies,
@@ -325,6 +332,7 @@ pub async fn shell(
         sms_images_enabled,
         can_manage_company: user.is_superuser || here(MANAGER) || here(SUPER_ADMIN_POSITION),
         can_manage_billing: here(MANAGER) || here(SUPER_ADMIN_POSITION),
+        payment_required,
         is_shop_manager: here(SHOP_MANAGER),
         has_projects_board: has_projects_board(&user, &rows),
         is_template_maker: here(TEMPLATE_MAKER),
