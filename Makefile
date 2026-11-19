@@ -14,11 +14,11 @@ CARGO_LAMBDA ?= $(if $(shell command -v cargo-lambda 2>/dev/null),cargo-lambda,u
 BUILD_BASE = CARGO_PROFILE_DEV_DEBUG=false CARGO_PROFILE_DEV_STRIP=symbols $(CARGO_LAMBDA) lambda build $(if $(filter dev,$(ENV)),,--release) $(if $(filter api,$(APP)),--arm64,--x86-64)
 
 # --- Build and deploy ---
-#   make build <app>          app: api, webhooks, time-triggered
+#   make build <app>          app: api, webhooks, time-triggered, duplicate-refresh
 #   make deploy <app> <env>   env: dev, prod
 #   make deploy-all           api and webhooks, each to dev and prod
 # Each app is a crate whose binary has the same name.
-APPS := api webhooks time-triggered
+APPS := api webhooks time-triggered duplicate-refresh
 ENVS := dev prod
 APP ?= $(firstword $(filter $(APPS),$(MAKECMDGOALS)))
 ENV ?= $(firstword $(filter $(ENVS),$(MAKECMDGOALS)))
@@ -35,6 +35,9 @@ FUNCTION_time-triggered_prod := time-triggered
 # On the duplicate database and the dev API. Its schedule (process-time-based-dev)
 # is disabled: it sends real email to the recipients copied from production.
 FUNCTION_time-triggered_dev := time-triggered-dev
+# Copies main over duplicate every night at 2 AM New York (duplicate-refresh/README.md).
+# Prod only: it reads the production database.
+FUNCTION_duplicate-refresh_prod := duplicate-refresh
 FUNCTION = $(FUNCTION_$(APP)_$(ENV))
 
 # The app and environment words are goals too; they do nothing themselves.
