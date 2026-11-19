@@ -463,14 +463,20 @@ async fn send_and_record_scheduled_email(
 
 /// Minute of the hour (UTC) at which each hourly job runs. These keep data
 /// that nobody waits on by the minute (call logs read back from `RingCentral`
-/// and `CloudTalk`, call points of those calls, contacts pushed to the
-/// providers, the PostHog auto-fix intake), each at its own minute so they
-/// never pile up, and away from `:00`. Everything else still runs every
-/// minute.
+/// and `CloudTalk`, call points of those calls, the PostHog auto-fix
+/// intake), each at its own minute so they never pile up, and away from
+/// `:00`. Everything else still runs every minute, except the contact sync.
 const CALL_HISTORY_MINUTE: u32 = 7;
 const CALL_POINTS_MINUTE: u32 = 22;
-const CONTACT_SYNC_MINUTE: u32 = 37;
 const POSTHOG_AUTOFIX_MINUTE: u32 = 52;
+
+/// The contact sync runs every 5 minutes, at the minutes whose remainder by 5
+/// is this (:04, :09, ... :59: never with an hourly job, never at `:00`). It
+/// pushes only 3 customers to `RingCentral` a run (its contact API throttles
+/// hard), so hourly would be 72 a day: an import of hundreds would take days
+/// to reach the provider. Every 5 minutes is 864 a day.
+const CONTACT_SYNC_EVERY_MINUTES: u32 = 5;
+const CONTACT_SYNC_REMAINDER: u32 = 4;
 
 /// The minute of the hour of an `EventBridge` event time
 /// (`2026-11-19T20:34:00Z`); `None` when it is not in that form.
@@ -487,6 +493,12 @@ fn minute_of_hour(time: &str) -> Option<u32> {
 /// whose time is unknown (an invocation by hand).
 fn hourly_due(minute: Option<u32>, job_minute: u32) -> bool {
     minute.is_none_or(|minute| minute == job_minute)
+}
+
+/// Whether the contact sync runs on this tick (every tick whose time is
+/// unknown, as [`hourly_due`]).
+fn contact_sync_due(minute: Option<u32>) -> bool {
+    minute.is_none_or(|minute| minute % CONTACT_SYNC_EVERY_MINUTES == CONTACT_SYNC_REMAINDER)
 }
 
 /// There are some code example in the following URLs:
@@ -612,7 +624,7 @@ pub(crate) async fn function_handler(
                 0
             }
         };
-    let contact_sync_count = if hourly_due(minute, CONTACT_SYNC_MINUTE) {
+    let contact_sync_count = if contact_sync_due(minute) {
         match report_job("contact-sync", process_contact_sync().await).await {
             Ok(count) => count,
             Err(error) => {
@@ -774,13 +786,19 @@ mod tests {
         let minutes = [
             CALL_HISTORY_MINUTE,
             CALL_POINTS_MINUTE,
-            CONTACT_SYNC_MINUTE,
             POSTHOG_AUTOFIX_MINUTE,
         ];
         for (i, minute) in minutes.iter().enumerate() {
             assert!((1..60).contains(minute));
             assert!(!minutes[i + 1..].contains(minute));
         }
+
+        // The contact sync: 12 times an hour, never with an hourly job, never at :00.
+        let runs: Vec<u32> = (0..60).filter(|m| contact_sync_due(Some(*m))).collect();
+        assert_eq!(runs.len(), 12);
+        assert!(!runs.contains(&0));
+        assert!(runs.iter().all(|m| !minutes.contains(m)));
+        assert!(contact_sync_due(None));
     }
 
     #[test]
