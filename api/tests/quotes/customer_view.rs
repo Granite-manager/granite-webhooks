@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use axum::routing::post;
 use axum::{Json, Router};
 use axum_test::TestServer;
-use common::{ALLOWED_ORIGIN, SECRET};
+use common::{ALLOWED_ORIGIN, SECRET, WithSession, sessions};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::MySqlPool;
@@ -1598,4 +1598,33 @@ async fn without_texting_a_code_cannot_be_texted(pool: MySqlPool) {
         .json(&json!({ "phone": "317-555-0100" }))
         .await
         .assert_status(StatusCode::CONFLICT);
+}
+
+#[test_db::test(seed)]
+async fn a_super_admin_opens_a_customer_page_without_a_code(pool: MySqlPool) {
+    sqlx::query("UPDATE users SET is_superuser = 1 WHERE id = 103")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (server, sent) = server(&pool).await;
+    server
+        .post("/v1/superuser/customer-view/100/1000")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    server
+        .post("/v1/superuser/customer-view/100/999999")
+        .with_session(sessions::SUPER_ADMIN)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    let opened = server
+        .post("/v1/superuser/customer-view/100/1000")
+        .with_session(sessions::SUPER_ADMIN)
+        .await;
+    opened.assert_status_ok();
+    assert_eq!(opened.json::<Value>(), json!({ "view_id": VIEW }));
+    let gate = server.get(&page("")).await;
+    assert_eq!(gate.json::<Value>()["verified"], json!(true));
+    server.get(&page("/projects")).await.assert_status_ok();
+    assert!(sent.lock().unwrap().is_empty());
 }
