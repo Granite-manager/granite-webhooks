@@ -1,10 +1,12 @@
 //! `POST /v1/ai/stone-colors`: a stone's colors picked by AI from its photo.
 //!
-//! The AI picks from the color list (`GET /v1/colors`), so the Add Stone and
-//! Edit Stone forms fill the Color field when a photo is chosen. The admin
-//! can change the pick before saving.
+//! The OpenAI Decisions API (`POST /v1/decisions`, `gpt-6-luna`) answers
+//! which listed color (`GET /v1/colors`) is the stone's main one and, for
+//! each color, how likely the stone shows it. The Add Stone and Edit Stone
+//! forms fill the Color field with the pick when a photo is chosen; the
+//! admin can change it before saving.
 
-use crate::ai::{AiError, Caller, Chat, LARGE_FALLBACK_MODEL, LARGE_MODEL};
+use crate::ai::{Caller, DECISIONS_MODEL};
 use crate::auth::AdminUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -15,7 +17,7 @@ use axum::extract::State;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::time::Duration;
 
 /// The largest photo read; the web app sends it shrunk to about 1 MB.
@@ -24,18 +26,13 @@ pub const MAX_PHOTO_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_PHOTO_BODY_BYTES: usize = MAX_PHOTO_BYTES / 3 * 4 + 64 * 1024;
 /// Most colors picked for one stone.
 const MAX_PICKED: usize = 4;
+/// A color besides the main one is picked when the AI is at least this sure
+/// the stone shows it.
+const SHOWS_COLOR_PROBABILITY: f64 = 0.5;
+/// Name of the question about the stone's main color.
+const MAIN_QUESTION: &str = "main";
 
-const PROMPT: &str = r#"This is a photo of a countertop stone slab (granite, quartz, marble, quartzite...) from a stone yard's inventory.
-
-Pick the colors a customer would use to find this stone when filtering the inventory by color, from this list only (id: name):
-{COLORS}
-
-Rules:
-- Pick the main background color first, then the colors of the veins, flecks or movement that clearly show. One to four colors.
-- Judge the stone itself; ignore the background, floor, rack, lighting glare, shadows, labels and people.
-- Use only ids from the list.
-
-Reply with only a JSON object: {"colorIds": [ids, main color first]}."#;
+const CONTEXT: &str = "This is a photo of a countertop stone slab (granite, quartz, marble, quartzite...) from a stone yard's inventory. Customers filter the inventory by color. Judge the stone itself only: ignore the background, floor, rack, lighting glare, shadows, labels and people.";
 
 /// Body of `POST /v1/ai/stone-colors`.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -49,8 +46,9 @@ pub struct StoneColorsInput {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StoneColors {
-    /// Ids from `GET /v1/colors`, the main color first; empty when the AI
-    /// could not tell.
+    /// Ids from `GET /v1/colors`: the main color first, then the other
+    /// colors the stone likely shows, surest first; at most 4. Empty when
+    /// the AI could not tell.
     pub color_ids: Vec<i32>,
 }
 
@@ -73,32 +71,74 @@ fn photo_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-/// The prompt with the color list in it.
-fn prompt(colors: &[Color]) -> String {
-    let list = colors
-        .iter()
-        .map(|color| format!("{}: {}", color.id, color.name))
-        .collect::<Vec<_>>()
-        .join("\n");
-    PROMPT.replace("{COLORS}", &list)
+/// The Decisions request: which listed color is the stone's main one, and
+/// for each color whether the stone clearly shows it.
+fn decision_body(colors: &[Color], photo_url: &str) -> Value {
+    let mut choices: Vec<Value> = Vec::new();
+    for color in colors {
+        if !choices.iter().any(|c| c["value"] == color.name.as_str()) {
+            choices.push(json!({ "value": color.name }));
+        }
+    }
+    let mut questions = vec![json!({
+        "type": "choice",
+        "name": MAIN_QUESTION,
+        "instructions": "Which color is the stone's main (background) color?",
+        "choices": choices,
+    })];
+    questions.extend(colors.iter().map(|color| {
+        json!({
+            "type": "predicate",
+            "name": color.id.to_string(),
+            "instructions": format!(
+                "Does the stone clearly show {}, as its main color or in its veins, flecks or movement?",
+                color.name
+            ),
+        })
+    }));
+    json!({
+        "model": DECISIONS_MODEL,
+        "input": [{
+            "role": "user",
+            "content": [
+                { "type": "input_text", "text": CONTEXT },
+                { "type": "input_image", "image_url": photo_url, "detail": "auto" },
+            ],
+        }],
+        "questions": questions,
+    })
 }
 
-/// The picked ids out of the AI's reply: only known ids, each once, in the
-/// AI's order, at most [`MAX_PICKED`].
-fn parse_ids(reply: &str, known: &[i32]) -> Option<Vec<i32>> {
-    let cleaned = reply.replace("```json", "").replace("```", "");
-    let parsed: serde_json::Value = serde_json::from_str(cleaned.trim()).ok()?;
-    let ids = parsed.get("colorIds")?.as_array()?;
+/// The picked ids out of a Decisions reply: the main color first, then the
+/// colors the stone likely shows, surest first, at most [`MAX_PICKED`].
+/// None when the reply has no answers.
+fn picked_ids(reply: &Value, colors: &[Color]) -> Option<Vec<i32>> {
+    let answers = reply.get("answers")?.as_array()?;
     let mut picked = Vec::new();
-    for id in ids {
-        let id = id
-            .as_i64()
-            .or_else(|| id.as_str().and_then(|s| s.trim().parse().ok()))
-            .and_then(|id| i32::try_from(id).ok());
-        if let Some(id) = id
-            && known.contains(&id)
-            && !picked.contains(&id)
-        {
+    let main = answers
+        .iter()
+        .find(|a| a["type"] == "choice" && a["name"] == MAIN_QUESTION)
+        .and_then(|a| a["choice"].as_str())
+        .and_then(|name| colors.iter().find(|color| color.name == name));
+    if let Some(main) = main {
+        picked.push(main.id);
+    }
+    let mut shown: Vec<(i32, f64)> = answers
+        .iter()
+        .filter(|a| a["type"] == "predicate")
+        .filter_map(|a| {
+            let id: i32 = a["name"].as_str()?.parse().ok()?;
+            let probability = a["probability"].as_f64()?;
+            colors
+                .iter()
+                .any(|color| color.id == id)
+                .then_some((id, probability))
+        })
+        .filter(|(_, probability)| *probability >= SHOWS_COLOR_PROBABILITY)
+        .collect();
+    shown.sort_by(|a, b| b.1.total_cmp(&a.1));
+    for (id, _) in shown {
+        if !picked.contains(&id) {
             picked.push(id);
         }
     }
@@ -109,9 +149,9 @@ fn parse_ids(reply: &str, known: &[i32]) -> Option<Vec<i32>> {
 /// Pick a stone's colors from its photo with AI
 ///
 /// Reads a JPEG, PNG or WebP photo of a stone (at most 4 MB, sent base64)
-/// and returns the colors from `GET /v1/colors` that it shows, the main
-/// color first. Nothing is saved. Company admins (and super admins,
-/// superusers) only.
+/// and returns the colors from `GET /v1/colors` that it shows: the main
+/// color first, then up to 3 more, surest first. Nothing is saved. Company
+/// admins (and super admins, superusers) only.
 #[crate::openapi::path(
     post,
     path = "/v1/ai/stone-colors",
@@ -149,40 +189,27 @@ pub async fn pick_stone_colors(
         sqlx::query_as("SELECT id, name FROM colors ORDER BY name ASC, id ASC")
             .fetch_all(&state.pool)
             .await?;
-    if colors.is_empty() {
+    if colors.len() < 2 {
+        // A choice question needs two options; a single color is no pick.
         return Ok(Json(StoneColors::default()));
     }
-    let known: Vec<i32> = colors.iter().map(|color| color.id).collect();
     let url = format!("data:{mime};base64,{}", STANDARD.encode(&bytes));
-    let content = json!([
-        { "type": "image_url", "image_url": { "url": url, "detail": "low" } },
-        { "type": "text", "text": prompt(&colors) },
-    ]);
-    let chat = |model| {
-        let mut chat = Chat::new(model);
-        chat.messages
-            .push(json!({ "role": "user", "content": content.clone() }));
-        chat.json = true;
-        chat.reasoning_effort = Some("low");
-        chat.timeout = Duration::from_secs(25);
-        chat
-    };
     let caller = Caller {
         feature: "stone_colors",
         user_id: Some(user.id),
         company_id: Some(user.company_id),
     };
-    let reply = match state.ai.chat(&state.pool, caller, &chat(LARGE_MODEL)).await {
-        Err(err) if err.is_model_permission() => {
-            state
-                .ai
-                .chat(&state.pool, caller, &chat(LARGE_FALLBACK_MODEL))
-                .await
-        }
-        other => other,
-    }
-    .map_err(|err: AiError| ApiError::Upstream(err.to_string()))?;
-    let color_ids = parse_ids(&reply, &known).ok_or_else(|| {
+    let reply = state
+        .ai
+        .decide(
+            &state.pool,
+            caller,
+            &decision_body(&colors, &url),
+            Duration::from_secs(25),
+        )
+        .await
+        .map_err(|err| ApiError::Upstream(err.to_string()))?;
+    let color_ids = picked_ids(&reply, &colors).ok_or_else(|| {
         ApiError::Upstream("Could not tell the stone's colors. Pick them by hand.".into())
     })?;
     Ok(Json(StoneColors { color_ids }))
@@ -192,20 +219,48 @@ pub async fn pick_stone_colors(
 mod tests {
     use super::*;
 
+    fn colors() -> Vec<Color> {
+        [(2, "Black"), (7, "Gray"), (15, "White"), (6, "Gold"), (4, "Brown")]
+            .into_iter()
+            .map(|(id, name)| Color {
+                id,
+                name: name.into(),
+            })
+            .collect()
+    }
+
     #[test]
-    fn only_known_ids_are_kept_once_in_order() {
-        let known = [1, 2, 3, 4, 5, 6];
+    fn the_main_color_comes_first_then_the_surest_shown_ones() {
+        let reply = json!({ "answers": [
+            { "type": "choice", "name": "main", "choice": "Gray", "confidence": 0.8 },
+            { "type": "predicate", "name": "2", "probability": 0.3 },
+            { "type": "predicate", "name": "7", "probability": 0.99 },
+            { "type": "predicate", "name": "15", "probability": 0.7 },
+            { "type": "predicate", "name": "6", "probability": 0.9 },
+            { "type": "predicate", "name": "4", "probability": 0.6 },
+            { "type": "predicate", "name": "99", "probability": 0.99 },
+            { "type": "refusal", "name": "3" },
+        ]});
+        assert_eq!(picked_ids(&reply, &colors()), Some(vec![7, 6, 15, 4]));
+        let refused = json!({ "answers": [{ "type": "refusal", "name": "main" }] });
+        assert_eq!(picked_ids(&refused, &colors()), Some(vec![]));
+        assert_eq!(picked_ids(&json!({}), &colors()), None);
+    }
+
+    #[test]
+    fn the_request_asks_about_every_color() {
+        let body = decision_body(&colors(), "data:image/png;base64,QQ==");
+        assert_eq!(body["model"], "gpt-6-luna");
         assert_eq!(
-            parse_ids("```json\n{\"colorIds\": [3, \"1\", 3, 99, 2]}\n```", &known),
-            Some(vec![3, 1, 2])
+            body["input"][0]["content"][1]["image_url"],
+            "data:image/png;base64,QQ=="
         );
-        assert_eq!(
-            parse_ids(r#"{"colorIds": [1, 2, 3, 4, 5, 6]}"#, &known),
-            Some(vec![1, 2, 3, 4])
-        );
-        assert_eq!(parse_ids(r#"{"colorIds": []}"#, &known), Some(vec![]));
-        assert_eq!(parse_ids("not json", &known), None);
-        assert_eq!(parse_ids(r#"{"colors": [1]}"#, &known), None);
+        let questions = body["questions"].as_array().unwrap();
+        assert_eq!(questions.len(), 6);
+        assert_eq!(questions[0]["type"], "choice");
+        assert_eq!(questions[0]["choices"].as_array().unwrap().len(), 5);
+        assert_eq!(questions[1]["name"], "2");
+        assert_eq!(questions[1]["type"], "predicate");
     }
 
     #[test]
@@ -214,16 +269,5 @@ mod tests {
         assert_eq!(photo_type(b"\x89PNG\r\n"), Some("image/png"));
         assert_eq!(photo_type(b"RIFF\0\0\0\0WEBPVP8 "), Some("image/webp"));
         assert_eq!(photo_type(b"%PDF-1.7"), None);
-    }
-
-    #[test]
-    fn the_prompt_lists_every_color() {
-        let colors = [
-            Color { id: 1, name: "White".into() },
-            Color { id: 7, name: "Gold".into() },
-        ];
-        let text = prompt(&colors);
-        assert!(text.contains("1: White\n7: Gold"));
-        assert!(!text.contains("{COLORS}"));
     }
 }
