@@ -153,10 +153,14 @@ Sending documents for signature (`POST /v1/emails` with
 `signature_requests`, `routes/emails/signatures.rs`): through SignWell by
 default (the company's `signwell_api_key`, else `SIGNWELL_API_KEY`;
 `SIGNWELL_TEST_MODE=true` for test documents), natively when enabled. A
-native send also needs the company's verified settings in
+native send needs only the sender's signature switch
+(`users.is_signature_available`) and a `SIGNATURE_STORAGE_BUCKET` that
+blocks all public access. A company listed in
 `SIGNATURE_VERIFIED_COMPANY_SETTINGS` (`{"<company id>": {"verifiedAt",
-"evidenceReference", "settings"}}`) and a `SIGNATURE_STORAGE_BUCKET` that
-blocks all public access. `signing_pdf.rs` freezes the PDF's form and prints
+"evidenceReference", "settings"}}`) signs with its own settings; any other
+company gets the defaults (`native_delivery::default_settings`: 30 days,
+reminders, sender notified, signed copy mailed to both, in its Telnyx
+business-hours time zone, else America/New_York). `signing_pdf.rs` freezes the PDF's form and prints
 what the sender filled in, matching pdf-lib's output.
 
 SignWell reports viewed / signed / declined documents to

@@ -235,3 +235,75 @@ async fn a_native_send_needs_its_key(pool: MySqlPool) {
         "A stable logical send identity is required"
     );
 }
+
+/// Sends a document for signature from company 101, which has no entry in
+/// `SIGNATURE_VERIFIED_COMPANY_SETTINGS`, and returns the frozen settings.
+async fn send_without_verified_settings(pool: &MySqlPool) -> (Fakes, Value) {
+    let setup = setup(pool).await;
+    sqlx::query("UPDATE users SET is_signature_available = 1 WHERE id = 106")
+        .execute(pool)
+        .await
+        .unwrap();
+    let key = "emails/101/f1/contract.pdf";
+    let bytes = setup.storage.get(KEY).await.unwrap().unwrap().bytes;
+    setup
+        .storage
+        .put(key, bytes, "application/pdf")
+        .await
+        .unwrap();
+    let url = format!("https://files.test/bucket/{key}");
+    let mut email = setup.email();
+    email.as_object_mut().unwrap().remove("deal_id");
+    email["attachments"][0]["url"] = json!(url);
+    email["attachments"][0]["token"] = json!(attachment_token::sign(SECRET, &url, 106));
+    email["signature_requests"][0]["url"] = json!(url);
+    let response = setup
+        .server
+        .post("/v1/emails")
+        .with_session(sessions::OTHER_COMPANY_REP)
+        .json(&email)
+        .await;
+    response.assert_status_ok();
+    let settings: String = sqlx::query_scalar(
+        "SELECT CAST(settings_json AS CHAR) FROM native_signature_documents WHERE company_id = 101",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (setup.fakes, serde_json::from_str(&settings).unwrap())
+}
+
+#[test_db::test(seed)]
+async fn the_signature_switch_alone_sends_with_default_settings(pool: MySqlPool) {
+    let (fakes, settings) = send_without_verified_settings(&pool).await;
+    let emails = fakes.emails.lock().unwrap().clone();
+    assert_eq!(emails.len(), 1);
+    assert_eq!(emails[0].to, vec!["alice@example.com".to_string()]);
+    assert!(emails[0].body.contains("https://sign.acme.test/sign/"));
+    assert_eq!(settings["timezone"], "America/New_York");
+    assert_eq!(settings["expiresInDays"], 30);
+    assert_eq!(
+        settings["notificationDelivery"]["completed"]["completedFile"],
+        "attachment"
+    );
+    let status: String = sqlx::query_scalar(
+        "SELECT CAST(status AS CHAR) FROM signature_requests WHERE company_id = 101 AND provider = 'native'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(status, "sent");
+}
+
+#[test_db::test(seed)]
+async fn default_settings_take_the_company_time_zone(pool: MySqlPool) {
+    sqlx::query(
+        "INSERT INTO telnyx_company_config (company_id, enabled, webhook_token, business_hours)
+         VALUES (101, 0, 'tz-test', JSON_OBJECT('tz', 'America/Los_Angeles'))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, settings) = send_without_verified_settings(&pool).await;
+    assert_eq!(settings["timezone"], "America/Los_Angeles");
+}

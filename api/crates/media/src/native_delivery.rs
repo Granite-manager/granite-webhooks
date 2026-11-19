@@ -73,16 +73,91 @@ pub struct PreparedNative {
     pub signing_url: String,
 }
 
-/// The per-company signing settings verified for native signing
-/// (`SIGNATURE_VERIFIED_COMPANY_SETTINGS`: `{"<company>": {verifiedAt,
-/// evidenceReference, settings}}`).
-fn verified_settings(company_id: i32) -> Result<Value, NativeError> {
+/// The time zone of default signing settings when the company has none of
+/// its own (no Telnyx business hours).
+const DEFAULT_SIGNING_TIME_ZONE: &str = "America/New_York";
+
+/// Signing settings for a company not in `SIGNATURE_VERIFIED_COMPANY_SETTINGS`.
+///
+/// The user's signature switch is enough: 30 days to sign, reminders and
+/// notifications on, drawn or typed signatures, in the company's time zone.
+pub fn default_settings(timezone: &str) -> Value {
+    json!({
+        "parityVerified": true,
+        "timezone": timezone,
+        "signatureMethods": ["type", "draw"],
+        "allowDecline": true,
+        "allowReassign": false,
+        "authentication": "invitation",
+        "reminders": true,
+        "expiresInDays": 30,
+        "notifications": { "viewed": true, "completed": true, "declined": true },
+        "notificationDelivery": {
+            "viewed": {
+                "recipients": ["sender"],
+                "subject": "{{filename}} was viewed",
+                "text": "Your customer opened {{filename}}. It is not signed yet.",
+                "completedFile": "none"
+            },
+            "completed": {
+                "recipients": ["sender", "signer"],
+                "subject": "{{filename}} is signed",
+                "text": "{{filename}} has been signed. The signed copy is attached.",
+                "completedFile": "attachment"
+            },
+            "declined": {
+                "recipients": ["sender"],
+                "subject": "{{filename}} was declined",
+                "text": "Your customer declined to sign {{filename}}.",
+                "completedFile": "none"
+            }
+        },
+        "auditPage": true
+    })
+}
+
+/// The company's time zone: its Telnyx business hours' `tz`, else
+/// [`DEFAULT_SIGNING_TIME_ZONE`].
+async fn company_time_zone(pool: &sqlx::MySqlPool, company_id: i32) -> Result<String, NativeError> {
+    let tz: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT JSON_UNQUOTE(JSON_EXTRACT(business_hours, '$.tz'))
+           FROM telnyx_company_config WHERE company_id = ? LIMIT 1",
+    )
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(tz
+        .flatten()
+        .map(|tz| tz.trim().to_string())
+        .filter(|tz| tz.parse::<chrono_tz::Tz>().is_ok())
+        .unwrap_or_else(|| DEFAULT_SIGNING_TIME_ZONE.to_string()))
+}
+
+/// The company's signing settings: its verified entry in
+/// `SIGNATURE_VERIFIED_COMPANY_SETTINGS` (`{"<company>": {verifiedAt,
+/// evidenceReference, settings}}`) when it has one, else
+/// [`default_settings`] in the company's time zone. An entry that is there
+/// but invalid still refuses the send.
+async fn signing_settings(pool: &sqlx::MySqlPool, company_id: i32) -> Result<Value, NativeError> {
+    match verified_settings(company_id)? {
+        Some(settings) => Ok(settings),
+        None => Ok(default_settings(
+            &company_time_zone(pool, company_id).await?,
+        )),
+    }
+}
+
+/// The company's own entry in `SIGNATURE_VERIFIED_COMPANY_SETTINGS`, or
+/// `None` when it has none.
+fn verified_settings(company_id: i32) -> Result<Option<Value>, NativeError> {
     let pending = || refused("Verified signature account settings are pending");
     let configs: Value = serde_json::from_str(
         &std::env::var("SIGNATURE_VERIFIED_COMPANY_SETTINGS").unwrap_or_else(|_| "{}".into()),
     )
     .map_err(|_| pending())?;
-    let entry = configs.get(company_id.to_string()).ok_or_else(pending)?;
+    let Some(entry) = configs.get(company_id.to_string()) else {
+        return Ok(None);
+    };
     let verified_at = entry["verifiedAt"].as_str().unwrap_or("");
     let evidence = entry["evidenceReference"].as_str().map_or("", str::trim);
     if chrono::DateTime::parse_from_rfc3339(verified_at).is_err() || evidence.is_empty() {
@@ -92,7 +167,7 @@ fn verified_settings(company_id: i32) -> Result<Value, NativeError> {
     if !frozen_settings_valid(&settings) {
         return Err(pending());
     }
-    Ok(settings)
+    Ok(Some(settings))
 }
 
 /// `frozenSigningSettingsSchema`.
@@ -313,7 +388,7 @@ pub async fn prepare(
     if input.items.is_empty() || input.items.len() > 20 {
         return Err(refused("Invalid signature batch"));
     }
-    let mut settings = verified_settings(input.company_id)?;
+    let mut settings = signing_settings(&state.pool, input.company_id).await?;
     let methods = settings["signatureMethods"]
         .as_array()
         .cloned()
@@ -865,5 +940,15 @@ mod tests {
         assert!(key_valid("delayed:12"));
         assert!(!key_valid("delayed:012"));
         assert!(!key_valid("composer:nope"));
+    }
+
+    #[test]
+    fn default_settings_pass_the_frozen_schema() {
+        assert!(frozen_settings_valid(&default_settings(
+            DEFAULT_SIGNING_TIME_ZONE
+        )));
+        assert!(frozen_settings_valid(&default_settings(
+            "America/Los_Angeles"
+        )));
     }
 }
