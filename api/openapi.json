@@ -56903,6 +56903,83 @@
         ]
       }
     },
+    "/v1/ai/stone-colors": {
+      "post": {
+        "tags": [
+          "ai"
+        ],
+        "summary": "Pick a stone's colors from its photo with AI",
+        "description": "Reads a JPEG, PNG or WebP photo of a stone (at most 4 MB, sent base64)\nand returns the colors from `GET /v1/colors` that it shows, the main\ncolor first. Nothing is saved. Company admins (and super admins,\nsuperusers) only.",
+        "operationId": "pick_stone_colors",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StoneColorsInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The colors the photo shows",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoneColors"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not base64, empty, too big, or not a JPEG, PNG or WebP",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "OpenAI failed or answered without colors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/ai/invoice-edit": {
       "post": {
         "tags": [
@@ -120981,6 +121058,36 @@
           "slabs": {
             "$ref": "#/components/schemas/SlabCounts",
             "description": "Slabs on hand."
+          }
+        }
+      },
+      "StoneColors": {
+        "type": "object",
+        "description": "The colors the AI picked.",
+        "required": [
+          "colorIds"
+        ],
+        "properties": {
+          "colorIds": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "format": "int32"
+            },
+            "description": "Ids from `GET /v1/colors`, the main color first; empty when the AI\ncould not tell."
+          }
+        }
+      },
+      "StoneColorsInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/ai/stone-colors`.",
+        "required": [
+          "contentBase64"
+        ],
+        "properties": {
+          "contentBase64": {
+            "type": "string",
+            "description": "The stone's photo, base64: a JPEG, PNG or WebP of at most 4 MB."
           }
         }
       },
