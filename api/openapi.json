@@ -97315,6 +97315,139 @@
               "null"
             ],
             "description": "`hot`, `medium` or `cold`; null when not rated."
+          },
+          "phone_2": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A second phone; null when the lead has none."
+          },
+          "company_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The customer's company; null when the lead has none."
+          },
+          "city": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "City; null when the lead has none."
+          },
+          "postal_code": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Zip code; null when the lead has none."
+          },
+          "remodal_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What they remodel (\"Kitchen\"…); null when the lead has none."
+          },
+          "project_size": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How big the project is; null when the lead has none."
+          },
+          "when_start": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "When they want to start; null when the lead has none."
+          },
+          "contact_time": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The best time to contact them; null when the lead has none."
+          },
+          "remove_and_dispose": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Whether the old countertops are removed; null when the lead has none."
+          },
+          "improve_offer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their answer to the offer question; null when the lead has none."
+          },
+          "sink": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The sink they chose; null when the lead has none."
+          },
+          "kitchen_stove": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The stove they chose; null when the lead has none."
+          },
+          "backsplash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The backsplash they chose; null when the lead has none."
+          },
+          "details": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Other answers of the form (a Facebook lead); null when the lead has none."
+          },
+          "attached_file": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The file they attached (a link); null when the lead has none."
+          },
+          "form_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The form the lead came from; null when the lead has none."
+          },
+          "compaign_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ad campaign; null when the lead has none."
+          },
+          "adset_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ad set; null when the lead has none."
+          },
+          "ad_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ad; null when the lead has none."
           }
         }
       },
