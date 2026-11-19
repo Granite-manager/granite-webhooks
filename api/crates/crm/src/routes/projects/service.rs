@@ -807,6 +807,27 @@ async fn create_project(
     .bind(company_id)
     .execute(&mut *conn)
     .await?;
+    // The customer's other events made since the deal began (a template or
+    // installation booked by hand) are this project's too, unless the
+    // customer has another project: then they are linked by hand in Event
+    // details.
+    sqlx::query(
+        "UPDATE events e
+           JOIN calendars cal ON cal.id = e.calendar_id AND cal.company_id = ?
+           JOIN deals d ON d.id = ?
+            SET e.project_id = ?
+          WHERE e.customer_id = d.customer_id AND e.project_id IS NULL
+            AND e.deleted_date IS NULL
+            AND e.created_date >= d.created_at - INTERVAL 1 DAY
+            AND NOT EXISTS (SELECT 1 FROM projects o
+                             WHERE o.customer_id = d.customer_id AND o.id <> ?)",
+    )
+    .bind(company_id)
+    .bind(deal_id)
+    .bind(id)
+    .bind(id)
+    .execute(&mut *conn)
+    .await?;
     // A sale's events planned for a part type give the project its parts.
     super::parts::materialize(&mut *conn, company_id, id).await;
     Ok(id)

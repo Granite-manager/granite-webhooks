@@ -56,6 +56,16 @@ pub async fn run(state: &AppState, company_id: i32, projects: &[Project]) {
     if let Err(error) = check(state, company_id, projects).await {
         tracing::error!(?error, company_id, "project step automation failed");
     }
+    // Steps that came up some other way (a new project, a job done on the
+    // schedule): their Notify people are told.
+    let ids: Vec<i32> = projects
+        .iter()
+        .filter(|p| {
+            p.archived_at.is_none() && p.cancelled_at.is_none() && p.sale_cancelled_at.is_none()
+        })
+        .map(|p| p.id)
+        .collect();
+    super::arrivals::announce(state, None, &ids).await;
 }
 
 async fn check(state: &AppState, company_id: i32, projects: &[Project]) -> sqlx::Result<()> {

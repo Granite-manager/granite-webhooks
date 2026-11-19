@@ -23,8 +23,6 @@ use sqlx::{MySql, MySqlConnection, QueryBuilder};
 
 const NAME_MAX: usize = 120;
 
-/// The bell: someone checked off a step you are told about.
-pub const STEP_DONE: &str = "project_step_done";
 
 /// The name to store, or why it can't be.
 fn clean_name(name: &str) -> ApiResult<&str> {
@@ -697,6 +695,8 @@ pub(super) async fn tell_moved_on(
         for (step_id, part_id) in checked {
             tell_step_people(state, actor_id, actor_name, project_id, step_id, part_id).await;
         }
+        // The new stage's first step comes up: its Notify people are told.
+        super::arrivals::announce(state, actor_id, &[project_id]).await;
         Ok(())
     }
     .await;
@@ -1023,8 +1023,9 @@ pub async fn set_auto(
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
-/// Tells the step's people (not the one who checked it) on the bell and
-/// their phones. Logged, never returned: the check-off is saved.
+/// Tells the person whose step is now next that it is theirs, then the
+/// Notify people of the step that came up (`arrivals`), not the one who
+/// checked `step_id` off. Logged, never returned: the check-off is saved.
 pub(super) async fn tell_step_people(
     state: &AppState,
     actor_id: Option<i32>,
@@ -1033,69 +1034,16 @@ pub(super) async fn tell_step_people(
     step_id: i32,
     part_id: i32,
 ) {
-    let result: sqlx::Result<()> = async {
-        let people: Vec<i32> = sqlx::query_scalar(
-            "SELECT n.user_id FROM project_process_step_notify n
-               JOIN users u ON u.id = n.user_id AND u.is_deleted = 0
-              WHERE n.step_id = ? AND n.user_id <> ?
-             UNION
-             SELECT p.sales_rep_id FROM projects p
-               JOIN project_process_steps s ON s.id = ? AND s.notify_sales_rep = 1
-               JOIN users u ON u.id = p.sales_rep_id AND u.is_deleted = 0
-              WHERE p.id = ? AND p.sales_rep_id <> ?",
-        )
-        .bind(step_id)
-        .bind(actor_id.unwrap_or(0))
-        .bind(step_id)
-        .bind(project_id)
-        .bind(actor_id.unwrap_or(0))
-        .fetch_all(&state.pool)
-        .await?;
-        let actor = actor_name
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .map(|name| name.chars().take(255).collect::<String>());
-        for person in people {
-            let id = sqlx::query(
-                "INSERT INTO notifications
-                    (user_id, project_id, message, notification_type, actor_name, due_at)
-                 SELECT ?, ?,
-                        LEFT(CONCAT(name, COALESCE((SELECT CONCAT(' (', pp.name, ')')
-                                                      FROM project_parts pp WHERE pp.id = ?), '')),
-                             255),
-                        ?, ?, NOW()
-                   FROM project_process_steps WHERE id = ?",
-            )
-            .bind(person)
-            .bind(project_id)
-            .bind(part_id)
-            .bind(STEP_DONE)
-            .bind(&actor)
-            .bind(step_id)
-            .execute(&state.pool)
-            .await?
-            .last_insert_id();
-            push_notification_logged(state, i64::try_from(id).unwrap_or_default()).await;
-        }
-        Ok(())
-    }
-    .await;
-    if let Err(error) = result {
-        tracing::error!(
-            ?error,
-            project_id,
-            step_id,
-            "project step notification failed"
-        );
-    }
     if let Err(error) = tell_next_owner(state, actor_id, actor_name, project_id, part_id).await {
         tracing::error!(
             ?error,
             project_id,
+            step_id,
             part_id,
             "project next step notification failed"
         );
     }
+    super::arrivals::announce(state, actor_id, &[project_id]).await;
 }
 
 /// Tells the person whose step is now the project's (or the part's) Next that
