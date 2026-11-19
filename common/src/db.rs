@@ -70,7 +70,7 @@ fn wall_ms() -> u64 {
 ///   connections fill the database's limit; this makes MySQL drop them
 ///   itself. A warm container whose connection was dropped reconnects on its
 ///   next query, which cost about 100 ms (TLS and sign-in on a 512 MB
-///   Lambda) until sqlx's sockets got `TCP_NODELAY` (`vendor/sqlx-core`), and
+///   Lambda) until sqlx's sockets got `TCP_NODELAY` (sqlx 0.9.1), and
 ///   about 10 ms since. 120, not 60: in a week of logs (Nov 2026) the most containers
 ///   that served a request within any 2 minutes was 64, the same as within
 ///   any minute (3 minutes: 75, against the limit of 90), and it cut the
