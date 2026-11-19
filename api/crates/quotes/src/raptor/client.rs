@@ -358,6 +358,17 @@ fn value(line: &str) -> &str {
 /// `current` with each line whose value went from `old` to `new` replaced
 /// (or added after the last line); every other line as it is.
 pub fn merge_note(current: &str, old: &str, new: &str) -> String {
+    // Nobody changed the note in Raptor: all of it is the CRM's, so the new
+    // one replaces it (a pick-up's short note replaces the long one).
+    let plain = |text: &str| {
+        text.replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .trim_end()
+            .to_string()
+    };
+    if plain(current) == plain(old) {
+        return new.to_string();
+    }
     let before: HashMap<String, &str> = old
         .lines()
         .filter_map(|l| Some((label(l)?, value(l))))
@@ -662,5 +673,8 @@ mod tests {
             ),
             "10-year sealer:Yes\n"
         );
+        // Nobody touched it in Raptor: a pick-up's short note replaces the long one.
+        let short = "10-year sealer:no\nBackplash:no\nSalesperson:Liza\n\n";
+        assert_eq!(merge_note(&old.replace('\n', "\r\n"), old, short), short);
     }
 }
