@@ -526,14 +526,13 @@ struct DefaultTemplate {
 ///
 /// Its system calendars and auto-confirm texts, its own starter pipeline, the default company email
 /// templates, a `walk-in@<subdomain>.com` employee for the check-in kiosk
-/// (password 1111, changed at its first sign-in) and the system customer
+/// (no password and no position: it cannot sign in until set up) and the system customer
 /// sources. Used by the superuser's create and by self sign-up.
 pub async fn seed_company(
     tx: &mut sqlx::Transaction<'_, sqlx::MySql>,
     id: i32,
     walk_in_subdomain: &str,
 ) -> ApiResult<()> {
-    let password = bcrypt::hash("1111", 10).map_err(|e| ApiError::Internal(e.to_string()))?;
     for (slug, name, color) in crate::routes::calendars::queries::SYSTEM_CALENDARS {
         sqlx::query("INSERT INTO calendars (company_id, name, color, slug, created_by) VALUES (?, ?, ?, ?, NULL)")
             .bind(id)
@@ -575,10 +574,9 @@ pub async fn seed_company(
     }
     sqlx::query(
         "INSERT INTO users (name, email, password, company_id, is_employee, is_admin)
-         VALUES ('Walk-in', ?, ?, ?, 1, 0)",
+         VALUES ('Walk-in', ?, NULL, ?, 1, 0)",
     )
     .bind(format!("walk-in@{walk_in_subdomain}.com"))
-    .bind(password)
     .bind(id)
     .execute(&mut **tx)
     .await?;

@@ -387,22 +387,19 @@ pub async fn sign_in(
         platform: input.platform,
         app_version,
     };
-    if let Some(step) = login_steps::first_step(pool, user_id, &password).await? {
+    if login_steps::is_default_password(&password) {
+        return Ok(refuse(
+            StatusCode::FORBIDDEN,
+            login_steps::DEFAULT_PASSWORD_REFUSED,
+        ));
+    }
+    if let Some(step) = login_steps::first_step(pool, user_id).await? {
         if !input.steps {
             return Err(ApiError::Denied(
                 "Update Granite Manager to sign in: your account needs a new password or a sign-in code first.".into(),
             ));
         }
-        return login_steps::begin(
-            pool,
-            user_id,
-            step,
-            &password,
-            &email_hash,
-            &ip_hash,
-            Some(&phone),
-        )
-        .await;
+        return login_steps::begin(pool, user_id, step, &email_hash, &ip_hash, Some(&phone)).await;
     }
     sqlx::query("DELETE FROM login_attempts WHERE email_hash = ?")
         .bind(&email_hash)
