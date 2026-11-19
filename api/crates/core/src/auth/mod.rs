@@ -172,10 +172,11 @@ pub const DEVICE_ROUTES: [&str; 11] = [
 /// Suppliers, Images (with its folders), Transactions and Quotes; the CRM
 /// notification a push names; the shop's maintenance checks a push says are
 /// due; the customer stones page the typing
-/// suggestion offers to link; and the sales reps that Assign a sales rep lists).
+/// suggestion offers to link; the sales reps that Assign a sales rep lists;
+/// and the customer to-do lists a crew job sends).
 /// These prefixes and everything under them; writes there still need the CRM
 /// session.
-pub const DEVICE_READ_ROUTES: [&str; 19] = [
+pub const DEVICE_READ_ROUTES: [&str; 20] = [
     "/v1/sms/mine",
     "/v1/ai/compose/inventory-url",
     "/v1/calendars",
@@ -195,6 +196,7 @@ pub const DEVICE_READ_ROUTES: [&str; 19] = [
     "/v1/notifications",
     "/v1/shop/maintenance",
     "/v1/users/sales-reps",
+    "/v1/customer-checklists",
 ];
 
 /// CRM actions the app's composer calls with its device token: exactly these
@@ -202,8 +204,9 @@ pub const DEVICE_READ_ROUTES: [&str; 19] = [
 /// to send, Improve message, AI reply, the suggestion that continues what the
 /// rep types and what it learns from the text they sent instead, a
 /// template's `{{variables}}` filled for Use Template, and the crew's
-/// position for the automatic On my way and Arrived).
-pub const DEVICE_ACTIONS: [&str; 8] = [
+/// position for the automatic On my way and Arrived, and the installer's
+/// post-installation checklist the customer signs).
+pub const DEVICE_ACTIONS: [&str; 9] = [
     "/v1/uploads",
     "/v1/sms/attachments",
     "/v1/ai/improve",
@@ -212,6 +215,7 @@ pub const DEVICE_ACTIONS: [&str; 8] = [
     "/v1/ai/compose/learn",
     "/v1/templates/fill",
     "/v1/me/location",
+    "/v1/checklists",
 ];
 
 /// `path` is `prefix` or under it (`/v1/emailsx` is not under `/v1/emails`).
@@ -1026,6 +1030,16 @@ mod tests {
         ] {
             assert!(!device_route(&Method::GET, path), "{path}");
         }
+    }
+
+    #[test]
+    fn the_crew_checklist_is_open_to_the_app() {
+        assert!(device_route(&Method::POST, "/v1/checklists"));
+        assert!(!device_route(&Method::GET, "/v1/checklists"));
+        assert!(!device_route(&Method::GET, "/v1/checklists/7/pdf"));
+        assert!(device_route(&Method::GET, "/v1/customer-checklists"));
+        assert!(!device_route(&Method::POST, "/v1/customer-checklists"));
+        assert!(!device_route(&Method::PUT, "/v1/customer-checklists/7"));
     }
 
     #[test]
