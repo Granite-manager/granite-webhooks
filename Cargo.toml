@@ -7,6 +7,7 @@ members = [
     "webhooks/crates/leads",
     "webhooks/crates/phone",
     "time-triggered",
+    "duplicate-refresh",
     "api",
     "api/crates/accounts",
     "api/crates/admin",
