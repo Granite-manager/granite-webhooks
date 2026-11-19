@@ -5,7 +5,7 @@
 use super::access::{STAGE_SQL, Stage, Viewer};
 use super::schemas::{
     DoneStep, NotifyPosition, Person, ProcessStage, ProcessStep, ProcessStepAuto, ProcessStepInput,
-    ProcessStepName, ProcessStepNotify, ProcessStepOrder, StepAuto, StepDone,
+    ProcessStepName, ProcessStepNotify, ProcessStepOrder, ProjectAction, StepAuto, StepDone,
 };
 use super::service::visible_project;
 use super::step_events::StepEventRule;
@@ -22,7 +22,6 @@ use lambda_http::tracing;
 use sqlx::{MySql, MySqlConnection, QueryBuilder};
 
 const NAME_MAX: usize = 120;
-
 
 /// The name to store, or why it can't be.
 fn clean_name(name: &str) -> ApiResult<&str> {
@@ -612,6 +611,81 @@ pub async fn set_stage_notify(
     }
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Checking off by hand the last step of the stage the project (or its part)
+/// is in moves it to the next stage (owner, 2026-11-19: "when I mark the last
+/// step in the list, it has to move to the next list"). The move is the
+/// board's, with its checks, history and notices; anyone who may check the step
+/// off moves it. A move that can't happen yet (no transaction, slabs not cut)
+/// answers why, and the step stays done.
+pub(super) async fn move_on_after_last_step(
+    state: &AppState,
+    viewer: &Viewer,
+    actor_name: Option<&str>,
+    project_id: i32,
+    step_id: i32,
+    part_id: i32,
+) -> ApiResult<()> {
+    let mut conn = state.pool.acquire().await?;
+    let steps = company_steps(&mut conn, viewer.company_id).await?;
+    let Some(stage) = steps.iter().find(|s| s.id == step_id).map(|s| s.stage_code) else {
+        return Ok(());
+    };
+    let last = steps
+        .iter()
+        .rev()
+        .find(|s| s.stage_code == stage)
+        .map(|s| s.id);
+    if last != Some(step_id) {
+        return Ok(());
+    }
+    let project = visible_project(&mut conn, viewer, project_id).await?;
+    let current = if part_id == 0 {
+        project.stage_code
+    } else {
+        let parts = super::parts::parts_of(&mut conn, viewer.company_id, &[project_id]).await?;
+        match parts.iter().find(|p| p.id == part_id) {
+            Some(part) => part.stage_code,
+            None => return Ok(()),
+        }
+    };
+    let Some(next) = Stage::ALL.into_iter().find(|s| *s > stage) else {
+        return Ok(());
+    };
+    if current != stage {
+        return Ok(());
+    }
+    let seen: i64 = sqlx::query_scalar(
+        "SELECT CAST(COALESCE(MAX(id), 0) AS SIGNED) FROM project_stage_history WHERE project_id = ?",
+    )
+    .bind(project_id)
+    .fetch_one(&mut *conn)
+    .await?;
+    drop(conn);
+    let mut mover = viewer.clone();
+    mover.permissions.production = true;
+    super::service::apply(
+        &state.pool,
+        &mover,
+        project_id,
+        ProjectAction::Stage {
+            version: project.version,
+            stage: next,
+            part_id: (part_id != 0).then_some(part_id),
+        },
+    )
+    .await?;
+    tell_moved_on(
+        state,
+        Some(viewer.user_id),
+        actor_name,
+        viewer.company_id,
+        project_id,
+        seen,
+    )
+    .await;
+    Ok(())
 }
 
 /// What a project's move left behind, for every stage it moved on from (the
@@ -1268,6 +1342,8 @@ pub async fn set_done(
                 part,
             )
             .await;
+            move_on_after_last_step(&state, &viewer, user.name.as_deref(), id, step_id, part)
+                .await?;
         }
     } else {
         sqlx::query(
