@@ -6,6 +6,7 @@
 //! Stones are linked to the material of their name here: on switching to
 //! materials, on listing materials, and on saving a stone.
 
+use super::background::{SlabBackground, company_background, pending_pictures};
 use super::locations::{LocationQuery, StoneLocation, inventory_company, locations};
 use super::queries::{list_stones, stones_with_slab_counts};
 use super::schemas::{ListStonesQuery, SlabCounts, Stone};
@@ -67,6 +68,12 @@ pub struct StaffStoneSettings {
     /// Every location of the company's business, its own included, by name;
     /// empty when it has no other locations.
     pub locations: Vec<StoneLocation>,
+    /// The company's slab picture background: new stone pictures are placed
+    /// on it. Null when it has none.
+    pub slab_background: Option<SlabBackground>,
+    /// Stone pictures still showing an older background (see
+    /// `POST /v1/stones/settings/slab-background/apply`).
+    pub slab_background_pending: i64,
 }
 
 /// `PUT /v1/stones/settings`.
@@ -225,6 +232,8 @@ pub async fn get_settings(
             .bind(user.company_id)
             .fetch_optional(&mut *conn)
             .await?;
+    let company = company_background(&mut conn, user.company_id).await?;
+    let pending = pending_pictures(&mut conn, user.company_id, company.version).await?;
     drop(conn);
     let mut locations = locations(&state.pool, user.company_id).await?;
     if locations.len() < 2 {
@@ -234,6 +243,8 @@ pub async fn get_settings(
         stone_view: view,
         show_all_locations: show_all.unwrap_or(false) && !locations.is_empty(),
         locations,
+        slab_background: company.background,
+        slab_background_pending: pending,
     }))
 }
 
