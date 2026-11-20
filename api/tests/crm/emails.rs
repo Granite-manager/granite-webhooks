@@ -582,7 +582,7 @@ async fn deal_email_history(pool: MySqlPool) {
             "body": "Sure, attached.", "sent_at": "2026-04-10T11:00:00.000Z", "read_count": 1,
             "has_attachments": false, "sender_user_id": 106,
             "sender_email": "Olga Other <rep@other.test>", "sender_name": "Olga Other",
-            "employee_read_at": null, "thread_has_attachments": true
+            "employee_read_at": null, "thread_has_attachments": true, "is_automated": false
         })
     );
     server(pool)
@@ -705,6 +705,36 @@ async fn admins_list_the_whole_company_mail(pool: MySqlPool) {
     )
     .await;
     assert_eq!(email_ids(&found), vec![8803]);
+    // A customer's name finds their mail, as in a user's own mailbox.
+    let named = get(
+        &pool,
+        "/v1/emails/threads?scope=admin&folder=sent&search=Other%20Co",
+        admin,
+    )
+    .await;
+    assert_eq!(email_ids(&named), vec![8801, 8804]);
+    let named = get(
+        &pool,
+        "/v1/emails/threads?scope=admin&search=other%20co%20cust",
+        admin,
+    )
+    .await;
+    assert_eq!(email_ids(&named), vec![8802, 8801, 8800]);
+    // An email address finds its mail too.
+    let address = get(
+        &pool,
+        "/v1/emails/threads?scope=admin&search=buyer%40other-customer",
+        admin,
+    )
+    .await;
+    assert_eq!(email_ids(&address), vec![8802, 8801, 8800]);
+    let suggested = get(
+        &pool,
+        "/v1/emails/search-suggestions?term=other%20co%20cust&scope=admin",
+        admin,
+    )
+    .await;
+    assert_eq!(suggested[0]["thread_id"], T1);
     // One user's mail.
     let olga = get(&pool, "/v1/emails/threads?scope=admin&sales_rep=106", admin).await;
     assert_eq!(email_ids(&olga), email_ids(&inbox));
