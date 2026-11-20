@@ -61135,6 +61135,53 @@
         ]
       }
     },
+    "/v1/jobs/company-taxes": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "Refresh company sales taxes",
+        "description": "Looks up the sales tax of the company checked longest ago (never, or\nover 30 days ago) from its address and saves it.",
+        "operationId": "run_company_taxes",
+        "responses": {
+          "200": {
+            "description": "How many companies were looked up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyTaxesRun"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong job key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "job_key": []
+          }
+        ]
+      }
+    },
     "/v1/me/call-coaching": {
       "get": {
         "tags": [
@@ -64750,7 +64797,7 @@
           "company"
         ],
         "summary": "Save the company settings",
-        "description": "Replaces the name, address, logo height and sales tax, and the logo when\na new one is given.",
+        "description": "Replaces the name, address and logo height, and the logo when a new one\nis given. A new address also sets the sales tax, looked up from it; an\naddress that can't be placed on the map is refused.",
         "operationId": "save_company_settings",
         "parameters": [
           {
@@ -64779,7 +64826,7 @@
             "description": "Saved"
           },
           "400": {
-            "description": "Missing name, or a value out of range",
+            "description": "Missing name, a value out of range, or an address the sales tax can't be found for",
             "content": {
               "application/json": {
                 "schema": {
@@ -87643,7 +87690,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Sales tax in percent (0-100)."
+            "description": "Ignored: the sales tax is worked out from the address. Kept so older\npages that still send it are not refused."
           },
           "max_users": {
             "type": [
@@ -87975,7 +88022,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Sales tax in percent (e.g. 7.25), or null."
+            "description": "Sales tax in percent (e.g. 7.25), worked out from the address; null\nwhen there is no address or it could not be placed."
           },
           "can_request_api_token": {
             "type": "boolean",
@@ -88026,7 +88073,7 @@
               "null"
             ],
             "format": "double",
-            "description": "Sales tax in percent (0 to 100); null clears it."
+            "description": "Ignored: the sales tax is worked out from the address. Kept so older\npages that still send it are not refused."
           }
         },
         "additionalProperties": false
@@ -88176,6 +88223,26 @@
           },
           "features": {
             "$ref": "#/components/schemas/Features"
+          }
+        }
+      },
+      "CompanyTaxesRun": {
+        "type": "object",
+        "description": "What a run did.",
+        "required": [
+          "processed",
+          "changed"
+        ],
+        "properties": {
+          "processed": {
+            "type": "integer",
+            "description": "Companies looked up (0 or 1).",
+            "minimum": 0
+          },
+          "changed": {
+            "type": "integer",
+            "description": "Companies whose rate changed.",
+            "minimum": 0
           }
         }
       },

@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use sqlx::MySqlPool;
 
 fn server(pool: &MySqlPool) -> TestServer {
-    TestServer::new(app(AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN)))
+    TestServer::new(app(AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN)
+        .with_extension(common::sales_tax_stub())))
 }
 
 fn signup(email: &str, subdomain: &str) -> Value {
@@ -106,6 +107,14 @@ async fn signing_up_saves_everything_at_800_a_month(pool: MySqlPool) {
     assert_eq!(source, "signup_page");
     assert_eq!(name, "Fresh Stone");
     assert_eq!(address.as_deref(), Some("1 Main St"));
+    // The sales tax came from the address, nobody typed it.
+    let tax: Option<String> =
+        sqlx::query_scalar("SELECT CAST(state_taxes AS CHAR) FROM company WHERE id = ?")
+            .bind(company_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(tax.as_deref(), Some("0.0700"));
     assert_eq!(requested.as_deref(), Some("fresh-stone"));
     assert_eq!(subdomain, None);
     assert_eq!(price, 80_000);

@@ -98,3 +98,40 @@ pub fn verified_signature_settings() {
         unsafe { std::env::set_var("SIGNATURE_VERIFIED_COMPANY_SETTINGS", settings.to_string()) };
     });
 }
+
+/// A stand-in for the sales tax service (`company_tax`): 7% at any address,
+/// 8% in Ohio (", OH"); an address with "Nowhere" can't be placed (422) and
+/// one with "Busy" is rate-limited (429). Give it to the state with
+/// `with_extension`.
+pub fn sales_tax_stub() -> api::company_tax::SalesTaxApi {
+    use axum::extract::Query;
+    use std::collections::HashMap;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let router = axum::Router::new().route(
+        "/v1/rate",
+        axum::routing::get(|Query(query): Query<HashMap<String, String>>| async move {
+            let address = query.get("address").cloned().unwrap_or_default();
+            if address.contains("Nowhere") {
+                (
+                    axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                    r#"{"code":"ADDRESS_NEEDS_CONFIRMATION"}"#.to_string(),
+                )
+            } else if address.contains("Busy") {
+                (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    r#"{"code":"RATE_LIMITED"}"#.to_string(),
+                )
+            } else {
+                let rate = if address.contains(", OH") { 0.08 } else { 0.07 };
+                (axum::http::StatusCode::OK, format!(r#"{{"rate":{rate}}}"#))
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        axum::serve(listener, router).await.unwrap();
+    });
+    api::company_tax::SalesTaxApi(std::sync::Arc::from(format!("http://{address}")))
+}

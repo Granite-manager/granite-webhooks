@@ -294,6 +294,10 @@ async fn process_maintenance_due_reminders() -> Result<usize, JobError> {
     post_api_job("maintenance-reminders", "maintenance due reminders").await
 }
 
+async fn process_company_taxes() -> Result<usize, JobError> {
+    post_api_job("company-taxes", "company sales taxes").await
+}
+
 async fn process_sms_followups() -> Result<usize, JobError> {
     post_api_job("sms-followups", "sms follow-ups").await
 }
@@ -583,6 +587,12 @@ pub(crate) async fn function_handler(
         "maintenance-reminders",
         process_maintenance_due_reminders().await,
         "maintenance due reminders",
+    )
+    .await;
+    or_logged(
+        "company-taxes",
+        process_company_taxes().await,
+        "company sales taxes",
     )
     .await;
     let sms_followup_count = or_logged(

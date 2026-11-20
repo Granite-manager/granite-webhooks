@@ -90,6 +90,7 @@ async fn setup(pool: &MySqlPool, shared_qbo_app: bool, ringcentral: bool) -> Set
         .with_qbo(qbo)
         .with_storage(storage.clone())
         .with_app_url(APP_URL)
+        .with_extension(common::sales_tax_stub())
         .with_ringcentral_app(
             ringcentral
                 .then(|| RingCentralApp::new("rc-client", "rc-secret", &base, Some(KEY)))
@@ -180,28 +181,20 @@ async fn managers_read_and_save_the_company_settings(pool: MySqlPool) {
         )
         .await
         .assert_status(StatusCode::NO_CONTENT);
-    let saved: (String, Option<String>, Option<String>, i32, String) = sqlx::query_as(
+    // A typed tax is ignored; no address, no tax.
+    let saved: (String, Option<String>, Option<String>, i32, Option<String>) = sqlx::query_as(
         "SELECT name, address, logo_url, logo_height, CAST(state_taxes AS CHAR) FROM company WHERE id = 100",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(
-        saved,
-        (
-            "Acme Stone Co".into(),
-            None,
-            Some(logo),
-            96,
-            "0.0650".into()
-        )
-    );
+    assert_eq!(saved, ("Acme Stone Co".into(), None, Some(logo), 96, None));
 
-    // Without a new logo the old one stays; a null tax clears it.
+    // Without a new logo the old one stays.
     server
         .put("/v1/company/settings")
         .with_session(sessions::ADMIN)
-        .json(&json!({ "name": "Acme", "logo_height": 48, "sales_tax_percent": null }))
+        .json(&json!({ "name": "Acme", "logo_height": 48 }))
         .await
         .assert_status(StatusCode::NO_CONTENT);
     let settings: Value = server
@@ -218,6 +211,97 @@ async fn managers_read_and_save_the_company_settings(pool: MySqlPool) {
     assert_eq!(settings["sales_tax_percent"], Value::Null);
 }
 
+async fn company_tax(pool: &MySqlPool) -> (Option<String>, bool) {
+    sqlx::query_as(
+        "SELECT CAST(state_taxes AS CHAR), state_taxes_checked_at IS NOT NULL FROM company WHERE id = 100",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test_db::test(seed)]
+async fn the_sales_tax_comes_from_the_address(pool: MySqlPool) {
+    admin_manages(&pool).await;
+    let Setup { server, .. } = setup(&pool, false, false).await;
+    let save = |address: &'static str, tax: f64| {
+        server
+            .put("/v1/company/settings")
+            .with_session(sessions::ADMIN)
+            .json(
+                &json!({ "name": "Acme Stone", "address": address, "logo_height": 48,
+                           "sales_tax_percent": tax }),
+            )
+    };
+    // A new address sets the tax from where it is; a typed one is ignored.
+    save("9 Elm St, Columbus, OH 43215", 3.0)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(company_tax(&pool).await, (Some("0.0800".into()), true));
+    let settings: Value = server
+        .get("/v1/company/settings")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(settings["sales_tax_percent"], 8.0);
+    // Special Order prices with it.
+    let rate: Value = server
+        .get("/v1/company/tax-rate")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(rate["state_tax_pct"], 0.08);
+
+    // An address that can't be placed is refused with a hint; nothing changes.
+    let refused = save("1 Nowhere Rd", 0.0).await;
+    refused.assert_status(StatusCode::BAD_REQUEST);
+    assert!(refused.text().contains("full address"));
+    let address: Option<String> = sqlx::query_scalar("SELECT address FROM company WHERE id = 100")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(address.as_deref(), Some("9 Elm St, Columbus, OH 43215"));
+
+    // The service busy: the address is saved, the old tax stays until the
+    // job asks again.
+    save("2 Busy St, Indianapolis, IN 46202", 0.0)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(company_tax(&pool).await, (Some("0.0800".into()), false));
+    sqlx::query("UPDATE company SET address = '2 Elm St, Indianapolis, IN 46202' WHERE id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Only company 100 is due.
+    sqlx::query("UPDATE company SET state_taxes_checked_at = NOW() WHERE id <> 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let jobs = TestServer::new(app(AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN)
+        .with_job_key("job-secret")
+        .with_extension(common::sales_tax_stub())));
+    let run: Value = jobs
+        .post("/v1/jobs/company-taxes")
+        .add_header("authorization", "job-secret")
+        .await
+        .json();
+    assert_eq!(run, json!({ "processed": 1, "changed": 1 }));
+    assert_eq!(company_tax(&pool).await, (Some("0.0700".into()), true));
+    // Checked: nothing due until next month.
+    let run: Value = jobs
+        .post("/v1/jobs/company-taxes")
+        .add_header("authorization", "job-secret")
+        .await
+        .json();
+    assert_eq!(run, json!({ "processed": 0, "changed": 0 }));
+
+    // Same address again: no lookup (a busy service would not matter).
+    save("2 Elm St, Indianapolis, IN 46202", 0.0)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(company_tax(&pool).await, (Some("0.0700".into()), true));
+}
+
 #[test_db::test(seed)]
 async fn company_settings_are_checked_and_scoped(pool: MySqlPool) {
     admin_manages(&pool).await;
@@ -225,7 +309,6 @@ async fn company_settings_are_checked_and_scoped(pool: MySqlPool) {
     for body in [
         json!({ "name": " ", "logo_height": 48 }),
         json!({ "name": "A", "logo_height": 500 }),
-        json!({ "name": "A", "logo_height": 48, "sales_tax_percent": 101 }),
         json!({ "name": "A", "logo_height": 48, "logo_url": "https://elsewhere.example/x.png" }),
     ] {
         server
