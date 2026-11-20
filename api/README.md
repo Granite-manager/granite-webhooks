@@ -216,7 +216,7 @@ mode in `tests/admin/payments_stripe_live.rs` (`STRIPE_TEST_SECRET_KEY`).
 
 ### Customer payments (Stripe Connect)
 
-`routes/customer_payments.rs` (api-quotes) lets a company's customers pay for
+`routes/customer_payments/` (api-quotes) lets a company's customers pay for
 their jobs by card or ACH. Each company gets a Standard connected account
 (Admin → Company → Payments starts Stripe's onboarding), and a payment is a
 direct charge on it: the money and Stripe's own fee are the company's, and
