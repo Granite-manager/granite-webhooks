@@ -208,6 +208,98 @@ is separate from `company_billing` above. Env: `STRIPE_SECRET_KEY`,
 against a fake Stripe in `tests/admin/payments.rs` and against Stripe's test
 mode in `tests/admin/payments_stripe_live.rs` (`STRIPE_TEST_SECRET_KEY`).
 
+### Customer payments (Stripe Connect)
+
+`routes/customer_payments.rs` (api-quotes) lets a company's customers pay for
+their jobs by card or ACH. Each company gets a Standard connected account
+(Admin → Company → Payments starts Stripe's onboarding), and a payment is a
+direct charge on it: the money and Stripe's own fee are the company's, and
+the platform keeps an application fee. The company is quoted 3% on cards and
+1% on ACH; the application fee is what Stripe's usual fee (2.9% + 30¢; 0.8%
+capped at $5) leaves of that, never below zero. A card payment's fee is at
+least $9 (3% of $300, under which Stripe's fee is more than 3%), and a card
+payment at least $10. The card fee is always the
+company's; the ACH fee can be passed on to the customer in 0.1% steps.
+
+A payment link (`<app>/pay/<payment id>`, 128 random bits) is for an amount
+of one job of the customer, a deal or a sale outside a deal, and never
+expires: the page asks `POST /v1/public/pay/{payment_id}/checkout` for a
+Checkout session, reused while Stripe keeps it open. `customer_payments`
+holds the links and their status (`created`, `canceled`, `pending`, `paid`,
+`failed`, `refunded`, `disputed`, `lost`), `company_payment_settings` the account and
+the fee split. Stripe reports to `POST /v1/webhooks/stripe-connect` (a
+Connect webhook: `checkout.session.completed`,
+`checkout.session.async_payment_succeeded`,
+`checkout.session.async_payment_failed`, `payment_intent.succeeded`,
+`payment_intent.processing`, `payment_intent.payment_failed`,
+`payment_intent.canceled`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`,
+`account.updated`, `account.application.deauthorized`; the Checkout and payment intent events overlap, and
+whichever comes first moves the payment on); each status change puts a
+`payment_*` row in the bell of the company's Managers and of whoever made the
+link, opening the customer's Projects tab at that payment's project. A
+declined card only notifies (once per Stripe event, kept in
+`customer_payment_events`): the link stays payable. One Checkout session
+per link at a time (the row is locked while it is made, and Stripe gets an
+`Idempotency-Key`), so two tabs cannot both pay; a second payment that still
+arrives (another payment intent) is a `payment_duplicate` bell: refund it in
+Stripe. That refund, or a dispute of that second charge, leaves the payment
+itself as it is (`payment_duplicate_refunded` bell). Each dispute disputes a payment once and never after it closed
+(steps kept in `customer_payment_events`). A `disputed` payment still counts
+as paid toward its job until the bank decides (the company holds the money);
+won, it is `paid` again, lost, it is `lost` (`payment_dispute_lost` bell) and
+the balance opens. An ACH Checkout page takes only a bank the customer signs
+in to (`verification_method=instant`): no account numbers typed by hand, so no
+micro-deposits. A payment belongs to the Stripe account it was made for
+(`customer_payments.stripe_account_id`): its Checkout page, its events and
+every question to Stripe use that account. When the company's account is no
+longer that one (`company_payment_settings.stripe_account_id` changed or
+emptied), its unpaid links are withdrawn (`withdraw_stale_links`: `canceled`,
+their open Checkout pages expired) instead of being paid into the old account,
+while payments made or on their way there keep following the old account's
+events. A request for a connected account is never sent without an `acct_` id
+(Stripe would run it on the platform's own account). Demo mode is off unless `APP_URL`
+is localhost and the run is not a real Lambda (`AWS_EXECUTION_ENV`). A partial refund keeps
+the payment `paid` and adds to `refunded_cents`. The Checkout session and its
+payment intent carry `company_id`, `customer_id`, `project_key`, `deal_id`,
+`sale_id` and `quote_id` in their metadata. The card fee is always the
+company's for now: a card surcharge is legal only on credit cards (Checkout
+cannot tell credit from debit before the customer pays), not in every state,
+and needs notice to Visa and Mastercard first. The customer's own page reads
+`GET /v1/public/customer-view/{company_id}/{view_id}/payments`; its balance
+counts only payments made through links.
+
+Payments are turned on company by company: `company.customer_payments_enabled`
+(off by default; Superuser → Companies, `PUT
+/v1/superuser/companies/{id}/features/customer_payments`). While off, the
+settings, the bank onboarding and new links answer 403 and the CRM and the
+customer's page show nothing; links made before stay payable.
+
+A webhook that never came is caught up with: a waiting payment (`created` or
+`pending`) whose Checkout page was opened is checked with Stripe (`catch_up`:
+its Checkout session, and for a bank transfer its payment intent) from `GET
+/v1/public/pay/{payment_id}` at most once a minute and from `GET
+/v1/customers/{id}/payments` at most once in 5 minutes
+(`customer_payments.stripe_checked_at`). What Stripe says moves the payment
+on as the webhook would; the webhook coming later changes nothing.
+
+A card Checkout page says "We accept cards issued in the United States only."
+(`custom_text[submit][message]`); it is a notice, such cards are not refused.
+
+Env: `STRIPE_SECRET_KEY` (the platform account, with Connect enabled),
+`STRIPE_CONNECT_WEBHOOK_SECRET` (the Connect webhook's own signing secret) and
+`APP_URL` (the links). `CUSTOMER_PAYMENTS_DEMO=1`, for local runs only, never
+calls Stripe: the bank account connects at once, checkout answers no URL and
+the page reports the outcome with `POST /v1/public/pay/{payment_id}/demo`.
+Migrations: `20270212090000_customer-payments.sql`,
+`20270212090100_customer-payments-refunds.sql`,
+`20270212090200_customer-payments-switch.sql`. Tested against a fake Stripe
+in `tests/quotes/customer_payments.rs`, and by hand against Stripe's test
+mode (cards, ACH, refunds, disputes, catching up); never in live mode.
+`Stripe::API_VERSION` is pinned: newer versions refuse
+`payment_method_types` on a Checkout session. Running and testing it
+locally (demo mode, Stripe test mode, test cards):
+`docs/customer-payments.md` in granite-front.
+
 ### Uploads and storage
 
 Images go straight from the browser to the bucket with a presigned PUT

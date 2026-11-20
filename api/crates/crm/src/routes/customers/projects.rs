@@ -75,7 +75,8 @@ pub struct Project {
     pub deal_id: Option<i64>,
     /// The deal's title.
     pub title: Option<String>,
-    /// The deal's amount, else the sales' total, a decimal string.
+    /// The deal's amount, else the total of its sales that were not
+    /// cancelled, a decimal string.
     pub price: Option<String>,
     /// Address of the job: its first sale's, else its newest quote's.
     pub address: Option<String>,
@@ -85,6 +86,9 @@ pub struct Project {
     pub date: Option<DateTime<Utc>>,
     /// The sales of the job.
     pub sale_ids: Vec<i32>,
+    /// A sale on its own that was cancelled: nothing is owed for it, and it
+    /// takes no payment link. Always false for a deal.
+    pub cancelled: bool,
 }
 
 #[derive(FromRow)]
@@ -114,6 +118,8 @@ pub struct ProjectSale {
     #[serde(serialize_with = "js_date")]
     #[schema(value_type = Option<String>, format = DateTime)]
     pub sale_date: Option<DateTime<Utc>>,
+    /// The sale was cancelled: its price is not part of its deal's total.
+    pub cancelled: bool,
 }
 
 /// Body of `PUT /v1/customers/{id}/parent`.
@@ -198,7 +204,8 @@ pub async fn projects(
     )));
     let mut sales_query = sqlx::query_as::<_, ProjectSale>(AssertSqlSafe(format!(
         "SELECT id, customer_id, CAST(deal_id AS SIGNED) AS deal_id,
-                CAST(price AS CHAR) AS price, project_address, sale_date
+                CAST(price AS CHAR) AS price, project_address, sale_date,
+                cancelled_date IS NOT NULL AS cancelled
          FROM sales WHERE customer_id IN ({marks}) ORDER BY sale_date, id"
     )));
     // Won deals, and deals a sale belongs to.
@@ -252,8 +259,11 @@ fn projects_of(customer_id: i32, deals: &[ProjectDeal], sales: &[ProjectSale]) -
                 .iter()
                 .filter(|sale| sale.deal_id == Some(deal.id))
                 .collect();
+            // As a payment link's limit counts it: a cancelled sale is
+            // not owed.
             let sales_total = own
                 .iter()
+                .filter(|sale| !sale.cancelled)
                 .filter_map(|sale| sale.price.as_deref()?.parse::<f64>().ok())
                 .sum::<f64>();
             Project {
@@ -272,6 +282,7 @@ fn projects_of(customer_id: i32, deals: &[ProjectDeal], sales: &[ProjectSale]) -
                     .find_map(|sale| sale.sale_date)
                     .or(deal.created_at),
                 sale_ids: own.iter().map(|sale| sale.id).collect(),
+                cancelled: false,
             }
         })
         .collect();
@@ -287,6 +298,7 @@ fn projects_of(customer_id: i32, deals: &[ProjectDeal], sales: &[ProjectSale]) -
                 address: sale.project_address.clone(),
                 date: sale.sale_date,
                 sale_ids: vec![sale.id],
+                cancelled: sale.cancelled,
             });
         }
     }

@@ -91,6 +91,9 @@ pub struct Features {
     pub onboarding: bool,
     /// The points leaderboard is on (own switch, else the platform default).
     pub leaderboard: bool,
+    /// Customer payments are on: the company may connect a bank account and
+    /// take its customers' payments by card or ACH. Off unless turned on.
+    pub customer_payments: bool,
 }
 
 /// The old company eSignatures switch. It no longer gates anything:
@@ -101,7 +104,8 @@ const LEGACY_SIGNATURE_SWITCH: &str = "(COALESCE(c.signature_enabled, 0) <> 0)";
 fn features_sql() -> String {
     format!(
         "COALESCE(c.quickbooks_enabled, 1) <> 0 AS quickbooks, {LEGACY_SIGNATURE_SWITCH} AS signature,
-         {} AS onboarding, {} AS leaderboard",
+         {} AS onboarding, {} AS leaderboard,
+         c.customer_payments_enabled <> 0 AS customer_payments",
         crate::routes::company::queries::ONBOARDING_ON,
         crate::routes::company::queries::LEADERBOARD_ON
     )
@@ -305,6 +309,9 @@ pub struct CompanyDetails {
     pub signature_enabled: bool,
     /// Stripe payment required.
     pub billing_required: bool,
+    /// Customer payments switch: the company may connect a bank account and
+    /// take its customers' payments by card or ACH. Off unless turned on.
+    pub customer_payments_enabled: bool,
     /// Guided tours switch (own setting, else the platform default).
     #[sqlx(skip)]
     pub onboarding_enabled: bool,
@@ -346,6 +353,7 @@ pub async fn get_company(
                 COALESCE(c.raptor_password, '') <> '' AS raptor_password_set,
                 COALESCE(c.quickbooks_enabled, 1) <> 0 AS quickbooks_enabled,
                 {LEGACY_SIGNATURE_SWITCH} AS signature_enabled, COALESCE(c.billing_required, 0) <> 0 AS billing_required,
+                c.customer_payments_enabled <> 0 AS customer_payments_enabled,
                 {} AS onboarding, {} AS leaderboard
            FROM company c {}
           WHERE c.id = ? AND c.deleted_at IS NULL",
@@ -1316,14 +1324,16 @@ pub struct Switch {
 
 /// Switch a company feature
 ///
-/// Turns `quickbooks`, `signature`, `onboarding` or `leaderboard` on or off
-/// for the company (an explicit setting, over the platform default).
+/// Turns `quickbooks`, `signature`, `onboarding`, `leaderboard` or
+/// `customer_payments` on or off for the company (an explicit setting, over
+/// the platform default; `customer_payments` has no platform default and is
+/// off until turned on here).
 #[crate::openapi::path(
     put,
     path = "/v1/superuser/companies/{id}/features/{feature}",
     operation_id = "switch_platform_company_feature",
     tag = "superuser",
-    params(("id" = i32, Path, description = "Company id"), ("feature" = String, Path, description = "`quickbooks`, `signature`, `onboarding` or `leaderboard`")),
+    params(("id" = i32, Path, description = "Company id"), ("feature" = String, Path, description = "`quickbooks`, `signature`, `onboarding`, `leaderboard` or `customer_payments`")),
     request_body = Switch,
     responses(
         (status = 204, description = "Saved"),
@@ -1347,6 +1357,7 @@ pub async fn switch_feature(
         "signature" => "signature_enabled",
         "onboarding" => "onboarding_enabled",
         "leaderboard" => "leaderboard_enabled",
+        "customer_payments" => "customer_payments_enabled",
         _ => return Err(ApiError::BadRequest("Invalid feature toggle".into())),
     };
     let updated = sqlx::query(sqlx::AssertSqlSafe(format!(

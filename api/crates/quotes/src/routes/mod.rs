@@ -4,6 +4,7 @@
 pub use api_schedule::routes::*;
 
 pub mod commissions;
+pub mod customer_payments;
 pub mod customer_view;
 pub mod feature_sales;
 pub mod job_chips;

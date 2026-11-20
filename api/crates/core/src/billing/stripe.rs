@@ -16,8 +16,12 @@ use std::time::Duration;
 const API_BASE: &str = "https://api.stripe.com";
 /// `stripe` npm 22's `ApiVersion`.
 pub const API_VERSION: &str = "2026-08-26.dahlia";
+/// The version sent to Stripe's `/v2` routes (Accounts v2).
+const API_V2_VERSION: &str = "2026-10-28.endive";
 /// How old a webhook signature may be (the SDK's default).
 const SIGNATURE_TOLERANCE_SECS: i64 = 300;
+/// What a customer's card Checkout page says by its Pay button.
+pub const US_CARDS_ONLY: &str = "We accept cards issued in the United States only.";
 
 #[derive(Debug, thiserror::Error)]
 pub enum StripeError {
@@ -73,7 +77,41 @@ impl Stripe {
         path: &str,
         form: &[(&str, String)],
     ) -> Result<Value, StripeError> {
+        self.send_as(None, method, path, form).await
+    }
+
+    /// `account`: the connected account the request acts on (Stripe Connect's
+    /// `Stripe-Account` header); `None` for the platform's own account.
+    async fn send_as(
+        &self,
+        account: Option<&str>,
+        method: reqwest::Method,
+        path: &str,
+        form: &[(&str, String)],
+    ) -> Result<Value, StripeError> {
+        self.send_once(account, None, method, path, form).await
+    }
+
+    /// `idempotency`: Stripe's `Idempotency-Key`: a request sent again with
+    /// the same key within 24 hours gets the first one's answer, so it is
+    /// made once.
+    async fn send_once(
+        &self,
+        account: Option<&str>,
+        idempotency: Option<&str>,
+        method: reqwest::Method,
+        path: &str,
+        form: &[(&str, String)],
+    ) -> Result<Value, StripeError> {
         let key = self.key.as_ref().ok_or(StripeError::NotConfigured)?;
+        // A request meant for a connected account never goes out without
+        // one: Stripe would run it on the platform's own account, and a
+        // customer's payment would land there.
+        if account.is_some_and(|account| !account.starts_with("acct_")) {
+            return Err(StripeError::Request(
+                "no connected Stripe account to act on".into(),
+            ));
+        }
         let encoded = serde_html_form::to_string(form)
             .map_err(|err| StripeError::Request(err.to_string()))?;
         let get = method == reqwest::Method::GET;
@@ -88,6 +126,14 @@ impl Stripe {
             .bearer_auth(&**key)
             .header("Stripe-Version", API_VERSION)
             .timeout(Duration::from_secs(30));
+        let request = match account {
+            Some(account) => request.header("Stripe-Account", account),
+            None => request,
+        };
+        let request = match idempotency {
+            Some(idempotency) => request.header("Idempotency-Key", idempotency),
+            None => request,
+        };
         let request = if get {
             request
         } else {
@@ -495,6 +541,299 @@ impl Stripe {
     }
 }
 
+/// The first 16 hex characters of the SHA-256 of a request's form, for an
+/// `Idempotency-Key` that changes when the request does.
+fn form_digest(form: &[(&str, String)]) -> String {
+    use sha2::Digest;
+    use std::fmt::Write as _;
+    let mut hasher = Sha256::new();
+    for (key, value) in form {
+        hasher.update(key.as_bytes());
+        hasher.update([0]);
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
+/// What a customer pays a company on Stripe Checkout
+/// ([`Stripe::create_payment_checkout_session`]).
+pub struct PaymentCheckout<'a> {
+    /// Our id of the payment, saved on the session and its payment intent
+    /// (`metadata[granite_payment]`), so webhooks find the payment.
+    pub payment_id: &'a str,
+    /// `card` or `us_bank_account` (ACH): the one method the page offers.
+    pub payment_method: &'a str,
+    /// The line the customer reads, e.g. the job's name.
+    pub description: &'a str,
+    /// What goes toward the job, in US cents.
+    pub amount_cents: i64,
+    /// The customer's part of the fee, a second line when above zero.
+    pub customer_fee_cents: i64,
+    /// That line's name, e.g. `Processing fee (0.5%)`.
+    pub customer_fee_name: &'a str,
+    /// More metadata for the session and its payment intent, e.g.
+    /// `("company_id", "100")`: who and what the payment is for.
+    pub metadata: &'a [(&'a str, String)],
+    /// What the platform keeps of the payment, when above zero.
+    pub application_fee_cents: i64,
+    pub success_url: &'a str,
+    pub cancel_url: &'a str,
+    /// The start of Stripe's `Idempotency-Key` for the request; a digest of
+    /// what is sent is added to it. Two requests with the same key and the
+    /// same content make one session.
+    pub idempotency_key: &'a str,
+}
+
+/// Stripe Connect: a company's customers pay the company on its own
+/// connected account (direct charges), and the platform takes an application
+/// fee. Requests about a connected account's objects carry `Stripe-Account`.
+impl Stripe {
+    /// A connected account for the company, of the kind Accounts v1 called
+    /// Standard: the company has Stripe's full dashboard, Stripe charges its
+    /// fees to the company and handles its disputes. It may take card and ACH
+    /// payments once Stripe has its details. Made with Accounts v2, which
+    /// Stripe requires of new platforms (`POST /v1/accounts` is refused); the
+    /// `/v1` routes read and charge the account all the same.
+    pub async fn create_connected_account(
+        &self,
+        name: &str,
+        company_id: i32,
+    ) -> Result<Value, StripeError> {
+        self.post_v2(
+            "/v2/core/accounts",
+            &serde_json::json!({
+                "display_name": name,
+                "identity": { "country": "us" },
+                "dashboard": "full",
+                "defaults": {
+                    "responsibilities": {
+                        "fees_collector": "stripe",
+                        "losses_collector": "stripe",
+                    },
+                },
+                "configuration": {
+                    "merchant": {
+                        "capabilities": {
+                            "card_payments": { "requested": true },
+                            "ach_debit_payments": { "requested": true },
+                        },
+                    },
+                },
+                "metadata": { "company_id": company_id.to_string() },
+            }),
+        )
+        .await
+    }
+
+    /// A request to Stripe's `/v2` API, which takes JSON and its own version.
+    async fn post_v2(&self, path: &str, body: &Value) -> Result<Value, StripeError> {
+        let key = self.key.as_ref().ok_or(StripeError::NotConfigured)?;
+        let response = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .bearer_auth(&**key)
+            .header("Stripe-Version", API_V2_VERSION)
+            .timeout(Duration::from_secs(30))
+            .json(body)
+            .send()
+            .await
+            .map_err(|err| StripeError::Request(err.without_url().to_string()))?;
+        let status = response.status();
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|err| StripeError::Request(err.without_url().to_string()))?;
+        if status.is_success() {
+            Ok(body)
+        } else {
+            let message = body["error"]["message"]
+                .as_str()
+                .unwrap_or("Stripe request failed")
+                .to_string();
+            Err(StripeError::Api(message))
+        }
+    }
+
+    /// A connected account: `charges_enabled` says whether it can be paid.
+    pub async fn account(&self, id: &str) -> Result<Value, StripeError> {
+        self.get(&format!("/v1/accounts/{}", path_part(id)), &[])
+            .await
+    }
+
+    /// Stripe's onboarding page for the account (business details, bank
+    /// account). The link works once and for a few minutes.
+    pub async fn create_account_link(
+        &self,
+        account: &str,
+        refresh_url: &str,
+        return_url: &str,
+    ) -> Result<Value, StripeError> {
+        self.post(
+            "/v1/account_links",
+            &[
+                ("account", account.into()),
+                ("refresh_url", refresh_url.into()),
+                ("return_url", return_url.into()),
+                ("type", "account_onboarding".into()),
+            ],
+        )
+        .await
+    }
+
+    /// A Checkout page on the connected `account` for one payment. It expires
+    /// in 24 hours. A card page says [`US_CARDS_ONLY`]; a bank transfer's
+    /// takes only a bank account the customer signs in to (no numbers typed
+    /// by hand, no micro-deposits).
+    pub async fn create_payment_checkout_session(
+        &self,
+        account: &str,
+        checkout: &PaymentCheckout<'_>,
+    ) -> Result<Value, StripeError> {
+        let metadata: Vec<(String, String)> = checkout
+            .metadata
+            .iter()
+            .flat_map(|(key, value)| {
+                [
+                    (format!("metadata[{key}]"), value.clone()),
+                    (
+                        format!("payment_intent_data[metadata][{key}]"),
+                        value.clone(),
+                    ),
+                ]
+            })
+            .collect();
+        let mut form: Vec<(&str, String)> = vec![
+            ("mode", "payment".into()),
+            ("payment_method_types[0]", checkout.payment_method.into()),
+            // Link would add its own ways to pay (a bank, Klarna) to a card
+            // page, and the fee was worked out for the method chosen here.
+            ("wallet_options[link][display]", "never".into()),
+            // The price is in dollars: no offer to pay in the card's own
+            // currency, which costs the customer a conversion markup.
+            ("adaptive_pricing[enabled]", "false".into()),
+            ("client_reference_id", checkout.payment_id.into()),
+            ("metadata[granite_payment]", checkout.payment_id.into()),
+            (
+                "payment_intent_data[metadata][granite_payment]",
+                checkout.payment_id.into(),
+            ),
+            ("line_items[0][quantity]", "1".into()),
+            ("line_items[0][price_data][currency]", "usd".into()),
+            (
+                "line_items[0][price_data][unit_amount]",
+                checkout.amount_cents.to_string(),
+            ),
+            (
+                "line_items[0][price_data][product_data][name]",
+                checkout.description.into(),
+            ),
+            ("success_url", checkout.success_url.into()),
+            ("cancel_url", checkout.cancel_url.into()),
+        ];
+        if checkout.payment_method == "card" {
+            // Only a notice next to Stripe's Pay button: a card issued
+            // elsewhere is not refused, and costs the company 1.5% more.
+            form.push(("custom_text[submit][message]", US_CARDS_ONLY.into()));
+        }
+        if checkout.payment_method == "us_bank_account" {
+            // The customer signs in to their bank and the transfer starts at
+            // once. Without this Stripe also lets them type the account's
+            // numbers by hand, which it then confirms with two small
+            // deposits over days: the page finishes with nothing debited.
+            form.push((
+                "payment_method_options[us_bank_account][verification_method]",
+                "instant".into(),
+            ));
+        }
+        if checkout.customer_fee_cents > 0 {
+            form.extend([
+                ("line_items[1][quantity]", "1".to_string()),
+                ("line_items[1][price_data][currency]", "usd".to_string()),
+                (
+                    "line_items[1][price_data][unit_amount]",
+                    checkout.customer_fee_cents.to_string(),
+                ),
+                (
+                    "line_items[1][price_data][product_data][name]",
+                    checkout.customer_fee_name.to_string(),
+                ),
+            ]);
+        }
+        form.extend(
+            metadata
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.clone())),
+        );
+        if checkout.application_fee_cents > 0 {
+            form.push((
+                "payment_intent_data[application_fee_amount]",
+                checkout.application_fee_cents.to_string(),
+            ));
+        }
+        // Stripe refuses a key sent again with other parameters, for 24
+        // hours. What is sent can change between two tries (the job gets a
+        // title, a newer quote), so the key carries a digest of it: the
+        // same request twice still makes one session, a changed one makes
+        // its own.
+        let key = format!("{}-{}", checkout.idempotency_key, form_digest(&form));
+        self.send_once(
+            Some(account),
+            Some(&key),
+            reqwest::Method::POST,
+            "/v1/checkout/sessions",
+            &form,
+        )
+        .await
+    }
+
+    /// A Checkout session of the connected `account`: `status` is `open`,
+    /// `complete` or `expired`.
+    pub async fn checkout_session(&self, account: &str, id: &str) -> Result<Value, StripeError> {
+        self.send_as(
+            Some(account),
+            reqwest::Method::GET,
+            &format!("/v1/checkout/sessions/{}", path_part(id)),
+            &[],
+        )
+        .await
+    }
+
+    /// Closes an open Checkout session, so nobody can pay on it any more.
+    pub async fn expire_checkout_session(
+        &self,
+        account: &str,
+        id: &str,
+    ) -> Result<Value, StripeError> {
+        self.send_as(
+            Some(account),
+            reqwest::Method::POST,
+            &format!("/v1/checkout/sessions/{}/expire", path_part(id)),
+            &[],
+        )
+        .await
+    }
+
+    /// A payment intent of the connected `account` (`last_payment_error`
+    /// says why it failed).
+    pub async fn payment_intent(&self, account: &str, id: &str) -> Result<Value, StripeError> {
+        self.send_as(
+            Some(account),
+            reqwest::Method::GET,
+            &format!("/v1/payment_intents/{}", path_part(id)),
+            &[],
+        )
+        .await
+    }
+}
+
 fn data(list: Value) -> Vec<Value> {
     match list {
         Value::Object(mut map) => match map.remove("data") {
@@ -754,6 +1093,40 @@ pub async fn latest_event(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Without a connected account Stripe would act on the platform's own
+    /// account: such a request is never sent.
+    #[tokio::test]
+    async fn a_request_for_a_connected_account_needs_one() {
+        // Nothing listens here: a request that went out would fail otherwise.
+        let stripe = Stripe::new(Some("sk_test_x"), "http://127.0.0.1:9");
+        for account in ["", " ", "100", "cus_1"] {
+            let refused = stripe.checkout_session(account, "cs_1").await;
+            assert!(
+                matches!(&refused, Err(StripeError::Request(message))
+                    if message == "no connected Stripe account to act on"),
+                "{account:?}: {refused:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_form_s_digest_changes_with_what_is_sent() {
+        let form = |quote: &str| {
+            vec![
+                ("mode", "payment".to_string()),
+                ("metadata[quote_id]", quote.to_string()),
+            ]
+        };
+        assert_eq!(form_digest(&form("9100")), form_digest(&form("9100")));
+        assert_ne!(form_digest(&form("9100")), form_digest(&form("9101")));
+        // Where one value ends and the next begins counts.
+        assert_ne!(
+            form_digest(&[("a", "bc".to_string())]),
+            form_digest(&[("ab", "c".to_string())])
+        );
+        assert_eq!(form_digest(&form("9100")).len(), 16);
+    }
 
     #[test]
     fn signatures_are_checked_like_the_sdk() {

@@ -300,6 +300,8 @@ UPDATE activity_points_sources SET counts_from = '2026-01-01 00:00:00';
 -- points are not counted). Company 101 has inbound email and CloudTalk (fake
 -- credentials), so its dashboard offers the Sent emails and Sent SMS widgets.
 UPDATE company SET leaderboard_enabled = 1 WHERE id = 100;
+-- Company 100 may take its customers' payments; company 101 may not.
+UPDATE company SET customer_payments_enabled = 1 WHERE id = 100;
 UPDATE company SET domain = 'other.test', cloudtalk_access_key = 'seed-key',
                    cloudtalk_access_secret = 'seed-secret' WHERE id = 101;
 
