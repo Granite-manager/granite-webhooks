@@ -2236,9 +2236,14 @@ async fn a_refund_told_before_the_payment_is_kept(pool: MySqlPool) {
     let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
     let id = payment["id"].as_str().unwrap();
     let charge = |refunded: i64, full: bool| {
-        json!({ "id": "ch_1", "payment_intent": "pi_1", "refunded": full,
+        json!({ "id": "ch_1", "payment_intent": "pi_1", "refunded": full, "status": "succeeded",
                 "amount_refunded": refunded, "metadata": { "granite_payment": id } })
     };
+    // A charge that has not cleared is not a payment made.
+    let mut unsettled = charge(20_000, false);
+    unsettled["status"] = json!("pending");
+    webhook(&server, "charge.refunded", ACCOUNT, unsettled).await;
+    assert_eq!(status_of(&pool, id).await, "created");
     webhook(&server, "charge.refunded", ACCOUNT, charge(20_000, false)).await;
     let kept: (String, i32, Option<String>) = sqlx::query_as(
         "SELECT CAST(status AS CHAR), refunded_cents, stripe_payment_intent_id

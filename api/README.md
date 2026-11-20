@@ -226,13 +226,13 @@ of one job of the customer, a deal or a sale outside a deal, and never
 expires: the page asks `POST /v1/public/pay/{payment_id}/checkout` for a
 Checkout session, reused while Stripe keeps it open. `customer_payments`
 holds the links and their status (`created`, `canceled`, `pending`, `paid`,
-`failed`, `refunded`, `disputed`), `company_payment_settings` the account and
+`failed`, `refunded`, `disputed`, `lost`), `company_payment_settings` the account and
 the fee split. Stripe reports to `POST /v1/webhooks/stripe-connect` (a
 Connect webhook: `checkout.session.completed`,
 `checkout.session.async_payment_succeeded`,
 `checkout.session.async_payment_failed`, `payment_intent.succeeded`,
 `payment_intent.processing`, `payment_intent.payment_failed`,
-`charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`,
+`payment_intent.canceled`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`,
 `account.updated`; the Checkout and payment intent events overlap, and
 whichever comes first moves the payment on); each status change puts a
 `payment_*` row in the bell of the company's Managers and of whoever made the
@@ -244,7 +244,12 @@ per link at a time (the row is locked while it is made, and Stripe gets an
 arrives (another payment intent) is a `payment_duplicate` bell: refund it in
 Stripe. That refund, or a dispute of that second charge, leaves the payment
 itself as it is (`payment_duplicate_refunded` bell). Each dispute disputes a payment once and never after it closed
-(steps kept in `customer_payment_events`). Demo mode is off unless `APP_URL`
+(steps kept in `customer_payment_events`). A `disputed` payment still counts
+as paid toward its job until the bank decides (the company holds the money);
+won, it is `paid` again, lost, it is `lost` (`payment_dispute_lost` bell) and
+the balance opens. An ACH Checkout page takes only a bank the customer signs
+in to (`verification_method=instant`): no account numbers typed by hand, so no
+micro-deposits. Demo mode is off unless `APP_URL`
 is localhost and the run is not a real Lambda (`AWS_EXECUTION_ENV`). A partial refund keeps
 the payment `paid` and adds to `refunded_cents`. The Checkout session and its
 payment intent carry `company_id`, `customer_id`, `project_key`, `deal_id`,

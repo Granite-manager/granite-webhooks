@@ -2652,7 +2652,11 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
                     // Only a payment that was made can be refunded: when
                     // this came before the event that says so, the payment
                     // is marked paid here, or the refund would be dropped.
-                    settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
+                    // Not for a charge still on its way (a bank transfer
+                    // that has not cleared): that money has not arrived.
+                    if object["status"] == "succeeded" {
+                        settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
+                    }
                     refund(pool, &payment, account, total, full).await?;
                 }
             }

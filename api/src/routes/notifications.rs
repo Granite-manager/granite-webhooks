@@ -466,8 +466,14 @@ fn type_title(kind: &str) -> Option<&'static str> {
         "customer_todos" => "Customer To-dos",
         SALES_ORDER => "Sales Order",
         // Customer payments (`routes::customer_payments`).
-        "payment_paid" | "payment_pending" | "payment_failed" | "payment_refunded"
-        | "payment_disputed" | "payment_duplicate" | "payment_duplicate_refunded" => "Payment",
+        "payment_paid"
+        | "payment_pending"
+        | "payment_failed"
+        | "payment_refunded"
+        | "payment_disputed"
+        | "payment_dispute_lost"
+        | "payment_duplicate"
+        | "payment_duplicate_refunded" => "Payment",
         "note_added" => "Added a Note",
         "note_edited" => "Edited a Note",
         "note_deleted" => "Deleted a Note",
