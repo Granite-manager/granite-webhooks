@@ -208,6 +208,7 @@ pub const TABLES: &[Table] = &[
     export("quote_payment_terms", Company),
     export("quote_sale_event_templates", Company),
     export("quote_settings", Company),
+    export("quote_suggestion_hidden", Company),
     export("quote_tax_rates", Company),
     export("quotes", Company),
     export("referral_source_aliases", Company),
