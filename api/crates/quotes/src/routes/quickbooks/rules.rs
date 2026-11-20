@@ -1862,6 +1862,41 @@ pub async fn record(
         )
         .await?;
     }
+    let class = header_outcome(
+        saved.class_name.as_deref(),
+        &Vec::from_iter(rep.name.as_deref()),
+    );
+    insert(
+        pool, user, quote_id, invoice_id, "class", None, None, &class, None,
+    )
+    .await?;
+    let cc = header_outcome(
+        saved.bill_email_cc.as_deref(),
+        &Vec::from_iter(rep.email.as_deref()),
+    );
+    insert(
+        pool, user, quote_id, invoice_id, "cc", None, None, &cc, None,
+    )
+    .await?;
+    if let Some(line) = saved
+        .lines
+        .iter()
+        .find(|line| line.detail_type == "SalesItemLineDetail" && line.item_ref_value.is_some())
+    {
+        let item = Outcome::new("value", line.item_ref_value.as_deref());
+        insert(
+            pool,
+            user,
+            quote_id,
+            invoice_id,
+            "item",
+            None,
+            line.item_ref_name.as_deref(),
+            &item,
+            None,
+        )
+        .await?;
+    }
     // The text lines typed in (or added by a rule and left in), the ones a
     // rule added that the rep deleted, or that nothing was typed in: the
     // next drafts get the ones the company's invoices keep getting
@@ -1905,41 +1940,6 @@ pub async fn record(
         let none = Outcome::new("none", None);
         insert(
             pool, user, quote_id, invoice_id, "added", None, None, &none, None,
-        )
-        .await?;
-    }
-    let class = header_outcome(
-        saved.class_name.as_deref(),
-        &Vec::from_iter(rep.name.as_deref()),
-    );
-    insert(
-        pool, user, quote_id, invoice_id, "class", None, None, &class, None,
-    )
-    .await?;
-    let cc = header_outcome(
-        saved.bill_email_cc.as_deref(),
-        &Vec::from_iter(rep.email.as_deref()),
-    );
-    insert(
-        pool, user, quote_id, invoice_id, "cc", None, None, &cc, None,
-    )
-    .await?;
-    if let Some(line) = saved
-        .lines
-        .iter()
-        .find(|line| line.detail_type == "SalesItemLineDetail" && line.item_ref_value.is_some())
-    {
-        let item = Outcome::new("value", line.item_ref_value.as_deref());
-        insert(
-            pool,
-            user,
-            quote_id,
-            invoice_id,
-            "item",
-            None,
-            line.item_ref_name.as_deref(),
-            &item,
-            None,
         )
         .await?;
     }

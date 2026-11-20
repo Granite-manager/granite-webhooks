@@ -519,6 +519,8 @@ async fn a_quote_makes_invoices_with_the_companys_items(pool: MySqlPool) {
             outcome("class", "sales_rep", None),
             outcome("cc", "sales_rep", None),
             outcome("item", "value", Some("3")),
+            // Nothing was typed into the invoice.
+            outcome("added", "none", None),
         ]
     );
     // Each line keeps the id QuickBooks gave it, to read later changes back.
