@@ -233,7 +233,7 @@ Connect webhook: `checkout.session.completed`,
 `checkout.session.async_payment_failed`, `payment_intent.succeeded`,
 `payment_intent.processing`, `payment_intent.payment_failed`,
 `payment_intent.canceled`, `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed`,
-`account.updated`; the Checkout and payment intent events overlap, and
+`account.updated`, `account.application.deauthorized`; the Checkout and payment intent events overlap, and
 whichever comes first moves the payment on); each status change puts a
 `payment_*` row in the bell of the company's Managers and of whoever made the
 link, opening the customer's Projects tab at that payment's project. A
@@ -249,7 +249,15 @@ as paid toward its job until the bank decides (the company holds the money);
 won, it is `paid` again, lost, it is `lost` (`payment_dispute_lost` bell) and
 the balance opens. An ACH Checkout page takes only a bank the customer signs
 in to (`verification_method=instant`): no account numbers typed by hand, so no
-micro-deposits. Demo mode is off unless `APP_URL`
+micro-deposits. A payment belongs to the Stripe account it was made for
+(`customer_payments.stripe_account_id`): its Checkout page, its events and
+every question to Stripe use that account. When the company's account is no
+longer that one (`company_payment_settings.stripe_account_id` changed or
+emptied), its unpaid links are withdrawn (`withdraw_stale_links`: `canceled`,
+their open Checkout pages expired) instead of being paid into the old account,
+while payments made or on their way there keep following the old account's
+events. A request for a connected account is never sent without an `acct_` id
+(Stripe would run it on the platform's own account). Demo mode is off unless `APP_URL`
 is localhost and the run is not a real Lambda (`AWS_EXECUTION_ENV`). A partial refund keeps
 the payment `paid` and adds to `refunded_cents`. The Checkout session and its
 payment intent carry `company_id`, `customer_id`, `project_key`, `deal_id`,

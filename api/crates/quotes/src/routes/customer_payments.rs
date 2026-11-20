@@ -17,8 +17,9 @@
 //! `checkout.session.async_payment_succeeded`,
 //! `checkout.session.async_payment_failed`, `payment_intent.succeeded`,
 //! `payment_intent.processing`, `payment_intent.payment_failed`,
-//! `payment_intent.canceled`, `charge.refunded`, `charge.dispute.created`,
-//! `charge.dispute.closed` and `account.updated`. The Checkout and payment intent events say the same
+//! `payment_intent.canceled`, `charge.refunded`, `charge.dispute.*`
+//! (`created` and `closed` at least), `account.updated` and
+//! `account.application.deauthorized`. The Checkout and payment intent events say the same
 //! things twice; whichever comes first moves the payment on.
 //!
 //! Each company gets a Standard connected account, and a payment is a direct
@@ -346,7 +347,8 @@ pub enum BankAccountStatus {
 pub struct BankAccount {
     /// Whether the company can be paid.
     pub status: BankAccountStatus,
-    /// The bank's name; null until connected, or when Stripe does not say.
+    /// The name of the bank payouts go to (the account's default bank
+    /// account at Stripe); null until connected, or when Stripe does not say.
     pub bank_name: Option<String>,
     /// The account number's last 4 digits; null like `bank_name`.
     pub last4: Option<String>,
@@ -458,7 +460,18 @@ async fn save_account(pool: &MySqlPool, account: &Value) -> sqlx::Result<()> {
     let Some(id) = account["id"].as_str() else {
         return Ok(());
     };
-    let bank = &account["external_accounts"]["data"][0];
+    // The bank account payouts go to: the one Stripe marks as the default
+    // for its currency, else the first. A company that adds a second bank
+    // account and makes it the default must see that one, not the old.
+    let banks = account["external_accounts"]["data"].as_array();
+    let bank = banks
+        .and_then(|banks| {
+            banks
+                .iter()
+                .find(|bank| bank["default_for_currency"] == true)
+                .or_else(|| banks.first())
+        })
+        .unwrap_or(&Value::Null);
     sqlx::query(
         "UPDATE company_payment_settings
             SET charges_enabled = ?, bank_name = COALESCE(?, bank_name),
@@ -869,6 +882,9 @@ struct PaymentRow {
     created_at: NaiveDateTime,
     customer_name: Option<String>,
     project_name: Option<String>,
+    /// The Stripe account the company uses today; `stripe_account_id` is the
+    /// one the payment was made for.
+    company_account: Option<String>,
 }
 
 /// The job a payment `p` shows under, for a `FROM customer_payments p`: its
@@ -904,9 +920,11 @@ const PAYMENT_SELECT: &str = concat!(
         p.failure_reason, p.created_by, p.created_at,
         NULLIF(TRIM(pc.name), '') AS customer_name,
         COALESCE(NULLIF(TRIM(pd.title), ''), NULLIF(TRIM(ps.project_address), ''))
-          AS project_name
+          AS project_name,
+        pcs.stripe_account_id AS company_account
    FROM customer_payments p
    LEFT JOIN customers pc ON pc.id = p.customer_id
+   LEFT JOIN company_payment_settings pcs ON pcs.company_id = p.company_id
    ",
     payment_job_joins!()
 );
@@ -963,6 +981,15 @@ impl PaymentRow {
         } else {
             0
         }
+    }
+
+    /// An unpaid link made for a Stripe account the company no longer uses
+    /// (the account was changed or removed). A link charges the account it
+    /// was made for, so paying this one would send the money to the old
+    /// account: it is withdrawn instead (`withdraw_stale_links`).
+    fn of_another_account(&self) -> bool {
+        self.status() == CustomerPaymentStatus::Created
+            && self.company_account.as_deref().unwrap_or_default() != self.stripe_account_id
     }
 
     /// Whether Stripe may know more than we do: the payment waits (`created`
@@ -1108,6 +1135,64 @@ fn transfer_failure(method: PaymentMethod, intent: &Value) -> String {
     }
 }
 
+/// Withdraws the company's unpaid links that were made for a Stripe account
+/// it no longer uses (its account was changed or removed), and closes their
+/// open Checkout pages as far as Stripe lets us. A link charges the account
+/// it was made for, so such a link would send the customer's money to the
+/// old account. Payments that were made or are on their way keep their
+/// account, whose events still move them (refunds, disputes, a transfer
+/// that clears); a payment that still arrives on a page left open is
+/// recorded the same way. Returns how many links were withdrawn.
+async fn withdraw_stale_links(state: &AppState, company_id: i32) -> sqlx::Result<u64> {
+    const STALE: &str = "p.company_id = ? AND p.status = 'created'
+        AND p.stripe_account_id <> COALESCE(s.stripe_account_id, '')";
+    let stale: Vec<(String, String, Option<String>)> = sqlx::query_as(AssertSqlSafe(format!(
+        "SELECT p.public_id, p.stripe_account_id, p.stripe_session_id
+           FROM customer_payments p
+           LEFT JOIN company_payment_settings s ON s.company_id = p.company_id
+          WHERE {STALE}"
+    )))
+    .bind(company_id)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut withdrawn = 0;
+    for (id, account, session) in stale {
+        let changed = sqlx::query(AssertSqlSafe(format!(
+            "UPDATE customer_payments p
+               LEFT JOIN company_payment_settings s ON s.company_id = p.company_id
+                SET p.status = 'canceled'
+              WHERE p.public_id = ? AND {STALE}"
+        )))
+        .bind(&id)
+        .bind(company_id)
+        .execute(&state.pool)
+        .await?
+        .rows_affected();
+        if changed == 0 {
+            continue;
+        }
+        withdrawn += changed;
+        tracing::warn!(
+            payment = %id,
+            company_id,
+            account = %account,
+            "link of a Stripe account the company no longer uses: withdrawn"
+        );
+        let on_stripe = account.starts_with("acct_")
+            && !account.starts_with(DEMO_ACCOUNT_PREFIX)
+            && state.stripe.is_enabled();
+        if let Some(session) = session.filter(|_| on_stripe)
+            && let Err(error) = state
+                .stripe
+                .expire_checkout_session(&account, &session)
+                .await
+        {
+            tracing::warn!(%error, payment = %id, "Checkout session of a withdrawn link not closed");
+        }
+    }
+    Ok(withdrawn)
+}
+
 /// The head of the family `customer_id` belongs to (its parent, else
 /// itself): the Projects tab shows the whole family's jobs. 404 when the
 /// customer is not the company's.
@@ -1135,7 +1220,8 @@ const FAMILY_SQL: &str = "SELECT fc.id FROM customers fc
 /// `paid`; an ACH transfer on its way is `pending`; a `disputed` payment
 /// still counts toward its job, a `lost` one no longer does. A waiting payment whose
 /// news from Stripe may have been missed is checked with Stripe here, at
-/// most once in 5 minutes each.
+/// most once in 5 minutes each. Unpaid links made for a Stripe account the
+/// company no longer uses are withdrawn here (`canceled`).
 #[crate::openapi::path(
     get,
     path = "/v1/customers/{id}/payments",
@@ -1171,6 +1257,12 @@ pub async fn list_payments(
         .await
     };
     let mut rows = list().await?;
+    // Links made for a Stripe account the company no longer uses are
+    // withdrawn: nobody may pay into the old account.
+    if rows.iter().any(PaymentRow::of_another_account) {
+        withdraw_stale_links(&state, user.company_id).await?;
+        rows = list().await?;
+    }
     // A webhook that never came: Stripe is asked about the waiting payments
     // (a few, each seldom), and the list is read again when one moved.
     let mut moved = false;
@@ -1338,6 +1430,8 @@ pub async fn create_payment(
             "A card payment must be at least $10. Use ACH for a smaller amount".into(),
         ));
     }
+    // Links of a Stripe account the company no longer uses ask for nothing.
+    withdraw_stale_links(&state, user.company_id).await?;
     // No link for more than is left to pay on the job: a typo must not make
     // the customer overpay.
     let (price_cents, taken) = job_balance(pool, user.company_id, &job).await?;
@@ -1583,6 +1677,8 @@ async fn page_payment(state: &AppState, payment_id: &str) -> ApiResult<PaymentRo
 /// it can still be paid (`status` is `created`). Once the customer opened
 /// Stripe's page, Stripe is asked where the payment is (at most once a
 /// minute), so the page is right even when Stripe's own message was missed.
+/// A link made for a Stripe account the company no longer uses is withdrawn
+/// (`canceled`): it would send the money to the old account.
 /// No session: the link's
 /// unguessable id is the credential. Next: `POST
 /// /v1/public/pay/{payment_id}/checkout`.
@@ -1603,6 +1699,12 @@ pub async fn pay_page(
     Path(payment_id): Path<String>,
 ) -> ApiResult<Response> {
     let mut payment = page_payment(&state, &payment_id).await?;
+    // Made for a Stripe account the company no longer uses: withdrawn, the
+    // page then says to ask for a new link.
+    if payment.of_another_account() {
+        withdraw_stale_links(&state, payment.company_id).await?;
+        payment = page_payment(&state, &payment_id).await?;
+    }
     // The customer may be back from Stripe before its webhook, or the
     // webhook may never come: Stripe is asked, at most once a minute.
     if catch_up(&state, &payment, CHECK_FROM_PAGE_SECS).await? {
@@ -1695,7 +1797,9 @@ async fn checkout_metadata(
 /// plus the customer's part of the fee, with the payment's one method. A
 /// page opened before is reused while Stripe keeps it open (24 hours), and
 /// requests at the same time (two tabs) get the same page, so a payment is
-/// not made twice. 409 unless the payment is `created`.
+/// not made twice. 409 unless the payment is `created`, and for a link made
+/// for a Stripe account the company no longer uses (the link is withdrawn;
+/// the company makes a new one, which charges its account of today).
 #[crate::openapi::path(
     post,
     path = "/v1/public/pay/{payment_id}/checkout",
@@ -1705,7 +1809,7 @@ async fn checkout_metadata(
     responses(
         (status = 200, description = "Stripe's page", body = PayCheckout),
         (status = 404, description = "No such payment link", body = ErrorBody),
-        (status = 409, description = "The payment was made, is on its way, failed or was withdrawn", body = ErrorBody),
+        (status = 409, description = "The payment was made, is on its way, failed or was withdrawn, or the link was made for a Stripe account the company no longer uses", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
         (status = 502, description = "Stripe failed", body = ErrorBody),
         (status = 503, description = "Payments are not set up", body = ErrorBody),
@@ -1719,11 +1823,23 @@ pub async fn pay_checkout(
     if payment.status() != CustomerPaymentStatus::Created {
         return Err(not_payable(payment.status()));
     }
+    // A link charges the Stripe account it was made for. When the company
+    // uses another one now, the money would go to the old account: the link
+    // is withdrawn, and the company makes a new one.
+    if payment.of_another_account() {
+        withdraw_stale_links(&state, payment.company_id).await?;
+        return Err(not_payable(CustomerPaymentStatus::Canceled));
+    }
     if CustomerPayments::of(&state).demo {
         return Ok(no_store(Json(PayCheckout { url: None })));
     }
     let account = payment.stripe_account_id.as_str();
-    if account.starts_with(DEMO_ACCOUNT_PREFIX) || !state.stripe.is_enabled() {
+    // Never without a connected account: Stripe would charge the platform's
+    // own account.
+    if !account.starts_with("acct_")
+        || account.starts_with(DEMO_ACCOUNT_PREFIX)
+        || !state.stripe.is_enabled()
+    {
         return Err(ApiError::Unavailable("Payments are not set up".into()));
     }
     // Read before the row is locked: the pool has one connection, and the
@@ -2586,6 +2702,22 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
     if kind == "account.updated" {
         return save_account(pool, object).await;
     }
+    // The company cut the platform off from its Stripe account: nothing can
+    // be charged on it any more, so it no longer counts as connected and no
+    // new link is made for it.
+    if kind == "account.application.deauthorized" {
+        if let Some(account) = event["account"].as_str() {
+            tracing::error!(account, "a company disconnected its Stripe account");
+            sqlx::query(
+                "UPDATE company_payment_settings SET charges_enabled = 0
+                  WHERE stripe_account_id = ?",
+            )
+            .bind(account)
+            .execute(pool)
+            .await?;
+        }
+        return Ok(());
+    }
     // Only events of a connected account are about customers' payments.
     let Some(account) = event["account"].as_str() else {
         return Ok(());
@@ -2661,23 +2793,24 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
                 }
             }
         }
-        "charge.dispute.created" | "charge.dispute.closed" => {
-            dispute_event(state, account, kind, object).await?;
+        // Every dispute event (opened, updated, funds withdrawn, closed):
+        // the dispute's own status says where it is.
+        _ if kind.starts_with("charge.dispute.") => {
+            dispute_event(state, account, object).await?;
         }
         _ => {}
     }
     Ok(())
 }
 
-/// A dispute of a charge was opened or closed. Once per dispute, and never
-/// opened after it closed: Stripe sending the dispute again after it was won
-/// must not dispute the payment anew.
-async fn dispute_event(
-    state: &AppState,
-    account: &str,
-    kind: &str,
-    object: &Value,
-) -> sqlx::Result<()> {
+/// Something happened to a dispute of a charge (`object` is the dispute).
+/// Its own `status` says where it is, whichever event carries it: decided
+/// for the customer (`lost`: a bank transfer's dispute is final and can
+/// arrive already lost), decided for the company (`won`, or an inquiry that
+/// was dropped, `warning_closed`), else still open. Once per dispute, and
+/// never opened after it was decided: Stripe sending the dispute again
+/// after it was won must not dispute the payment anew.
+async fn dispute_event(state: &AppState, account: &str, object: &Value) -> sqlx::Result<()> {
     let pool = &state.pool;
     let intent = id_of(&object["payment_intent"]);
     let (Some(payment), Some(dispute)) = (
@@ -2700,14 +2833,14 @@ async fn dispute_event(
     // changes nothing later.
     settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
     let closed = format!("dispute_closed:{dispute}");
-    if kind == "charge.dispute.closed" {
-        // Won: the company keeps the money. Lost: the bank took it back.
-        // Anything else (a withdrawn inquiry) leaves the payment as it is.
-        let decided = match object["status"].as_str() {
-            Some("won") => Some(Outcome::DisputeWon),
-            Some("lost") => Some(Outcome::DisputeLost),
-            _ => None,
-        };
+    // Won, or an inquiry the bank dropped: the company keeps the money.
+    // Lost: the bank took it back.
+    let decided = match object["status"].as_str() {
+        Some("won" | "warning_closed") => Some(Outcome::DisputeWon),
+        Some("lost") => Some(Outcome::DisputeLost),
+        _ => None,
+    };
+    if decided.is_some() {
         settle_once(pool, &closed, None, &payment, account, decided).await?;
         return Ok(());
     }
@@ -2738,7 +2871,11 @@ pub struct ConnectWebhookReceived {
 /// status. A declined card only notifies: the link stays payable. A partial
 /// refund keeps the payment `paid` and records what was given back. A
 /// dispute makes it `disputed`, then `paid` again when won or `lost` when
-/// the bank gives the money back. Each
+/// the bank gives the money back (the dispute's own status decides, on any
+/// `charge.dispute.*` event). `account.application.deauthorized` (the
+/// company cut the platform off from its Stripe account) leaves the company
+/// not connected. Events of an account only move payments made for that
+/// account, also after the company changed to another one. Each
 /// change is made once, however often Stripe sends the event. Needs a valid
 /// `Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.
 #[crate::openapi::path(
@@ -2957,15 +3094,23 @@ pub async fn view_payments(
     .await?;
     let projects = jobs_of(&deals, &sales);
     let total_cents: i64 = projects.iter().map(|job| job.price_cents).sum();
-    let rows: Vec<PaymentRow> = sqlx::query_as(AssertSqlSafe(format!(
-        "{PAYMENT_SELECT}
-          WHERE p.company_id = ? AND p.customer_id = ? AND p.status <> 'canceled'
-          ORDER BY p.created_at DESC, p.id DESC"
-    )))
-    .bind(company_id)
-    .bind(customer.id)
-    .fetch_all(&state.pool)
-    .await?;
+    let listed = || async {
+        sqlx::query_as::<_, PaymentRow>(AssertSqlSafe(format!(
+            "{PAYMENT_SELECT}
+              WHERE p.company_id = ? AND p.customer_id = ? AND p.status <> 'canceled'
+              ORDER BY p.created_at DESC, p.id DESC"
+        )))
+        .bind(company_id)
+        .bind(customer.id)
+        .fetch_all(&state.pool)
+        .await
+    };
+    let mut rows = listed().await?;
+    // No "Pay now" on a link of a Stripe account the company no longer uses.
+    if rows.iter().any(PaymentRow::of_another_account) {
+        withdraw_stale_links(&state, company_id).await?;
+        rows = listed().await?;
+    }
     let paid_cents: i64 = rows.iter().map(PaymentRow::paid_toward_job).sum();
     let pending_cents: i64 = rows
         .iter()

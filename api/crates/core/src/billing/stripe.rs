@@ -104,6 +104,14 @@ impl Stripe {
         form: &[(&str, String)],
     ) -> Result<Value, StripeError> {
         let key = self.key.as_ref().ok_or(StripeError::NotConfigured)?;
+        // A request meant for a connected account never goes out without
+        // one: Stripe would run it on the platform's own account, and a
+        // customer's payment would land there.
+        if account.is_some_and(|account| !account.starts_with("acct_")) {
+            return Err(StripeError::Request(
+                "no connected Stripe account to act on".into(),
+            ));
+        }
         let encoded = serde_html_form::to_string(form)
             .map_err(|err| StripeError::Request(err.to_string()))?;
         let get = method == reqwest::Method::GET;
@@ -1085,6 +1093,22 @@ pub async fn latest_event(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Without a connected account Stripe would act on the platform's own
+    /// account: such a request is never sent.
+    #[tokio::test]
+    async fn a_request_for_a_connected_account_needs_one() {
+        // Nothing listens here: a request that went out would fail otherwise.
+        let stripe = Stripe::new(Some("sk_test_x"), "http://127.0.0.1:9");
+        for account in ["", " ", "100", "cus_1"] {
+            let refused = stripe.checkout_session(account, "cs_1").await;
+            assert!(
+                matches!(&refused, Err(StripeError::Request(message))
+                    if message == "no connected Stripe account to act on"),
+                "{account:?}: {refused:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_form_s_digest_changes_with_what_is_sent() {

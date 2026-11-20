@@ -2410,3 +2410,313 @@ async fn a_deal_s_balance_counts_what_its_sales_were_paid(pool: MySqlPool) {
         "This sale was cancelled, so there is nothing to pay for it"
     );
 }
+
+// ---- the company's Stripe account
+
+/// The company moves to another Stripe account. A link charges the account
+/// it was made for, so an unpaid link of the old account is withdrawn rather
+/// than paid into it; what was paid or is on its way there keeps following
+/// the old account's events, and new links charge the new account.
+#[test_db::test(seed)]
+async fn a_link_stays_with_the_stripe_account_it_was_made_for(pool: MySqlPool) {
+    let (server, stripe) = connected_server(&pool).await;
+    let id = |payment: &Value| payment["id"].as_str().unwrap().to_string();
+    // Paid on the old account.
+    let paid = id(&link(&server, 1000, "deal-8000", "card", 30_000).await);
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(&paid, "paid", "pi_1"),
+    )
+    .await;
+    // Not paid, with Stripe's page open on the old account.
+    let open = id(&link(&server, 1000, "deal-8000", "card", 70_000).await);
+    server
+        .post(&format!("/v1/public/pay/{open}/checkout"))
+        .await
+        .assert_status_ok();
+    // A transfer on its way on the old account.
+    let moving = id(&link(&server, 1004, "sale-7000", "ach", 50_000).await);
+    let intent = |status: &str| json!({ "id": "pi_2", "status": status, "metadata": { "granite_payment": &moving } });
+    webhook(
+        &server,
+        "payment_intent.processing",
+        ACCOUNT,
+        intent("processing"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, &moving).await, "pending");
+
+    sqlx::query("UPDATE company_payment_settings SET stripe_account_id = 'acct_2'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // The CRM's list withdraws the old account's unpaid link and closes its
+    // page at Stripe, on the old account.
+    let listed: Value = server
+        .get("/v1/customers/1000/payments")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    let status_in_list = |listed: &Value, id: &str| {
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|payment| payment["id"] == id)
+            .unwrap()["status"]
+            .clone()
+    };
+    assert_eq!(status_in_list(&listed, &open), "canceled");
+    assert_eq!(status_in_list(&listed, &paid), "paid");
+    {
+        let stripe = stripe.lock().unwrap();
+        assert_eq!(stripe.count("POST", "/v1/checkout/sessions/{id}/expire"), 1);
+        assert_eq!(
+            stripe
+                .last("POST", "/v1/checkout/sessions/{id}/expire")
+                .0
+                .as_deref(),
+            Some(ACCOUNT)
+        );
+    }
+    // Its link no longer takes a payment, on either account.
+    assert_eq!(
+        server
+            .get(&format!("/v1/public/pay/{open}"))
+            .await
+            .json::<Value>()["status"],
+        "canceled"
+    );
+    let refused = server
+        .post(&format!("/v1/public/pay/{open}/checkout"))
+        .await;
+    refused.assert_status(StatusCode::CONFLICT);
+    assert_eq!(
+        refused.json::<Value>()["error"],
+        "This payment link is no longer active"
+    );
+    assert_eq!(
+        stripe
+            .lock()
+            .unwrap()
+            .count("POST", "/v1/checkout/sessions"),
+        1
+    );
+
+    // The $700 it asked for is free again, and the new link charges the new
+    // account.
+    let fresh = id(&link(&server, 1000, "deal-8000", "card", 70_000).await);
+    server
+        .post(&format!("/v1/public/pay/{fresh}/checkout"))
+        .await
+        .assert_status_ok();
+    assert_eq!(
+        stripe
+            .lock()
+            .unwrap()
+            .last("POST", "/v1/checkout/sessions")
+            .0
+            .as_deref(),
+        Some("acct_2")
+    );
+    webhook(
+        &server,
+        "checkout.session.completed",
+        "acct_2",
+        session_event(&fresh, "paid", "pi_9"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, &fresh).await, "paid");
+
+    // The old account's events still move what was paid or started there.
+    webhook(
+        &server,
+        "charge.refunded",
+        ACCOUNT,
+        json!({ "id": "ch_1", "payment_intent": "pi_1", "refunded": true,
+                "amount_refunded": 30_000, "status": "succeeded" }),
+    )
+    .await;
+    assert_eq!(status_of(&pool, &paid).await, "refunded");
+    webhook(
+        &server,
+        "payment_intent.succeeded",
+        ACCOUNT,
+        intent("succeeded"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, &moving).await, "paid");
+    // The new account cannot touch a payment of the old one.
+    webhook(
+        &server,
+        "checkout.session.completed",
+        "acct_2",
+        session_event(&open, "paid", "pi_8"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, &open).await, "canceled");
+    // Money that still arrives on the page left open at the old account is
+    // recorded: it is the company's.
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(&open, "paid", "pi_3"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, &open).await, "paid");
+}
+
+/// Without a Stripe account at all (it was removed), nothing is payable.
+#[test_db::test(seed)]
+async fn a_link_of_a_removed_stripe_account_is_withdrawn(pool: MySqlPool) {
+    let (server, stripe) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 30_000).await;
+    let id = payment["id"].as_str().unwrap();
+    sqlx::query(
+        "UPDATE company_payment_settings SET stripe_account_id = NULL, charges_enabled = 0",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    server
+        .post(&format!("/v1/public/pay/{id}/checkout"))
+        .await
+        .assert_status(StatusCode::CONFLICT);
+    assert_eq!(status_of(&pool, id).await, "canceled");
+    assert_eq!(
+        stripe
+            .lock()
+            .unwrap()
+            .count("POST", "/v1/checkout/sessions"),
+        0
+    );
+}
+
+/// A dispute's own status says where it is, whichever event carries it.
+#[test_db::test(seed)]
+async fn a_dispute_s_own_status_decides(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let pay = |key: &'static str, method: &'static str, intent: &'static str| {
+        let server = &server;
+        async move {
+            let customer = if key.starts_with("sale") { 1004 } else { 1000 };
+            let payment = link(server, customer, key, method, 20_000).await;
+            let id = payment["id"].as_str().unwrap().to_string();
+            webhook(
+                server,
+                "payment_intent.succeeded",
+                ACCOUNT,
+                json!({ "id": intent, "status": "succeeded",
+                        "metadata": { "granite_payment": &id } }),
+            )
+            .await;
+            id
+        }
+    };
+    let dispute = |id: &str, intent: &str, status: &str| json!({ "id": id, "payment_intent": intent, "status": status });
+
+    // A bank transfer's dispute is final: it can arrive already lost.
+    let transfer = pay("sale-7000", "ach", "pi_1").await;
+    webhook(
+        &server,
+        "charge.dispute.created",
+        ACCOUNT,
+        dispute("dp_1", "pi_1", "lost"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, &transfer).await, "lost");
+    let kinds: Vec<String> = bell(&pool)
+        .await
+        .into_iter()
+        .filter(|(user, _, _)| *user == 102)
+        .map(|(_, kind, _)| kind)
+        .collect();
+    assert_eq!(kinds, ["payment_paid", "payment_dispute_lost"]);
+
+    // An inquiry the bank dropped: paid again.
+    let asked = pay("deal-8000", "card", "pi_2").await;
+    webhook(
+        &server,
+        "charge.dispute.created",
+        ACCOUNT,
+        dispute("dp_2", "pi_2", "warning_needs_response"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, &asked).await, "disputed");
+    webhook(
+        &server,
+        "charge.dispute.closed",
+        ACCOUNT,
+        dispute("dp_2", "pi_2", "warning_closed"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, &asked).await, "paid");
+
+    // The opening was never told: any later event of the dispute opens it,
+    // once.
+    let late = pay("deal-8000", "card", "pi_3").await;
+    for _ in 0..2 {
+        webhook(
+            &server,
+            "charge.dispute.funds_withdrawn",
+            ACCOUNT,
+            dispute("dp_3", "pi_3", "needs_response"),
+        )
+        .await;
+    }
+    assert_eq!(status_of(&pool, &late).await, "disputed");
+    let disputed = bell(&pool)
+        .await
+        .into_iter()
+        .filter(|(user, kind, _)| *user == 102 && kind == "payment_disputed")
+        .count();
+    assert_eq!(disputed, 2);
+}
+
+/// The bank shown is the one payouts go to, and a company that cuts the
+/// platform off from its Stripe account is no longer connected.
+#[test_db::test(seed)]
+async fn the_company_s_account_follows_what_stripe_says(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    webhook(
+        &server,
+        "account.updated",
+        ACCOUNT,
+        json!({ "id": ACCOUNT, "charges_enabled": true, "external_accounts": { "data": [
+            { "bank_name": "Old Bank", "last4": "1111", "default_for_currency": false },
+            { "bank_name": "New Bank", "last4": "2222", "default_for_currency": true },
+        ] } }),
+    )
+    .await;
+    let settings = || async {
+        server
+            .get("/v1/company/payment-settings")
+            .with_session(sessions::REP)
+            .await
+            .json::<Value>()
+    };
+    assert_eq!(
+        settings().await["bank"],
+        json!({ "status": "connected", "bank_name": "New Bank", "last4": "2222" })
+    );
+
+    let status = webhook(
+        &server,
+        "account.application.deauthorized",
+        ACCOUNT,
+        json!({ "id": "ca_1", "object": "application" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(settings().await["bank"]["status"], "pending_verification");
+    server
+        .post("/v1/customers/1000/payments")
+        .with_session(sessions::REP)
+        .json(&json!({ "project_key": "deal-8000", "method": "card", "amount_cents": 20_000 }))
+        .await
+        .assert_status(StatusCode::CONFLICT);
+}

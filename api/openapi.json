@@ -7381,7 +7381,7 @@
           "customer-payments"
         ],
         "summary": "List a customer's payments",
-        "description": "The payments and unpaid payment links of the jobs of the customer's\nfamily (the customer, its parent and the parent's other projects: what\n`GET /v1/customers/{id}/projects` lists), newest first, withdrawn links\nincluded. `project_key` names the job. Money that reached the company is\n`paid`; an ACH transfer on its way is `pending`; a `disputed` payment\nstill counts toward its job, a `lost` one no longer does. A waiting payment whose\nnews from Stripe may have been missed is checked with Stripe here, at\nmost once in 5 minutes each.",
+        "description": "The payments and unpaid payment links of the jobs of the customer's\nfamily (the customer, its parent and the parent's other projects: what\n`GET /v1/customers/{id}/projects` lists), newest first, withdrawn links\nincluded. `project_key` names the job. Money that reached the company is\n`paid`; an ACH transfer on its way is `pending`; a `disputed` payment\nstill counts toward its job, a `lost` one no longer does. A waiting payment whose\nnews from Stripe may have been missed is checked with Stripe here, at\nmost once in 5 minutes each. Unpaid links made for a Stripe account the\ncompany no longer uses are withdrawn here (`canceled`).",
         "operationId": "list_customer_payments",
         "parameters": [
           {
@@ -7661,7 +7661,7 @@
           "customer-payments"
         ],
         "summary": "Show a payment link's page",
-        "description": "What the customer is asked to pay, to whom and for which job, and whether\nit can still be paid (`status` is `created`). Once the customer opened\nStripe's page, Stripe is asked where the payment is (at most once a\nminute), so the page is right even when Stripe's own message was missed.\nNo session: the link's\nunguessable id is the credential. Next: `POST\n/v1/public/pay/{payment_id}/checkout`.",
+        "description": "What the customer is asked to pay, to whom and for which job, and whether\nit can still be paid (`status` is `created`). Once the customer opened\nStripe's page, Stripe is asked where the payment is (at most once a\nminute), so the page is right even when Stripe's own message was missed.\nA link made for a Stripe account the company no longer uses is withdrawn\n(`canceled`): it would send the money to the old account.\nNo session: the link's\nunguessable id is the credential. Next: `POST\n/v1/public/pay/{payment_id}/checkout`.",
         "operationId": "get_pay_page",
         "parameters": [
           {
@@ -7714,7 +7714,7 @@
           "customer-payments"
         ],
         "summary": "Open Stripe's page for a payment link",
-        "description": "A Stripe Checkout page on the company's account for the payment's amount\nplus the customer's part of the fee, with the payment's one method. A\npage opened before is reused while Stripe keeps it open (24 hours), and\nrequests at the same time (two tabs) get the same page, so a payment is\nnot made twice. 409 unless the payment is `created`.",
+        "description": "A Stripe Checkout page on the company's account for the payment's amount\nplus the customer's part of the fee, with the payment's one method. A\npage opened before is reused while Stripe keeps it open (24 hours), and\nrequests at the same time (two tabs) get the same page, so a payment is\nnot made twice. 409 unless the payment is `created`, and for a link made\nfor a Stripe account the company no longer uses (the link is withdrawn;\nthe company makes a new one, which charges its account of today).",
         "operationId": "create_pay_checkout",
         "parameters": [
           {
@@ -7749,7 +7749,7 @@
             }
           },
           "409": {
-            "description": "The payment was made, is on its way, failed or was withdrawn",
+            "description": "The payment was made, is on its way, failed or was withdrawn, or the link was made for a Stripe account the company no longer uses",
             "content": {
               "application/json": {
                 "schema": {
@@ -7936,7 +7936,7 @@
           "customer-payments"
         ],
         "summary": "Receive a Stripe Connect event",
-        "description": "Stripe's webhook for the companies' connected accounts: Checkout,\npayment intent, refund and dispute events move a customer's payment on\n(and notify the company), and account events update the company's bank\nstatus. A declined card only notifies: the link stays payable. A partial\nrefund keeps the payment `paid` and records what was given back. A\ndispute makes it `disputed`, then `paid` again when won or `lost` when\nthe bank gives the money back. Each\nchange is made once, however often Stripe sends the event. Needs a valid\n`Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.",
+        "description": "Stripe's webhook for the companies' connected accounts: Checkout,\npayment intent, refund and dispute events move a customer's payment on\n(and notify the company), and account events update the company's bank\nstatus. A declined card only notifies: the link stays payable. A partial\nrefund keeps the payment `paid` and records what was given back. A\ndispute makes it `disputed`, then `paid` again when won or `lost` when\nthe bank gives the money back (the dispute's own status decides, on any\n`charge.dispute.*` event). `account.application.deauthorized` (the\ncompany cut the platform off from its Stripe account) leaves the company\nnot connected. Events of an account only move payments made for that\naccount, also after the company changed to another one. Each\nchange is made once, however often Stripe sends the event. Needs a valid\n`Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.",
         "operationId": "receive_stripe_connect_webhook",
         "parameters": [
           {
@@ -84894,7 +84894,7 @@
               "string",
               "null"
             ],
-            "description": "The bank's name; null until connected, or when Stripe does not say."
+            "description": "The name of the bank payouts go to (the account's default bank\naccount at Stripe); null until connected, or when Stripe does not say."
           },
           "last4": {
             "type": [
