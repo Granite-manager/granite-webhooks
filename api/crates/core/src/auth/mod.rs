@@ -438,8 +438,9 @@ pub const DEVICE_QUOTE_READS: [&str; 9] = [
 /// every 15 seconds and discarded (`PUT|DELETE .../autosave`), Copy quote
 /// (`POST .../copies`), Update prices (`POST .../prices`), Mark as Sold and
 /// Undo sale (`POST|DELETE .../sale`), emailing it (`POST .../emails`),
-/// switching a sent email's link off or on (`PATCH .../emails/{email_id}`)
-/// and recording a print (`POST .../prints`). Reading a quote is under
+/// switching a sent email's link off or on (`PATCH .../emails/{email_id}`),
+/// recording a print (`POST .../prints`) and the x that takes an area name or
+/// item out of the suggestions (`POST /v1/quotes/suggestions/hide`). Reading a quote is under
 /// [`DEVICE_READ_ROUTES`]; making its QuickBooks invoice is
 /// [`sale_and_invoice_write`]; the customer link, contracts and the browser's
 /// print previews stay with the CRM session. The
@@ -468,6 +469,7 @@ fn quote_write(method: &Method, path: &str) -> bool {
         [id, "copies" | "prices" | "emails" | "prints"] => is_id(id) && is_post,
         [id, "sale"] => is_id(id) && (is_post || is_delete),
         [id, "emails", email] => is_id(id) && is_id(email) && is_patch,
+        ["suggestions", "hide"] => is_post,
         _ => false,
     }
 }
@@ -1310,6 +1312,7 @@ mod tests {
             (Method::GET, "/v1/quotes/7"),
             (Method::GET, "/v1/quotes/7/revisions/3"),
             (Method::GET, "/v1/quotes/suggestions"),
+            (Method::POST, "/v1/quotes/suggestions/hide"),
             (Method::GET, "/v1/quote-price-lists"),
             (Method::GET, "/v1/quote-tax-rates"),
             (Method::GET, "/v1/quote-payment-terms"),

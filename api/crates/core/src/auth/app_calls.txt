@@ -256,6 +256,7 @@ POST /v1/quotes/7/invoice-draft
 POST /v1/quotes/7/prices
 POST /v1/quotes/7/prints
 POST /v1/quotes/7/sale
+POST /v1/quotes/suggestions/hide
 POST /v1/sales
 POST /v1/schedule/auto-plan
 POST /v1/shop/maintenance/checks
