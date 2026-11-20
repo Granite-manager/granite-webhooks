@@ -2594,6 +2594,80 @@ async fn a_link_of_a_removed_stripe_account_is_withdrawn(pool: MySqlPool) {
             .count("POST", "/v1/checkout/sessions"),
         0
     );
+
+    // How a company moves to another Stripe account: its old one is removed
+    // (by support), then "Add bank account" makes a new one, which starts
+    // unverified and without the old account's bank.
+    stripe
+        .lock()
+        .unwrap()
+        .accounts
+        .insert(ACCOUNT.into(), json!({ "id": ACCOUNT }));
+    server
+        .post("/v1/company/payment-settings/bank-account")
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status_ok();
+    let kept: (Option<String>, bool, Option<String>) = sqlx::query_as(
+        "SELECT stripe_account_id, charges_enabled <> 0, bank_name
+           FROM company_payment_settings WHERE company_id = 100",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(kept, (Some("acct_2".into()), false, None));
+    let new_link = || {
+        server
+            .post("/v1/customers/1000/payments")
+            .with_session(sessions::REP)
+            .json(&json!({ "project_key": "deal-8000", "method": "card", "amount_cents": 30_000 }))
+    };
+    // No link until Stripe approved the new account.
+    new_link().await.assert_status(StatusCode::CONFLICT);
+    webhook(
+        &server,
+        "account.updated",
+        "acct_2",
+        json!({ "id": "acct_2", "charges_enabled": true, "external_accounts": { "data": [
+            { "bank_name": "New Bank", "last4": "2222", "default_for_currency": true },
+        ] } }),
+    )
+    .await;
+    let settings: Value = server
+        .get("/v1/company/payment-settings")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(
+        settings["bank"],
+        json!({ "status": "connected", "bank_name": "New Bank", "last4": "2222" })
+    );
+    // The old account saying something no longer changes the company.
+    webhook(
+        &server,
+        "account.updated",
+        ACCOUNT,
+        json!({ "id": ACCOUNT, "charges_enabled": false }),
+    )
+    .await;
+    let made = new_link().await;
+    made.assert_status(StatusCode::CREATED);
+    let fresh = made.json::<Value>()["id"].as_str().unwrap().to_string();
+    server
+        .post(&format!("/v1/public/pay/{fresh}/checkout"))
+        .await
+        .assert_status_ok();
+    assert_eq!(
+        stripe
+            .lock()
+            .unwrap()
+            .last("POST", "/v1/checkout/sessions")
+            .0
+            .as_deref(),
+        Some("acct_2")
+    );
+    // The old link stays withdrawn.
+    assert_eq!(status_of(&pool, id).await, "canceled");
 }
 
 /// A dispute's own status says where it is, whichever event carries it.
