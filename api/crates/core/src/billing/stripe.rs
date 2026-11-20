@@ -533,6 +533,28 @@ impl Stripe {
     }
 }
 
+/// The first 16 hex characters of the SHA-256 of a request's form, for an
+/// `Idempotency-Key` that changes when the request does.
+fn form_digest(form: &[(&str, String)]) -> String {
+    use sha2::Digest;
+    use std::fmt::Write as _;
+    let mut hasher = Sha256::new();
+    for (key, value) in form {
+        hasher.update(key.as_bytes());
+        hasher.update([0]);
+        hasher.update(value.as_bytes());
+        hasher.update([0]);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .take(8)
+        .fold(String::new(), |mut out, byte| {
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
 /// What a customer pays a company on Stripe Checkout
 /// ([`Stripe::create_payment_checkout_session`]).
 pub struct PaymentCheckout<'a> {
@@ -556,8 +578,9 @@ pub struct PaymentCheckout<'a> {
     pub application_fee_cents: i64,
     pub success_url: &'a str,
     pub cancel_url: &'a str,
-    /// Stripe's `Idempotency-Key` for the request: two requests with the same
-    /// key make one session.
+    /// The start of Stripe's `Idempotency-Key` for the request; a digest of
+    /// what is sent is added to it. Two requests with the same key and the
+    /// same content make one session.
     pub idempotency_key: &'a str,
 }
 
@@ -658,7 +681,9 @@ impl Stripe {
     }
 
     /// A Checkout page on the connected `account` for one payment. It expires
-    /// in 24 hours. A card page says [`US_CARDS_ONLY`].
+    /// in 24 hours. A card page says [`US_CARDS_ONLY`]; a bank transfer's
+    /// takes only a bank account the customer signs in to (no numbers typed
+    /// by hand, no micro-deposits).
     pub async fn create_payment_checkout_session(
         &self,
         account: &str,
@@ -710,6 +735,16 @@ impl Stripe {
             // elsewhere is not refused, and costs the company 1.5% more.
             form.push(("custom_text[submit][message]", US_CARDS_ONLY.into()));
         }
+        if checkout.payment_method == "us_bank_account" {
+            // The customer signs in to their bank and the transfer starts at
+            // once. Without this Stripe also lets them type the account's
+            // numbers by hand, which it then confirms with two small
+            // deposits over days: the page finishes with nothing debited.
+            form.push((
+                "payment_method_options[us_bank_account][verification_method]",
+                "instant".into(),
+            ));
+        }
         if checkout.customer_fee_cents > 0 {
             form.extend([
                 ("line_items[1][quantity]", "1".to_string()),
@@ -735,9 +770,15 @@ impl Stripe {
                 checkout.application_fee_cents.to_string(),
             ));
         }
+        // Stripe refuses a key sent again with other parameters, for 24
+        // hours. What is sent can change between two tries (the job gets a
+        // title, a newer quote), so the key carries a digest of it: the
+        // same request twice still makes one session, a changed one makes
+        // its own.
+        let key = format!("{}-{}", checkout.idempotency_key, form_digest(&form));
         self.send_once(
             Some(account),
-            Some(checkout.idempotency_key),
+            Some(&key),
             reqwest::Method::POST,
             "/v1/checkout/sessions",
             &form,
@@ -1044,6 +1085,24 @@ pub async fn latest_event(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_form_s_digest_changes_with_what_is_sent() {
+        let form = |quote: &str| {
+            vec![
+                ("mode", "payment".to_string()),
+                ("metadata[quote_id]", quote.to_string()),
+            ]
+        };
+        assert_eq!(form_digest(&form("9100")), form_digest(&form("9100")));
+        assert_ne!(form_digest(&form("9100")), form_digest(&form("9101")));
+        // Where one value ends and the next begins counts.
+        assert_ne!(
+            form_digest(&[("a", "bc".to_string())]),
+            form_digest(&[("ab", "c".to_string())])
+        );
+        assert_eq!(form_digest(&form("9100")).len(), 16);
+    }
 
     #[test]
     fn signatures_are_checked_like_the_sdk() {

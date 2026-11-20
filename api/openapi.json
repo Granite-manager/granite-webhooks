@@ -7169,7 +7169,7 @@
           "customer-payments"
         ],
         "summary": "Show the company's customer payment settings",
-        "description": "Whether the company's bank account is connected (so customers can pay\nit), and for each payment method the fee and how much of it the company\npasses on to the customer. While the account is being verified, Stripe is\nasked again on each call. Connect an account with `POST\n/v1/company/payment-settings/bank-account`; make payment links with `POST\n/v1/customers/{id}/payments`.",
+        "description": "Whether the company's bank account is connected (so customers can pay\nit), and for each payment method the fee and how much of it the company\npasses on to the customer. While the account is being verified, Stripe is\nasked whether it approved it at most once a minute per company; between\nthose the answer is the last one kept. Connect an account with `POST\n/v1/company/payment-settings/bank-account`; make payment links with `POST\n/v1/customers/{id}/payments`.",
         "operationId": "get_company_payment_settings",
         "responses": {
           "200": {
@@ -7381,7 +7381,7 @@
           "customer-payments"
         ],
         "summary": "List a customer's payments",
-        "description": "The payments and unpaid payment links of the jobs of the customer's\nfamily (the customer, its parent and the parent's other projects: what\n`GET /v1/customers/{id}/projects` lists), newest first, withdrawn links\nincluded. `project_key` names the job. Money that reached the company is\n`paid`; an ACH transfer on its way is `pending`. A waiting payment whose\nnews from Stripe may have been missed is checked with Stripe here, at\nmost once in 5 minutes each.",
+        "description": "The payments and unpaid payment links of the jobs of the customer's\nfamily (the customer, its parent and the parent's other projects: what\n`GET /v1/customers/{id}/projects` lists), newest first, withdrawn links\nincluded. `project_key` names the job. Money that reached the company is\n`paid`; an ACH transfer on its way is `pending`; a `disputed` payment\nstill counts toward its job, a `lost` one no longer does. A waiting payment whose\nnews from Stripe may have been missed is checked with Stripe here, at\nmost once in 5 minutes each.",
         "operationId": "list_customer_payments",
         "parameters": [
           {
@@ -7461,7 +7461,7 @@
           "customer-payments"
         ],
         "summary": "Make a payment link",
-        "description": "A link the customer pays `amount_cents` of one job on, by card or ACH.\nThe fee split in effect now is saved on the payment. Send `url` to the\ncustomer: it never expires, and the payment stays `created` until they\npay. The amount cannot be more than is left to pay on the job: its price\nless what was paid, what is on its way and the links not paid yet (400\nsays how much that is). 409 until the company's bank account is connected (`GET\n/v1/company/payment-settings`). Withdraw an unpaid link with `DELETE\n/v1/customers/{id}/payments/{payment_id}`.",
+        "description": "A link the customer pays `amount_cents` of one job on, by card or ACH.\nThe fee split in effect now is saved on the payment. Send `url` to the\ncustomer: it never expires, and the payment stays `created` until they\npay. The amount cannot be more than is left to pay on the job: its price\nless what was paid (a disputed payment counts until the bank decides),\nwhat is on its way and the links not paid yet (400 says how much that\nis). A deal's payments include those made for its sales before they\njoined it. A sale that is part of a deal takes no link of its own (400:\nmake it for the deal), nor does a cancelled sale. 409 until the company's bank account is connected (`GET\n/v1/company/payment-settings`). Withdraw an unpaid link with `DELETE\n/v1/customers/{id}/payments/{payment_id}`.",
         "operationId": "create_customer_payment",
         "parameters": [
           {
@@ -7497,7 +7497,7 @@
             }
           },
           "400": {
-            "description": "Unknown job, the amount is out of range, or it is more than is left to pay on the job",
+            "description": "Unknown job, a sale that is part of a deal or was cancelled, the amount is out of range, or it is more than is left to pay on the job",
             "content": {
               "application/json": {
                 "schema": {
@@ -7936,7 +7936,7 @@
           "customer-payments"
         ],
         "summary": "Receive a Stripe Connect event",
-        "description": "Stripe's webhook for the companies' connected accounts: Checkout,\npayment intent, refund and dispute events move a customer's payment on\n(and notify the company), and account events update the company's bank\nstatus. A declined card only notifies: the link stays payable. A partial\nrefund keeps the payment `paid` and records what was given back. Each\nchange is made once, however often Stripe sends the event. Needs a valid\n`Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.",
+        "description": "Stripe's webhook for the companies' connected accounts: Checkout,\npayment intent, refund and dispute events move a customer's payment on\n(and notify the company), and account events update the company's bank\nstatus. A declined card only notifies: the link stays payable. A partial\nrefund keeps the payment `paid` and records what was given back. A\ndispute makes it `disputed`, then `paid` again when won or `lost` when\nthe bank gives the money back. Each\nchange is made once, however often Stripe sends the event. Needs a valid\n`Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.",
         "operationId": "receive_stripe_connect_webhook",
         "parameters": [
           {
@@ -91569,7 +91569,7 @@
               "string",
               "null"
             ],
-            "description": "Why it failed (Stripe's words); null unless `failed`."
+            "description": "Why it failed, as a short plain phrase of our own, never Stripe's\ntext (\"insufficient funds\", \"the bank account is closed\", \"the bank\ndeclined the transfer\"); null unless `failed`."
           },
           "created_at": {
             "type": "string",
@@ -91587,7 +91587,8 @@
           "paid",
           "failed",
           "refunded",
-          "disputed"
+          "disputed",
+          "lost"
         ]
       },
       "CustomerProjects": {
@@ -92121,7 +92122,7 @@
           "paid_cents": {
             "type": "integer",
             "format": "int64",
-            "description": "What they paid through payment links, less what was refunded."
+            "description": "What they paid through payment links, less what was refunded. A\ndisputed payment counts until the bank decides; a lost one does not."
           },
           "pending_cents": {
             "type": "integer",
@@ -110927,7 +110928,8 @@
         "type": "object",
         "description": "One job of a customer: a deal and its sales, or a sale on its own.",
         "required": [
-          "sale_ids"
+          "sale_ids",
+          "cancelled"
         ],
         "properties": {
           "deal_id": {
@@ -110950,7 +110952,7 @@
               "string",
               "null"
             ],
-            "description": "The deal's amount, else the sales' total, a decimal string."
+            "description": "The deal's amount, else the total of its sales that were not\ncancelled, a decimal string."
           },
           "address": {
             "type": [
@@ -110974,6 +110976,10 @@
               "format": "int32"
             },
             "description": "The sales of the job."
+          },
+          "cancelled": {
+            "type": "boolean",
+            "description": "A sale on its own that was cancelled: nothing is owed for it, and it\ntakes no payment link. Always false for a deal."
           }
         }
       },
@@ -111952,7 +111958,8 @@
         "description": "A sale to a customer of the family.",
         "required": [
           "id",
-          "customer_id"
+          "customer_id",
+          "cancelled"
         ],
         "properties": {
           "id": {
@@ -111994,6 +112001,10 @@
             ],
             "format": "date-time",
             "description": "When it was sold."
+          },
+          "cancelled": {
+            "type": "boolean",
+            "description": "The sale was cancelled: its price is not part of its deal's total."
           }
         }
       },
@@ -128885,7 +128896,7 @@
               "string",
               "null"
             ],
-            "description": "Why it failed; null unless `failed`."
+            "description": "Why it failed, as a short plain phrase (\"insufficient funds\"); null\nunless `failed`."
           },
           "created_at": {
             "type": "string",

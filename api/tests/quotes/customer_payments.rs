@@ -436,7 +436,9 @@ async fn connecting_a_bank_account_goes_through_stripe(pool: MySqlPool) {
         );
     }
 
-    // Stripe has not approved it yet: asked on each read.
+    // Stripe has not approved it yet: asked now, then at most once a minute
+    // for the whole company, however many pages read the settings.
+    let asked = |stripe: &Shared| stripe.lock().unwrap().count("GET", "/v1/accounts/acct_1");
     let settings = || async {
         server
             .get("/v1/company/payment-settings")
@@ -453,10 +455,23 @@ async fn connecting_a_bank_account_goes_through_stripe(pool: MySqlPool) {
         json!({ "id": ACCOUNT, "charges_enabled": true,
                 "external_accounts": { "data": [{ "bank_name": "Chase", "last4": "6789" }] } }),
     );
+    assert_eq!(asked(&stripe), 1);
+    for _ in 0..3 {
+        assert_eq!(settings().await["bank"]["status"], "pending_verification");
+    }
+    assert_eq!(asked(&stripe), 1);
+    sqlx::query(
+        "UPDATE company_payment_settings
+            SET stripe_checked_at = UTC_TIMESTAMP() - INTERVAL 61 SECOND",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     assert_eq!(
         settings().await["bank"],
         json!({ "status": "connected", "bank_name": "Chase", "last4": "6789" })
     );
+    assert_eq!(asked(&stripe), 2);
     // Connected: Stripe is not asked again.
     let reads = stripe.lock().unwrap().count("GET", "/v1/accounts/acct_1");
     settings().await;
@@ -472,6 +487,14 @@ async fn connecting_a_bank_account_goes_through_stripe(pool: MySqlPool) {
         .await
         .assert_status_ok();
     assert_eq!(stripe.lock().unwrap().count("POST", "/v2/core/accounts"), 1);
+    // Back from Stripe's page the first read asks at once, minute or not.
+    let checked: Option<chrono::NaiveDateTime> = sqlx::query_scalar(
+        "SELECT stripe_checked_at FROM company_payment_settings WHERE company_id = 100",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(checked, None);
 }
 
 #[test_db::test(seed)]
@@ -774,6 +797,12 @@ async fn the_page_sends_the_customer_to_stripe_checkout(pool: MySqlPool) {
         assert_eq!(form["adaptive_pricing[enabled]"], "false");
         // The US-cards notice is for card pages only.
         assert!(!form.contains_key("custom_text[submit][message]"));
+        // The customer signs in to their bank: no account numbers typed by
+        // hand, which Stripe would confirm with micro-deposits over days.
+        assert_eq!(
+            form["payment_method_options[us_bank_account][verification_method]"],
+            "instant"
+        );
         assert_eq!(form["metadata[granite_payment]"], id);
         assert_eq!(form["payment_intent_data[metadata][granite_payment]"], id);
         // Who and what it is for, on the session and on the payment.
@@ -999,9 +1028,15 @@ async fn a_card_payment_is_paid_at_once_and_the_company_hears(pool: MySqlPool) {
 
 #[test_db::test(seed)]
 async fn an_ach_transfer_is_pending_until_it_clears(pool: MySqlPool) {
-    let (server, _) = connected_server(&pool).await;
+    let (server, stripe) = connected_server(&pool).await;
     let payment = link(&server, 1004, "sale-7000", "ach", 50_000).await;
     let id = payment["id"].as_str().unwrap();
+    // The finished page does not say whether the transfer started: its
+    // payment intent does.
+    stripe.lock().unwrap().intents.insert(
+        "pi_1".into(),
+        json!({ "id": "pi_1", "status": "processing" }),
+    );
     webhook(
         &server,
         "checkout.session.completed",
@@ -2087,4 +2122,286 @@ async fn stripe_not_answering_leaves_the_page_as_it_is(pool: MySqlPool) {
     let page = server.get(&format!("/v1/public/pay/{id}")).await;
     page.assert_status_ok();
     assert_eq!(page.json::<Value>()["status"], "created");
+}
+
+// ---- what the review of 2026-11-20 found
+
+/// The customer typed their bank account by hand: Stripe's page finishes,
+/// and nothing is debited until they confirm two small deposits.
+#[test_db::test(seed)]
+async fn a_bank_account_not_confirmed_yet_is_not_a_transfer_on_its_way(pool: MySqlPool) {
+    let (server, stripe) = connected_server(&pool).await;
+    let payment = link(&server, 1004, "sale-7000", "ach", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    let page = format!("/v1/public/pay/{id}");
+    server
+        .post(&format!("{page}/checkout"))
+        .await
+        .assert_status_ok();
+    {
+        let mut stripe = stripe.lock().unwrap();
+        stripe.intents.insert(
+            "pi_1".into(),
+            json!({ "id": "pi_1", "status": "requires_action" }),
+        );
+        let session = stripe.sessions.get_mut("cs_1").unwrap();
+        session["status"] = json!("complete");
+        session["payment_status"] = json!("unpaid");
+        session["payment_intent"] = json!("pi_1");
+    }
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "unpaid", "pi_1"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, id).await, "created");
+    // Asking Stripe from the page says the same.
+    forget_the_check(&pool, id).await;
+    assert_eq!(server.get(&page).await.json::<Value>()["status"], "created");
+    assert_eq!(bell(&pool).await, vec![]);
+    // The page that was finished takes no second payment.
+    let again = server.post(&format!("{page}/checkout")).await;
+    again.assert_status(StatusCode::CONFLICT);
+    assert_eq!(
+        again.json::<Value>()["error"],
+        "This payment is already on its way"
+    );
+
+    // Confirmed: the transfer starts.
+    webhook(
+        &server,
+        "payment_intent.processing",
+        ACCOUNT,
+        json!({ "id": "pi_1", "status": "processing",
+                "metadata": { "granite_payment": id } }),
+    )
+    .await;
+    assert_eq!(status_of(&pool, id).await, "pending");
+}
+
+/// Stripe calls a payment intent off: a transfer held to be on its way
+/// fails, a link nobody paid stays payable.
+#[test_db::test(seed)]
+async fn a_canceled_intent_fails_only_a_transfer_on_its_way(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let canceled = |id: &str, intent: &str| {
+        json!({ "id": intent, "status": "canceled", "last_payment_error": null,
+                "metadata": { "granite_payment": id } })
+    };
+    let waiting = link(&server, 1004, "sale-7000", "ach", 50_000).await;
+    let waiting = waiting["id"].as_str().unwrap();
+    webhook(
+        &server,
+        "payment_intent.canceled",
+        ACCOUNT,
+        canceled(waiting, "pi_1"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, waiting).await, "created");
+    assert_eq!(bell(&pool).await, vec![]);
+
+    sqlx::query("UPDATE customer_payments SET status = 'pending' WHERE public_id = ?")
+        .bind(waiting)
+        .execute(&pool)
+        .await
+        .unwrap();
+    webhook(
+        &server,
+        "payment_intent.canceled",
+        ACCOUNT,
+        canceled(waiting, "pi_1"),
+    )
+    .await;
+    let listed: Value = server
+        .get("/v1/customers/1004/payments")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(listed[0]["status"], "failed");
+    assert_eq!(
+        listed[0]["failure_reason"],
+        "the transfer was canceled before it started"
+    );
+    // The amount is free for a new link.
+    link(&server, 1004, "sale-7000", "ach", 100_050).await;
+}
+
+/// Stripe keeps no order: the refund of a payment can be told before the
+/// payment itself.
+#[test_db::test(seed)]
+async fn a_refund_told_before_the_payment_is_kept(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    let charge = |refunded: i64, full: bool| {
+        json!({ "id": "ch_1", "payment_intent": "pi_1", "refunded": full,
+                "amount_refunded": refunded, "metadata": { "granite_payment": id } })
+    };
+    webhook(&server, "charge.refunded", ACCOUNT, charge(20_000, false)).await;
+    let kept: (String, i32, Option<String>) = sqlx::query_as(
+        "SELECT CAST(status AS CHAR), refunded_cents, stripe_payment_intent_id
+           FROM customer_payments WHERE public_id = ?",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(kept, ("paid".into(), 20_000, Some("pi_1".into())));
+    // The event that says it was paid comes late and changes nothing.
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "paid", "pi_1"),
+    )
+    .await;
+    webhook(&server, "charge.refunded", ACCOUNT, charge(50_000, true)).await;
+    assert_eq!(status_of(&pool, id).await, "refunded");
+    let kinds: Vec<String> = bell(&pool)
+        .await
+        .into_iter()
+        .filter(|(user, _, _)| *user == 102)
+        .map(|(_, kind, _)| kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        ["payment_paid", "payment_refunded", "payment_refunded"]
+    );
+    // Nothing of it counts toward the $1,000 job any more.
+    link(&server, 1000, "deal-8000", "card", 100_000).await;
+}
+
+/// A disputed payment still covers the job: the company holds the money
+/// until the bank decides. Lost, the money is gone and the job is owed again.
+#[test_db::test(seed)]
+async fn a_disputed_payment_covers_the_job_until_the_bank_decides(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 100_000).await;
+    let id = payment["id"].as_str().unwrap();
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(id, "paid", "pi_1"),
+    )
+    .await;
+    let dispute =
+        |status: &str| json!({ "id": "dp_1", "payment_intent": "pi_1", "status": status });
+    webhook(
+        &server,
+        "charge.dispute.created",
+        ACCOUNT,
+        dispute("needs_response"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, id).await, "disputed");
+    let more = || {
+        server
+            .post("/v1/customers/1000/payments")
+            .with_session(sessions::REP)
+            .json(&json!({ "project_key": "deal-8000", "method": "card", "amount_cents": 100_000 }))
+    };
+    let refused = more().await;
+    refused.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(refused.json::<Value>()["error"], "The open balance is $0");
+
+    for _ in 0..2 {
+        webhook(&server, "charge.dispute.closed", ACCOUNT, dispute("lost")).await;
+    }
+    let listed: Value = server
+        .get("/v1/customers/1000/payments")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(listed[0]["status"], "lost");
+    let lost: Vec<String> = bell(&pool)
+        .await
+        .into_iter()
+        .filter(|(user, kind, _)| *user == 102 && kind == "payment_dispute_lost")
+        .map(|(_, _, text)| text)
+        .collect();
+    assert_eq!(
+        lost,
+        [
+            "The dispute of the $1,000 payment for Alice kitchen was lost: the bank gave the money back to Alice Lead."
+        ]
+    );
+    more().await.assert_status(StatusCode::CREATED);
+}
+
+/// The dispute's close can be told before its opening.
+#[test_db::test(seed)]
+async fn a_dispute_lost_before_it_was_heard_of_is_still_lost(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let payment = link(&server, 1000, "deal-8000", "card", 50_000).await;
+    let id = payment["id"].as_str().unwrap();
+    let dispute = |status: &str| {
+        json!({ "id": "dp_1", "payment_intent": "pi_1", "status": status,
+                "metadata": { "granite_payment": id } })
+    };
+    webhook(&server, "charge.dispute.closed", ACCOUNT, dispute("lost")).await;
+    assert_eq!(status_of(&pool, id).await, "lost");
+    webhook(
+        &server,
+        "charge.dispute.created",
+        ACCOUNT,
+        dispute("needs_response"),
+    )
+    .await;
+    assert_eq!(status_of(&pool, id).await, "lost");
+}
+
+/// Sale 7000 ($1,000.50) is paid for and then joins deal 8002 ($2,500.50):
+/// what was paid counts toward the deal, and the sale takes no link of its
+/// own any more.
+#[test_db::test(seed)]
+async fn a_deal_s_balance_counts_what_its_sales_were_paid(pool: MySqlPool) {
+    let (server, _) = connected_server(&pool).await;
+    let payment = link(&server, 1004, "sale-7000", "card", 100_050).await;
+    webhook(
+        &server,
+        "checkout.session.completed",
+        ACCOUNT,
+        session_event(payment["id"].as_str().unwrap(), "paid", "pi_1"),
+    )
+    .await;
+    sqlx::query("UPDATE sales SET deal_id = 8002 WHERE id = 7000")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let ask = |key: &'static str, cents: i64| {
+        server
+            .post("/v1/customers/1004/payments")
+            .with_session(sessions::REP)
+            .json(&json!({ "project_key": key, "method": "card", "amount_cents": cents }))
+    };
+    let refused = ask("deal-8002", 150_001).await;
+    refused.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refused.json::<Value>()["error"],
+        "The open balance is $1,500"
+    );
+    let refused = ask("sale-7000", 10_000).await;
+    refused.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refused.json::<Value>()["error"],
+        "This sale is part of project #8002: make the link for the project"
+    );
+    ask("deal-8002", 150_000)
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    // A cancelled sale is not owed.
+    sqlx::query("UPDATE sales SET cancelled_date = NOW() WHERE id = 7001")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let refused = ask("sale-7001", 10_000).await;
+    refused.assert_status(StatusCode::BAD_REQUEST);
+    assert_eq!(
+        refused.json::<Value>()["error"],
+        "This sale was cancelled, so there is nothing to pay for it"
+    );
 }

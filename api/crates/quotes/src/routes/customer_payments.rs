@@ -17,8 +17,8 @@
 //! `checkout.session.async_payment_succeeded`,
 //! `checkout.session.async_payment_failed`, `payment_intent.succeeded`,
 //! `payment_intent.processing`, `payment_intent.payment_failed`,
-//! `charge.refunded`, `charge.dispute.created`, `charge.dispute.closed` and
-//! `account.updated`. The Checkout and payment intent events say the same
+//! `payment_intent.canceled`, `charge.refunded`, `charge.dispute.created`,
+//! `charge.dispute.closed` and `account.updated`. The Checkout and payment intent events say the same
 //! things twice; whichever comes first moves the payment on.
 //!
 //! Each company gets a Standard connected account, and a payment is a direct
@@ -96,6 +96,9 @@ const CHECK_FROM_PAGE_SECS: i64 = 60;
 const CHECK_FROM_LIST_SECS: i64 = 300;
 /// Stripe is asked about this many payments at most while listing.
 const CHECK_FROM_LIST_MOST: usize = 3;
+/// How often Stripe is asked whether it approved a company's account, in
+/// seconds, however many pages ask for the company's payment settings.
+const CHECK_ACCOUNT_SECS: i64 = 60;
 /// `notifications.message` holds this many characters.
 const MESSAGE_CHARS: usize = 255;
 
@@ -484,7 +487,8 @@ async fn company_origin(state: &AppState, company_id: i32) -> sqlx::Result<Strin
 /// Whether the company's bank account is connected (so customers can pay
 /// it), and for each payment method the fee and how much of it the company
 /// passes on to the customer. While the account is being verified, Stripe is
-/// asked again on each call. Connect an account with `POST
+/// asked whether it approved it at most once a minute per company; between
+/// those the answer is the last one kept. Connect an account with `POST
 /// /v1/company/payment-settings/bank-account`; make payment links with `POST
 /// /v1/customers/{id}/payments`.
 #[crate::openapi::path(
@@ -512,7 +516,27 @@ pub async fn payment_settings(
             row.enabled && !config.demo && !row.charges_enabled && state.stripe.is_enabled()
         })
         .map(str::to_string);
-    if let Some(account) = unverified {
+    // One asker a minute for the whole company, whoever opens whichever
+    // page: the others answer from what is kept, and Stripe's own
+    // `account.updated` event says when the account is approved.
+    let mine = match &unverified {
+        Some(_) => {
+            sqlx::query(
+                "UPDATE company_payment_settings SET stripe_checked_at = UTC_TIMESTAMP()
+                  WHERE company_id = ?
+                    AND (stripe_checked_at IS NULL
+                         OR stripe_checked_at <= UTC_TIMESTAMP() - INTERVAL ? SECOND)",
+            )
+            .bind(user.company_id)
+            .bind(CHECK_ACCOUNT_SECS)
+            .execute(&state.pool)
+            .await?
+            .rows_affected()
+                == 1
+        }
+        None => false,
+    };
+    if let Some(account) = unverified.filter(|_| mine) {
         // Stripe's answer only refreshes what is kept: the page still opens
         // when Stripe is down.
         match state.stripe.account(&account).await {
@@ -707,6 +731,14 @@ pub async fn start_bank_onboarding(
         .await?;
         account
     };
+    // Back from Stripe's page, the first look at the settings asks Stripe
+    // at once instead of waiting out the minute.
+    sqlx::query(
+        "UPDATE company_payment_settings SET stripe_checked_at = NULL WHERE company_id = ?",
+    )
+    .bind(company_id)
+    .execute(&state.pool)
+    .await?;
     let page = format!(
         "{}/admin/company",
         company_origin(&state, company_id).await?
@@ -746,8 +778,13 @@ pub enum CustomerPaymentStatus {
     Failed,
     /// The company gave the whole payment back.
     Refunded,
-    /// The customer disputed the payment with their bank.
+    /// The customer disputed the payment with their bank, which has not
+    /// decided yet. The company still holds the money, so it counts as paid
+    /// toward the job. Won, it is `paid` again; lost, it is `lost`.
     Disputed,
+    /// The bank decided the dispute for the customer and took the money
+    /// back: nothing of it counts toward the job any more. Final.
+    Lost,
 }
 
 impl CustomerPaymentStatus {
@@ -759,8 +796,14 @@ impl CustomerPaymentStatus {
             "failed" => Self::Failed,
             "refunded" => Self::Refunded,
             "disputed" => Self::Disputed,
+            "lost" => Self::Lost,
             _ => Self::Created,
         }
+    }
+
+    /// The company holds its money: paid, or disputed and not decided yet.
+    const fn holds_money(self) -> bool {
+        matches!(self, Self::Paid | Self::Disputed)
     }
 }
 
@@ -793,7 +836,9 @@ pub struct CustomerPayment {
     pub refunded_cents: i32,
     /// The page the customer pays on. It never expires.
     pub url: String,
-    /// Why it failed (Stripe's words); null unless `failed`.
+    /// Why it failed, as a short plain phrase of our own, never Stripe's
+    /// text ("insufficient funds", "the bank account is closed", "the bank
+    /// declined the transfer"); null unless `failed`.
     pub failure_reason: Option<String>,
     /// When the link was made (ISO 8601, UTC).
     pub created_at: String,
@@ -826,11 +871,32 @@ struct PaymentRow {
     project_name: Option<String>,
 }
 
-/// Every payment column, with the job it shows under: a payment made for a
-/// sale moves to the sale's deal once the sale is part of one, as the job
-/// itself does in `GET /v1/customers/{id}/projects`.
-const PAYMENT_SELECT: &str = "SELECT p.id, p.public_id, p.company_id, p.customer_id,
-        CAST(COALESCE(p.deal_id, pd.id) AS SIGNED) AS deal_id, p.sale_id,
+/// The job a payment `p` shows under, for a `FROM customer_payments p`: its
+/// sale `ps` and its deal `pd`. A payment made for a sale moves to the
+/// sale's deal once the sale is part of one, as the job itself does in `GET
+/// /v1/customers/{id}/projects`; [`PAYMENT_DEAL`] is that deal. Every reader
+/// of a payment's job uses these, so the list and the balance agree.
+macro_rules! payment_job_joins {
+    () => {
+        "LEFT JOIN sales ps ON ps.id = p.sale_id
+         LEFT JOIN deals pd ON pd.id = COALESCE(p.deal_id, ps.deal_id) AND pd.deleted_at IS NULL"
+    };
+}
+
+/// The deal a payment shows under (see `payment_job_joins`); NULL for a
+/// payment of a sale that is not part of a deal.
+macro_rules! payment_deal {
+    () => {
+        "COALESCE(p.deal_id, pd.id)"
+    };
+}
+
+/// Every payment column, with the job it shows under.
+const PAYMENT_SELECT: &str = concat!(
+    "SELECT p.id, p.public_id, p.company_id, p.customer_id,
+        CAST(",
+    payment_deal!(),
+    " AS SIGNED) AS deal_id, p.sale_id,
         CAST(p.method AS CHAR) AS method, CAST(p.status AS CHAR) AS status,
         p.amount_cents, p.fee_cents, p.customer_fee_cents, p.customer_fee_bps,
         p.company_fee_cents, p.application_fee_cents, p.refunded_cents,
@@ -841,8 +907,9 @@ const PAYMENT_SELECT: &str = "SELECT p.id, p.public_id, p.company_id, p.customer
           AS project_name
    FROM customer_payments p
    LEFT JOIN customers pc ON pc.id = p.customer_id
-   LEFT JOIN sales ps ON ps.id = p.sale_id
-   LEFT JOIN deals pd ON pd.id = COALESCE(p.deal_id, ps.deal_id) AND pd.deleted_at IS NULL";
+   ",
+    payment_job_joins!()
+);
 
 impl PaymentRow {
     fn method(&self) -> PaymentMethod {
@@ -887,10 +954,11 @@ impl PaymentRow {
         self.created_at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
     }
 
-    /// What it put toward the job: its amount when paid, less what was given
+    /// What it put toward the job: its amount while the company holds the
+    /// money (paid, or disputed and not decided yet), less what was given
     /// back (a refund takes the customer's fee back last).
     fn paid_toward_job(&self) -> i64 {
-        if self.status() == CustomerPaymentStatus::Paid {
+        if self.status().holds_money() {
             i64::from(self.amount_cents - self.refunded_cents.min(self.amount_cents))
         } else {
             0
@@ -1004,17 +1072,40 @@ async fn catch_up(state: &AppState, payment: &PaymentRow, every_secs: i64) -> sq
             return Ok(false);
         }
     };
-    let outcome = match found["status"].as_str() {
-        Some("succeeded") => Outcome::Paid,
-        Some("processing" | "requires_action") => Outcome::Pending,
-        // The transfer bounced, whether or not we heard that it started.
-        Some("requires_payment_method" | "canceled") => Outcome::Failed(decline_reason(
-            payment.method(),
-            &found["last_payment_error"],
-        )),
-        _ => return Ok(false),
+    let Some(outcome) = transfer_outcome(payment.method(), &found) else {
+        return Ok(false);
     };
     settle(pool, id, Some(account), Some(intent), outcome).await
+}
+
+/// What the payment intent of a finished Checkout page says of a payment
+/// that was not paid at once (a bank transfer). None while there is nothing
+/// to record: with `requires_action` the customer typed their bank account
+/// by hand and has yet to confirm it (micro-deposits), so no money has left
+/// their account and the payment is not on its way.
+fn transfer_outcome(method: PaymentMethod, intent: &Value) -> Option<Outcome> {
+    match intent["status"].as_str() {
+        Some("succeeded") => Some(Outcome::Paid),
+        Some("processing") => Some(Outcome::Pending),
+        // The transfer bounced or was called off, whether or not we heard
+        // that it started.
+        Some("requires_payment_method" | "canceled") => {
+            Some(Outcome::Failed(transfer_failure(method, intent)))
+        }
+        _ => None,
+    }
+}
+
+/// Why a payment intent's transfer did not go through, in plain words: the
+/// bank's reason (`decline_reason`), or that it was called off when Stripe
+/// canceled the intent without one (a bank account never confirmed).
+fn transfer_failure(method: PaymentMethod, intent: &Value) -> String {
+    let error = &intent["last_payment_error"];
+    if intent["status"] == "canceled" && error.is_null() {
+        "the transfer was canceled before it started".into()
+    } else {
+        decline_reason(method, error)
+    }
 }
 
 /// The head of the family `customer_id` belongs to (its parent, else
@@ -1041,7 +1132,8 @@ const FAMILY_SQL: &str = "SELECT fc.id FROM customers fc
 /// family (the customer, its parent and the parent's other projects: what
 /// `GET /v1/customers/{id}/projects` lists), newest first, withdrawn links
 /// included. `project_key` names the job. Money that reached the company is
-/// `paid`; an ACH transfer on its way is `pending`. A waiting payment whose
+/// `paid`; an ACH transfer on its way is `pending`; a `disputed` payment
+/// still counts toward its job, a `lost` one no longer does. A waiting payment whose
 /// news from Stripe may have been missed is checked with Stripe here, at
 /// most once in 5 minutes each.
 #[crate::openapi::path(
@@ -1151,8 +1243,11 @@ fn new_public_id() -> ApiResult<String> {
 /// The fee split in effect now is saved on the payment. Send `url` to the
 /// customer: it never expires, and the payment stays `created` until they
 /// pay. The amount cannot be more than is left to pay on the job: its price
-/// less what was paid, what is on its way and the links not paid yet (400
-/// says how much that is). 409 until the company's bank account is connected (`GET
+/// less what was paid (a disputed payment counts until the bank decides),
+/// what is on its way and the links not paid yet (400 says how much that
+/// is). A deal's payments include those made for its sales before they
+/// joined it. A sale that is part of a deal takes no link of its own (400:
+/// make it for the deal), nor does a cancelled sale. 409 until the company's bank account is connected (`GET
 /// /v1/company/payment-settings`). Withdraw an unpaid link with `DELETE
 /// /v1/customers/{id}/payments/{payment_id}`.
 #[crate::openapi::path(
@@ -1164,7 +1259,7 @@ fn new_public_id() -> ApiResult<String> {
     request_body = NewPayment,
     responses(
         (status = 201, description = "The payment link", body = CustomerPayment),
-        (status = 400, description = "Unknown job, the amount is out of range, or it is more than is left to pay on the job", body = ErrorBody),
+        (status = 400, description = "Unknown job, a sale that is part of a deal or was cancelled, the amount is out of range, or it is more than is left to pay on the job", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an employee or admin, or customer payments are not turned on for the company", body = ErrorBody),
         (status = 404, description = "No such customer in the company", body = ErrorBody),
@@ -1199,8 +1294,13 @@ pub async fn create_payment(
             .await?
         }
         Job::Sale(sale) => {
-            sqlx::query_scalar(AssertSqlSafe(format!(
-                "SELECT s.customer_id FROM sales s
+            // With the deal the sale's payments show under, if any (the
+            // one `payment_job_joins` finds).
+            let found: Option<(i32, bool, Option<i64>)> = sqlx::query_as(AssertSqlSafe(format!(
+                "SELECT s.customer_id, s.cancelled_date IS NOT NULL,
+                        (SELECT CAST(d.id AS SIGNED) FROM deals d
+                          WHERE d.id = s.deal_id AND d.deleted_at IS NULL)
+                   FROM sales s
                   WHERE s.id = ? AND s.customer_id IN ({FAMILY_SQL})"
             )))
             .bind(sale)
@@ -1208,7 +1308,23 @@ pub async fn create_payment(
             .bind(head)
             .bind(head)
             .fetch_optional(pool)
-            .await?
+            .await?;
+            match found {
+                // Its payments would show under the deal and count toward
+                // the deal's balance, not the sale's.
+                Some((_, _, Some(deal))) => {
+                    return Err(ApiError::BadRequest(format!(
+                        "This sale is part of project #{deal}: make the link for the project"
+                    )));
+                }
+                Some((_, true, _)) => {
+                    return Err(ApiError::BadRequest(
+                        "This sale was cancelled, so there is nothing to pay for it".into(),
+                    ));
+                }
+                Some((owner, ..)) => Some(owner),
+                None => None,
+            }
         }
     };
     let owner = owner.ok_or_else(|| ApiError::BadRequest("Unknown project".into()))?;
@@ -1288,7 +1404,7 @@ pub async fn create_payment(
 /// What the payments of one job already cover, in cents.
 #[derive(sqlx::FromRow)]
 struct JobTaken {
-    /// Paid, less what was refunded.
+    /// Paid (or disputed and not decided yet), less what was refunded.
     paid: i64,
     /// ACH transfers on their way.
     pending: i64,
@@ -1298,25 +1414,28 @@ struct JobTaken {
 
 /// A job's price (a deal's amount, else its open sales' prices; a sale's
 /// price) and what its payments already cover, the way the CRM's Projects
-/// tab works out the open balance.
+/// tab works out the open balance. A job's payments are the ones the list
+/// shows under it (`payment_job_joins`): a deal's include those made for
+/// its sales before they joined it. A disputed payment still covers its
+/// amount until the bank decides: the company holds the money.
 async fn job_balance(
     pool: &MySqlPool,
     company_id: i32,
     job: &Job,
 ) -> sqlx::Result<(i64, JobTaken)> {
-    let (price_sql, column, id) = match job {
+    let (price_sql, of_job, id) = match job {
         Job::Deal(deal) => (
             "SELECT CAST(ROUND(COALESCE(d.amount,
                          (SELECT SUM(COALESCE(s.price, 0)) FROM sales s
                            WHERE s.deal_id = d.id AND s.cancelled_date IS NULL), 0) * 100)
                          AS SIGNED)
                FROM deals d WHERE d.id = ?",
-            "deal_id",
+            concat!(payment_deal!(), " = ?"),
             *deal,
         ),
         Job::Sale(sale) => (
             "SELECT CAST(ROUND(COALESCE(s.price, 0) * 100) AS SIGNED) FROM sales s WHERE s.id = ?",
-            "sale_id",
+            concat!("p.sale_id = ? AND ", payment_deal!(), " IS NULL"),
             i64::from(*sale),
         ),
     };
@@ -1325,14 +1444,17 @@ async fn job_balance(
         .fetch_optional(pool)
         .await?;
     let taken: JobTaken = sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT CAST(COALESCE(SUM(IF(status = 'paid',
-                         amount_cents - LEAST(refunded_cents, amount_cents), 0)), 0) AS SIGNED)
-                    AS paid,
-                CAST(COALESCE(SUM(IF(status = 'pending', amount_cents, 0)), 0) AS SIGNED)
+        "SELECT CAST(COALESCE(SUM(IF(p.status IN ('paid', 'disputed'),
+                         p.amount_cents - LEAST(p.refunded_cents, p.amount_cents), 0)), 0)
+                     AS SIGNED) AS paid,
+                CAST(COALESCE(SUM(IF(p.status = 'pending', p.amount_cents, 0)), 0) AS SIGNED)
                     AS pending,
-                CAST(COALESCE(SUM(IF(status = 'created', amount_cents, 0)), 0) AS SIGNED)
+                CAST(COALESCE(SUM(IF(p.status = 'created', p.amount_cents, 0)), 0) AS SIGNED)
                     AS unpaid_links
-           FROM customer_payments WHERE company_id = ? AND {column} = ?"
+           FROM customer_payments p
+           {joins}
+          WHERE p.company_id = ? AND {of_job}",
+        joins = payment_job_joins!(),
     )))
     .bind(company_id)
     .bind(id)
@@ -1637,19 +1759,34 @@ pub async fn pay_checkout(
                     url: Some(url.into()),
                 })));
             }
-            // Paid there; the webhook is about to say so.
-            (Some("complete"), _) => return Err(not_payable(CustomerPaymentStatus::Paid)),
+            // Paid there, or a transfer was started there: the webhook is
+            // about to say so.
+            (Some("complete"), _) => {
+                return Err(not_payable(if session["payment_status"] == "unpaid" {
+                    CustomerPaymentStatus::Pending
+                } else {
+                    CustomerPaymentStatus::Paid
+                }));
+            }
             _ => {}
         }
     }
     let fee_name = fee_line_name(payment.customer_fee_bps);
     let description = payment.checkout_name();
     // The same for every request that follows the same page (none yet, or
-    // one Stripe let expire): Stripe makes one session for them all.
+    // one Stripe let expire) and asks for the same thing: Stripe makes one
+    // session for them all. The client adds a digest of what is sent, so a
+    // request that changed since a failed try is not refused for reusing
+    // the key.
+    // The hour is in it because Stripe also replays an answer that was its
+    // own failure (a 500) for the key's 24 hours: the link is payable again
+    // within the hour. A second session is harmless: one that was not saved
+    // here was never shown to anyone.
     let idempotency_key = format!(
-        "granite-checkout-{}-after-{}",
+        "granite-checkout-{}-after-{}-h{}",
         payment.public_id,
-        previous.as_deref().unwrap_or("none")
+        previous.as_deref().unwrap_or("none"),
+        chrono::Utc::now().timestamp() / 3_600
     );
     let session = state
         .stripe
@@ -1763,6 +1900,8 @@ enum Outcome {
     Disputed,
     /// The dispute was decided for the company: paid again.
     DisputeWon,
+    /// The dispute was decided for the customer: the money went back.
+    DisputeLost,
 }
 
 impl Outcome {
@@ -1774,6 +1913,9 @@ impl Outcome {
             Self::Failed(_) => ("failed", "'created', 'canceled', 'pending'"),
             Self::Disputed => ("disputed", "'paid'"),
             Self::DisputeWon => ("paid", "'disputed'"),
+            // From `paid` too: the dispute's close can come before its
+            // opening, which then changes nothing.
+            Self::DisputeLost => ("lost", "'paid', 'disputed'"),
         }
     }
 
@@ -1785,6 +1927,7 @@ impl Outcome {
             Self::Failed(_) => Some("payment_failed"),
             Self::Disputed => Some("payment_disputed"),
             Self::DisputeWon => None,
+            Self::DisputeLost => Some("payment_dispute_lost"),
         }
     }
 }
@@ -1899,7 +2042,7 @@ async fn paid_twice(
     let other: Option<Option<String>> = sqlx::query_scalar(
         "SELECT stripe_payment_intent_id FROM customer_payments
           WHERE public_id = ? AND stripe_account_id = ?
-            AND status IN ('pending', 'paid', 'refunded', 'disputed')",
+            AND status IN ('pending', 'paid', 'refunded', 'disputed', 'lost')",
     )
     .bind(public_id)
     .bind(account)
@@ -2128,6 +2271,10 @@ fn message(payment: &PaymentRow, kind: &str, bell: Bell<'_>) -> String {
         "payment_disputed" => format!(
             "{} disputed the {amount} payment for {project}.",
             customer.unwrap_or("A customer")
+        ),
+        "payment_dispute_lost" => format!(
+            "The dispute of the {amount} payment for {project} was lost: the bank gave the money back to {}.",
+            customer.unwrap_or("the customer")
         ),
         "payment_duplicate_refunded" => format!(
             "The extra {amount} payment for {project} was refunded to {}. The first payment stays.",
@@ -2362,6 +2509,75 @@ async fn intent_failed(
     Ok(())
 }
 
+/// A canceled payment intent. Only a transfer we hold to be on its way
+/// fails by it. A link nobody paid stays payable: Stripe may cancel the
+/// intent of a Checkout page that was left open, and the link outlives its
+/// pages.
+async fn intent_canceled(pool: &MySqlPool, account: &str, object: &Value) -> sqlx::Result<()> {
+    let Some(payment) = payment_of(object) else {
+        return Ok(());
+    };
+    let found: Option<(String, String)> = sqlx::query_as(
+        "SELECT CAST(status AS CHAR), CAST(method AS CHAR) FROM customer_payments
+          WHERE public_id = ? AND stripe_account_id = ?",
+    )
+    .bind(payment)
+    .bind(account)
+    .fetch_optional(pool)
+    .await?;
+    let Some((status, method)) = found else {
+        return Ok(());
+    };
+    if status == "pending" {
+        let reason = transfer_failure(PaymentMethod::parse(&method), object);
+        settle(
+            pool,
+            payment,
+            Some(account),
+            object["id"].as_str(),
+            Outcome::Failed(reason),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// What a Checkout page that finished unpaid (`checkout.session.completed`
+/// with `payment_status: unpaid`) means for its payment. The session does
+/// not say whether the transfer started or the customer has yet to confirm
+/// a bank account typed by hand, so its payment intent is read from Stripe
+/// (`transfer_outcome`). When Stripe does not answer, nothing is recorded
+/// here: `payment_intent.processing` and `catch_up` say it later. Without a
+/// Stripe client or an intent to ask about, the transfer is taken as started.
+async fn unpaid_session_outcome(
+    state: &AppState,
+    account: &str,
+    payment: &str,
+    intent: Option<&str>,
+) -> sqlx::Result<Option<Outcome>> {
+    let Some(intent) = intent.filter(|_| state.stripe.is_enabled()) else {
+        return Ok(Some(Outcome::Pending));
+    };
+    let method: Option<String> = sqlx::query_scalar(
+        "SELECT CAST(method AS CHAR) FROM customer_payments
+          WHERE public_id = ? AND stripe_account_id = ?",
+    )
+    .bind(payment)
+    .bind(account)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some(method) = method else {
+        return Ok(None);
+    };
+    match state.stripe.payment_intent(account, intent).await {
+        Ok(found) => Ok(transfer_outcome(PaymentMethod::parse(&method), &found)),
+        Err(error) => {
+            tracing::warn!(%error, payment, "payment intent of an unpaid session not read");
+            Ok(None)
+        }
+    }
+}
+
 /// Applies one event of a connected account.
 async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
     let pool = &state.pool;
@@ -2382,8 +2598,13 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
             };
             let outcome = match object["payment_status"].as_str() {
                 Some("paid") => Outcome::Paid,
-                // ACH: the transfer has only started.
-                Some("unpaid") if kind == "checkout.session.completed" => Outcome::Pending,
+                // ACH: the page is finished and the money is not there yet.
+                Some("unpaid") if kind == "checkout.session.completed" => {
+                    match unpaid_session_outcome(state, account, payment, intent).await? {
+                        Some(outcome) => outcome,
+                        None => return Ok(()),
+                    }
+                }
                 _ => return Ok(()),
             };
             settle(pool, payment, Some(account), intent, outcome).await?;
@@ -2418,6 +2639,9 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
         "payment_intent.payment_failed" => {
             intent_failed(pool, account, event["id"].as_str(), object).await?;
         }
+        "payment_intent.canceled" => {
+            intent_canceled(pool, account, object).await?;
+        }
         "charge.refunded" => {
             if let Some(payment) = payment_of_charge(state, account, object).await? {
                 let full = object["refunded"].as_bool() == Some(true);
@@ -2425,6 +2649,10 @@ async fn apply_event(state: &AppState, event: &Value) -> sqlx::Result<()> {
                 if let Some(extra) = extra_charge(pool, &payment, account, intent).await? {
                     extra_refunded(pool, &payment, account, &extra, total).await?;
                 } else {
+                    // Only a payment that was made can be refunded: when
+                    // this came before the event that says so, the payment
+                    // is marked paid here, or the refund would be dropped.
+                    settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
                     refund(pool, &payment, account, total, full).await?;
                 }
             }
@@ -2463,16 +2691,22 @@ async fn dispute_event(
         tracing::warn!(payment = %payment, dispute, "dispute of an extra charge");
         return Ok(());
     }
+    // Only a payment that was made can be disputed: when the dispute came
+    // first, the payment is marked paid here, and the event that says so
+    // changes nothing later.
+    settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
     let closed = format!("dispute_closed:{dispute}");
     if kind == "charge.dispute.closed" {
-        let won = (object["status"] == "won").then_some(Outcome::DisputeWon);
-        settle_once(pool, &closed, None, &payment, account, won).await?;
+        // Won: the company keeps the money. Lost: the bank took it back.
+        // Anything else (a withdrawn inquiry) leaves the payment as it is.
+        let decided = match object["status"].as_str() {
+            Some("won") => Some(Outcome::DisputeWon),
+            Some("lost") => Some(Outcome::DisputeLost),
+            _ => None,
+        };
+        settle_once(pool, &closed, None, &payment, account, decided).await?;
         return Ok(());
     }
-    // Only a payment that was made can be disputed: when this came first,
-    // the payment is marked paid here, and the event that says so changes
-    // nothing later.
-    settle(pool, &payment, Some(account), intent, Outcome::Paid).await?;
     settle_once(
         pool,
         &format!("dispute_created:{dispute}"),
@@ -2498,7 +2732,9 @@ pub struct ConnectWebhookReceived {
 /// payment intent, refund and dispute events move a customer's payment on
 /// (and notify the company), and account events update the company's bank
 /// status. A declined card only notifies: the link stays payable. A partial
-/// refund keeps the payment `paid` and records what was given back. Each
+/// refund keeps the payment `paid` and records what was given back. A
+/// dispute makes it `disputed`, then `paid` again when won or `lost` when
+/// the bank gives the money back. Each
 /// change is made once, however often Stripe sends the event. Needs a valid
 /// `Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.
 #[crate::openapi::path(
@@ -2567,7 +2803,8 @@ pub struct ViewPayment {
     pub refunded_cents: i32,
     /// The page to pay on, while `created`.
     pub url: String,
-    /// Why it failed; null unless `failed`.
+    /// Why it failed, as a short plain phrase ("insufficient funds"); null
+    /// unless `failed`.
     pub failure_reason: Option<String>,
     /// When the link was made (ISO 8601, UTC).
     pub created_at: String,
@@ -2596,7 +2833,8 @@ pub struct CustomerViewPayments {
     pub enabled: bool,
     /// What their jobs cost together (`projects`), in US cents.
     pub total_cents: i64,
-    /// What they paid through payment links, less what was refunded.
+    /// What they paid through payment links, less what was refunded. A
+    /// disputed payment counts until the bank decides; a lost one does not.
     pub paid_cents: i64,
     /// ACH transfers on their way.
     pub pending_cents: i64,

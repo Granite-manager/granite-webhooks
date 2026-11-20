@@ -140,3 +140,44 @@ async fn a_won_deal_is_one_project_with_its_sales(pool: MySqlPool) {
     assert_eq!(alone["price"], "1000.50");
     assert_eq!(erin["sales"][1]["deal_id"], 8601);
 }
+
+/// A cancelled sale is not owed: it is left out of its deal's total, and on
+/// its own it is marked so the page offers no payment for it.
+#[test_db::test(seed)]
+async fn a_cancelled_sale_is_not_part_of_what_a_job_costs(pool: MySqlPool) {
+    sqlx::raw_sql(
+        "UPDATE sales SET deal_id = 8601 WHERE id IN (7000, 7001);
+         UPDATE sales SET cancelled_date = NOW() WHERE id = 7001;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let body: Value = projects(&pool, 1004, sessions::REP).await.json();
+    let erin = &body["customers"][0];
+    let deal = erin["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["deal_id"] == 8601)
+        .unwrap();
+    // $1,000.50 of sale 7000; the cancelled $2,000 of 7001 is not counted.
+    assert_eq!(deal["price"], "1000.50");
+    assert_eq!(deal["sale_ids"], json!([7000, 7001]));
+    assert_eq!(deal["cancelled"], false);
+    assert_eq!(erin["sales"][0]["cancelled"], false);
+    assert_eq!(erin["sales"][1]["cancelled"], true);
+
+    sqlx::query("UPDATE sales SET deal_id = NULL WHERE id = 7001")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let body: Value = projects(&pool, 1004, sessions::REP).await.json();
+    let alone = body["customers"][0]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["sale_ids"] == json!([7001]))
+        .unwrap()
+        .clone();
+    assert_eq!(alone["cancelled"], true);
+}
