@@ -19,6 +19,7 @@
 
 use crate::auth::CurrentUser;
 use crate::auth::session::SessionUser;
+use crate::company_tax;
 use crate::deliverability::{self, DomainTrust};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -393,7 +394,8 @@ pub struct CompanyInput {
     /// Email domain.
     #[serde(default)]
     pub domain: Option<String>,
-    /// Sales tax in percent (0-100).
+    /// Ignored: the sales tax is worked out from the address. Kept so older
+    /// pages that still send it are not refused.
     #[serde(default)]
     pub sales_tax_percent: Option<f64>,
     /// User limit (1 or more); edit only.
@@ -461,7 +463,6 @@ pub(crate) fn valid_subdomain(value: &str) -> bool {
 struct Clean {
     name: String,
     subdomain: String,
-    tax: Option<String>,
 }
 
 fn validate(input: &CompanyInput) -> ApiResult<Clean> {
@@ -475,27 +476,13 @@ fn validate(input: &CompanyInput) -> ApiResult<Clean> {
             "Subdomain must contain only lowercase letters, numbers, and hyphens".into(),
         ));
     }
-    if input
-        .sales_tax_percent
-        .is_some_and(|tax| !tax.is_finite() || !(0.0..=100.0).contains(&tax))
-    {
-        return Err(ApiError::BadRequest(
-            "Sales tax must be between 0 and 100".into(),
-        ));
-    }
     if input.max_users.is_some_and(|max| max < 1) {
         return Err(ApiError::BadRequest("max_users must be 1 or more".into()));
     }
     if input.logo_height.is_some_and(|h| !(32..=192).contains(&h)) {
         return Err(ApiError::BadRequest("logo_height must be 32 to 192".into()));
     }
-    Ok(Clean {
-        name,
-        subdomain,
-        tax: input
-            .sales_tax_percent
-            .map(|tax| format!("{:.4}", (tax * 100.0).round() / 10_000.0)),
-    })
+    Ok(Clean { name, subdomain })
 }
 
 pub(crate) async fn subdomain_taken(
@@ -634,17 +621,18 @@ pub async fn create_company(
     if subdomain_taken(&state, &clean.subdomain, 0).await? {
         return Err(ApiError::Conflict("Subdomain is already in use".into()));
     }
+    let address = text(input.address.as_ref());
+    let tax = company_tax::checked_address(&state, address.as_deref()).await?;
     let mut tx = state.pool.begin().await?;
     let id = sqlx::query(
-        "INSERT INTO company (name, subdomain, address, state_taxes, domain, cloudtalk_access_key,
+        "INSERT INTO company (name, subdomain, address, domain, cloudtalk_access_key,
                               cloudtalk_access_secret, ringcentral_client_id, ringcentral_client_secret,
                               ringcentral_jwt, ringcentral_server_url, statistics_widgets_hidden)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&clean.name)
     .bind(&clean.subdomain)
-    .bind(text(input.address.as_ref()))
-    .bind(&clean.tax)
+    .bind(&address)
     .bind(text(input.domain.as_ref()))
     .bind(text(input.cloudtalk_access_key.as_ref()))
     .bind(text(input.cloudtalk_access_secret.as_ref()))
@@ -658,6 +646,7 @@ pub async fn create_company(
     let id = i32::try_from(id).map_err(|_| ApiError::Internal("company id out of range".into()))?;
     seed_company(&mut tx, id, &clean.subdomain).await?;
     tx.commit().await?;
+    company_tax::apply(&state.pool, id, tax.as_ref()).await?;
     deliverability::ensure_company_trust(&state.pool, &state.dns, id, input.domain.as_deref())
         .await?;
     Ok((StatusCode::CREATED, Json(CreatedId { id: i64::from(id) })))
@@ -697,6 +686,21 @@ pub async fn update_company(
     if subdomain_taken(&state, &clean.subdomain, id).await? {
         return Err(ApiError::Conflict("Subdomain is already in use".into()));
     }
+    // The tax follows the address: looked up when it changes (a new address
+    // that can't be placed is refused), or when there is none yet.
+    let address = text(input.address.as_ref());
+    let (old_address, has_tax): (Option<String>, bool) =
+        sqlx::query_as("SELECT address, state_taxes IS NOT NULL FROM company WHERE id = ?")
+            .bind(id)
+            .fetch_one(&state.pool)
+            .await?;
+    let tax = if old_address.as_deref().map(str::trim) != address.as_deref() {
+        Some(company_tax::checked_address(&state, address.as_deref()).await?)
+    } else if !has_tax && address.is_some() {
+        Some(company_tax::lookup_address(&state, address.as_deref()).await)
+    } else {
+        None
+    };
     let new_logo = match input
         .logo_url
         .as_deref()
@@ -718,9 +722,7 @@ pub async fn update_company(
     let mut query = sqlx::QueryBuilder::new("UPDATE company SET name = ");
     query.push_bind(&clean.name);
     query.push(", subdomain = ").push_bind(&clean.subdomain);
-    query
-        .push(", address = ")
-        .push_bind(text(input.address.as_ref()));
+    query.push(", address = ").push_bind(&address);
     query
         .push(", domain = ")
         .push_bind(text(input.domain.as_ref()));
@@ -730,7 +732,6 @@ pub async fn update_company(
     query
         .push(", logo_height = ")
         .push_bind(input.logo_height.unwrap_or(48));
-    query.push(", state_taxes = ").push_bind(&clean.tax);
     query.push(", max_users = ").push_bind(input.max_users);
     for (column, value) in [
         ("cloudtalk_access_key", &input.cloudtalk_access_key),
@@ -781,6 +782,9 @@ pub async fn update_company(
         .push_bind(id)
         .push(" AND deleted_at IS NULL");
     query.build().execute(&state.pool).await?;
+    if let Some(tax) = tax {
+        company_tax::apply(&state.pool, id, tax.as_ref()).await?;
+    }
     deliverability::ensure_company_trust(&state.pool, &state.dns, id, input.domain.as_deref())
         .await?;
     Ok(StatusCode::NO_CONTENT)

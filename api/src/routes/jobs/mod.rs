@@ -25,6 +25,8 @@
 //! - `POST /v1/jobs/raptor-jobs` → new projects into Raptor jobs
 //! - `POST /v1/jobs/company-exports` → each morning, a company's data (CSV
 //!   per table, pictures and documents) zipped and emailed as a 7-day link
+//! - `POST /v1/jobs/company-taxes` → each company's sales tax looked up
+//!   again from its address, once a month
 //! - `POST /v1/jobs/ringcentral-delivery` → (run by hand) texts `RingCentral`
 //!   did not deliver, marked failed
 //!
@@ -34,6 +36,7 @@ mod appointment_reminders;
 pub mod call_history;
 pub mod call_points;
 pub mod company_exports;
+pub mod company_taxes;
 pub mod contact_sync;
 pub mod maintenance_reminders;
 pub mod phone;
@@ -68,4 +71,5 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(raptor_jobs::run))
         .routes(routes!(ringcentral_delivery::run))
         .routes(routes!(company_exports::run))
+        .routes(routes!(company_taxes::run))
 }

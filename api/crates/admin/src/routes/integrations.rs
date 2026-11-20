@@ -23,6 +23,7 @@
 
 use crate::app_origin::company_subdomain;
 use crate::auth::{EmployeeUser, UserManager};
+use crate::company_tax;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::oauth_state;
@@ -133,7 +134,8 @@ pub struct CompanySettings {
     pub logo_url: Option<String>,
     /// Logo height in pixels as saved (32-192), or null.
     pub logo_height: Option<i32>,
-    /// Sales tax in percent (e.g. 7.25), or null.
+    /// Sales tax in percent (e.g. 7.25), worked out from the address; null
+    /// when there is no address or it could not be placed.
     pub sales_tax_percent: Option<f64>,
     /// The caller holds the Manager position in the company (may request the
     /// API bearer token).
@@ -242,15 +244,17 @@ pub struct CompanySettingsInput {
     pub logo_url: Option<String>,
     /// Logo height in pixels, 32 to 192.
     pub logo_height: i32,
-    /// Sales tax in percent (0 to 100); null clears it.
+    /// Ignored: the sales tax is worked out from the address. Kept so older
+    /// pages that still send it are not refused.
     #[serde(default)]
     pub sales_tax_percent: Option<f64>,
 }
 
 /// Save the company settings
 ///
-/// Replaces the name, address, logo height and sales tax, and the logo when
-/// a new one is given.
+/// Replaces the name, address and logo height, and the logo when a new one
+/// is given. A new address also sets the sales tax, looked up from it; an
+/// address that can't be placed on the map is refused.
 #[crate::openapi::path(
     put,
     path = "/v1/company/settings",
@@ -260,7 +264,7 @@ pub struct CompanySettingsInput {
     request_body = CompanySettingsInput,
     responses(
         (status = 204, description = "Saved"),
-        (status = 400, description = "Missing name, or a value out of range", body = ErrorBody),
+        (status = 400, description = "Missing name, a value out of range, or an address the sales tax can't be found for", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller does not manage the company", body = ErrorBody),
         (status = 404, description = "No such company", body = ErrorBody),
@@ -282,20 +286,13 @@ pub async fn save_settings(
     if !(32..=192).contains(&input.logo_height) {
         return Err(ApiError::BadRequest("logo_height must be 32 to 192".into()));
     }
-    if input
-        .sales_tax_percent
-        .is_some_and(|tax| !tax.is_finite() || !(0.0..=100.0).contains(&tax))
-    {
-        return Err(ApiError::BadRequest(
-            "sales_tax_percent must be 0 to 100".into(),
-        ));
-    }
-    let existing: Option<Option<String>> =
-        sqlx::query_scalar("SELECT logo_url FROM company WHERE id = ?")
-            .bind(company_id)
-            .fetch_optional(&state.pool)
-            .await?;
-    let existing = existing.ok_or(ApiError::NotFound)?;
+    let existing: Option<(Option<String>, Option<String>, bool)> = sqlx::query_as(
+        "SELECT logo_url, address, state_taxes IS NOT NULL FROM company WHERE id = ?",
+    )
+    .bind(company_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (existing, old_address, has_tax) = existing.ok_or(ApiError::NotFound)?;
     let logo_url = match input
         .logo_url
         .as_deref()
@@ -319,22 +316,29 @@ pub async fn save_settings(
         .as_deref()
         .map(str::trim)
         .filter(|address| !address.is_empty());
+    let moved = old_address.as_deref().map(str::trim) != address;
+    // The tax follows the address: looked up when it changes (a new address
+    // that can't be placed is refused), or when there is none yet.
+    let tax = if moved {
+        Some(company_tax::checked_address(&state, address).await?)
+    } else if !has_tax && address.is_some() {
+        Some(company_tax::lookup_address(&state, address).await)
+    } else {
+        None
+    };
     sqlx::query(
-        "UPDATE company SET name = ?, address = ?, logo_url = ?, logo_height = ?, state_taxes = ?
-          WHERE id = ?",
+        "UPDATE company SET name = ?, address = ?, logo_url = ?, logo_height = ? WHERE id = ?",
     )
     .bind(name)
     .bind(address)
     .bind(logo_url)
     .bind(input.logo_height)
-    .bind(
-        input
-            .sales_tax_percent
-            .map(|tax| format!("{:.4}", (tax * 100.0).round() / 10_000.0)),
-    )
     .bind(company_id)
     .execute(&state.pool)
     .await?;
+    if let Some(tax) = tax {
+        company_tax::apply(&state.pool, company_id, tax.as_ref()).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

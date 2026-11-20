@@ -35,6 +35,37 @@ fn filled(value: Option<&str>) -> Option<&str> {
 }
 
 impl CustomerRow {
+    /// The customer as the quote being invoiced knows them. The quote's
+    /// phone comes first (the customer's own becomes the second one when
+    /// they differ); its first filled email is theirs when they have none.
+    /// The customer's own email stays, since their `QuickBooks` customer is
+    /// matched by it; the invoice itself is emailed to the quote's.
+    pub fn or_quote(mut self, emails: [Option<String>; 2], phone: Option<String>) -> Self {
+        if filled(self.email.as_deref()).is_none() {
+            self.email = emails
+                .into_iter()
+                .flatten()
+                .find(|email| !email.trim().is_empty());
+        }
+        let digits = |phone: &str| -> String {
+            let digits: String = phone.chars().filter(char::is_ascii_digit).collect();
+            match digits.strip_prefix('1') {
+                Some(national) if digits.len() == 11 => national.to_string(),
+                _ => digits,
+            }
+        };
+        if let Some(quoted) = phone.filter(|phone| !phone.trim().is_empty()) {
+            let own = self.phone.take().filter(|own| !own.trim().is_empty());
+            if let Some(own) = own.filter(|own| digits(own) != digits(&quoted))
+                && filled(self.phone_2.as_deref()).is_none()
+            {
+                self.phone_2 = Some(own);
+            }
+            self.phone = Some(quoted);
+        }
+        self
+    }
+
     /// A builder, designer or other business: its address is its office.
     pub fn is_business(&self) -> bool {
         filled(self.company_name.as_deref()).is_some()
@@ -466,6 +497,41 @@ mod tests {
             postal_code: Some("46032".into()),
             ..CustomerRow::default()
         }
+    }
+
+    #[test]
+    fn the_quote_fills_the_email_and_phone_the_customer_lacks() {
+        let bare = CustomerRow {
+            name: Some("Bob Lead".into()),
+            email: Some("  ".into()),
+            ..CustomerRow::default()
+        };
+        let filled = bare.or_quote(
+            [Some(String::new()), Some("bob@example.com".into())],
+            Some("317-555-0199".into()),
+        );
+        let fields = Value::Object(known_fields(&filled, None));
+        assert_eq!(fields["PrimaryEmailAddr"]["Address"], "bob@example.com");
+        assert_eq!(fields["PrimaryPhone"]["FreeFormNumber"], "(317) 555-0199");
+        // The customer's own email stays; the quote's phone comes first.
+        let kept = alice().or_quote(
+            [Some("other@example.com".into()), None],
+            Some("317-555-0199".into()),
+        );
+        assert_eq!(kept.email.as_deref(), Some(" alice@example.com "));
+        assert_eq!(kept.phone.as_deref(), Some("317-555-0199"));
+        assert_eq!(kept.phone_2.as_deref(), Some("3175550101"));
+        // Their own phone becomes the second one, unless it is the same number.
+        let one_phone = |own: &str| CustomerRow {
+            phone: Some(own.into()),
+            ..CustomerRow::default()
+        };
+        let other = one_phone("317-555-0100").or_quote([None, None], Some("317-555-0199".into()));
+        assert_eq!(other.phone.as_deref(), Some("317-555-0199"));
+        assert_eq!(other.phone_2.as_deref(), Some("317-555-0100"));
+        let same =
+            one_phone("+1 (317) 555-0199").or_quote([None, None], Some("317-555-0199".into()));
+        assert_eq!(same.phone_2, None);
     }
 
     #[test]

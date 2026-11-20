@@ -391,6 +391,12 @@ pub async fn sign_up(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    // The sales tax from the address it gave; one that can't be placed
+    // leaves none (it can be fixed on the Company page).
+    let tax = crate::company_tax::lookup_address(&state, signup.address.as_deref()).await;
+    if let Some(tax) = tax.filter(|found| *found != crate::company_tax::TaxLookup::NotFound) {
+        crate::company_tax::apply(&state.pool, company_id, Some(&tax)).await?;
+    }
 
     let base = crate::setup_checklist::base_domain(&state);
     send_notices(&state, company_id, &signup, &base).await;

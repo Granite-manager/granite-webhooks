@@ -41,6 +41,7 @@ pub mod rules;
 pub mod sales;
 pub mod split;
 pub mod style;
+mod wider;
 
 use crate::auth::session::SessionUser;
 use crate::auth::{AdminUser, EmployeeUser};
@@ -696,12 +697,19 @@ pub(crate) async fn prepare(
     quote_id: Option<i32>,
     invoice: &EditableInvoice,
 ) -> ApiResult<Prepared> {
+    // The quote's address, phone, email and second email.
+    type QuoteContact = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
     let company_id = user.company_id;
-    let job = if let Some(quote_id) = quote_id {
+    let quote = if let Some(quote_id) = quote_id {
         // A quote may be invoiced again (e.g. its invoice was deleted in
         // QuickBooks); it keeps the newest invoice's id.
-        let quote: Option<(i32, Option<String>)> = sqlx::query_as(
-            "SELECT id, address FROM quotes
+        let quote: Option<QuoteContact> = sqlx::query_as(
+            "SELECT address, phone, email, email_2 FROM quotes
               WHERE id = ? AND company_id = ? AND customer_id = ? AND deleted_at IS NULL",
         )
         .bind(quote_id)
@@ -709,19 +717,28 @@ pub(crate) async fn prepare(
         .bind(customer_id)
         .fetch_optional(&state.pool)
         .await?;
-        let Some((_, address)) = quote else {
+        let Some(quote) = quote else {
             return Err(ApiError::Denied(
                 "This quote is not one of this customer's.".into(),
             ));
         };
-        address.as_deref().and_then(customer::parse_address)
+        Some(quote)
     } else {
         None
     };
+    let (address, phone, email, email_2) = quote.unwrap_or_default();
     // Without a quote, or a quote without an address, the job is where the
     // editor ships to.
-    let job = job.or_else(|| invoice.ship_addr.clone());
-    let row = customer(state, company_id, customer_id).await?;
+    let job = address
+        .as_deref()
+        .and_then(customer::parse_address)
+        .or_else(|| invoice.ship_addr.clone());
+    // The invoice goes to the quote's own email when it has one (it may differ
+    // from the customer's); the customer's card only gets what it lacks.
+    let quoted_email = email.clone().filter(|email| !email.trim().is_empty());
+    let row = customer(state, company_id, customer_id)
+        .await?
+        .or_quote([email, email_2], phone);
     let access = state
         .qbo
         .access(&state.pool, company_id)
@@ -759,7 +776,7 @@ pub(crate) async fn prepare(
     Ok(Prepared {
         access,
         qbo_id,
-        email: row.email,
+        email: quoted_email.or(row.email),
         classes: Classes {
             invoice: invoice_class,
             per_line,

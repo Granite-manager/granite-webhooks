@@ -20,6 +20,7 @@
 // Each crate re-exports the ones below it.
 pub use api_crm::*;
 
+pub mod company_tax;
 pub mod posthog_autofix;
 pub mod routes;
 pub mod setup_checklist;

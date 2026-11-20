@@ -8,3 +8,4 @@
 - Never sign users out of the phone app after an update (app or API), ever: it stays signed in until the user signs out or the server revokes its session. A route the phone may not use answers 403, never 401, and the app signs out only when GET /v1/phone/bootstrap itself answers 401.
 - Build what the owner asks for in full, natively, where they ask for it: "add the website's features to the app" means real app screens with every feature, never a link or an embedded web page. Never ship a shortcut in place of what was asked; if something truly cannot be done, say so before starting.
 - A repeated lead ALWAYS makes the deal active and moves it to the first stage (Not Contacted Yet), with or without a lead-form token; a past customer gets a new deal. Never gate this on the sender (owner, 2026-11-16).
+- Always make a mockup for the owner before finishing: a picture of how the change looks (or works), sent to them with the report, for every request (owner, 2026-11-20).
