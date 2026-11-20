@@ -173,7 +173,10 @@ async fn customer(state: &AppState, company_id: i32, name: &str) -> ApiResult<St
 /// Granite Manager gave ends. Stripe returns to
 /// `/admin/billing?checkout=success` (or `cancel`); access opens once Stripe
 /// confirms the payment. 400 when Stripe is not set up or refused, 409
-/// while a subscription is running. Managers only.
+/// while a subscription is running. Only one such page is open at a time
+/// (asked again, the open page is answered again; after a change of price
+/// it is closed and a new one made), so the company cannot pay twice from
+/// two pages. Managers only.
 #[crate::openapi::path(
     post,
     path = "/v1/billing/first-payment/checkout",

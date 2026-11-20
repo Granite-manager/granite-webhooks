@@ -64338,7 +64338,7 @@
           "billing"
         ],
         "summary": "Subscribe through Stripe Checkout",
-        "description": "A Stripe Checkout link that subscribes the company to the plan; Stripe\nreturns to `/admin/billing?checkout=success` (or `cancel`). Only while the\ncompany has no running subscription (400 otherwise: change the plan).",
+        "description": "A Stripe Checkout link that subscribes the company to the plan; Stripe\nreturns to `/admin/billing?checkout=success` (or `cancel`). Only while the\ncompany has no running subscription (400 otherwise: change the plan).\nOnly one such page is open at a time: asked again for the same plan, the\nopen page is answered again; for another plan it is closed first, so the\ncompany cannot pay for two subscriptions from two pages.",
         "operationId": "create_billing_checkout",
         "requestBody": {
           "content": {
@@ -64619,7 +64619,7 @@
           "billing"
         ],
         "summary": "Pay the monthly subscription",
-        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`GET /v1/billing/first-payment`), charged now, or when the free time\nGranite Manager gave ends. Stripe returns to\n`/admin/billing?checkout=success` (or `cancel`); access opens once Stripe\nconfirms the payment. 400 when Stripe is not set up or refused, 409\nwhile a subscription is running. Managers only.",
+        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`GET /v1/billing/first-payment`), charged now, or when the free time\nGranite Manager gave ends. Stripe returns to\n`/admin/billing?checkout=success` (or `cancel`); access opens once Stripe\nconfirms the payment. 400 when Stripe is not set up or refused, 409\nwhile a subscription is running. Only one such page is open at a time\n(asked again, the open page is answered again; after a change of price\nit is closed and a new one made), so the company cannot pay twice from\ntwo pages. Managers only.",
         "operationId": "create_billing_first_payment_checkout",
         "responses": {
           "200": {
@@ -64894,7 +64894,7 @@
           "payments"
         ],
         "summary": "Start a company's monthly subscription",
-        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`subscription_price_cents`, read now; later price changes do not touch a\nrunning subscription). The first time, a Stripe customer is created and\nsaved on the company. Stripe sends the payer back to the payments page\nwith `&checkout=success` or `&checkout=cancel`. 409 while the company has\na live subscription: open the portal instead.",
+        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`subscription_price_cents`, read now; later price changes do not touch a\nrunning subscription). The first time, a Stripe customer is created and\nsaved on the company. Stripe sends the payer back to the payments page\nwith `&checkout=success` or `&checkout=cancel`. 409 while the company has\na live subscription: open the portal instead. Only one such page is open\nat a time, so a company cannot pay for two subscriptions from two pages:\nasked again, the page that is open is answered again, and when the price\nor the first payment day changed since, that page is closed and a new one\nmade.",
         "operationId": "create_payment_checkout",
         "parameters": [
           {

@@ -34,6 +34,10 @@ struct FakeStripe {
     /// Products by id.
     products: HashMap<String, Value>,
     portal_configurations: Vec<Value>,
+    /// Checkout sessions, oldest first.
+    checkouts: Vec<Value>,
+    /// Sessions Stripe refuses to expire.
+    unclosable: Vec<String>,
     customers_created: usize,
     /// (method, path, form or query)
     requests: Vec<(String, String, String)>,
@@ -151,10 +155,66 @@ async fn fake_stripe(state: Shared) -> String {
         )
         .route(
             "/v1/checkout/sessions",
-            post(|State(s): State<Shared>, body: String| async move {
+            get(
+                |State(s): State<Shared>, query: axum::extract::RawQuery| async move {
+                    let mut s = s.lock().unwrap();
+                    let query = query.0.unwrap_or_default();
+                    s.requests
+                        .push(("GET".into(), "/v1/checkout/sessions".into(), query.clone()));
+                    let params = form(&query);
+                    // Newest first, as Stripe lists them.
+                    let data: Vec<Value> = s
+                        .checkouts
+                        .iter()
+                        .rev()
+                        .filter(|session| {
+                            params
+                                .get("customer")
+                                .is_some_and(|customer| session["customer"] == customer.as_str())
+                                && params
+                                    .get("status")
+                                    .is_none_or(|status| session["status"] == status.as_str())
+                        })
+                        .cloned()
+                        .collect();
+                    Json(json!({ "object": "list", "data": data }))
+                },
+            )
+            .post(|State(s): State<Shared>, body: String| async move {
                 let mut s = s.lock().unwrap();
-                s.requests.push(("POST".into(), "/v1/checkout/sessions".into(), body));
-                Json(json!({ "id": "cs_1", "url": "https://checkout.stripe.com/c/pay/cs_1" }))
+                s.requests
+                    .push(("POST".into(), "/v1/checkout/sessions".into(), body.clone()));
+                let params = form(&body);
+                let id = format!("cs_{}", s.checkouts.len() + 1);
+                let session = json!({
+                    "id": id, "object": "checkout.session", "status": "open",
+                    "mode": params.get("mode"), "customer": params.get("customer"),
+                    "url": format!("https://checkout.stripe.com/c/pay/{id}"),
+                    "metadata": { "granite_request": params.get("metadata[granite_request]") },
+                });
+                s.checkouts.push(session.clone());
+                Json(session)
+            }),
+        )
+        .route(
+            "/v1/checkout/sessions/{id}/expire",
+            post(|State(s): State<Shared>, Path(id): Path<String>| async move {
+                let mut s = s.lock().unwrap();
+                s.requests.push((
+                    "POST".into(),
+                    "/v1/checkout/sessions/{id}/expire".into(),
+                    id.clone(),
+                ));
+                let refused = s.unclosable.contains(&id);
+                let session = s
+                    .checkouts
+                    .iter_mut()
+                    .filter(|_| !refused)
+                    .find(|session| session["id"] == id.as_str() && session["status"] == "open")
+                    .ok_or_else(|| stripe_error(StatusCode::BAD_REQUEST, "Only open Checkout Sessions can be expired"))?;
+                session["status"] = json!("expired");
+                session["url"] = Value::Null;
+                Ok::<_, (StatusCode, Json<Value>)>(Json(session.clone()))
             }),
         )
         .route(
@@ -463,7 +523,10 @@ async fn the_first_checkout_links_a_new_customer_and_charges_the_company_price(p
             ("tax_code".to_string(), "txcd_10103001".to_string()),
         ])
     );
-    let session = s.last_form("POST", "/v1/checkout/sessions");
+    let mut session = s.last_form("POST", "/v1/checkout/sessions");
+    // What the request asked for, so the same request gets this page back.
+    let request = session.remove("metadata[granite_request]").unwrap();
+    assert_eq!(request.len(), 16, "{request}");
     let page = format!("{APP_URL}/?c={}", token(100));
     assert_eq!(
         session,
@@ -490,11 +553,17 @@ async fn the_first_checkout_links_a_new_customer_and_charges_the_company_price(p
 #[test_db::test(seed)]
 async fn a_later_checkout_reuses_the_customer_and_product_at_the_current_price(pool: MySqlPool) {
     let (server, stripe) = server(&pool).await;
+    // The second click, or a second tab, gets the page that is already open:
+    // two open pages could both be paid, as two subscriptions.
     for _ in 0..2 {
-        server
+        let response = server
             .post(&format!("/v1/public/payments/{}/checkout", token(100)))
-            .await
-            .assert_status_ok();
+            .await;
+        response.assert_status_ok();
+        assert_eq!(
+            response.json::<Value>(),
+            json!({ "url": "https://checkout.stripe.com/c/pay/cs_1" })
+        );
     }
     make_superuser(&pool).await;
     server
@@ -503,17 +572,99 @@ async fn a_later_checkout_reuses_the_customer_and_product_at_the_current_price(p
         .json(&json!({ "price_cents": 123_456 }))
         .await
         .assert_status(StatusCode::NO_CONTENT);
-    server
+    // At another price it is another page, and the old one is closed first.
+    let response = server
         .post(&format!("/v1/public/payments/{}/checkout", token(100)))
-        .await
-        .assert_status_ok();
+        .await;
+    response.assert_status_ok();
+    assert_eq!(
+        response.json::<Value>(),
+        json!({ "url": "https://checkout.stripe.com/c/pay/cs_2" })
+    );
     let s = stripe.lock().unwrap();
     assert_eq!(s.count("POST", "/v1/customers"), 1);
     assert_eq!(s.count("POST", "/v1/products"), 1);
-    assert_eq!(s.count("POST", "/v1/checkout/sessions"), 3);
+    // Three requests, two pages: the second request made none.
+    assert_eq!(s.count("POST", "/v1/checkout/sessions"), 2);
+    assert_eq!(s.count("POST", "/v1/checkout/sessions/{id}/expire"), 1);
+    let open: Vec<&str> = s
+        .checkouts
+        .iter()
+        .filter(|session| session["status"] == "open")
+        .map(|session| session["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(open, ["cs_2"]);
     let session = s.last_form("POST", "/v1/checkout/sessions");
     assert_eq!(session["customer"], "cus_new1");
     assert_eq!(session["line_items[0][price_data][unit_amount]"], "123456");
+}
+
+/// Only pages that would start a subscription for this customer are closed
+/// or handed back; a page that cannot be closed any more stops the request.
+#[test_db::test(seed)]
+async fn only_the_customers_own_subscription_pages_count(pool: MySqlPool) {
+    let (server, stripe) = server(&pool).await;
+    set_customer(&pool, 100, "cus_acme").await;
+    let page = |id: &str, customer: &str, mode: &str, status: &str| {
+        json!({ "id": id, "object": "checkout.session", "status": status, "mode": mode,
+                "customer": customer, "url": format!("https://checkout.stripe.com/c/pay/{id}"),
+                "metadata": {} })
+    };
+    stripe.lock().unwrap().checkouts.extend([
+        // Another customer's, a one-time payment's, and one that already ended.
+        page("cs_1", "cus_other", "subscription", "open"),
+        page("cs_2", "cus_acme", "payment", "open"),
+        page("cs_3", "cus_acme", "subscription", "expired"),
+        // An older page of the company made some other way: closed.
+        page("cs_4", "cus_acme", "subscription", "open"),
+    ]);
+    let response = server
+        .post(&format!("/v1/public/payments/{}/checkout", token(100)))
+        .await;
+    response.assert_status_ok();
+    assert_eq!(
+        response.json::<Value>(),
+        json!({ "url": "https://checkout.stripe.com/c/pay/cs_5" })
+    );
+    {
+        let s = stripe.lock().unwrap();
+        let status = |id: &str| {
+            s.checkouts
+                .iter()
+                .find(|session| session["id"] == id)
+                .unwrap()["status"]
+                .clone()
+        };
+        assert_eq!(status("cs_1"), "open");
+        assert_eq!(status("cs_2"), "open");
+        assert_eq!(status("cs_4"), "expired");
+        assert_eq!(status("cs_5"), "open");
+        assert_eq!(s.count("POST", "/v1/checkout/sessions/{id}/expire"), 1);
+    }
+
+    // Stripe lists a page as open that it then refuses to close (it was paid
+    // meanwhile): no second page is made.
+    {
+        let mut s = stripe.lock().unwrap();
+        let listed = page("cs_gone", "cus_acme", "subscription", "open");
+        s.checkouts.push(listed);
+        s.unclosable.push("cs_gone".into());
+    }
+    let made = stripe
+        .lock()
+        .unwrap()
+        .count("POST", "/v1/checkout/sessions");
+    server
+        .post(&format!("/v1/public/payments/{}/checkout", token(100)))
+        .await
+        .assert_status(StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        stripe
+            .lock()
+            .unwrap()
+            .count("POST", "/v1/checkout/sessions"),
+        made
+    );
 }
 
 #[test_db::test(seed)]
