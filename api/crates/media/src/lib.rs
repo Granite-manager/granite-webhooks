@@ -28,4 +28,5 @@ pub mod pdf_fonts;
 pub mod pdf_preview;
 pub mod signing_pdf;
 pub mod signwell;
+pub mod slab_background;
 pub mod thumbnails;

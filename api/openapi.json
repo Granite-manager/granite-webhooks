@@ -8425,6 +8425,215 @@
         ]
       }
     },
+    "/v1/stones/settings/slab-background": {
+      "put": {
+        "tags": [
+          "stones"
+        ],
+        "summary": "Set the slab picture background",
+        "description": "Admin › Stones › Settings. Saves the company's background picture (an\nupload to the `stones` folder) and the spot on it. Every stone picture\nuploaded from now on is placed in that spot; the ones already made with\nan older background are counted in `pending` and remade by\n`POST /v1/stones/settings/slab-background/apply`. Pictures uploaded\nbefore a background was set stay as they are.",
+        "operationId": "save_slab_background",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlabBackground"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingPictures"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not an uploaded picture, or the corners are outside the picture, crossed or too close together",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database or storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Uploads are not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "stones"
+        ],
+        "summary": "Remove the slab picture background",
+        "description": "New stone pictures are stored as uploaded again. The ones on the\nbackground are counted in `pending`:\n`POST /v1/stones/settings/slab-background/apply` puts them back as they\nwere uploaded.",
+        "operationId": "remove_slab_background",
+        "responses": {
+          "200": {
+            "description": "Removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingPictures"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/stones/settings/slab-background/apply": {
+      "post": {
+        "tags": [
+          "stones"
+        ],
+        "summary": "Remake stone pictures for the current background",
+        "description": "Remakes up to four stone pictures that were made with an older\nbackground: on the current one, or back as uploaded when the company\nremoved its background. Call it again while `pending` is above 0.",
+        "operationId": "apply_slab_background",
+        "responses": {
+          "200": {
+            "description": "A few pictures remade",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingPictures"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database or storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Uploads are not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/stones/materials": {
       "get": {
         "tags": [
@@ -106249,6 +106458,20 @@
           }
         }
       },
+      "PendingPictures": {
+        "type": "object",
+        "description": "How many stone pictures still show an older background.",
+        "required": [
+          "pending"
+        ],
+        "properties": {
+          "pending": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stone pictures `POST /v1/stones/settings/slab-background/apply` has\nyet to remake."
+          }
+        }
+      },
       "Permissions": {
         "type": "object",
         "description": "What the caller may do with projects.",
@@ -119297,6 +119520,32 @@
           }
         }
       },
+      "SlabBackground": {
+        "type": "object",
+        "description": "The company's slab picture background.",
+        "required": [
+          "url",
+          "spot"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "The background picture: the `url` of an upload to the `stones` folder\n(`POST /v1/uploads`)."
+          },
+          "spot": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number",
+                "format": "double"
+              }
+            },
+            "description": "Where the stone picture goes: four `[x, y]` corners as fractions of\nthe picture (0 to 1), clockwise from top left."
+          }
+        },
+        "additionalProperties": false
+      },
       "SlabChoice": {
         "type": "object",
         "description": "A slab of the inventory.",
@@ -120194,7 +120443,8 @@
         "required": [
           "stone_view",
           "show_all_locations",
-          "locations"
+          "locations",
+          "slab_background_pending"
         ],
         "properties": {
           "stone_view": {
@@ -120211,6 +120461,22 @@
               "$ref": "#/components/schemas/StoneLocation"
             },
             "description": "Every location of the company's business, its own included, by name;\nempty when it has no other locations."
+          },
+          "slab_background": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SlabBackground",
+                "description": "The company's slab picture background: new stone pictures are placed\non it. Null when it has none."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slab_background_pending": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Stone pictures still showing an older background (see\n`POST /v1/stones/settings/slab-background/apply`)."
           }
         }
       },

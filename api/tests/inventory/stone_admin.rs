@@ -953,3 +953,197 @@ async fn stone_finishes_are_created_renamed_and_deleted(pool: MySqlPool) {
     listed.assert_status_ok();
     assert_eq!(listed.json::<Value>().as_array().unwrap().len(), 4);
 }
+
+// ---- Slab picture background (Admin › Stones › Settings)
+
+const SPOT: [[f64; 2]; 4] = [[0.2, 0.25], [0.9, 0.25], [0.9, 0.85], [0.2, 0.85]];
+
+async fn stone_pictures(pool: &MySqlPool, id: i64) -> (String, Option<String>) {
+    sqlx::query_as("SELECT url, original_url FROM stones WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn pending(res: axum_test::TestResponse) -> i64 {
+    res.assert_status_ok();
+    res.json::<Value>()["pending"].as_i64().unwrap()
+}
+
+#[test_db::test(seed)]
+async fn new_stone_pictures_are_placed_on_the_company_background(pool: MySqlPool) {
+    let (server, storage) = server_with_storage(pool.clone());
+    // A stone added before there is a background keeps its picture as uploaded.
+    let earlier = upload(&server, &storage, "stones").await;
+    let earlier_id = server
+        .post("/v1/stones")
+        .with_session(sessions::ADMIN)
+        .json(&stone_body(Some(&earlier)))
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+
+    let background = upload(&server, &storage, "stones").await;
+    let saved = server
+        .put("/v1/stones/settings/slab-background")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "url": background, "spot": SPOT }))
+        .await;
+    assert_eq!(pending(saved).await, 0);
+    let settings: Value = server
+        .get("/v1/stones/settings")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(
+        settings["slab_background"],
+        json!({ "url": background, "spot": SPOT })
+    );
+    assert_eq!(settings["slab_background_pending"], 0);
+    assert_eq!(stone_pictures(&pool, earlier_id).await, (earlier.clone(), None));
+
+    // A stone added now shows its picture on the background and keeps the upload.
+    let uploaded = upload(&server, &storage, "stones").await;
+    let id = server
+        .post("/v1/stones")
+        .with_session(sessions::ADMIN)
+        .json(&stone_body(Some(&uploaded)))
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    let (shown, original) = stone_pictures(&pool, id).await;
+    assert_ne!(shown, uploaded);
+    assert_eq!(original.as_deref(), Some(uploaded.as_str()));
+    let keys = storage.memory_keys();
+    for stored in [key(&shown), icon(&shown), key(&uploaded)] {
+        assert!(keys.contains(&stored), "{stored} is stored");
+    }
+    // The background's own size, as a JPEG.
+    let file = storage.get(&key(&shown)).await.unwrap().unwrap();
+    assert_eq!(file.content_type, "image/jpeg");
+    let picture = image::load_from_memory(&file.bytes).unwrap();
+    assert_eq!((picture.width(), picture.height()), (800, 600));
+
+    // Moving the spot remakes that picture, and only that one.
+    let moved = [[0.1, 0.2], [0.8, 0.2], [0.8, 0.8], [0.1, 0.8]];
+    let saved = server
+        .put("/v1/stones/settings/slab-background")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "url": background, "spot": moved }))
+        .await;
+    assert_eq!(pending(saved).await, 1);
+    let applied = server
+        .post("/v1/stones/settings/slab-background/apply")
+        .with_session(sessions::ADMIN)
+        .await;
+    assert_eq!(pending(applied).await, 0);
+    let (remade, original) = stone_pictures(&pool, id).await;
+    assert_ne!(remade, shown);
+    assert_eq!(original.as_deref(), Some(uploaded.as_str()));
+    let keys = storage.memory_keys();
+    assert!(keys.contains(&key(&remade)) && keys.contains(&key(&background)));
+    assert!(!keys.contains(&key(&shown)) && !keys.contains(&icon(&shown)));
+
+    // A new picture for the stone replaces both of its files.
+    let second = upload(&server, &storage, "stones").await;
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&stone_body(Some(&second)))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let (shown, original) = stone_pictures(&pool, id).await;
+    assert_eq!(original.as_deref(), Some(second.as_str()));
+    let keys = storage.memory_keys();
+    assert!(keys.contains(&key(&shown)));
+    assert!(!keys.contains(&key(&remade)) && !keys.contains(&key(&uploaded)));
+
+    // Without the background the picture is back as uploaded.
+    let removed = server
+        .delete("/v1/stones/settings/slab-background")
+        .with_session(sessions::ADMIN)
+        .await;
+    assert_eq!(pending(removed).await, 1);
+    let applied = server
+        .post("/v1/stones/settings/slab-background/apply")
+        .with_session(sessions::ADMIN)
+        .await;
+    assert_eq!(pending(applied).await, 0);
+    assert_eq!(stone_pictures(&pool, id).await, (second.clone(), None));
+    let keys = storage.memory_keys();
+    assert!(keys.contains(&key(&second)));
+    assert!(!keys.contains(&key(&shown)) && !keys.contains(&key(&background)));
+    assert_eq!(stone_pictures(&pool, earlier_id).await, (earlier, None));
+    let settings: Value = server
+        .get("/v1/stones/settings")
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(settings["slab_background"], Value::Null);
+}
+
+#[test_db::test(seed)]
+async fn the_slab_background_is_validated_and_admin_only(pool: MySqlPool) {
+    let (server, storage) = server_with_storage(pool);
+    let background = upload(&server, &storage, "stones").await;
+    server
+        .put("/v1/stones/settings/slab-background")
+        .with_session(sessions::REP)
+        .json(&json!({ "url": background, "spot": SPOT }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    for route in ["/v1/stones/settings/slab-background/apply"] {
+        server
+            .post(route)
+            .with_session(sessions::REP)
+            .await
+            .assert_status(StatusCode::FORBIDDEN);
+    }
+    server
+        .delete("/v1/stones/settings/slab-background")
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    // Crossed corners.
+    let crossed = [[0.2, 0.25], [0.9, 0.85], [0.9, 0.25], [0.2, 0.85]];
+    expect_error(
+        server
+            .put("/v1/stones/settings/slab-background")
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "url": background, "spot": crossed }))
+            .await,
+        StatusCode::BAD_REQUEST,
+        "Put the four corners",
+    )
+    .await;
+    // Not an upload of the company.
+    expect_error(
+        server
+            .put("/v1/stones/settings/slab-background")
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "url": "https://example.com/warehouse.jpg", "spot": SPOT }))
+            .await,
+        StatusCode::BAD_REQUEST,
+        "not an uploaded stones file",
+    )
+    .await;
+    // Not a picture.
+    let text = upload(&server, &storage, "stones").await;
+    storage
+        .put(&key(&text), b"hello".to_vec(), "image/png")
+        .await
+        .unwrap();
+    expect_error(
+        server
+            .put("/v1/stones/settings/slab-background")
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "url": text, "spot": SPOT }))
+            .await,
+        StatusCode::BAD_REQUEST,
+        "This file is not a picture",
+    )
+    .await;
+}

@@ -62,7 +62,7 @@ async fn the_old_stones_view_is_the_default(pool: MySqlPool) {
         .with_session(sessions::REP)
         .await;
     res.assert_status_ok();
-    assert_eq!(res.json::<Value>(), json!({ "stone_view": "stones" }));
+    assert_eq!(res.json::<Value>()["stone_view"], "stones");
 }
 
 #[test_db::test(seed)]

@@ -5,6 +5,7 @@
 //! `admin.stones.edit.$stone.information.tsx`, `admin.stones.delete.$stone.tsx`
 //! and `api.stones.$stoneId.samples.tsx`.
 
+use super::background::{remove_unused, stone_picture};
 use super::materials::link_materials;
 use crate::auth::{AdminUser, ShopOrEmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -230,19 +231,30 @@ pub async fn create(
     let image_url = uploaded.unwrap_or(STONE_PLACEHOLDER).to_string();
     let mut tx = state.pool.begin().await?;
     validate(&mut tx, user.company_id, &input).await?;
-    if let Some(url) = uploaded {
-        uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
-    }
+    let picture = match uploaded {
+        Some(url) => {
+            uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
+            Some(stone_picture(&state.storage, &mut tx, user.company_id, url).await?)
+        }
+        None => None,
+    };
     let result = sqlx::query(
-        "INSERT INTO stones (name, type, finishing, url, company_id, is_display, on_sale,
+        "INSERT INTO stones (name, type, finishing, url, original_url, slab_background_version,
+            company_id, is_display, on_sale,
             regular_stock, supplier_id, width, length, cost_per_sqft, retail_price, level,
             bundle_number, bundle_location, delivery_date, block_number)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(input.name.trim())
     .bind(input.kind.trim())
     .bind(&input.finishing)
-    .bind(&image_url)
+    .bind(
+        picture
+            .as_ref()
+            .map_or(image_url.as_str(), |p| p.url.as_str()),
+    )
+    .bind(picture.as_ref().and_then(|p| p.original_url.as_deref()))
+    .bind(picture.as_ref().and_then(|p| p.version))
     .bind(user.company_id)
     .bind(input.is_display)
     .bind(input.on_sale)
@@ -295,20 +307,38 @@ pub async fn update(
     JsonBody(input): JsonBody<StoneInput>,
 ) -> ApiResult<StatusCode> {
     let mut tx = state.pool.begin().await?;
-    let current: Option<Option<String>> = sqlx::query_scalar(
-        "SELECT url FROM stones WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
+    let current: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT url, original_url FROM stones
+          WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
     )
     .bind(id)
     .bind(user.company_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let current_url = current.ok_or(ApiError::NotFound)?;
+    let (current_url, current_original) = current.ok_or(ApiError::NotFound)?;
     validate(&mut tx, user.company_id, &input).await?;
-    let new_url = non_empty(input.image_url.as_ref())
+    let uploaded = non_empty(input.image_url.as_ref())
         .filter(|url| Some(*url) != current_url.as_deref())
-        .map(str::to_string);
-    if let Some(url) = &new_url {
-        uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
+        .filter(|url| Some(*url) != current_original.as_deref());
+    let picture = match uploaded {
+        Some(url) => {
+            uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
+            Some(stone_picture(&state.storage, &mut tx, user.company_id, url).await?)
+        }
+        None => None,
+    };
+    let new_url = picture.as_ref().map(|p| p.url.clone());
+    if let Some(picture) = &picture {
+        sqlx::query(
+            "UPDATE stones SET original_url = ?, slab_background_version = ?
+              WHERE id = ? AND company_id = ?",
+        )
+        .bind(&picture.original_url)
+        .bind(picture.version)
+        .bind(id)
+        .bind(user.company_id)
+        .execute(&mut *tx)
+        .await?;
     }
     sqlx::query(
         "UPDATE stones SET material_id = IF(TRIM(name) <=> ?, material_id, NULL), name = ?, type = ?, finishing = ?, url = COALESCE(?, url),
@@ -341,21 +371,15 @@ pub async fn update(
     .await?;
     set_colors(&mut tx, id, &input.color_ids).await?;
     link_materials(&mut tx, user.company_id, Some(id)).await?;
-    // Another stone can point at the same photo; it keeps it.
-    let shared = match (&new_url, &current_url) {
-        (Some(_), Some(old)) => {
-            sqlx::query_scalar::<_, i32>("SELECT id FROM stones WHERE url = ? AND id <> ? LIMIT 1")
-                .bind(old)
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .is_some()
-        }
-        _ => true,
-    };
     tx.commit().await?;
-    if let (false, Some(old)) = (shared, &current_url) {
-        uploads::remove(&state.storage, old, user.company_id).await;
+    if new_url.is_some() {
+        // Another stone can point at the same photo; it keeps it. The old
+        // picture goes with the one it was uploaded as, when it was on the
+        // company's background.
+        let mut conn = state.pool.acquire().await?;
+        for old in [&current_url, &current_original].into_iter().flatten() {
+            remove_unused(&state.storage, &mut conn, old, user.company_id).await?;
+        }
     }
     Ok(StatusCode::NO_CONTENT)
 }
