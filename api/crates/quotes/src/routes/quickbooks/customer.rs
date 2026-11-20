@@ -35,6 +35,22 @@ fn filled(value: Option<&str>) -> Option<&str> {
 }
 
 impl CustomerRow {
+    /// The customer with what the quote being invoiced knows and they lack:
+    /// its first filled email when they have none, its phone when they have
+    /// no phone. What the customer has is never replaced.
+    pub fn or_quote(mut self, emails: [Option<String>; 2], phone: Option<String>) -> Self {
+        if filled(self.email.as_deref()).is_none() {
+            self.email = emails
+                .into_iter()
+                .flatten()
+                .find(|email| !email.trim().is_empty());
+        }
+        if filled(self.phone.as_deref()).is_none() && filled(self.phone_2.as_deref()).is_none() {
+            self.phone = phone;
+        }
+        self
+    }
+
     /// A builder, designer or other business: its address is its office.
     pub fn is_business(&self) -> bool {
         filled(self.company_name.as_deref()).is_some()
@@ -466,6 +482,29 @@ mod tests {
             postal_code: Some("46032".into()),
             ..CustomerRow::default()
         }
+    }
+
+    #[test]
+    fn the_quote_fills_the_email_and_phone_the_customer_lacks() {
+        let bare = CustomerRow {
+            name: Some("Bob Lead".into()),
+            email: Some("  ".into()),
+            ..CustomerRow::default()
+        };
+        let filled = bare.or_quote(
+            [Some(String::new()), Some("bob@example.com".into())],
+            Some("317-555-0199".into()),
+        );
+        let fields = Value::Object(known_fields(&filled, None));
+        assert_eq!(fields["PrimaryEmailAddr"]["Address"], "bob@example.com");
+        assert_eq!(fields["PrimaryPhone"]["FreeFormNumber"], "(317) 555-0199");
+        // What the customer has stays.
+        let kept = alice().or_quote(
+            [Some("other@example.com".into()), None],
+            Some("317-555-0199".into()),
+        );
+        assert_eq!(kept.email.as_deref(), Some(" alice@example.com "));
+        assert_eq!(kept.phone.as_deref(), Some("317-555-0100"));
     }
 
     #[test]
