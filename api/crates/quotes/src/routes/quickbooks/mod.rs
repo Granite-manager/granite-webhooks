@@ -41,6 +41,7 @@ pub mod rules;
 pub mod sales;
 pub mod split;
 pub mod style;
+mod wider;
 
 use crate::auth::session::SessionUser;
 use crate::auth::{AdminUser, EmployeeUser};
@@ -732,7 +733,9 @@ pub(crate) async fn prepare(
         .as_deref()
         .and_then(customer::parse_address)
         .or_else(|| invoice.ship_addr.clone());
-    // A customer without an email or a phone gets the quote's own.
+    // The invoice goes to the quote's own email when it has one (it may differ
+    // from the customer's); the customer's card only gets what it lacks.
+    let quoted_email = email.clone().filter(|email| !email.trim().is_empty());
     let row = customer(state, company_id, customer_id)
         .await?
         .or_quote([email, email_2], phone);
@@ -773,7 +776,7 @@ pub(crate) async fn prepare(
     Ok(Prepared {
         access,
         qbo_id,
-        email: row.email,
+        email: quoted_email.or(row.email),
         classes: Classes {
             invoice: invoice_class,
             per_line,
