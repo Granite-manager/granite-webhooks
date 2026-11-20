@@ -7,6 +7,8 @@
 //! - `GET /v1/stones/{id}` → one stone with its color ids
 //! - `GET /v1/stones/{id}/slabs` → its slabs (own + linked) with sale details
 //! - `PATCH /v1/stones/{id}/samples` → samples on hand and how many to keep
+//! - `PUT`/`DELETE /v1/stones/settings/slab-background` → the company's slab
+//!   picture background (see `background`)
 //!
 //! The reads take `?location=` for another location's stones (look only),
 //! see `locations`.
@@ -14,6 +16,7 @@
 //! Replaces the loader of the Remix `employee.stones.tsx` route
 //! (`stoneQueryBuilder` in `app/utils/queries.server.ts`).
 
+pub mod background;
 mod handlers;
 pub mod locations;
 pub mod materials;
@@ -30,6 +33,8 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(handlers::list, writes::create))
         .routes(routes!(handlers::search))
         .routes(routes!(materials::get_settings, materials::save_settings))
+        .routes(routes!(background::save, background::remove))
+        .routes(routes!(background::apply))
         .routes(routes!(materials::list))
         .routes(routes!(materials::get))
         .routes(routes!(handlers::quick_add))
