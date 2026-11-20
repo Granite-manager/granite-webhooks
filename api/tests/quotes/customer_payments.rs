@@ -795,7 +795,7 @@ async fn the_page_sends_the_customer_to_stripe_checkout(pool: MySqlPool) {
         assert_eq!(form["line_items[0][price_data][unit_amount]"], "100000");
         assert_eq!(
             form["line_items[0][price_data][product_data][name]"],
-            "Alice kitchen"
+            "Alice kitchen · Project #8000"
         );
         assert_eq!(form["line_items[1][price_data][unit_amount]"], "1000");
         assert_eq!(

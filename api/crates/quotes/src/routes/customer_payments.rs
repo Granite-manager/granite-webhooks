@@ -853,6 +853,25 @@ impl PaymentRow {
         CustomerPaymentStatus::parse(&self.status)
     }
 
+    /// The job's number as people say it: "Project #10226" (a deal) or
+    /// "Sale #812" (a sale outside any deal).
+    fn project_number(&self) -> String {
+        match (self.deal_id, self.sale_id) {
+            (Some(deal), _) => format!("Project #{deal}"),
+            (None, sale) => format!("Sale #{}", sale.unwrap_or_default()),
+        }
+    }
+
+    /// What the customer sees on Stripe's page and in their statement: the
+    /// job's name with its number ("12 Oak St · Project #10226"), or the
+    /// number alone when the job has no name.
+    fn checkout_name(&self) -> String {
+        let number = self.project_number();
+        self.project_name
+            .as_ref()
+            .map_or_else(|| number.clone(), |name| format!("{name} · {number}"))
+    }
+
     fn project_key(&self) -> String {
         match (self.deal_id, self.sale_id) {
             (Some(deal), _) => format!("deal-{deal}"),
@@ -1624,10 +1643,7 @@ pub async fn pay_checkout(
         }
     }
     let fee_name = fee_line_name(payment.customer_fee_bps);
-    let description = payment
-        .project_name
-        .clone()
-        .unwrap_or_else(|| "Your project".into());
+    let description = payment.checkout_name();
     // The same for every request that follows the same page (none yet, or
     // one Stripe let expire): Stripe makes one session for them all.
     let idempotency_key = format!(
@@ -2083,7 +2099,10 @@ struct Bell<'a> {
 /// What the bell says about a payment.
 fn message(payment: &PaymentRow, kind: &str, bell: Bell<'_>) -> String {
     let customer = payment.customer_name.as_deref();
-    let project = payment.project_name.as_deref().unwrap_or("their project");
+    let project = payment
+        .project_name
+        .clone()
+        .unwrap_or_else(|| payment.project_number().to_lowercase());
     let amount = dollars(
         bell.amount_cents
             .unwrap_or_else(|| i64::from(payment.amount_cents)),
