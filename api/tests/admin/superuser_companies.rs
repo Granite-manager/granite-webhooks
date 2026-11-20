@@ -56,6 +56,7 @@ async fn server(pool: &MySqlPool) -> TestServer {
     let pending: HashSet<String> = ["pending.example".to_string()].into();
     let state = AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN)
         .with_app_url("https://granite-manager.com")
+        .with_extension(common::sales_tax_stub())
         .with_dns(AppDns::Fixed(Arc::new(dns())))
         .with_ses(SesIdentities::Fixed(Some(Arc::new((verified, pending)))));
     TestServer::new(app(state))
@@ -114,7 +115,7 @@ async fn creating_a_company_seeds_it(pool: MySqlPool) {
     for body in [
         json!({ "name": " ", "subdomain": "new" }),
         json!({ "name": "New", "subdomain": "Bad Sub" }),
-        json!({ "name": "New", "subdomain": "new", "sales_tax_percent": 120 }),
+        json!({ "name": "New", "subdomain": "new", "address": "1 Nowhere Rd" }),
     ] {
         server
             .post("/v1/superuser/companies")
@@ -139,14 +140,30 @@ async fn creating_a_company_seeds_it(pool: MySqlPool) {
         .await
         .json();
     let id = created["id"].as_i64().unwrap();
-    let (tax, hidden, address): (String, i32, Option<String>) = sqlx::query_as(
+    let (tax, hidden, address): (Option<String>, i32, Option<String>) = sqlx::query_as(
         "SELECT CAST(state_taxes AS CHAR), statistics_widgets_hidden, address FROM company WHERE id = ?",
     )
     .bind(id)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!((tax.as_str(), hidden, address), ("0.0725", 1, None));
+    // A typed tax is ignored: no address, no tax.
+    assert_eq!((tax, hidden, address), (None, 1, None));
+    // With an address, the tax comes from it.
+    let located: Value = server
+        .post("/v1/superuser/companies")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "Ohio Stone", "subdomain": "ohio-stone",
+                       "address": "5 Oak St, Dayton, OH 45402" }))
+        .await
+        .json();
+    let tax: Option<String> =
+        sqlx::query_scalar("SELECT CAST(state_taxes AS CHAR) FROM company WHERE id = ?")
+            .bind(located["id"].as_i64().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(tax.as_deref(), Some("0.0800"));
     let count = |sql: &'static str| {
         let pool = pool.clone();
         async move {
@@ -225,6 +242,7 @@ async fn superusers_edit_and_delete_a_company(pool: MySqlPool) {
         .put("/v1/superuser/companies/101")
         .with_session(sessions::ADMIN)
         .json(&json!({ "name": "Other Co", "subdomain": "other", "max_users": 5, "sales_tax_percent": 6,
+                       "address": "7 Pine St, Lexington, KY 40504",
                        "signwell_api_key": "sw-key", "signature_enabled": true, "quickbooks_enabled": false,
                        "domain": "healthy.example" }))
         .await
@@ -236,7 +254,8 @@ async fn superusers_edit_and_delete_a_company(pool: MySqlPool) {
         .json();
     assert_eq!(company["subdomain"], "other");
     assert_eq!(company["max_users"], 5);
-    assert_eq!(company["sales_tax_percent"], 6.0);
+    // From the new address, not the typed 6.
+    assert_eq!(company["sales_tax_percent"], 7.0);
     assert_eq!(company["signwell_api_key"], "sw-key");
     assert_eq!(company["signature_enabled"], true);
     assert_eq!(company["quickbooks_enabled"], false);
@@ -420,14 +439,21 @@ async fn statuses_answer_every_company_like_the_single_checks(pool: MySqlPool) {
                     .json::<Value>()
             }
         };
-        assert_eq!(status["ses_inbound"], single("ses-inbound").await, "company {id}");
+        assert_eq!(
+            status["ses_inbound"],
+            single("ses-inbound").await,
+            "company {id}"
+        );
         assert_eq!(
             status["setup_checklist"],
             single("setup-checklist").await,
             "company {id}"
         );
         let trust = single("domain-trust").await;
-        assert_eq!(status["domain_trust"]["domain"], trust["domain"], "company {id}");
+        assert_eq!(
+            status["domain_trust"]["domain"], trust["domain"],
+            "company {id}"
+        );
         assert_eq!(
             status["domain_trust"]["risk_level"], trust["risk_level"],
             "company {id}"
