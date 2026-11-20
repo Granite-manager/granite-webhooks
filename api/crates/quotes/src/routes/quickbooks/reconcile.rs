@@ -310,8 +310,8 @@ async fn keep_typed(
 ) -> sqlx::Result<()> {
     let insert = "INSERT INTO qbo_invoice_draft_outcomes
            (company_id, user_id, quote_id, qbo_invoice_id, field, draft_shape, draft_text,
-            outcome, saved_value, qbo_line_id)
-         SELECT company_id, user_id, quote_id, qbo_invoice_id, 'added', ?, ?, ?, ?, ?
+            outcome, saved_value, qbo_line_id, by_hand)
+         SELECT company_id, user_id, quote_id, qbo_invoice_id, 'added', ?, ?, ?, ?, ?, ?
            FROM qbo_invoice_draft_outcomes WHERE id = ? AND company_id = ?";
     for line in &typed.new {
         sqlx::query(insert)
@@ -320,6 +320,7 @@ async fn keep_typed(
             .bind("added")
             .bind(&line.after)
             .bind(&line.line_id)
+            .bind(true)
             .bind(like)
             .bind(company_id)
             .execute(pool)
@@ -332,6 +333,7 @@ async fn keep_typed(
             .bind("none")
             .bind(None::<String>)
             .bind(None::<String>)
+            .bind(None::<bool>)
             .bind(like)
             .bind(company_id)
             .execute(pool)
@@ -339,7 +341,7 @@ async fn keep_typed(
     }
     for id in &typed.gone {
         sqlx::query(
-            "UPDATE qbo_invoice_draft_outcomes SET outcome = 'removed'
+            "UPDATE qbo_invoice_draft_outcomes SET outcome = 'removed', by_hand = 1
               WHERE id = ? AND company_id = ? AND field = 'added'",
         )
         .bind(id)
@@ -412,12 +414,14 @@ pub(super) async fn reconcile(
             sqlx::query(
                 "UPDATE qbo_invoice_draft_outcomes
                     SET outcome = ?, saved_value = ?, draft_text = COALESCE(?, draft_text),
-                        tidied_at = IF(?, COALESCE(tidied_at, CURRENT_TIMESTAMP), tidied_at)
+                        tidied_at = IF(?, COALESCE(tidied_at, CURRENT_TIMESTAMP), tidied_at),
+                        by_hand = IF(?, 1, by_hand)
                   WHERE id = ? AND company_id = ?",
             )
             .bind(&now.outcome.outcome)
             .bind(&now.outcome.value)
             .bind(&now.draft_text)
+            .bind(now.tidied)
             .bind(now.tidied)
             .bind(now.id)
             .bind(company_id)

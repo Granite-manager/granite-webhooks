@@ -237,7 +237,7 @@ pub fn added_lines(draft: &[Line], saved: &[Line]) -> Vec<AddedLine> {
     let mut before: Option<(&str, bool)> = None;
     for line in saved.iter().filter(|line| !said(line).is_empty()) {
         let own = line.id.as_deref().and_then(|id| drafted.get(id).copied());
-        if own.is_none() && is_text(line) {
+        if own.is_none() && is_text(line) && !is_told(line) {
             added.push(AddedLine {
                 shape: short(said(line)),
                 text: said(line).chars().take(TEXT_CHARS).collect(),
@@ -250,18 +250,89 @@ pub fn added_lines(draft: &[Line], saved: &[Line]) -> Vec<AddedLine> {
     added
 }
 
+/// What the editor showed for a draft, the company's way: what the rep
+/// then saved was made by hand where it differs, and only left as it was
+/// where it does not.
+#[derive(Debug, Default)]
+pub struct Shown {
+    /// Each draft line's text as shown, by id; none for a line left out.
+    lines: HashMap<String, Option<String>>,
+    /// The texts added to the draft ([`insert`]).
+    added: Vec<String>,
+    /// Off when what was shown could not be worked out.
+    known: bool,
+}
+
+impl Shown {
+    /// From the draft as the quote made it and what the rules made of it:
+    /// the lines shown and the ones left out.
+    pub(super) fn of(draft: &[Line], lines: &[Line], removed: &[Line]) -> Self {
+        let drafted: HashSet<&str> = draft.iter().filter_map(|line| line.id.as_deref()).collect();
+        let own = |line: &&Line| line.id.as_deref().is_some_and(|id| drafted.contains(id));
+        let id = |line: &Line| line.id.clone().unwrap_or_default();
+        Self {
+            lines: lines
+                .iter()
+                .filter(own)
+                .map(|line| (id(line), Some(said(line).to_string())))
+                .chain(removed.iter().filter(own).map(|line| (id(line), None)))
+                .collect(),
+            added: lines
+                .iter()
+                .filter(|line| is_usual(line))
+                .map(|line| said(line).to_string())
+                .collect(),
+            known: true,
+        }
+    }
+
+    /// Whether the rep made a draft line what it was saved as (`saved`: its
+    /// text, none when it is not on the invoice) by hand.
+    pub fn by_hand(&self, id: &str, saved: Option<&str>) -> Option<bool> {
+        let saved = saved.map(str::trim).filter(|saved| !saved.is_empty());
+        let shown = self.lines.get(id).filter(|_| self.known)?;
+        Some(shown.as_deref() != saved)
+    }
+
+    /// Whether the rep typed a line that is no draft line (else a rule
+    /// added it and they left it in).
+    pub fn typed(&self, line: &AddedLine) -> Option<bool> {
+        self.known
+            .then(|| !self.added.iter().any(|text| short(text) == line.shape))
+    }
+
+    /// The lines a rule added that are not among the ones saved (`kept`):
+    /// the rep deleted them.
+    pub fn deleted(&self, kept: &[AddedLine]) -> Vec<AddedLine> {
+        self.added
+            .iter()
+            .filter(|text| !kept.iter().any(|line| line.shape == short(text)))
+            .map(|text| AddedLine {
+                shape: short(text),
+                text: text.clone(),
+                after: String::new(),
+                line_id: None,
+            })
+            .collect()
+    }
+}
+
 /// One kept row of what was typed into an invoice (`field = 'added'`).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub(super) struct AddedRow {
     pub id: i32,
     pub qbo_invoice_id: String,
     /// `added`; `none` for an invoice nothing was typed into; `removed` for
-    /// a line since deleted in `QuickBooks`.
+    /// a line a rule added that the rep deleted, or one deleted since in
+    /// `QuickBooks`.
     pub outcome: String,
     pub draft_shape: Option<String>,
     pub draft_text: Option<String>,
     /// [`AddedLine::after`].
     pub saved_value: Option<String>,
+    /// The rep typed it (or deleted it); not so for a line a rule added
+    /// that they left in.
+    pub by_hand: Option<bool>,
 }
 
 /// A text the company's invoices keep getting.
@@ -287,7 +358,8 @@ pub(super) fn added_history(
     sizes: &HashMap<String, Arc<Sizes>>,
 ) -> (HashMap<String, Vec<LinePast>>, HashMap<String, Usual>) {
     let mut invoices: Vec<&str> = Vec::new();
-    let mut got: HashMap<&str, HashSet<&str>> = HashMap::new();
+    // By invoice and shape: whether it got the text, and by the rep's hand.
+    let mut got: HashMap<&str, HashMap<&str, (bool, bool)>> = HashMap::new();
     let mut texts: HashMap<&str, Vec<&AddedRow>> = HashMap::new();
     for row in rows {
         let invoice = row.qbo_invoice_id.as_str();
@@ -296,11 +368,22 @@ pub(super) fn added_history(
                 continue;
             }
             invoices.push(invoice);
-            got.insert(invoice, HashSet::new());
+            got.insert(invoice, HashMap::new());
         }
-        if let (Some(shape), true) = (row.draft_shape.as_deref(), row.outcome == "added") {
-            got.entry(invoice).or_default().insert(shape);
-            texts.entry(shape).or_default().push(row);
+        let Some(shape) = row.draft_shape.as_deref() else {
+            continue;
+        };
+        let of = got.entry(invoice).or_default();
+        match row.outcome.as_str() {
+            "added" => {
+                of.insert(shape, (true, row.by_hand.unwrap_or(true)));
+                texts.entry(shape).or_default().push(row);
+            }
+            // Deleted by the rep: they did not want it there.
+            "removed" => {
+                of.entry(shape).or_insert((false, true));
+            }
+            _ => {}
         }
     }
     let mut history = HashMap::new();
@@ -317,17 +400,15 @@ pub(super) fn added_history(
         }
         let past = invoices
             .iter()
-            .map(|invoice| LinePast {
-                outcome: Outcome::new(
-                    if got[invoice].contains(shape) {
-                        "added"
-                    } else {
-                        "absent"
-                    },
-                    None,
-                ),
-                words: words.get(*invoice).cloned(),
-                sizes: sizes.get(*invoice).cloned().unwrap_or_default(),
+            .map(|invoice| {
+                // No row: nothing was shown and nothing typed.
+                let (added, by_hand) = got[invoice].get(shape).copied().unwrap_or((false, false));
+                LinePast {
+                    outcome: Outcome::new(if added { "added" } else { "absent" }, None),
+                    words: words.get(*invoice).cloned(),
+                    sizes: sizes.get(*invoice).cloned().unwrap_or_default(),
+                    by_hand,
+                }
             })
             .collect();
         history.insert(shape.to_string(), past);
@@ -341,6 +422,13 @@ pub(super) fn added_history(
         );
     }
     (history, usual)
+}
+
+/// A line an admin's instruction added: no habit of the reps.
+fn is_told(line: &Line) -> bool {
+    line.id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("new:told:"))
 }
 
 /// The id of a line a rule added.
@@ -586,6 +674,7 @@ mod tests {
             draft_shape: typed.map(|(text, _)| shape(text)),
             draft_text: typed.map(|(text, _)| text.to_string()),
             saved_value: typed.map(|(_, after)| after.to_string()),
+            by_hand: None,
         }
     }
 
