@@ -191,6 +191,12 @@ and against Stripe's test mode in `tests/admin/billing_stripe_live.rs` when
 `STRIPE_WEBHOOK_SECRET`, `STRIPE_BILLING_PLANS` (`price|Name|cents,...`) or
 `STRIPE_PRICE_ID`.
 
+A Stripe customer has at most one open Checkout page that starts a
+subscription (`Stripe::subscription_checkout`, used by the billing page, the
+first payment and the payments page): the same request gets the open page
+back, a different one (another price, plan or first charge) closes it first.
+Two open pages could both be paid, as two subscriptions.
+
 ### Payments page (Stripe)
 
 `routes/payments.rs` serves the payments page (`apps/payments` in the CRM

@@ -288,6 +288,9 @@ pub struct PlanChoice {
 /// A Stripe Checkout link that subscribes the company to the plan; Stripe
 /// returns to `/admin/billing?checkout=success` (or `cancel`). Only while the
 /// company has no running subscription (400 otherwise: change the plan).
+/// Only one such page is open at a time: asked again for the same plan, the
+/// open page is answered again; for another plan it is closed first, so the
+/// company cannot pay for two subscriptions from two pages.
 #[crate::openapi::path(
     post,
     path = "/v1/billing/checkout",

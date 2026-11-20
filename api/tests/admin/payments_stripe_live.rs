@@ -122,6 +122,42 @@ async fn a_company_subscribes_manages_and_shows_up_for_superusers(pool: MySqlPoo
         format!("https://dev-payments.granite-manager.com/?c={token}&checkout=success")
     );
 
+    // One open page at a time: the same request gets its page back, and at
+    // another price the old page is closed at Stripe before a new one is
+    // made, so two pages can never both be paid.
+    let again = server
+        .post(&format!("/v1/public/payments/{token}/checkout"))
+        .await;
+    again.assert_status_ok();
+    assert_eq!(again.json::<Value>()["url"], url.as_str());
+    sqlx::query("UPDATE company SET subscription_price_cents = 81000 WHERE id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let repriced = server
+        .post(&format!("/v1/public/payments/{token}/checkout"))
+        .await;
+    repriced.assert_status_ok();
+    assert_ne!(repriced.json::<Value>()["url"], url.as_str());
+    let old = raw
+        .get(&format!("/v1/checkout/sessions/{session_id}"), &[])
+        .await;
+    assert_eq!(old["status"], "expired");
+    let open = raw
+        .get(
+            "/v1/checkout/sessions",
+            &[("customer", &customer), ("status", "open")],
+        )
+        .await;
+    let open = open["data"].as_array().unwrap();
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0]["amount_total"], 81000);
+    assert_eq!(open[0]["mode"], "subscription");
+    sqlx::query("UPDATE company SET subscription_price_cents = 80000 WHERE id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+
     // The payer pays: a subscription like the one Checkout makes.
     let card = raw
         .post(

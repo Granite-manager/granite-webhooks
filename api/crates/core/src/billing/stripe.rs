@@ -304,7 +304,8 @@ impl Stripe {
         .await
     }
 
-    /// A Checkout page that starts a subscription to `price_id`.
+    /// A Checkout page that starts a subscription to `price_id`; at most one
+    /// such page is open per customer (`subscription_checkout`).
     pub async fn create_checkout_session(
         &self,
         customer: &str,
@@ -313,9 +314,9 @@ impl Stripe {
         quantity: i64,
         return_base: &str,
     ) -> Result<Value, StripeError> {
-        self.post(
-            "/v1/checkout/sessions",
-            &[
+        self.subscription_checkout(
+            customer,
+            vec![
                 ("mode", "subscription".into()),
                 ("customer", customer.into()),
                 ("client_reference_id", company_id.to_string()),
@@ -331,6 +332,70 @@ impl Stripe {
             ],
         )
         .await
+    }
+
+    /// The customer's open Checkout pages that would start a subscription
+    /// (up to 100, newest first).
+    pub async fn open_subscription_checkouts(
+        &self,
+        customer: &str,
+    ) -> Result<Vec<Value>, StripeError> {
+        let list = self
+            .get(
+                "/v1/checkout/sessions",
+                &[
+                    ("customer", customer.into()),
+                    ("status", "open".into()),
+                    ("limit", "100".into()),
+                ],
+            )
+            .await?;
+        Ok(data(list)
+            .into_iter()
+            .filter(|session| session["mode"] == "subscription")
+            .collect())
+    }
+
+    /// Closes an open Checkout page of the platform's own account, so nobody
+    /// can pay on it any more.
+    pub async fn expire_subscription_checkout(&self, id: &str) -> Result<Value, StripeError> {
+        self.post(
+            &format!("/v1/checkout/sessions/{}/expire", path_part(id)),
+            &[],
+        )
+        .await
+    }
+
+    /// A Checkout page that starts a subscription for `customer`, with at
+    /// most one such page open at a time, so a company cannot pay for two
+    /// subscriptions from two pages (two tabs, a second click, a link opened
+    /// again). The open page made by the very same request (same price, same
+    /// return address, same first charge) is handed back; any other open one
+    /// is closed first. A page that cannot be closed (it was just paid)
+    /// fails the call: the caller's check for a running subscription
+    /// answers the next try.
+    async fn subscription_checkout(
+        &self,
+        customer: &str,
+        mut form: Vec<(&str, String)>,
+    ) -> Result<Value, StripeError> {
+        let request = form_digest(&form);
+        let mut same: Option<Value> = None;
+        for session in self.open_subscription_checkouts(customer).await? {
+            let reusable = same.is_none()
+                && session["metadata"][SUBSCRIPTION_CHECKOUT_REQUEST] == request.as_str()
+                && session["url"].is_string();
+            if reusable {
+                same = Some(session);
+            } else if let Some(id) = session["id"].as_str() {
+                self.expire_subscription_checkout(id).await?;
+            }
+        }
+        if let Some(session) = same {
+            return Ok(session);
+        }
+        form.push((SUBSCRIPTION_CHECKOUT_REQUEST_FIELD, request));
+        self.post("/v1/checkout/sessions", &form).await
     }
 
     /// A billing portal page; `payment_method_update` opens the card form.
@@ -427,7 +492,8 @@ impl Stripe {
     /// A Checkout page that starts a monthly subscription to `product` at
     /// `unit_amount_cents` (USD), for the company's existing customer. With
     /// `first_payment_at` (unix seconds) the card is saved now and first
-    /// charged then, then every month from that day.
+    /// charged then, then every month from that day. At most one such page
+    /// is open per customer (`subscription_checkout`).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_monthly_checkout_session(
         &self,
@@ -465,7 +531,7 @@ impl Stripe {
         if let Some(at) = first_payment_at {
             form.push(("subscription_data[trial_end]", at.to_string()));
         }
-        self.post("/v1/checkout/sessions", &form).await
+        self.subscription_checkout(customer, form).await
     }
 
     /// A billing portal page (cancel, payment method, invoices) with the
@@ -541,8 +607,15 @@ impl Stripe {
     }
 }
 
+/// On a Checkout page that starts a subscription: the digest of the request
+/// it was made with (`form_digest`), in its metadata. A later request for
+/// the very same page gets that page back instead of a second one.
+const SUBSCRIPTION_CHECKOUT_REQUEST: &str = "granite_request";
+const SUBSCRIPTION_CHECKOUT_REQUEST_FIELD: &str = "metadata[granite_request]";
+
 /// The first 16 hex characters of the SHA-256 of a request's form, for an
-/// `Idempotency-Key` that changes when the request does.
+/// `Idempotency-Key` that changes when the request does, and to tell whether
+/// two requests ask for the same thing.
 fn form_digest(form: &[(&str, String)]) -> String {
     use sha2::Digest;
     use std::fmt::Write as _;
