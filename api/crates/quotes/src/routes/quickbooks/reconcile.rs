@@ -24,6 +24,7 @@
 
 use super::invoice::{rows, text};
 use super::rules::{Outcome, fill, first_item, header_outcome, invoice_class, template, words};
+use super::wider::{self, AddedLine};
 use crate::openapi::ToSchema;
 use lambda_http::tracing;
 use serde::{Deserialize, Serialize};
@@ -208,6 +209,147 @@ pub(super) fn differing(kept: &[Kept], invoice: &Value, staff: &[&str], lines: b
         .collect()
 }
 
+/// What was typed into an invoice, as `QuickBooks` has it now, next to the
+/// rows kept of it ([`super::wider`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct Typed {
+    /// Text lines that are no draft line and have no row yet: typed in when
+    /// the invoice was created, before such lines were kept, or in
+    /// `QuickBooks` since.
+    pub new: Vec<AddedLine>,
+    /// The rows of lines typed in that are on the invoice no more.
+    pub gone: Vec<i32>,
+    /// Nothing was typed in and no row says so yet.
+    pub none: bool,
+}
+
+/// The lines typed into `invoice` against the rows `kept` of it. None for an
+/// invoice whose draft lines cannot all be told by their `QuickBooks` line
+/// id (created before those were kept, or as a split): there a text line
+/// may be a draft line reworded.
+pub(super) fn typed(kept: &[Kept], invoice: &Value) -> Option<Typed> {
+    let drafted: Vec<&Kept> = kept.iter().filter(|row| row.field == "line").collect();
+    if drafted.is_empty()
+        || drafted
+            .iter()
+            .any(|row| row.outcome != "removed" && row.qbo_line_id.is_none())
+    {
+        return None;
+    }
+    let now = rows(&invoice["Line"]);
+    let said: Vec<(Option<String>, &str, bool)> = now
+        .iter()
+        .map(|line| {
+            (
+                text(&line["Id"]),
+                trimmed(&line["Description"]),
+                line["DetailType"] == "DescriptionOnly",
+            )
+        })
+        .filter(|(_, said, _)| !said.is_empty())
+        .collect();
+    let by_id = |id: Option<&str>| {
+        drafted
+            .iter()
+            .find(|row| id.is_some() && row.qbo_line_id.as_deref() == id)
+    };
+    // A draft line's text, as drafted or as created, is that line.
+    let own: HashSet<String> = drafted
+        .iter()
+        .filter_map(|row| {
+            row.draft_text
+                .as_deref()
+                .map(|text| text.trim().to_string())
+        })
+        .chain(drafted.iter().filter_map(|row| created_text(row)))
+        .collect();
+    let rows_typed: Vec<&Kept> = kept
+        .iter()
+        .filter(|row| row.field == "added" && row.outcome == "added")
+        .collect();
+    let row_text = |row: &Kept| row.draft_text.as_deref().map_or("", str::trim).to_string();
+    let gone = rows_typed
+        .iter()
+        .filter(|row| !said.iter().any(|(_, said, _)| *said == row_text(row)))
+        .map(|row| row.id)
+        .collect();
+    let mut new = Vec::new();
+    let mut before: Option<(&str, bool)> = None;
+    for (id, said, is_text) in &said {
+        let draft_line = by_id(id.as_deref());
+        if draft_line.is_none()
+            && *is_text
+            && !own.contains(*said)
+            && !rows_typed.iter().any(|row| row_text(row) == *said)
+        {
+            new.push(AddedLine {
+                shape: wider::short(said),
+                text: said.chars().take(1000).collect(),
+                after: wider::after(before),
+                line_id: id.clone(),
+            });
+        }
+        before = Some(
+            draft_line
+                .and_then(|row| row.draft_text.as_deref())
+                .map_or((*said, false), |drafted| (drafted, true)),
+        );
+    }
+    let none = new.is_empty() && !kept.iter().any(|row| row.field == "added");
+    Some(Typed { new, gone, none })
+}
+
+/// Keeps what [`typed`] found: a row for each new line (with the invoice's
+/// user and quote, as on `like`, one of its rows), `removed` for the ones
+/// gone, and that nothing was typed in.
+async fn keep_typed(
+    pool: &MySqlPool,
+    company_id: i32,
+    like: i32,
+    typed: &Typed,
+) -> sqlx::Result<()> {
+    let insert = "INSERT INTO qbo_invoice_draft_outcomes
+           (company_id, user_id, quote_id, qbo_invoice_id, field, draft_shape, draft_text,
+            outcome, saved_value, qbo_line_id)
+         SELECT company_id, user_id, quote_id, qbo_invoice_id, 'added', ?, ?, ?, ?, ?
+           FROM qbo_invoice_draft_outcomes WHERE id = ? AND company_id = ?";
+    for line in &typed.new {
+        sqlx::query(insert)
+            .bind(&line.shape)
+            .bind(&line.text)
+            .bind("added")
+            .bind(&line.after)
+            .bind(&line.line_id)
+            .bind(like)
+            .bind(company_id)
+            .execute(pool)
+            .await?;
+    }
+    if typed.none {
+        sqlx::query(insert)
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind("none")
+            .bind(None::<String>)
+            .bind(None::<String>)
+            .bind(like)
+            .bind(company_id)
+            .execute(pool)
+            .await?;
+    }
+    for id in &typed.gone {
+        sqlx::query(
+            "UPDATE qbo_invoice_draft_outcomes SET outcome = 'removed'
+              WHERE id = ? AND company_id = ? AND field = 'added'",
+        )
+        .bind(id)
+        .bind(company_id)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
 /// Brings the kept outcomes of the company's invoices in line with what
 /// `invoices` (its newest, as `QuickBooks` has them) are now. Returns how
 /// many changed.
@@ -259,6 +401,13 @@ pub(super) async fn reconcile(
         let Some(rows) = by_invoice.get(id.as_str()) else {
             continue;
         };
+        // What was typed in: not on an invoice rewritten from its quote.
+        if !synced.contains(id.as_str())
+            && let Some(typed) = typed(rows, invoice)
+            && let Some(like) = rows.first()
+        {
+            keep_typed(pool, company_id, like.id, &typed).await?;
+        }
         for now in differing(rows, invoice, staff, !synced.contains(id.as_str())) {
             sqlx::query(
                 "UPDATE qbo_invoice_draft_outcomes
@@ -514,5 +663,63 @@ mod tests {
         let now = differing(&drafted(), &tidied(), &[], false);
         let ids: Vec<i32> = now.iter().map(|now| now.id).collect();
         assert_eq!(ids, [6, 8]);
+    }
+
+    #[test]
+    fn lines_typed_in_are_found_next_to_the_draft_lines() {
+        let mut invoice = tidied();
+        let lines = invoice["Line"].as_array_mut().unwrap();
+        lines.insert(
+            3,
+            json!({ "Id": "7", "DetailType": "DescriptionOnly", "Description": " Sinks provided by customer" }),
+        );
+        // A draft line typed back in is no new text.
+        lines.insert(
+            4,
+            json!({ "Id": "8", "DetailType": "DescriptionOnly", "Description": "Laser Template" }),
+        );
+        let mut rows = drafted();
+        assert_eq!(
+            typed(&rows, &invoice),
+            Some(Typed {
+                new: vec![AddedLine {
+                    shape: "sinks provided by customer".into(),
+                    text: "Sinks provided by customer".into(),
+                    after: "# sink - 60/40".into(),
+                    line_id: Some("7".into()),
+                }],
+                gone: vec![],
+                none: false,
+            })
+        );
+        // Kept already; a line typed in earlier was deleted since.
+        rows.push(kept(
+            9,
+            "added",
+            Some("Sinks provided by customer"),
+            "added",
+            Some("7"),
+        ));
+        rows.push(kept(10, "added", Some("Old note"), "added", Some("6")));
+        assert_eq!(
+            typed(&rows, &invoice),
+            Some(Typed {
+                new: vec![],
+                gone: vec![10],
+                none: false,
+            })
+        );
+        // Nothing typed in is kept too, once.
+        assert_eq!(
+            typed(&drafted(), &tidied()),
+            Some(Typed {
+                none: true,
+                ..Typed::default()
+            })
+        );
+        // Draft lines without line ids: a text line may be one of them reworded.
+        let mut unknown = drafted();
+        unknown[0].qbo_line_id = None;
+        assert_eq!(typed(&unknown, &invoice), None);
     }
 }

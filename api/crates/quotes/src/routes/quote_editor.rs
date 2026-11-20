@@ -1462,6 +1462,19 @@ pub async fn update_quote(
 ) -> ApiResult<StatusCode> {
     let quote = quote_or_404(&state, id, user.company_id).await?;
     let mut sets: Vec<(&str, Value)> = Vec::new();
+    // What the rep typed on the quote also fills what the customer lacks.
+    let typed = |value: &Option<String>| {
+        value
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    };
+    let contact = QuoteContact {
+        email: typed(&input.email),
+        phone: typed(&input.phone),
+        address: typed(&input.address),
+    };
     if let Some(name) = input
         .quote_name
         .as_deref()
@@ -1579,7 +1592,125 @@ pub async fn update_quote(
             .execute(&state.pool)
             .await?;
     }
+    if let Err(err) =
+        fill_customer_contact(&state.pool, user.company_id, customer_id, user.id, &contact).await
+    {
+        // The quote is saved; only the customer's card stays as it was.
+        tracing::error!(error = %err, "customer not filled in from the quote");
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// The email, phone and address typed on a quote.
+#[derive(Debug, Default)]
+struct QuoteContact {
+    email: Option<String>,
+    phone: Option<String>,
+    address: Option<String>,
+}
+
+/// `customers.address` holds this many characters.
+const CUSTOMER_ADDRESS_CHARS: usize = 255;
+/// `customers.phone` holds this many.
+const CUSTOMER_PHONE_CHARS: usize = 50;
+
+/// Saves what was typed on a quote to its customer, where the customer has
+/// nothing: the email when they have no email, the phone when they have no
+/// phone, the address when they have no address. What the customer has is
+/// never replaced, an email another customer of the company has stays
+/// theirs, and the import's shared customer gets nothing (it belongs to
+/// every quote on it).
+async fn fill_customer_contact(
+    pool: &sqlx::MySqlPool,
+    company_id: i32,
+    customer_id: i32,
+    user_id: i32,
+    contact: &QuoteContact,
+) -> sqlx::Result<()> {
+    if contact.email.is_none() && contact.phone.is_none() && contact.address.is_none() {
+        return Ok(());
+    }
+    let own: Option<i32> = sqlx::query_scalar(
+        "SELECT id FROM customers
+          WHERE id = ? AND company_id = ? AND deleted_at IS NULL
+            AND NOT COALESCE(name LIKE ? AND created_by <=> name, 0)",
+    )
+    .bind(customer_id)
+    .bind(company_id)
+    .bind(IMPORT_PLACEHOLDER)
+    .fetch_optional(pool)
+    .await?;
+    if own.is_none() {
+        return Ok(());
+    }
+    if let Some(phone) = contact
+        .phone
+        .as_deref()
+        .filter(|phone| phone.chars().count() <= CUSTOMER_PHONE_CHARS)
+    {
+        sqlx::query(
+            "UPDATE customers SET phone = ?
+              WHERE id = ? AND COALESCE(TRIM(phone), '') = ''
+                AND COALESCE(TRIM(phone_2), '') = ''",
+        )
+        .bind(phone)
+        .bind(customer_id)
+        .execute(pool)
+        .await?;
+    }
+    if let Some(address) = contact
+        .address
+        .as_deref()
+        .filter(|address| address.chars().count() <= CUSTOMER_ADDRESS_CHARS)
+    {
+        sqlx::query(
+            "UPDATE customers SET address = ?
+              WHERE id = ? AND COALESCE(TRIM(address), '') = ''
+                AND COALESCE(TRIM(city), '') = '' AND COALESCE(TRIM(postal_code), '') = ''",
+        )
+        .bind(address)
+        .bind(customer_id)
+        .execute(pool)
+        .await?;
+    }
+    let Some(email) = contact.email.as_deref() else {
+        return Ok(());
+    };
+    let mut tx = pool.begin().await?;
+    // The customer has no email at all, and nobody else in the company has this one.
+    let free: Option<i32> = sqlx::query_scalar(
+        "SELECT c.id FROM customers c
+          WHERE c.id = ? AND c.email_id IS NULL
+            AND NOT EXISTS (SELECT 1 FROM customers_emails mine WHERE mine.customer_id = c.id)
+            AND NOT EXISTS (
+                SELECT 1 FROM customers other
+                  JOIN customers_emails ce ON ce.customer_id = other.id
+                 WHERE other.company_id = c.company_id AND other.id <> c.id
+                   AND other.deleted_at IS NULL
+                   AND LOWER(TRIM(ce.email)) = LOWER(TRIM(?)))
+          FOR UPDATE",
+    )
+    .bind(customer_id)
+    .bind(email)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if free.is_some() {
+        let email_id = sqlx::query(
+            "INSERT INTO customers_emails (customer_id, email, created_by) VALUES (?, ?, ?)",
+        )
+        .bind(customer_id)
+        .bind(email)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?
+        .last_insert_id();
+        sqlx::query("UPDATE customers SET email_id = ? WHERE id = ?")
+            .bind(email_id)
+            .bind(customer_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await
 }
 
 /// A drawing to save.
@@ -2043,8 +2174,11 @@ pub async fn mark_sold(
         ));
     }
     let template_ready = sale_ready(input.job_status.as_deref(), true, "the template")?;
-    let installation_ready =
-        sale_ready(input.installation_status.as_deref(), false, "the installation")?;
+    let installation_ready = sale_ready(
+        input.installation_status.as_deref(),
+        false,
+        "the installation",
+    )?;
     let fh_backsplash_template_ready = sale_ready(
         input.fh_backsplash_template_status.as_deref(),
         false,

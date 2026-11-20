@@ -23,6 +23,7 @@ use super::habits::{DraftAddresses, Habits, Places};
 use super::instructions::{self, Kept};
 use super::invoice::{EditableInvoice, Line, rows, text};
 use super::products::Model;
+use super::wider::{self, AddedRow, LeadPast, Leads, Usual};
 use super::{reconcile, style};
 use crate::auth::EmployeeUser;
 use crate::auth::session::SessionUser;
@@ -38,7 +39,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::MySqlPool;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 
 /// Outcomes a rule is decided from, newest first.
 pub const WINDOW: usize = 10;
@@ -168,14 +169,60 @@ pub enum LineRule {
     Changed(String),
     /// Left out (text lines only).
     Removed,
+    /// A text line the reps keep typing in, added ([`super::wider`]).
+    Added,
 }
 
-/// The quotes a line rule holds on: those with a word, or those without it.
+/// What a quote's draft lines count, by shape, in hundredths: 3570 under
+/// "# sq ft fabrication" for a quote with "35.7 sq ft Fabrication" (lines of
+/// one shape add up). How big the job is, in the company's own lines.
+pub type Sizes = BTreeMap<String, i64>;
+
+/// The [`Sizes`] of a draft's line texts.
+pub fn sizes<'a>(texts: impl Iterator<Item = &'a str>) -> Sizes {
+    let mut sizes = Sizes::new();
+    for text in texts {
+        let Some(count) = variables(text)
+            .first()
+            .and_then(|(_, _, value)| value.parse::<f64>().ok())
+            .filter(|count| count.is_finite())
+        else {
+            continue;
+        };
+        #[allow(clippy::cast_possible_truncation)] // a count on an invoice line
+        let hundredths = (count * 100.0).round() as i64;
+        *sizes.entry(shape(text)).or_default() += hundredths;
+    }
+    sizes
+}
+
+/// The quotes a line rule holds on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct When {
-    pub word: String,
-    /// On quotes with the word (else: without it).
-    pub has: bool,
+pub enum When {
+    /// Those with a word (`has`), or those without it.
+    Word { word: String, has: bool },
+    /// Those whose lines of a shape count less than `limit` hundredths
+    /// (`below`), or at least that many: "left out on jobs under 10 sq ft".
+    Size {
+        shape: String,
+        limit: i64,
+        below: bool,
+    },
+}
+
+impl When {
+    /// Whether it holds on a quote with these words and sizes; unknown for a
+    /// size rule on a quote without such a line.
+    pub fn holds(&self, words: &[String], sizes: &Sizes) -> Option<bool> {
+        match self {
+            Self::Word { word, has } => Some(has_word(words, word) == *has),
+            Self::Size {
+                shape,
+                limit,
+                below,
+            } => sizes.get(shape).map(|size| (size < limit) == *below),
+        }
+    }
 }
 
 /// A line rule and the quotes it holds on (all when `when` is `None`).
@@ -186,23 +233,29 @@ pub struct ShapeRule {
 }
 
 /// One outcome of a line, with the words of the quote it was on (unknown for
-/// invoices created before those were kept).
+/// invoices created before those were kept) and what its lines counted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinePast {
     pub outcome: Outcome,
     /// Sorted and distinct.
     pub words: Option<Vec<String>>,
+    pub sizes: Arc<Sizes>,
 }
 
 /// Outcomes a rule that holds on some quotes only is looked for in.
 pub const WHEN_WINDOW: usize = 40;
 /// Fewest outcomes behind such a rule.
 pub const WHEN_MIN_SEEN: usize = 4;
+/// Fewest outcomes behind one that goes by the job's size, and fewest
+/// against it on the other jobs: a size is easier to find by chance than a
+/// word.
+pub const SIZE_MIN_SEEN: usize = 5;
 
 fn rule_of(outcome: &Outcome) -> Option<LineRule> {
     match outcome.outcome.as_str() {
         "changed" => Some(LineRule::Changed(outcome.value.clone()?)),
         "removed" => Some(LineRule::Removed),
+        "added" => Some(LineRule::Added),
         _ => None,
     }
 }
@@ -235,55 +288,100 @@ pub fn line_rules(
         .collect()
 }
 
-/// A rule the outcomes on the quotes with (or without) one word make, while
-/// the others hardly ever did it: at least [`WHEN_MIN_SEEN`] times and the
-/// 2 newest of them (see [`decide`]), on 2 or more other quotes. Of such
-/// words, the one with the most outcomes behind it, then rules for quotes
-/// with a word before ones for quotes without it, then the word on the most
-/// of the company's quotes ("cabinets" rather than "shaker").
-fn when_rule(past: &[LinePast], common: &HashMap<String, usize>) -> Option<ShapeRule> {
-    let known: Vec<(&Outcome, &[String])> = past
+/// The conditions a rule could go by: each word of the quotes behind `known`
+/// (with it, without it), then each size between two that were seen (below
+/// it, at least it).
+fn conditions(known: &[&LinePast]) -> Vec<When> {
+    let mut words: Vec<&str> = known
         .iter()
-        .filter_map(|p| Some((&p.outcome, p.words.as_deref()?)))
+        .flat_map(|p| p.words.iter().flatten().map(String::as_str))
+        .collect();
+    words.sort_unstable();
+    words.dedup();
+    let mut seen: BTreeMap<&str, Vec<i64>> = BTreeMap::new();
+    for p in known {
+        for (shape, size) in p.sizes.iter() {
+            seen.entry(shape.as_str()).or_default().push(*size);
+        }
+    }
+    let mut conditions: Vec<When> = words
+        .into_iter()
+        .flat_map(|word| {
+            [true, false].map(|has| When::Word {
+                word: word.to_string(),
+                has,
+            })
+        })
+        .collect();
+    for (shape, mut sizes) in seen {
+        sizes.sort_unstable();
+        sizes.dedup();
+        for pair in sizes.windows(2) {
+            for below in [true, false] {
+                conditions.push(When::Size {
+                    shape: shape.to_string(),
+                    limit: i64::midpoint(pair[0], pair[1]),
+                    below,
+                });
+            }
+        }
+    }
+    conditions
+}
+
+/// A rule the outcomes on some of the quotes make, while the others hardly
+/// ever did it: the quotes with (or without) one word, at least
+/// [`WHEN_MIN_SEEN`] times and the 2 newest of them (see [`decide`]), on 2
+/// or more other quotes; or the jobs under (or from) one size, at least
+/// [`SIZE_MIN_SEEN`] times, on as many other jobs. Of such conditions, the
+/// one with the most outcomes behind it, then a word before a size, then
+/// rules for quotes with a word before ones for quotes without it, then the
+/// word on the most of the company's quotes ("cabinets" rather than
+/// "shaker").
+fn when_rule(past: &[LinePast], common: &HashMap<String, usize>) -> Option<ShapeRule> {
+    let known: Vec<&LinePast> = past
+        .iter()
+        .filter(|p| p.words.is_some())
         .take(WHEN_WINDOW)
         .collect();
     if known.len() < WHEN_MIN_SEEN + 2 {
         return None;
     }
-    let mut candidates: Vec<&str> = known
-        .iter()
-        .flat_map(|(_, words)| words.iter().map(String::as_str))
-        .collect();
-    candidates.sort_unstable();
-    candidates.dedup();
-    let mut best: Option<((usize, bool, usize), When, LineRule)> = None;
-    for word in candidates {
-        for has in [true, false] {
-            let (group, rest): (Vec<_>, Vec<_>) = known
-                .iter()
-                .partition(|(_, words)| has_word(words, word) == has);
-            if group.len() < WHEN_MIN_SEEN || rest.len() < 2 {
-                continue;
+    let mut best: Option<((usize, bool, bool, usize), When, LineRule)> = None;
+    for when in conditions(&known) {
+        let (min_seen, min_rest, rank) = match &when {
+            When::Word { word, has } => (
+                WHEN_MIN_SEEN,
+                2,
+                (true, *has, common.get(word).copied().unwrap_or(0)),
+            ),
+            When::Size { .. } => (SIZE_MIN_SEEN, SIZE_MIN_SEEN, (false, false, 0)),
+        };
+        let mut group = Vec::new();
+        let mut rest = Vec::new();
+        for p in &known {
+            match when.holds(p.words.as_deref().unwrap_or_default(), &p.sizes) {
+                Some(true) => group.push(p.outcome.clone()),
+                Some(false) => rest.push(&p.outcome),
+                None => {}
             }
-            let group: Vec<Outcome> = group.iter().map(|(o, _)| (*o).clone()).collect();
-            let Some((winner, seen)) = decide(&group) else {
-                continue;
-            };
-            let Some(rule) = rule_of(&winner) else {
-                continue;
-            };
-            let elsewhere = rest.iter().filter(|(o, _)| **o == winner).count();
-            if seen < WHEN_MIN_SEEN || elsewhere * 5 > rest.len() {
-                continue;
-            }
-            let key = (seen, has, common.get(word).copied().unwrap_or(0));
-            if best.as_ref().is_none_or(|(held, _, _)| key > *held) {
-                let when = When {
-                    word: word.to_string(),
-                    has,
-                };
-                best = Some((key, when, rule));
-            }
+        }
+        if group.len() < min_seen || rest.len() < min_rest {
+            continue;
+        }
+        let Some((winner, seen)) = decide(&group) else {
+            continue;
+        };
+        let Some(rule) = rule_of(&winner) else {
+            continue;
+        };
+        let elsewhere = rest.iter().filter(|o| ***o == winner).count();
+        if seen < min_seen || elsewhere * 5 > rest.len() {
+            continue;
+        }
+        let key = (seen, rank.0, rank.1, rank.2);
+        if best.as_ref().is_none_or(|(held, _, _)| key > *held) {
+            best = Some((key, when, rule));
         }
     }
     best.map(|(_, when, rule)| ShapeRule {
@@ -300,29 +398,52 @@ fn is_editable(line: &Line) -> bool {
     line.detail_type == "SalesItemLineDetail" || is_text(line)
 }
 
-/// The draft with the rules that hold on it (its quote has these `words`)
+/// The quote a draft is made from, as the rules see it.
+#[derive(Debug, Default)]
+pub(super) struct Drafted {
+    /// The words of its lines.
+    pub words: Vec<String>,
+    /// What its lines count.
+    pub sizes: Sizes,
+}
+
+impl Drafted {
+    pub fn of(lines: &[Line]) -> Self {
+        let texts = || lines.iter().filter_map(|line| line.description.as_deref());
+        Self {
+            words: words(texts()),
+            sizes: sizes(texts()),
+        }
+    }
+}
+
+/// The draft with the rules that hold on it (on its quote, `drafted`)
 /// applied: lines reworded in place, text lines left out returned apart (so
-/// the editor can bring them back). Priced lines are only ever reworded, and
+/// the editor can bring them back). A line with no rule of its own loses the
+/// count and unit it starts with when the company's lines that start so
+/// keep losing theirs (`leads`). Priced lines are only ever reworded, and
 /// lines an admin said to keep (`shielded`) stay as they are.
 #[allow(clippy::implicit_hasher)]
 pub(super) fn apply(
     lines: Vec<Line>,
     rules: &HashMap<String, ShapeRule>,
-    words: &[String],
+    leads: &Leads,
+    drafted: &Drafted,
     shielded: &Kept,
 ) -> (Vec<Line>, Vec<Line>) {
     let mut kept = Vec::with_capacity(lines.len());
     let mut removed = Vec::new();
     for mut line in lines {
+        let free = is_editable(&line) && !shielded.holds(&line);
         let rule = line
             .description
             .as_deref()
-            .filter(|_| is_editable(&line) && !shielded.holds(&line))
+            .filter(|_| free)
             .and_then(|text| rules.get(&shape(text)))
             .filter(|rule| {
                 rule.when
                     .as_ref()
-                    .is_none_or(|when| has_word(words, &when.word) == when.has)
+                    .is_none_or(|when| when.holds(&drafted.words, &drafted.sizes) == Some(true))
             })
             .map(|rule| &rule.rule);
         match rule {
@@ -334,7 +455,18 @@ pub(super) fn apply(
                 }
                 kept.push(line);
             }
-            _ => kept.push(line),
+            Some(_) => kept.push(line),
+            None => {
+                let bare = line
+                    .description
+                    .as_deref()
+                    .filter(|_| free)
+                    .and_then(|text| leads.strip(text));
+                if let Some(text) = bare {
+                    line.description = Some(text);
+                }
+                kept.push(line);
+            }
         }
     }
     (kept, removed)
@@ -1082,15 +1214,128 @@ async fn quote_words(
         .collect())
 }
 
-/// Each line shape's outcomes, newest first (up to [`WHEN_WINDOW`]), with
-/// their quotes' words; and on how many of the company's quotes each word is.
-async fn line_history(
-    pool: &MySqlPool,
-    company_id: i32,
-) -> sqlx::Result<(HashMap<String, Vec<LinePast>>, HashMap<String, usize>)> {
+/// One kept outcome of a draft line.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub(super) struct PastRow {
+    pub draft_shape: String,
+    pub outcome: String,
+    pub saved_value: Option<String>,
+    pub qbo_invoice_id: Option<String>,
+    pub draft_text: Option<String>,
+}
+
+/// What a company's invoices made here taught: the rules its draft lines
+/// follow, the starts they lose and the lines its reps keep typing in.
+#[derive(Debug, Default)]
+pub(super) struct Learned {
+    /// By draft line shape.
+    pub rules: HashMap<String, ShapeRule>,
+    pub leads: Leads,
+    /// The texts typed in that are added to a draft, with the quotes each
+    /// goes with.
+    added: Vec<(Usual, Option<When>)>,
+}
+
+impl Learned {
+    /// From the outcomes of the company's draft lines (`past`) and what was
+    /// typed into its invoices (`typed`), both newest first, and the words
+    /// of each invoice's quote.
+    #[allow(clippy::implicit_hasher)]
+    pub fn from(
+        past: &[PastRow],
+        typed: &[AddedRow],
+        quotes: &HashMap<String, Vec<String>>,
+    ) -> Self {
+        // What each invoice's draft lines counted.
+        let mut drafts: HashMap<&str, Vec<&str>> = HashMap::new();
+        for row in past {
+            if let (Some(invoice), Some(text)) =
+                (row.qbo_invoice_id.as_deref(), row.draft_text.as_deref())
+            {
+                drafts.entry(invoice).or_default().push(text);
+            }
+        }
+        let sized: HashMap<String, Arc<Sizes>> = drafts
+            .into_iter()
+            .map(|(invoice, texts)| (invoice.to_string(), Arc::new(sizes(texts.into_iter()))))
+            .collect();
+        let mut history: HashMap<String, Vec<LinePast>> = HashMap::new();
+        for row in past {
+            let lines = history.entry(row.draft_shape.clone()).or_default();
+            if lines.len() < WHEN_WINDOW {
+                let invoice = row.qbo_invoice_id.as_ref();
+                lines.push(LinePast {
+                    outcome: Outcome {
+                        outcome: row.outcome.clone(),
+                        value: row.saved_value.clone(),
+                    },
+                    words: invoice.and_then(|id| quotes.get(id)).cloned(),
+                    sizes: invoice
+                        .and_then(|id| sized.get(id))
+                        .cloned()
+                        .unwrap_or_default(),
+                });
+            }
+        }
+        let mut common: HashMap<String, usize> = HashMap::new();
+        for word in quotes.values().flatten() {
+            *common.entry(word.clone()).or_default() += 1;
+        }
+        let leads: Vec<LeadPast<'_>> = past
+            .iter()
+            .filter_map(|row| {
+                Some(LeadPast {
+                    shape: &row.draft_shape,
+                    outcome: &row.outcome,
+                    value: row.saved_value.as_deref(),
+                    draft_text: row.draft_text.as_deref()?,
+                })
+            })
+            .collect();
+        let (typed, mut usual) = wider::added_history(typed, quotes, &sized);
+        let mut added: Vec<(Usual, Option<When>)> = line_rules(&typed, &common)
+            .into_iter()
+            .filter(|(_, rule)| rule.rule == LineRule::Added)
+            .filter_map(|(shape, rule)| Some((usual.remove(&shape)?, rule.when)))
+            .collect();
+        added.sort_by(|a, b| a.0.text.cmp(&b.0.text));
+        Self {
+            rules: line_rules(&history, &common),
+            leads: Leads::learn(&leads),
+            added,
+        }
+    }
+
+    /// The draft made the company's way: the rules that hold on it applied
+    /// (see [`apply`]; the lines left out come back apart), then the lines
+    /// its reps keep typing into such invoices added.
+    pub fn draft(&self, lines: Vec<Line>, shielded: &Kept) -> (Vec<Line>, Vec<Line>) {
+        let drafted = Drafted::of(&lines);
+        let shapes: HashMap<String, String> = lines
+            .iter()
+            .filter_map(|line| Some((line.id.clone()?, shape(line.description.as_deref()?))))
+            .collect();
+        let (mut lines, removed) = apply(lines, &self.rules, &self.leads, &drafted, shielded);
+        let usual = self
+            .added
+            .iter()
+            .filter(|(_, when)| {
+                when.as_ref()
+                    .is_none_or(|when| when.holds(&drafted.words, &drafted.sizes) == Some(true))
+            })
+            .map(|(usual, _)| usual.clone())
+            .collect();
+        wider::insert(&mut lines, &shapes, usual);
+        (lines, removed)
+    }
+}
+
+/// What the company's invoices made here taught ([`Learned`]).
+async fn learned(pool: &MySqlPool, company_id: i32) -> sqlx::Result<Learned> {
     let quotes = quote_words(pool, company_id).await?;
-    let rows: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT draft_shape, outcome, saved_value, qbo_invoice_id FROM qbo_invoice_draft_outcomes
+    let past: Vec<PastRow> = sqlx::query_as(
+        "SELECT draft_shape, outcome, saved_value, qbo_invoice_id, draft_text
+           FROM qbo_invoice_draft_outcomes
           WHERE company_id = ? AND field = 'line' AND draft_shape IS NOT NULL
           ORDER BY id DESC LIMIT ?",
     )
@@ -1098,21 +1343,24 @@ async fn line_history(
     .bind(LINE_HISTORY)
     .fetch_all(pool)
     .await?;
-    let mut history: HashMap<String, Vec<LinePast>> = HashMap::new();
-    for (shape, outcome, value, invoice) in rows {
-        let past = history.entry(shape).or_default();
-        if past.len() < WHEN_WINDOW {
-            past.push(LinePast {
-                outcome: Outcome { outcome, value },
-                words: invoice.and_then(|id| quotes.get(&id)).cloned(),
-            });
-        }
-    }
-    let mut common: HashMap<String, usize> = HashMap::new();
-    for word in quotes.values().flatten() {
-        *common.entry(word.clone()).or_default() += 1;
-    }
-    Ok((history, common))
+    // Newest invoice first: a line found later in QuickBooks belongs with
+    // its invoice, not with the day it was found.
+    let typed: Vec<AddedRow> = sqlx::query_as(
+        "SELECT a.id, a.qbo_invoice_id, a.outcome, a.draft_shape, a.draft_text, a.saved_value
+           FROM qbo_invoice_draft_outcomes a
+           JOIN (SELECT qbo_invoice_id, MIN(id) AS made FROM qbo_invoice_draft_outcomes
+                  WHERE company_id = ? AND qbo_invoice_id IS NOT NULL
+                  GROUP BY qbo_invoice_id) invoice
+             ON invoice.qbo_invoice_id = a.qbo_invoice_id
+          WHERE a.company_id = ? AND a.field = 'added'
+          ORDER BY invoice.made DESC, a.id DESC LIMIT ?",
+    )
+    .bind(company_id)
+    .bind(company_id)
+    .bind(LINE_HISTORY)
+    .fetch_all(pool)
+    .await?;
+    Ok(Learned::from(&past, &typed, &quotes))
 }
 
 /// The products reps saved on invoices created here (with the quote's
@@ -1279,14 +1527,8 @@ pub async fn invoice_draft(
     // First: a scan a day old is read again, and with it what the office
     // changed in QuickBooks since (the histories below then have it).
     let scan = scan(&state, company_id).await?.unwrap_or_default();
-    let (history, common) = line_history(&state.pool, company_id).await?;
-    let rules = line_rules(&history, &common);
-    let draft_words = words(
-        input
-            .lines
-            .iter()
-            .filter_map(|line| line.description.as_deref()),
-    );
+    let learned_rules = learned(&state.pool, company_id).await?;
+    let draft_words = Drafted::of(&input.lines).words;
     let texts: Vec<String> = input
         .lines
         .iter()
@@ -1295,7 +1537,7 @@ pub async fn invoice_draft(
     let told = instructions::load(&state.pool, company_id).await;
     let told = instructions::holding(&told, &texts);
     let shielded = Kept::of(&told);
-    let (mut lines, mut removed) = apply(input.lines, &rules, &draft_words, &shielded);
+    let (mut lines, mut removed) = learned_rules.draft(input.lines, &shielded);
     // The wording the AI learned from the company's own invoices, then what
     // an admin told it (which wins).
     let learned = style::load(&state.pool, company_id).await;
@@ -1467,6 +1709,33 @@ pub async fn record(
             Some(&line.draft_text),
             &line.outcome,
             line_ids.get(&line.line_id).map(String::as_str),
+        )
+        .await?;
+    }
+    // The text lines typed in, or that nothing was: the next drafts get
+    // the ones the company's invoices keep getting ([`super::wider`]).
+    let typed = wider::added_lines(draft, &saved.lines);
+    for line in &typed {
+        insert(
+            pool,
+            user,
+            quote_id,
+            invoice_id,
+            "added",
+            Some(&line.shape),
+            Some(&line.text),
+            &Outcome::new("added", Some(&line.after)),
+            line.line_id
+                .as_ref()
+                .and_then(|id| line_ids.get(id))
+                .map(String::as_str),
+        )
+        .await?;
+    }
+    if typed.is_empty() {
+        let none = Outcome::new("none", None);
+        insert(
+            pool, user, quote_id, invoice_id, "added", None, None, &none, None,
         )
         .await?;
     }
@@ -1694,7 +1963,8 @@ mod tests {
                 text("d", "Laser Template"),
             ],
             &rules,
-            &[],
+            &Leads::default(),
+            &Drafted::default(),
             &Kept::default(),
         );
         let texts: Vec<_> = kept
@@ -1718,6 +1988,7 @@ mod tests {
         LinePast {
             outcome: outcome.clone(),
             words: Some(words(lines.iter().copied())),
+            sizes: Arc::new(sizes(lines.iter().copied())),
         }
     }
 
@@ -1752,7 +2023,7 @@ mod tests {
             rules[&fabrication],
             ShapeRule {
                 rule: LineRule::Removed,
-                when: Some(When {
+                when: Some(When::Word {
                     word: "cabinets".into(),
                     has: true
                 }),
@@ -1760,13 +2031,15 @@ mod tests {
         );
         let draft = |extra: &str| vec![text("a", "40 sq ft Fabrication"), text("b", extra)];
         let with = draft("10 Cabinets");
-        let with_words = words(with.iter().filter_map(|l| l.description.as_deref()));
-        let (kept_lines, removed_lines) = apply(with, &rules, &with_words, &Kept::default());
+        let with_quote = Drafted::of(&with);
+        let none = Leads::default();
+        let (kept_lines, removed_lines) = apply(with, &rules, &none, &with_quote, &Kept::default());
         assert_eq!(kept_lines.len(), 1);
         assert_eq!(removed_lines[0].id.as_deref(), Some("a"));
         let without = draft("Granite Zurich");
-        let without_words = words(without.iter().filter_map(|l| l.description.as_deref()));
-        let (kept_lines, removed_lines) = apply(without, &rules, &without_words, &Kept::default());
+        let without_quote = Drafted::of(&without);
+        let (kept_lines, removed_lines) =
+            apply(without, &rules, &none, &without_quote, &Kept::default());
         assert_eq!(kept_lines.len(), 2);
         assert!(removed_lines.is_empty());
 
