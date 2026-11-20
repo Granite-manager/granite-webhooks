@@ -277,9 +277,9 @@ Env: `STRIPE_SECRET_KEY` (the platform account, with Connect enabled),
 `APP_URL` (the links). `CUSTOMER_PAYMENTS_DEMO=1`, for local runs only, never
 calls Stripe: the bank account connects at once, checkout answers no URL and
 the page reports the outcome with `POST /v1/public/pay/{payment_id}/demo`.
-Migrations: `20270208090000_customer-payments.sql`,
-`20270208090100_customer-payments-refunds.sql`,
-`20270208090200_customer-payments-switch.sql`. Tested against a fake Stripe
+Migrations: `20270212090000_customer-payments.sql`,
+`20270212090100_customer-payments-refunds.sql`,
+`20270212090200_customer-payments-switch.sql`. Tested against a fake Stripe
 in `tests/quotes/customer_payments.rs`, and by hand against Stripe's test
 mode (cards, ACH, refunds, disputes, catching up); never in live mode.
 `Stripe::API_VERSION` is pinned: newer versions refuse
