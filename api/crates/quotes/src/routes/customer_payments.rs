@@ -2237,67 +2237,86 @@ async fn payment_of_charge(
     }
 }
 
-/// Why an ACH transfer failed, in Stripe's words.
+/// Why an ACH transfer failed, in plain words (see `decline_reason`).
 async fn failure_reason(state: &AppState, account: &str, intent: Option<&str>) -> String {
-    let fallback = || "the bank declined the transfer".to_string();
     let Some(intent) = intent.filter(|_| state.stripe.is_enabled()) else {
-        return fallback();
+        return decline_reason(PaymentMethod::Ach, &Value::Null);
     };
     match state.stripe.payment_intent(account, intent).await {
-        Ok(intent) => intent["last_payment_error"]["message"]
-            .as_str()
-            .map(str::trim)
-            .filter(|message| !message.is_empty())
-            .map_or_else(fallback, str::to_string),
+        Ok(intent) => decline_reason(PaymentMethod::Ach, &intent["last_payment_error"]),
         Err(error) => {
             tracing::warn!(%error, "payment intent not read");
-            fallback()
+            decline_reason(PaymentMethod::Ach, &Value::Null)
         }
     }
 }
 
-/// Why a payment failed, from a payment intent's `last_payment_error`: a
-/// card's decline code in plain words (a lost or stolen card reads as
-/// declined), else Stripe's message. A bank transfer keeps Stripe's message
-/// unless the account was short of money.
+/// Why a payment failed, from a payment intent's `last_payment_error`, as a
+/// short phrase a manager reads in the bell and on the payment: the decline
+/// or return code (with or without Stripe's `payment_method_` prefix), else
+/// key words of Stripe's message. Unknown reasons read "card declined" or
+/// "the bank declined the transfer"; a lost or stolen card reads as declined.
 fn decline_reason(method: PaymentMethod, error: &Value) -> String {
-    let code = error["decline_code"]
-        .as_str()
-        .or_else(|| error["code"].as_str())
-        .unwrap_or_default();
-    let words = match code {
-        "insufficient_funds" => Some("insufficient funds"),
-        // The rest are a card's codes. A bank transfer that bounced carries
-        // "generic_decline" too, and Stripe's message says what happened.
-        _ if method == PaymentMethod::Ach => None,
-        "expired_card" => Some("the card has expired"),
-        "incorrect_cvc" | "invalid_cvc" => Some("wrong security code"),
-        "incorrect_number" | "invalid_number" => Some("wrong card number"),
-        "card_velocity_exceeded" | "withdrawal_count_limit_exceeded" => {
-            Some("the card's limit was reached")
-        }
-        "generic_decline" | "card_declined" | "do_not_honor" | "lost_card" | "stolen_card"
-        | "fraudulent" | "pickup_card" | "restricted_card" | "merchant_blacklist" => {
-            Some("card declined")
-        }
-        _ => None,
+    let text = |key: &str| error[key].as_str().unwrap_or_default().to_ascii_lowercase();
+    let codes = [text("decline_code"), text("code")];
+    let has = |names: &[&str]| {
+        codes.iter().any(|code| {
+            let code = code.strip_prefix("payment_method_").unwrap_or(code);
+            names.contains(&code)
+        })
     };
-    words
-        .map(str::to_string)
-        .or_else(|| {
-            error["message"]
-                .as_str()
-                .map(str::trim)
-                .filter(|message| !message.is_empty())
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| {
-            match method {
-                PaymentMethod::Card => "card declined",
-                PaymentMethod::Ach => "the bank declined the transfer",
-            }
-            .into()
-        })
+    let message = text("message");
+    let says = |words: &[&str]| words.iter().any(|word| message.contains(word));
+    // Stripe's own message goes to people only through these short phrases:
+    // it is English written for developers ("Your request used a real card
+    // while testing...").
+    let words = if has(&["insufficient_funds"]) || says(&["insufficient funds"]) {
+        "insufficient funds"
+    } else if method == PaymentMethod::Ach {
+        // A bounced transfer often carries "generic_decline"; the return
+        // code or Stripe's message says why.
+        if has(&["account_closed"]) || says(&["closed"]) {
+            "the bank account is closed"
+        } else if has(&["no_account", "invalid_account_number"])
+            || says(&["could not be located", "invalid account"])
+        {
+            "the bank account was not found"
+        } else if has(&["debit_not_authorized", "debit_authorization_not_match"])
+            || says(&["not authorized", "unauthorized"])
+        {
+            "the customer's bank refused the debit"
+        } else if has(&["account_frozen", "bank_account_restricted"])
+            || says(&["frozen", "restricted"])
+        {
+            "the bank account is frozen or restricted"
+        } else {
+            "the bank declined the transfer"
+        }
+    } else if has(&["expired_card"]) {
+        "the card has expired"
+    } else if has(&["incorrect_cvc", "invalid_cvc"]) {
+        "wrong security code"
+    } else if has(&["incorrect_number", "invalid_number"]) {
+        "wrong card number"
+    } else if has(&["invalid_expiry_month", "invalid_expiry_year"]) {
+        "wrong expiry date"
+    } else if has(&["card_velocity_exceeded", "withdrawal_count_limit_exceeded"]) {
+        "the card's limit was reached"
+    } else if has(&[
+        "authentication_required",
+        "payment_intent_authentication_failure",
+    ]) {
+        "the bank's confirmation (3D Secure) was not completed"
+    } else if has(&["card_not_supported", "currency_not_supported"]) {
+        "this card is not accepted"
+    } else if has(&["processing_error"]) {
+        "the card could not be charged, try again"
+    } else if has(&["test_mode_live_card", "live_mode_test_card"]) {
+        "a real card was used in test mode"
+    } else {
+        "card declined"
+    };
+    words.into()
 }
 
 /// A failed payment intent: a declined card (or a bank that refused at once)
@@ -2833,7 +2852,21 @@ mod tests {
         assert_eq!(
             card(serde_json::json!({ "code": "processing_error",
                                      "message": "An error occurred while processing your card." })),
-            "An error occurred while processing your card."
+            "the card could not be charged, try again"
+        );
+        // Stripe's developer wording never reaches the bell.
+        assert_eq!(
+            card(serde_json::json!({ "code": "card_declined",
+                "decline_code": "test_mode_live_card",
+                "message": "Your card was declined. Your request used a real card while testing." })),
+            "a real card was used in test mode"
+        );
+        assert_eq!(
+            card(
+                serde_json::json!({ "code": "card_declined", "decline_code": "something_new",
+                                     "message": "Something Stripe added later." })
+            ),
+            "card declined"
         );
         assert_eq!(card(Value::Null), "card declined");
         assert_eq!(
@@ -2847,7 +2880,29 @@ mod tests {
                 &serde_json::json!({ "code": "no_account", "decline_code": "generic_decline",
                     "message": "The customer's bank account could not be located." })
             ),
-            "The customer's bank account could not be located."
+            "the bank account was not found"
+        );
+        let ach = |error: Value| decline_reason(PaymentMethod::Ach, &error);
+        // What dev's test bank sent on 2026-11-20.
+        assert_eq!(
+            ach(serde_json::json!({ "decline_code": "generic_decline",
+                "message": "The customer's bank account has been closed." })),
+            "the bank account is closed"
+        );
+        assert_eq!(
+            ach(
+                serde_json::json!({ "code": "payment_method_insufficient_funds",
+                "message": "The customer's account has insufficient funds to cover this payment." })
+            ),
+            "insufficient funds"
+        );
+        assert_eq!(
+            ach(serde_json::json!({ "code": "debit_not_authorized", "message": "" })),
+            "the customer's bank refused the debit"
+        );
+        assert_eq!(
+            ach(serde_json::json!({ "message": "Something the bank said." })),
+            "the bank declined the transfer"
         );
     }
 

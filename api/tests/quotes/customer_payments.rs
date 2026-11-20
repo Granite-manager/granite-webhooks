@@ -1073,10 +1073,7 @@ async fn a_failed_transfer_says_why(pool: MySqlPool) {
         .await
         .json();
     assert_eq!(listed[0]["status"], "failed");
-    assert_eq!(
-        listed[0]["failure_reason"],
-        "The customer's bank account has insufficient funds."
-    );
+    assert_eq!(listed[0]["failure_reason"], "insufficient funds");
     assert_eq!(
         stripe
             .lock()
@@ -1088,7 +1085,7 @@ async fn a_failed_transfer_says_why(pool: MySqlPool) {
     );
     assert_eq!(
         bell(&pool).await.last().unwrap().2,
-        "Erin Builder's $500 ACH payment for 5 Oak Ave failed: The customer's bank account has insufficient funds."
+        "Erin Builder's $500 ACH payment for 5 Oak Ave failed: insufficient funds."
     );
     // A late success does not revive it.
     webhook(
@@ -1278,7 +1275,7 @@ async fn payment_intent_events_move_a_payment_like_checkout_s(pool: MySqlPool) {
     assert_eq!(status_of(&pool, id).await, "failed");
     assert_eq!(
         bell(&pool).await.last().unwrap().2,
-        "Erin Builder's $500 ACH payment for 5 Oak Ave failed: The customer's bank account has insufficient funds."
+        "Erin Builder's $500 ACH payment for 5 Oak Ave failed: insufficient funds."
     );
     // Checkout's word on it comes after: heard once.
     webhook(
