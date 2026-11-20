@@ -15,6 +15,7 @@
 //! - `POST .../outbound`                    → Call Control: approve the app's parked calls, or hang up
 //! - `POST .../via-cell?call=`, `.../via-cell-gather?call=`, `.../notice` → Call via my cell
 //! - `POST .../test-call?call=`, `.../cell-code?user=` → test calls, cell verification codes
+//! - `POST .../schedule-call?call=`, `.../schedule-call-answer`, `.../schedule-call-machine`, `.../schedule-call-status` → Scheduling calls (`schedule_call.rs`)
 //! - `POST .../porting`                     → port-in notifications (Ed25519, required; `porting.rs`)
 //! - `POST .../messaging`                   → texts: inbound texts and MMS, delivery status (Ed25519-signed, required)
 //! - `POST .../10dlc`                       → texting registration: brand, campaign and number updates (Ed25519, required; `tendlc.rs`)
@@ -41,6 +42,7 @@ mod misc;
 mod outbound;
 mod porting;
 mod recording;
+mod schedule_call;
 mod status;
 mod tendlc;
 mod via_cell;
@@ -82,6 +84,10 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(via_cell::notice))
         .routes(routes!(misc::test_call))
         .routes(routes!(misc::cell_code))
+        .routes(routes!(schedule_call::schedule_call))
+        .routes(routes!(schedule_call::schedule_call_answer))
+        .routes(routes!(schedule_call::schedule_call_machine))
+        .routes(routes!(schedule_call::schedule_call_status))
         .routes(routes!(porting::porting))
         .routes(routes!(messaging::messaging))
         .routes(routes!(tendlc::take_telnyx_10dlc_event))
@@ -131,6 +137,11 @@ pub struct TexmlRequest {
     pub recording_status: Option<String>,
     /// The recording's length, in seconds.
     pub recording_duration: Option<String>,
+    /// The words said at a `<Gather>` that listens for speech.
+    pub speech_result: Option<String>,
+    /// What picked up a call placed with answering-machine detection:
+    /// `human`, `machine_start`, `fax` or `unknown`.
+    pub answered_by: Option<String>,
     /// The keys pressed at a `<Gather>`.
     pub digits: Option<String>,
     /// Why the call ended (Telnyx's hangup cause).
@@ -212,6 +223,14 @@ impl TexmlRequest {
 
     fn digits(&self) -> Option<&str> {
         field(self.digits.as_ref())
+    }
+
+    fn speech_result(&self) -> Option<&str> {
+        field(self.speech_result.as_ref())
+    }
+
+    fn answered_by(&self) -> Option<&str> {
+        field(self.answered_by.as_ref())
     }
 
     fn hangup_cause(&self) -> Option<&str> {

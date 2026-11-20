@@ -156,6 +156,23 @@ pub struct ConnectionNumber {
     pub phone_number: String,
 }
 
+/// A call our own voice speaks on (`Telnyx::texml_voice_call`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceCall<'a> {
+    /// Who is called, E.164.
+    pub to: &'a str,
+    /// The caller ID, E.164.
+    pub from: &'a str,
+    /// Where Telnyx fetches the TeXML once the call is answered.
+    pub url: &'a str,
+    /// Where the call's final status goes.
+    pub status_callback: &'a str,
+    /// Where Telnyx says what picked up (a person or an answering machine).
+    pub amd_callback: &'a str,
+    /// How long it rings, in seconds (5 to 120).
+    pub ring_secs: u32,
+}
+
 /// `POST /calls/{call_control_id}/actions/transfer`: bridges the app's
 /// parked call to `to`. Unset fields are left out.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -489,11 +506,40 @@ impl Telnyx {
             body["StatusCallback"] = json!(callback);
             body["StatusCallbackMethod"] = json!("POST");
         }
+        self.place_texml(application_id, &body).await
+    }
+
+    /// `texml_call` for a call our own voice speaks on (a confirmation
+    /// call): it rings for `ring_secs`, and Telnyx listens in the background
+    /// for an answering machine (`AsyncAmd`), posting what picked up
+    /// (`AnsweredBy`) to `amd_callback` while the TeXML at `url` already runs.
+    pub async fn texml_voice_call(
+        &self,
+        application_id: &str,
+        call: &VoiceCall<'_>,
+    ) -> Result<Option<String>, TelnyxError> {
+        let body = json!({
+            "To": call.to, "From": call.from, "Url": call.url, "Method": "POST",
+            "StatusCallback": call.status_callback, "StatusCallbackMethod": "POST",
+            "Timeout": call.ring_secs,
+            "MachineDetection": "Enable", "AsyncAmd": true,
+            "AsyncAmdStatusCallback": call.amd_callback, "AsyncAmdStatusCallbackMethod": "POST",
+        });
+        self.place_texml(application_id, &body).await
+    }
+
+    /// `POST /texml/calls/{application_id}`: the new call's `CallSid` when
+    /// Telnyx says it.
+    async fn place_texml(
+        &self,
+        application_id: &str,
+        body: &Value,
+    ) -> Result<Option<String>, TelnyxError> {
         let answer = self
             .json(
                 Method::POST,
                 &format!("/texml/calls/{}", segment(application_id)),
-                Some(&body),
+                Some(body),
             )
             .await?;
         let sid = [

@@ -46,6 +46,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(writes::update, writes::delete))
         .routes(routes!(notifications::send_confirmation))
         .routes(routes!(notifications::scheduling_texts))
+        .routes(routes!(notifications::calls::place))
         .routes(routes!(crew::set_status))
         .routes(routes!(crew::location))
         .routes(routes!(shop::set_status))
