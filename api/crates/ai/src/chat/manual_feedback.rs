@@ -310,7 +310,36 @@ pub async fn correction(
     previous: &[String],
     access: Option<&Access>,
 ) -> Correction {
-    let manual = crm_manual::content_for(&state.pool, question).await;
+    // A question of several features ("customer's quote page": Quotes or the
+    // online quote): the corrected answer covers each, from their sections.
+    let ambiguous = match crm_manual::features(question) {
+        Some(crm_manual::Features::Ask(asked)) => Some(asked),
+        _ => None,
+    };
+    let manual = match &ambiguous {
+        Some(asked) => {
+            let mut ids: Vec<String> = Vec::new();
+            for id in asked.choices.iter().flat_map(|c| &c.sections) {
+                if !ids.contains(id) {
+                    ids.push(id.clone());
+                }
+            }
+            crm_manual::content_with(&state.pool, &ids).await
+        }
+        None => crm_manual::content_for(&state.pool, question).await,
+    };
+    let meanings = ambiguous.as_ref().map_or_else(String::new, |asked| {
+        let labels: Vec<String> = asked
+            .choices
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format!("{}. {}", i + 1, c.label))
+            .collect();
+        format!(
+            "\n\nThe question can mean any of these:\n{}\nAnswer each one briefly under its own **bold** name, in this order.",
+            labels.join("\n")
+        )
+    });
     let quick = cloudtalk_phone_answer(question, access)
         .or_else(|| cloudtalk_credentials_answer(question, access))
         .or_else(|| answer_from_manual(&manual, question, access));
@@ -346,13 +375,18 @@ pub async fn correction(
         "{access_block}APPLICATION SOURCE CODE: none matched this question.\n\nCRM USER MANUAL:\n\n{manual}\n\n{CORRECTION_RULES}"
     );
     let user = format!(
-        "{previous_attempts}The user asked: {question}\n\nThe assistant answered:\n{original_answer}\n\nThe user disliked that answer. This is correction attempt {attempt} of 2. Provide one correct answer based on CURRENT USER ACCESS, then VERIFIED UI FACTS / source code, then the manual. Do not repeat the same steps twice."
+        "{previous_attempts}The user asked: {question}\n\nThe assistant answered:\n{original_answer}\n\nThe user disliked that answer. This is correction attempt {attempt} of 2. Provide one correct answer based on CURRENT USER ACCESS, then VERIFIED UI FACTS / source code, then the manual. Do not repeat the same steps twice.{meanings}"
     );
     let raw = model_correction(state, caller, &system, &user).await;
     let Some(raw) = raw.filter(|r| !r.is_empty()) else {
         let fallback = cloudtalk_phone_answer(question, access)
             .or_else(|| cloudtalk_credentials_answer(question, access))
-            .or_else(|| answer_from_manual(&manual, question, access));
+            .or_else(|| answer_from_manual(&manual, question, access))
+            .or_else(|| {
+                ambiguous.as_ref().map(|asked| {
+                    format!("{}\n\nAsk again naming the one you mean.", asked.question)
+                })
+            });
         return sanitize(
             Correction {
                 answer: fallback.unwrap_or_else(|| {
