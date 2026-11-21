@@ -55828,7 +55828,7 @@
           "quotes"
         ],
         "summary": "Create a quote",
-        "description": "An empty drawing (the company's counter depth and rounding) with the\nprice list's \"always include\" extras, the caller as sales rep (else the\ncustomer's sales rep; 400 when neither is one), the customer's address,\nphone and email copied, and the price list's default tax rate and payment\nterms (else the company's first payment terms).",
+        "description": "An empty drawing (the company's counter depth and rounding) with the\nprice list's \"always include\" extras, the caller as salesperson when they\nare a sales rep (else the customer's assigned person, whatever their\nposition; else the caller), the customer's address,\nphone and email copied, and the price list's default tax rate and payment\nterms (else the company's first payment terms).",
         "operationId": "create_quote",
         "requestBody": {
           "content": {
@@ -55852,7 +55852,7 @@
             }
           },
           "400": {
-            "description": "No customer, or no sales rep for it",
+            "description": "No customer",
             "content": {
               "application/json": {
                 "schema": {
