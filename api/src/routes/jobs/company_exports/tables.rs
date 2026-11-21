@@ -355,10 +355,7 @@ pub const TABLES: &[Table] = &[
         Parent("instruction_id", "instructions", "id"),
     ),
     skip("login_attempts", "sign-in attempts"),
-    skip(
-        "login_challenges",
-        "sign-ins waiting for a code or a new password",
-    ),
+    skip("login_challenges", "sign-ins waiting for a code or a new password"),
     export("notification_email_hides", Parent("user_id", "users", "id")),
     export("notifications", Parent("user_id", "users", "id")),
     skip("password_reset_tokens", "password reset links"),
