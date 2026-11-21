@@ -29,8 +29,12 @@ const CONTRACT_TEMPLATES_BASE: &str = "https://granite-database.s3.us-east-2.ama
 #[derive(Clone)]
 pub struct AppState {
     pub pool: MySqlPool,
-    /// Same value as the Remix app's `SESSION_SECRET`; signs the `__session` cookie.
+    /// `SESSION_SECRET`: signs the `__session` cookie and every other value
+    /// the API signs (the same as `session_secrets.current()`).
     pub session_secret: Arc<str>,
+    /// What a signed value is checked against: `SESSION_SECRET`, plus the
+    /// other secret during a rotation (see [`crate::session_secrets`]).
+    pub session_secrets: crate::session_secrets::SessionSecrets,
     pub allowed_origins: Arc<[String]>,
     /// Bucket for uploaded images.
     pub storage: Storage,
@@ -207,6 +211,7 @@ impl AppState {
         Self {
             pool,
             session_secret: Arc::from(session_secret),
+            session_secrets: crate::session_secrets::SessionSecrets::new(session_secret),
             allowed_origins: parse_origins(allowed_origins).into(),
             storage: Storage::Disabled,
             telegram: TelegramBots::disabled(),
@@ -440,6 +445,21 @@ impl AppState {
         self
     }
 
+    /// Sign with `current` and also accept `other` (a rotation, see
+    /// [`crate::session_secrets`]); `switched_at` in unix seconds.
+    #[must_use]
+    pub fn with_rotated_session_secret(
+        mut self,
+        current: &str,
+        other: &str,
+        switched_at: Option<i64>,
+    ) -> Self {
+        self.session_secret = Arc::from(current);
+        self.session_secrets =
+            crate::session_secrets::SessionSecrets::new(current).with_other(other, switched_at);
+        self
+    }
+
     #[must_use]
     pub fn with_agent_runner_key(mut self, key: &str) -> Self {
         self.agent_runner_key = Some(key.trim())
@@ -465,7 +485,14 @@ impl AppState {
         let origins = std::env::var("API_ALLOWED_ORIGINS")
             .unwrap_or_else(|_| DEFAULT_ALLOWED_ORIGINS.to_string());
         let storage = Storage::from_env();
-        Ok(Self::new(pool, &secret, &origins)
+        let mut state = Self::new(pool, &secret, &origins);
+        state.session_secrets = state.session_secrets.with_other_from_env();
+        lambda_http::tracing::info!(
+            other_session_secret = state.session_secrets.other().is_some(),
+            switched_at = ?state.session_secrets.switched_at(),
+            "session secrets"
+        );
+        Ok(state
             .with_push(Push::from_env(&storage))
             .with_storage(storage)
             .with_telnyx(Telnyx::from_env())

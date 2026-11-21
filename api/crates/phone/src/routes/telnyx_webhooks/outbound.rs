@@ -47,6 +47,7 @@ use crate::phone::lines::{self, CallerId, default_caller_id};
 use crate::phone::numbers::{emergency_code, is_nanp, last10, to_e164};
 use crate::phone::recordings::{self, RecordingKind};
 use crate::phone::{clock, contacts, outcomes, settings};
+use crate::session_secrets::SessionSecrets;
 use crate::state::AppState;
 use crate::telnyx::Transfer;
 use axum::body::Bytes;
@@ -257,6 +258,9 @@ struct Device {
     session_id: i64,
     /// Its SIP user on Telnyx (`gencred...`).
     sip_username: String,
+    /// When its device session signed in (unix seconds): which session
+    /// secrets its call key may come from.
+    session_created: i64,
 }
 
 /// The SIP user (`gencred...`) of a `from` like `sip:gencred1@sip.telnyx.com`;
@@ -272,7 +276,7 @@ fn sip_user(from: Option<&str>) -> Option<&str> {
 async fn live_device(pool: &MySqlPool, company_id: i32, id: i64) -> sqlx::Result<Option<Device>> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT CAST(pd.id AS SIGNED) AS id, pd.user_id, CAST(ds.id AS SIGNED) AS session_id,
-                pd.sip_username
+                pd.sip_username, CAST(UNIX_TIMESTAMP(ds.created_at) AS SIGNED) AS session_created
            FROM phone_devices pd
            JOIN device_sessions ds ON ds.id = pd.device_session_id
           WHERE {LIVE_DEVICE} AND pd.company_id = ? AND ds.company_id = pd.company_id
@@ -342,11 +346,12 @@ struct Unproven {
 
 /// The phone that placed a parked call (see the module docs): the one
 /// `X-Granite-Device-Id` names, proven by `X-Granite-Call-Auth` over the
-/// call to `destination` with its call key (derived from `secret`, the
-/// `SESSION_SECRET`); a SIP user in `from` must be that phone's.
+/// call to `destination` with its call key (derived from a session secret:
+/// during a rotation, the old one too for a phone signed in before it); a
+/// SIP user in `from` must be that phone's.
 async fn calling_device(
     pool: &MySqlPool,
-    secret: &str,
+    secrets: &SessionSecrets,
     company_id: i32,
     payload: &Payload,
     destination: &str,
@@ -371,12 +376,15 @@ async fn calling_device(
         destination,
         caller_id: payload.header("x-granite-caller-id").unwrap_or_default(),
     };
-    let auth = check_call_auth(
-        payload.header("x-granite-call-auth"),
-        &call_key(secret, device.session_id),
-        &signed,
-        Utc::now().timestamp(),
-    );
+    let now = Utc::now().timestamp();
+    let header = payload.header("x-granite-call-auth");
+    let mut auth = Err("no call key");
+    for secret in secrets.for_device_session(device.session_created) {
+        auth = check_call_auth(header, &call_key(secret, device.session_id), &signed, now);
+        if auth.is_ok() {
+            break;
+        }
+    }
     if let Err(reason) = auth {
         return refuse(reason);
     }
@@ -495,7 +503,7 @@ async fn decide(
     let destination = emergency.map_or_else(|| to_e164(dialed).unwrap_or_default(), str::to_string);
     let device = calling_device(
         pool,
-        &state.session_secret,
+        &state.session_secrets,
         company_id,
         payload,
         &destination,

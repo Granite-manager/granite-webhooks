@@ -147,7 +147,7 @@ async fn check_attachments(
         let token = attachment.token.as_deref();
         if !may_attach(
             &state.pool,
-            &state.session_secret,
+            &state.session_secrets,
             user,
             &attachment.url,
             token,

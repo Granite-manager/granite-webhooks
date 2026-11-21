@@ -29,7 +29,7 @@ pub mod routes;
 
 use axum::extract::{MatchedPath, Request, State};
 use axum::http::HeaderValue;
-use axum::http::header::{CONTENT_TYPE, ORIGIN, X_CONTENT_TYPE_OPTIONS};
+use axum::http::header::{CONTENT_TYPE, COOKIE, ORIGIN, X_CONTENT_TYPE_OPTIONS};
 use axum::http::{Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -38,6 +38,48 @@ use state::AppState;
 
 async fn health_check() -> &'static str {
     "ok"
+}
+
+/// During a session secret rotation (`state::session_secrets`), signs the
+/// request's cookies that only the other secret opens again under the
+/// current one, so every route reads them as usual (and `GET
+/// /v1/auth/session` hands the browser the new cookie). Nobody is signed out
+/// by a rotation.
+async fn upgrade_session_cookies(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    if let Some(other) = state.session_secrets.other() {
+        let current = state.session_secrets.current();
+        let headers = request.headers_mut();
+        let resigned: Vec<HeaderValue> = headers
+            .get_all(COOKIE)
+            .iter()
+            .map(|value| {
+                value
+                    .to_str()
+                    .ok()
+                    .and_then(|header| {
+                        auth::cookie::resign_cookies(
+                            header,
+                            &auth::cookie::SIGNED_COOKIE_NAMES,
+                            current,
+                            other,
+                        )
+                    })
+                    .and_then(|header| HeaderValue::from_str(&header).ok())
+                    .unwrap_or_else(|| value.clone())
+            })
+            .collect();
+        if headers.get_all(COOKIE).iter().ne(resigned.iter()) {
+            headers.remove(COOKIE);
+            for value in resigned {
+                headers.append(COOKIE, value);
+            }
+        }
+    }
+    next.run(request).await
 }
 
 /// CSRF defence for cookie-authenticated writes: a browser sends `Origin`
@@ -217,6 +259,10 @@ pub fn app_with_routes(
         .layer(middleware::from_fn_with_state(
             state.clone(),
             report_server_errors,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            upgrade_session_cookies,
         ))
         .layer(middleware::from_fn_with_state(state.clone(), check_origin))
         .layer(middleware::from_fn(no_sniff))

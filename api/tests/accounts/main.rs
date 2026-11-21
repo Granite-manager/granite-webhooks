@@ -16,6 +16,7 @@ mod me;
 mod me_account;
 mod onboarding;
 mod position_sections;
+mod secret_rotation;
 mod teach_mode;
 mod todos;
 mod user_call_activity;

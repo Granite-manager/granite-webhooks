@@ -1012,8 +1012,8 @@ pub async fn finish_quickbooks(
     EmployeeUser(user): EmployeeUser,
     JsonBody(input): JsonBody<QuickbooksCallback>,
 ) -> ApiResult<Json<Connected>> {
-    if !oauth_state::verify(
-        &state.session_secret,
+    if !oauth_state::verify_recent(
+        &state.session_secrets,
         &input.state,
         "quickbooks",
         user.company_id,
@@ -1262,8 +1262,8 @@ pub async fn finish_ringcentral(
             "RingCentral connection was cancelled.".into(),
         ));
     }
-    if !oauth_state::verify(
-        &state.session_secret,
+    if !oauth_state::verify_recent(
+        &state.session_secrets,
         &input.state,
         "ringcentral",
         user.company_id,

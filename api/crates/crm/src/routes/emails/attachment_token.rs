@@ -7,6 +7,7 @@
 //! the caller may read. Same HMAC as the Remix `signAttachmentUrl`, so
 //! scheduled sends the Remix cron delivers keep working.
 
+use crate::session_secrets::SessionSecrets;
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::fmt::Write;
@@ -32,14 +33,19 @@ pub fn sign(secret: &str, url: &str, user_id: i32) -> String {
         })
 }
 
-pub fn verify(secret: &str, url: &str, user_id: i32, token: Option<&str>) -> bool {
+/// Whether `token` is [`sign`]'s for this URL and user, under any session
+/// secret a long-lived value may be signed with (tokens wait in saved
+/// drafts and scheduled emails, see `crate::session_secrets`).
+pub fn verify(secrets: &SessionSecrets, url: &str, user_id: i32, token: Option<&str>) -> bool {
     let Some(token) = token else {
         return false;
     };
     let Some(bytes) = decode_hex(token) else {
         return false;
     };
-    mac(secret, url, user_id).verify_slice(&bytes).is_ok()
+    secrets
+        .all()
+        .any(|secret| mac(secret, url, user_id).verify_slice(&bytes).is_ok())
 }
 
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
@@ -63,10 +69,24 @@ mod tests {
             sign("s", "u", 7),
             "40499754caecf3ad98ebed2c5a256e52405b9725a578c8588e63836bdc3edce7"
         );
-        assert!(verify("s", "u", 7, Some(&sign("s", "u", 7))));
-        assert!(!verify("s", "u", 8, Some(&sign("s", "u", 7))));
-        assert!(!verify("s", "v", 7, Some(&sign("s", "u", 7))));
-        assert!(!verify("s", "u", 7, None));
-        assert!(!verify("s", "u", 7, Some("zz")));
+        let s = SessionSecrets::new("s");
+        assert!(verify(&s, "u", 7, Some(&sign("s", "u", 7))));
+        assert!(!verify(&s, "u", 8, Some(&sign("s", "u", 7))));
+        assert!(!verify(&s, "v", 7, Some(&sign("s", "u", 7))));
+        assert!(!verify(&s, "u", 7, None));
+        assert!(!verify(&s, "u", 7, Some("zz")));
+    }
+
+    #[test]
+    fn tokens_signed_before_a_rotation_still_verify() {
+        let rotated = SessionSecrets::new("new").with_other("s", Some(1));
+        assert!(verify(&rotated, "u", 7, Some(&sign("s", "u", 7))));
+        assert!(verify(&rotated, "u", 7, Some(&sign("new", "u", 7))));
+        assert!(!verify(
+            &SessionSecrets::new("new"),
+            "u",
+            7,
+            Some(&sign("s", "u", 7))
+        ));
     }
 }

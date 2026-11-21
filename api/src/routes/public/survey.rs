@@ -196,10 +196,12 @@ pub async fn create_survey(
     .await?;
     if let (Some(checklist_id), Some(token)) = (input.checklist_id, input.token.as_deref())
         && checklist_id > 0
-        && same(
-            survey_token(&state.session_secret, checklist_id).as_bytes(),
-            token.as_bytes(),
-        )
+        && state.session_secrets.all().any(|secret| {
+            same(
+                survey_token(secret, checklist_id).as_bytes(),
+                token.as_bytes(),
+            )
+        })
     {
         record_completion(&state, company_id, checklist_id).await?;
     }

@@ -1167,3 +1167,77 @@ async fn without_a_notice_recording_the_notice_is_said_before_recording(pool: My
     .unwrap();
     assert_eq!(answered, "in_progress");
 }
+
+/// `X-Granite-Call-Auth` of phone `n` whose call key came from `secret`.
+fn call_auth_under(secret: &str, n: u32, to: &str, caller: &str) -> String {
+    use base64::Engine as _;
+    use hmac::{Hmac, KeyInit, Mac};
+    let mut key = Hmac::<sha2::Sha256>::new_from_slice(secret.as_bytes()).unwrap();
+    key.update(format!("granite-phone-call-key:{}", 950_000 + n).as_bytes());
+    let key = key.finalize().into_bytes();
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(&key).unwrap();
+    let time = now();
+    mac.update(format!("v1|{}|{to}|{caller}|{time}", 960_000 + n).as_bytes());
+    format!(
+        "v1.{time}.{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    )
+}
+
+#[test_db::test(seed)]
+async fn phones_signed_in_before_a_secret_rotation_keep_calling(pool: MySqlPool) {
+    const NEW: &str = "new-session-secret-new-session-secret";
+    enable_calling(&pool, 100, "").await;
+    lines(&pool).await;
+    // Phone 41 signed in a day ago, before the switch; phone 42 after it.
+    add_phone(&pool, 41, 100, 100).await;
+    add_phone(&pool, 42, 100, 100).await;
+    sql(
+        &pool,
+        "UPDATE device_sessions SET created_at = UTC_TIMESTAMP() WHERE id = 950042",
+    )
+    .await;
+    let signer = Signer::new();
+    let key = signer.public_key.clone();
+    let switched = now() - 60;
+    let (server, stubs) = phone_server_with(pool.clone(), move |state| {
+        state
+            .with_phone_config(signed_config(&key))
+            .with_rotated_session_secret(NEW, crate::common::SECRET, Some(switched))
+    })
+    .await;
+    let (to, caller) = ("+13175550142", "+13175550151");
+    // The key phone 41 got at sign-in, from the old secret: still approved.
+    place(&server, &signer, &app_call("v3:r-1", 41, to, caller)).await;
+    assert_eq!(
+        stubs.telnyx_paths(),
+        ["POST /calls/v3:r-1/actions/transfer"]
+    );
+    stubs.clear_telnyx();
+    // A key from the new secret works for both.
+    for (ccid, n) in [("v3:r-2", 41), ("v3:r-3", 42)] {
+        let auth = call_auth_under(NEW, n, to, caller);
+        let device = (960_000 + n).to_string();
+        place(
+            &server,
+            &signer,
+            &named(ccid, &device, to, caller, Some(&auth)),
+        )
+        .await;
+        assert_eq!(
+            stubs.telnyx_paths(),
+            [format!("POST /calls/{ccid}/actions/transfer")]
+        );
+        stubs.clear_telnyx();
+    }
+    // Phone 42 signed in after the switch and never got an old key: one
+    // made from the old secret is forged.
+    let forged = call_auth_under(crate::common::SECRET, 42, to, caller);
+    place(
+        &server,
+        &signer,
+        &named("v3:r-4", "960042", to, caller, Some(&forged)),
+    )
+    .await;
+    assert_refused(&pool, &stubs, "v3:r-4").await;
+}
