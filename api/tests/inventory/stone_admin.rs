@@ -1264,3 +1264,78 @@ async fn a_closeup_is_drawn_in_a_circle_on_the_stone_picture(pool: MySqlPool) {
     assert_ne!(shown, uploaded);
     assert_eq!(original.as_deref(), Some(uploaded.as_str()));
 }
+
+#[test_db::test(seed)]
+async fn the_closeup_circle_goes_where_the_admin_put_it(pool: MySqlPool) {
+    let (server, storage) = server_with_storage(pool.clone());
+    let uploaded = upload(&server, &storage, "stones").await;
+    let closeup = upload(&server, &storage, "stones").await;
+    let mut body = stone_body(Some(&uploaded));
+    body["closeup_url"] = json!(closeup);
+    body["closeup_place"] = json!({ "x": 0.25, "y": 0.75, "size": 0.4 });
+    let id = server
+        .post("/v1/stones")
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    let detail: Value = server
+        .get(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(
+        detail["closeup_place"],
+        json!({ "x": 0.25, "y": 0.75, "size": 0.4 })
+    );
+    let (placed, _) = stone_pictures(&pool, id).await;
+
+    // Moving only the circle draws the picture again; past the edge and too
+    // big, it is kept on the picture.
+    let mut body = stone_body(None);
+    body["closeup_place"] = json!({ "x": 1.4, "y": 0.5, "size": 3 });
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let (moved, original) = stone_pictures(&pool, id).await;
+    assert_ne!(moved, placed);
+    assert_eq!(original.as_deref(), Some(uploaded.as_str()));
+    let detail: Value = server
+        .get(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(
+        detail["closeup_place"],
+        json!({ "x": 1.0, "y": 0.5, "size": 1.0 })
+    );
+
+    // Editing without the field keeps it; null puts it back at the top right.
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&stone_body(None))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(stone_pictures(&pool, id).await.0, moved);
+    let mut body = stone_body(None);
+    body["closeup_place"] = Value::Null;
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_ne!(stone_pictures(&pool, id).await.0, moved);
+    let detail: Value = server
+        .get(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(detail["closeup_place"], Value::Null);
+}

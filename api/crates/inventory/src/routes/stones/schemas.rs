@@ -133,6 +133,9 @@ pub struct StoneDetail {
     pub original_url: Option<String>,
     /// Close-up shown in a red circle on `url`; null when none.
     pub closeup_url: Option<String>,
+    /// Where the close-up circle is on the picture; null: at the top right.
+    #[sqlx(skip)]
+    pub closeup_place: Option<CloseupPlace>,
     /// Supplier id; null if unknown.
     pub supplier_id: Option<i32>,
     /// Shown in the employee and customer catalogs.
@@ -174,6 +177,28 @@ pub struct StoneDetail {
     /// Ids of the colors the stone is tagged with, ascending.
     #[sqlx(skip)]
     pub color_ids: Vec<i32>,
+}
+
+/// Where the admin put the close-up circle (dragged and sized in Edit image).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CloseupPlace {
+    /// Middle of the circle, as a share of the picture's width (0 to 1).
+    pub x: f64,
+    /// Middle of the circle, as a share of the picture's height (0 to 1).
+    pub y: f64,
+    /// Circle across, as a share of the picture's shorter side (0.1 to 1).
+    pub size: f64,
+}
+
+impl From<CloseupPlace> for crate::stone_closeup::CloseupPlace {
+    fn from(place: CloseupPlace) -> Self {
+        Self {
+            x: place.x,
+            y: place.y,
+            size: place.size,
+        }
+    }
 }
 
 /// A slab or remnant of a stone, as the slabs dialog lists it.

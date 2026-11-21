@@ -7,6 +7,8 @@
 
 use super::background::{remove_unused, stone_picture};
 use super::materials::link_materials;
+use super::queries::closeup_place;
+use super::schemas::CloseupPlace;
 use crate::auth::{AdminUser, ShopOrEmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -46,6 +48,11 @@ pub struct StoneInput {
     #[serde(default, deserialize_with = "crate::serde_helpers::double_option")]
     #[schema(value_type = Option<String>)]
     pub closeup_url: Option<Option<String>>,
+    /// Where the close-up circle goes on the image. When editing, omit it to
+    /// keep the current place; null puts it back at the top right.
+    #[serde(default, deserialize_with = "crate::serde_helpers::double_option")]
+    #[schema(value_type = Option<CloseupPlace>)]
+    pub closeup_place: Option<Option<CloseupPlace>>,
     /// Shown in the catalogs.
     #[serde(default)]
     pub is_display: bool,
@@ -111,6 +118,16 @@ fn non_empty(value: Option<&String>) -> Option<&str> {
     value.map(|v| v.trim()).filter(|v| !v.is_empty())
 }
 
+/// `place` with its middle on the picture and a size the circle can have.
+fn inside_picture(place: CloseupPlace) -> CloseupPlace {
+    use crate::stone_closeup::{MAX_SIZE, MIN_SIZE};
+    CloseupPlace {
+        x: place.x.clamp(0.0, 1.0),
+        y: place.y.clamp(0.0, 1.0),
+        size: place.size.clamp(MIN_SIZE, MAX_SIZE),
+    }
+}
+
 async fn validate(
     conn: &mut MySqlConnection,
     company_id: i32,
@@ -128,6 +145,13 @@ async fn validate(
         if value.is_some_and(|v| !v.is_finite() || v < 0.0) {
             return Err(ApiError::BadRequest("Enter a number of 0 or more".into()));
         }
+    }
+    if let Some(Some(place)) = input.closeup_place
+        && ![place.x, place.y, place.size].iter().all(|v| v.is_finite())
+    {
+        return Err(ApiError::BadRequest(
+            "The close-up's place is not a number. Move the circle again.".into(),
+        ));
     }
     if let Some(date) = non_empty(input.delivery_date.as_ref())
         && chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err()
@@ -244,19 +268,30 @@ pub async fn create(
     if let Some(url) = closeup {
         uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
     }
+    let place = input.closeup_place.flatten().map(inside_picture);
     let picture = match uploaded {
         Some(url) => {
             uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
-            Some(stone_picture(&state.storage, &mut tx, user.company_id, url, closeup).await?)
+            Some(
+                stone_picture(
+                    &state.storage,
+                    &mut tx,
+                    user.company_id,
+                    url,
+                    closeup,
+                    place,
+                )
+                .await?,
+            )
         }
         None => None,
     };
     let result = sqlx::query(
         "INSERT INTO stones (name, type, finishing, url, original_url, slab_background_version,
-            closeup_url, company_id, is_display, on_sale,
+            closeup_url, closeup_x, closeup_y, closeup_size, company_id, is_display, on_sale,
             regular_stock, supplier_id, width, length, cost_per_sqft, retail_price, level,
             bundle_number, bundle_location, delivery_date, block_number)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(input.name.trim())
     .bind(input.kind.trim())
@@ -269,6 +304,9 @@ pub async fn create(
     .bind(picture.as_ref().and_then(|p| p.original_url.as_deref()))
     .bind(picture.as_ref().and_then(|p| p.version))
     .bind(closeup)
+    .bind(place.map(|p| p.x))
+    .bind(place.map(|p| p.y))
+    .bind(place.map(|p| p.size))
     .bind(user.company_id)
     .bind(input.is_display)
     .bind(input.on_sale)
@@ -344,10 +382,19 @@ pub async fn update(
         uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
     }
     let closeup = closeup_change.unwrap_or(current_closeup.as_deref());
+    // Some(None): back to the top right; None: it stays where it is.
+    let current_place = closeup_place(&mut *tx, id).await?;
+    let place_change = input
+        .closeup_place
+        .map(|place| place.map(inside_picture))
+        .filter(|place| *place != current_place);
+    let place = place_change.unwrap_or(current_place);
     // A new picture, or the one the stone was uploaded with when only the
-    // close-up changed. A stone without a picture has nothing to draw on.
+    // close-up or its place changed. A stone without a picture has nothing
+    // to draw on.
+    let redraw = closeup_change.is_some() || (place_change.is_some() && closeup.is_some());
     let base = uploaded.or_else(|| {
-        closeup_change?;
+        redraw.then_some(())?;
         current_original
             .as_deref()
             .or(current_url.as_deref())
@@ -357,9 +404,17 @@ pub async fn update(
         uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
     }
     let picture = match base {
-        Some(url) => {
-            Some(stone_picture(&state.storage, &mut tx, user.company_id, url, closeup).await?)
-        }
+        Some(url) => Some(
+            stone_picture(
+                &state.storage,
+                &mut tx,
+                user.company_id,
+                url,
+                closeup,
+                place,
+            )
+            .await?,
+        ),
         None => None,
     };
     let new_url = picture
@@ -385,6 +440,19 @@ pub async fn update(
             .bind(user.company_id)
             .execute(&mut *tx)
             .await?;
+    }
+    if let Some(change) = place_change {
+        sqlx::query(
+            "UPDATE stones SET closeup_x = ?, closeup_y = ?, closeup_size = ?
+              WHERE id = ? AND company_id = ?",
+        )
+        .bind(change.map(|p| p.x))
+        .bind(change.map(|p| p.y))
+        .bind(change.map(|p| p.size))
+        .bind(id)
+        .bind(user.company_id)
+        .execute(&mut *tx)
+        .await?;
     }
     sqlx::query(
         "UPDATE stones SET material_id = IF(TRIM(name) <=> ?, material_id, NULL), name = ?, type = ?, finishing = ?, url = COALESCE(?, url),
