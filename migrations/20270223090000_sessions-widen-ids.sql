@@ -4,7 +4,7 @@
 --
 -- Apply before the API release that hashes them: it writes 64 characters.
 -- The old API keeps working on the wider columns. Rows written before stay
--- bare until the pending `20270222090000_sessions-hash-existing-ids.sql`
+-- bare until the pending `20270224090000_sessions-hash-existing-ids.sql`
 -- hashes them after that release is deployed.
 --
 -- Both tables are small (prod 2026-11-20: 1572 sessions, 86 device sessions),
