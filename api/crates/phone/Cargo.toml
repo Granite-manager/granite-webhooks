@@ -10,11 +10,12 @@ doctest = false
 
 [features]
 # See the api crate's `openapi` feature.
-openapi = ["dep:utoipa", "dep:utoipa-axum", "api-crm/openapi", "api-accounts/openapi"]
+openapi = ["dep:utoipa", "dep:utoipa-axum", "api-crm/openapi", "api-accounts/openapi", "api-schedule/openapi"]
 
 [dependencies]
 api-crm = { path = "../crm" }
 api-accounts = { path = "../accounts" }
+api-schedule = { path = "../schedule" }
 getrandom = "0.4"
 axum = "0.8"
 base64 = "0.22"

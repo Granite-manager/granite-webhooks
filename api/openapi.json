@@ -49418,6 +49418,115 @@
         ]
       }
     },
+    "/v1/events/{id}/confirmation-call": {
+      "post": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Call the customer to confirm",
+        "description": "Places one automatic call to the event's customer from the Scheduling\nManager's line. A voice reads the auto-confirm text (without its \"reply\nYES\" sentence) and asks for a yes or a no: \"yes\" or 1 turns the job\nConfirmed and tells the Scheduling Managers, \"no\" or 2 tells them the\ncustomer said no, \"repeat\" reads it again, anything else is asked again\n(3 tries). The job turns Awaiting confirmation. When the call brings no\nyes or no, the same text is sent to the customer as a scheduling text.",
+        "operationId": "call_event_confirmation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Event id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CallInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The call is ringing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CallPlaced"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unscheduled, no customer or phone, not an auto-confirm text, calls are not set up, or a call is already going",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee, admin or shop manager or worker",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such event in the caller's company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The call could not be placed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/events/{id}/crew-status": {
       "post": {
         "tags": [
@@ -81804,6 +81913,408 @@
         }
       }
     },
+    "/v1/webhooks/telnyx/{token}/schedule-call": {
+      "post": {
+        "tags": [
+          "telnyx-webhooks"
+        ],
+        "summary": "Speak a scheduling call",
+        "description": "The TeXML our scheduling call fetches when the customer picks up: a\n`<Gather>` (a spoken word or one key) in which the voice reads the\nscheduling text and asks for yes (1), no (2) or \"repeat\"; whatever comes\ngoes to `schedule-call-answer`. Hangs up when the call is over, is not\nthe company's, or an answering machine picked up (`AnsweredBy`).",
+        "operationId": "speak_telnyx_schedule_call",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "The company's webhook token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call",
+            "in": "query",
+            "description": "The scheduling call (`schedule_calls.id`).",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Telnyx's request when the customer's phone answered: `CallSid`, `AnsweredBy`",
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TexmlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "TeXML: the message and the question, or hang up",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a form-encoded request, or no `call`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Telnyx's signature does not check out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The account or connection is not the company's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No company has this webhook token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error before the company was known",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/telnyx/{token}/schedule-call-answer": {
+      "post": {
+        "tags": [
+          "telnyx-webhooks"
+        ],
+        "summary": "Take a scheduling call's answer",
+        "description": "The `<Gather>` action of `schedule-call`: `Digits` (1 yes, 2 no) or\n`SpeechResult` (the words said). A yes turns the job Confirmed and tells\nthe Scheduling Managers; a no tells them; \"repeat\" reads the message\nagain; anything else (nothing too) is asked again, and after the last\ntry the customer is told a text is coming and gets the scheduling text.",
+        "operationId": "answer_telnyx_schedule_call",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "The company's webhook token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call",
+            "in": "query",
+            "description": "The scheduling call (`schedule_calls.id`).",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Telnyx's `<Gather>` action request: `CallSid`, `Digits`, `SpeechResult`",
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TexmlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "TeXML: the closing words, the question again, or hang up",
+            "content": {
+              "application/xml": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not a form-encoded request, or no `call`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Telnyx's signature does not check out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The account or connection is not the company's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No company has this webhook token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error before the company was known",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/telnyx/{token}/schedule-call-machine": {
+      "post": {
+        "tags": [
+          "telnyx-webhooks"
+        ],
+        "summary": "Hear what picked up a scheduling call",
+        "description": "Telnyx's answering-machine detection for the call (`AnsweredBy`): for a\nmachine or a fax the call ends as unanswered, is hung up, and the\ncustomer gets the scheduling text. A person changes nothing.",
+        "operationId": "detect_telnyx_schedule_call_machine",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "The company's webhook token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call",
+            "in": "query",
+            "description": "The scheduling call (`schedule_calls.id`).",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Telnyx's detection result: `CallSid`, `AnsweredBy` (`human`, `machine_start`, `fax`, `unknown`)",
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TexmlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Taken"
+          },
+          "400": {
+            "description": "Not a form-encoded request, or no `call`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Telnyx's signature does not check out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The account or connection is not the company's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No company has this webhook token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error before the company was known",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/telnyx/{token}/schedule-call-status": {
+      "post": {
+        "tags": [
+          "telnyx-webhooks"
+        ],
+        "summary": "End a scheduling call",
+        "description": "The call's status callback. An end without a yes or a no (`busy`,\n`no-answer`, `canceled`, `failed`, or `completed` before an answer) is\nnoted on the event and the customer gets the scheduling text. Other\nstatuses change nothing.",
+        "operationId": "end_telnyx_schedule_call",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "description": "The company's webhook token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "call",
+            "in": "query",
+            "description": "The scheduling call (`schedule_calls.id`).",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Telnyx's status callback: `CallSid`, `CallStatus`",
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/TexmlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Taken"
+          },
+          "400": {
+            "description": "Not a form-encoded request, or no `call`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Telnyx's signature does not check out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The account or connection is not the company's",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No company has this webhook token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error before the company was known",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/webhooks/telnyx/{token}/porting": {
       "post": {
         "tags": [
@@ -86465,14 +86976,22 @@
       },
       "CallInput": {
         "type": "object",
-        "description": "Body of `POST /v1/calls/{provider}`.",
+        "description": "Body of `POST /v1/events/{id}/confirmation-call`.",
         "required": [
-          "phone_digits"
+          "template_id"
         ],
         "properties": {
-          "phone_digits": {
-            "type": "string",
-            "description": "10 to 15 digits."
+          "template_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "An auto-confirm text of the company."
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The text as edited before calling. Left out, the template goes as it\nis."
           }
         }
       },
@@ -86541,6 +87060,19 @@
           "voicemail": {
             "type": "boolean",
             "description": "It was a voicemail (a shorter note)."
+          }
+        }
+      },
+      "CallPlaced": {
+        "type": "object",
+        "description": "`POST /v1/events/{id}/confirmation-call`.",
+        "required": [
+          "phone"
+        ],
+        "properties": {
+          "phone": {
+            "type": "string",
+            "description": "The 10 digits being called."
           }
         }
       },
@@ -119010,7 +119542,8 @@
         "description": "`GET /v1/events/{id}/scheduling-texts`.",
         "required": [
           "templates",
-          "ai_ready"
+          "ai_ready",
+          "can_call"
         ],
         "properties": {
           "templates": {
@@ -119030,6 +119563,10 @@
           "ai_ready": {
             "type": "boolean",
             "description": "AI marks the job Ready when the customer agrees."
+          },
+          "can_call": {
+            "type": "boolean",
+            "description": "The company can place a Scheduling call (`POST\n/v1/events/{id}/confirmation-call`): calling is on and the Scheduling\nManager has a Granite Manager line."
           }
         }
       },
@@ -126801,6 +127338,22 @@
               "null"
             ],
             "description": "The recording's length, in seconds.",
+            "default": null
+          },
+          "SpeechResult": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The words said at a `<Gather>` that listens for speech.",
+            "default": null
+          },
+          "AnsweredBy": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What picked up a call placed with answering-machine detection:\n`human`, `machine_start`, `fax` or `unknown`.",
             "default": null
           },
           "Digits": {

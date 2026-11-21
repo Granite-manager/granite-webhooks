@@ -13,6 +13,7 @@ mod phone_telnyx_inbound;
 mod phone_telnyx_outbound;
 mod phone_telnyx_recording;
 mod phone_telnyx_via_cell;
+mod schedule_call;
 mod telnyx_10dlc;
 mod telnyx_calls;
 mod telnyx_notification_number;

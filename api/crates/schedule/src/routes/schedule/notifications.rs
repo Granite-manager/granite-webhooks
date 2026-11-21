@@ -60,6 +60,8 @@ use sqlx::{MySql, MySqlPool, Transaction};
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
+pub mod calls;
+
 /// Longest text a template may send.
 const MAX_SMS: usize = 1600;
 const MAX_EMAIL: usize = 20_000;
@@ -3222,27 +3224,45 @@ pub async fn send_confirmation(
         // An auto-confirm text asks the customer for the date: even a Ready
         // job now awaits their answer.
         let asks = TemplateKind::parse(&template.kind) == TemplateKind::Question;
-        mark_called(pool, user.company_id, id, user.name.as_deref(), asks).await?;
+        mark_called(
+            pool,
+            user.company_id,
+            id,
+            user.name.as_deref(),
+            asks,
+            "texted",
+        )
+        .await?;
     }
     if let Some(sent) = sent.text
         && TemplateKind::parse(&template.kind) == TemplateKind::Question
     {
-        start_waiting(pool, user.company_id, &event, &template, &sent, user.id).await?;
+        start_waiting(
+            pool,
+            user.company_id,
+            &event,
+            &template,
+            &sent,
+            Some(user.id),
+        )
+        .await?;
     }
     Ok(Json(ConfirmationSent {
         channel: message.channel,
     }))
 }
 
-/// The customer was texted: the job turns Called (Awaiting confirmation),
-/// unless it is already Called or Confirmed, or it is Ready and the text
-/// doesn't ask for the date (`asks`: an auto-confirm text).
+/// The customer was texted (or called: `how`): the job turns Called
+/// (Awaiting confirmation), unless it is already Called or Confirmed, or it
+/// is Ready and the text doesn't ask for the date (`asks`: an auto-confirm
+/// text).
 async fn mark_called(
     pool: &MySqlPool,
     company_id: i32,
     event_id: i32,
     user_name: Option<&str>,
     asks: bool,
+    how: &str,
 ) -> Result<(), sqlx::Error> {
     let changed = sqlx::query(
         "UPDATE events SET status = 'called'
@@ -3259,8 +3279,9 @@ async fn mark_called(
     if changed {
         record(
             pool,
-            &History::new(event_id, company_id, "updated", user_name)
-                .message("Status changed to Awaiting confirmation: the customer was texted"),
+            &History::new(event_id, company_id, "updated", user_name).message(&format!(
+                "Status changed to Awaiting confirmation: the customer was {how}"
+            )),
         )
         .await;
     }
@@ -3309,7 +3330,7 @@ async fn start_waiting(
     event: &Appointment,
     template: &TemplateRow,
     sent: &SentText,
-    user_id: i32,
+    user_id: Option<i32>,
 ) -> Result<(), sqlx::Error> {
     let settings = scheduling_settings(pool, company_id).await?;
     let followup = template.followup();
@@ -3407,6 +3428,10 @@ pub struct SchedulingTexts {
     pub problem: Option<String>,
     /// AI marks the job Ready when the customer agrees.
     pub ai_ready: bool,
+    /// The company can place a Scheduling call (`POST
+    /// /v1/events/{id}/confirmation-call`): calling is on and the Scheduling
+    /// Manager has a Granite Manager line.
+    pub can_call: bool,
 }
 
 /// List an event's scheduling texts
@@ -3526,6 +3551,7 @@ pub async fn scheduling_texts(
         templates: previews,
         problem: problem.map(str::to_string),
         ai_ready: settings.ai_ready,
+        can_call: calls::caller(&state, company_id).await?.is_some(),
     }))
 }
 
@@ -3804,42 +3830,71 @@ async fn mark_confirmed(
         &History::new(wait.event_id, wait.company_id, "updated", Some("AI")).message(&line),
     )
     .await;
+    tell_managers(
+        state,
+        &Notice {
+            company_id: wait.company_id,
+            event_id: wait.event_id,
+            customer_id: wait.customer_id,
+            sender: wait.sent_by,
+            actor: "AI",
+        },
+        "is Confirmed: the customer agreed to the date (AI)",
+    )
+    .await?;
+    Ok(true)
+}
+
+/// A notice to the Scheduling Managers about a job.
+struct Notice {
+    company_id: i32,
+    event_id: i32,
+    customer_id: Option<i32>,
+    /// Who texted or called the customer: told when the company has no
+    /// Scheduling Manager.
+    sender: Option<i32>,
+    /// Who the notification is from, e.g. `AI`.
+    actor: &'static str,
+}
+
+/// Tells the company's Scheduling Managers "`<the job's title>` `what`" (a
+/// notification, pushed to their phones).
+async fn tell_managers(state: &AppState, notice: &Notice, what: &str) -> Result<(), sqlx::Error> {
+    let pool = &state.pool;
     let title: Option<Option<String>> =
         sqlx::query_scalar("SELECT NULLIF(TRIM(title), '') FROM events WHERE id = ?")
-            .bind(wait.event_id)
+            .bind(notice.event_id)
             .fetch_optional(pool)
             .await?;
     let title = title.flatten().unwrap_or_else(|| "A job".into());
-    let message: String = format!("{title} is Confirmed: the customer agreed to the date (AI)")
-        .chars()
-        .take(255)
-        .collect();
+    let message: String = format!("{title} {what}").chars().take(255).collect();
     let mut managers: Vec<i32> = sqlx::query_scalar(
         "SELECT u.id FROM users u
            JOIN users_positions up ON up.user_id = u.id
           WHERE up.company_id = ? AND up.position_id = ? AND u.is_deleted = 0
           ORDER BY u.id",
     )
-    .bind(wait.company_id)
+    .bind(notice.company_id)
     .bind(crate::auth::sections::SCHEDULING_MANAGER_POSITION)
     .fetch_all(pool)
     .await?;
-    // No Scheduling Manager: whoever sent the text.
+    // No Scheduling Manager: whoever texted or called.
     if managers.is_empty() {
-        managers.extend(wait.sent_by);
+        managers.extend(notice.sender);
     }
     for user_id in managers {
         let id = sqlx::query(
             "INSERT INTO notifications
                     (user_id, customer_id, event_id, message, notification_type, actor_name,
                      due_at)
-             VALUES (?, ?, ?, ?, 'schedule_ai_ready', 'AI', NOW())",
+             VALUES (?, ?, ?, ?, 'schedule_ai_ready', ?, NOW())",
         )
         .bind(user_id)
-        .bind(wait.customer_id)
+        .bind(notice.customer_id)
         // The job it is about: a tap opens it (the bell and the phone).
-        .bind(wait.event_id)
+        .bind(notice.event_id)
         .bind(&message)
+        .bind(notice.actor)
         .execute(pool)
         .await?
         .last_insert_id();
@@ -3849,7 +3904,7 @@ async fn mark_confirmed(
         )
         .await;
     }
-    Ok(true)
+    Ok(())
 }
 
 /// Sends the wait's follow-up: the last text's follow-up template (itself
