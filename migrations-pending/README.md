@@ -7,9 +7,12 @@ holds, and delete its section below.
 | File | Apply when |
 |---|---|
 | `20270219090000_events-drop-description.sql` | The API release that never reads or writes `events.description` (PR "Events have only notes") is deployed to every Lambda; until then the live API still selects the column. |
-| `20270224090000_sessions-hash-existing-ids.sql` | The API release that stores web sessions hashed (PR "Hash web session ids") is deployed to every API Lambda, prod and dev; until then the live API looks sessions up by the bare id. After it is applied, drop the bare-id fallback (`auth::session::stored_session_ids`). |
 
 ## History
+
+`20270224090000_sessions-hash-existing-ids.sql` moved to `migrations/` on
+2026-11-21, once the API that reads hashed session ids was on both prod API
+Lambdas.
 
 `20260904120200_drop-users-onboarding-columns.sql` moved to `migrations/` on
 2026-09-11. Its preconditions no longer needed a human to sequence them:
