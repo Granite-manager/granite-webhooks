@@ -200,7 +200,8 @@ pub fn subject_of(body: &str) -> String {
 ///
 /// Sends a message to Granite Manager's support team. It joins the user's
 /// open request (status `open` or `waiting`); when they have none, it
-/// starts a new one whose subject is the message's first line. The request
+/// starts a new one whose subject the AI writes from the message (its first
+/// line when the AI cannot). The request
 /// becomes `open` (the team owes an answer). Pictures must be uploaded to
 /// the `bug-reports` folder first (`POST /v1/uploads`). The page, the
 /// PostHog session and the window size help the team see what the user
@@ -270,6 +271,7 @@ pub async fn send_message(
     .bind(user.id)
     .fetch_optional(&mut *tx)
     .await?;
+    let created = open.is_none();
     let conversation_id = if let Some(id) = open {
         id
     } else {
@@ -322,6 +324,16 @@ pub async fn send_message(
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
+    // A new request: Luna writes its subject (the first line stays when it
+    // cannot), unless someone renamed it meanwhile.
+    if created && let Some(subject) = super::ai_subject(&state, &user, &body).await {
+        sqlx::query("UPDATE support_conversations SET subject = ? WHERE id = ? AND subject = ?")
+            .bind(subject)
+            .bind(conversation_id)
+            .bind(subject_of(&body))
+            .execute(&state.pool)
+            .await?;
+    }
     Ok((StatusCode::CREATED, Json(row.for_client())))
 }
 
@@ -361,6 +373,19 @@ pub async fn mark_thread_read(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_subjects_are_cleaned() {
+        assert_eq!(
+            super::super::clean_subject("\"Quote PDF shows the old sink.\"\nmore").as_deref(),
+            Some("Quote PDF shows the old sink")
+        );
+        assert_eq!(
+            super::super::clean_subject("Subject: Login fails").as_deref(),
+            Some("Login fails")
+        );
+        assert_eq!(super::super::clean_subject("  \n "), None);
+    }
 
     #[test]
     fn subjects_are_the_first_line() {

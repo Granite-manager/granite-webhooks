@@ -2604,7 +2604,7 @@
           "support"
         ],
         "summary": "Write to support",
-        "description": "Sends a message to Granite Manager's support team. It joins the user's\nopen request (status `open` or `waiting`); when they have none, it\nstarts a new one whose subject is the message's first line. The request\nbecomes `open` (the team owes an answer). Pictures must be uploaded to\nthe `bug-reports` folder first (`POST /v1/uploads`). The page, the\nPostHog session and the window size help the team see what the user\nsaw. Returns the saved message; answers come back through\n`GET /v1/support/thread`.",
+        "description": "Sends a message to Granite Manager's support team. It joins the user's\nopen request (status `open` or `waiting`); when they have none, it\nstarts a new one whose subject the AI writes from the message (its first\nline when the AI cannot). The request\nbecomes `open` (the team owes an answer). Pictures must be uploaded to\nthe `bug-reports` folder first (`POST /v1/uploads`). The page, the\nPostHog session and the window size help the team see what the user\nsaw. Returns the saved message; answers come back through\n`GET /v1/support/thread`.",
         "operationId": "send_support_message",
         "requestBody": {
           "content": {

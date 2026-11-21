@@ -41,6 +41,53 @@ use serde::{Serialize, Serializer};
 
 pub use client::client_unread;
 
+/// How long the subject model may take before the first line stays.
+const SUBJECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+const SUBJECT_PROMPT: &str = "Write the subject of this support request from a user of Granite Manager, a CRM for countertop and stone fabricators. 3 to 7 words, sentence case, in the language of the message, no quotes, no period at the end. Answer with the subject only.";
+
+/// The model's answer as a subject: one line, no quotes, at most 120 characters.
+pub fn clean_subject(raw: &str) -> Option<String> {
+    let line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let line = line
+        .trim_start_matches(|c| matches!(c, '"' | '\'' | '“' | '”' | '«' | '»'))
+        .trim_end_matches(|c| matches!(c, '"' | '\'' | '“' | '”' | '«' | '»' | '.'))
+        .trim();
+    let line = line.strip_prefix("Subject:").map_or(line, str::trim);
+    (!line.is_empty()).then(|| line.chars().take(120).collect())
+}
+
+/// A short subject for a new request, written by the cheap chat model
+/// (Luna); `None` when the model is off, slow or fails (the first line stays).
+pub async fn ai_subject(state: &AppState, user: &SessionUser, text: &str) -> Option<String> {
+    use crate::ai::{Caller, Chat, MINI_FALLBACK_MODEL, MINI_MODEL};
+    let text: String = text.chars().take(2000).collect();
+    let chat = |model| {
+        let mut chat = Chat::new(model)
+            .max_tokens(Some(300))
+            .message("system", SUBJECT_PROMPT)
+            .message("user", &text);
+        chat.reasoning_effort = Some("low");
+        chat.timeout = SUBJECT_TIMEOUT;
+        chat
+    };
+    let caller = Caller {
+        feature: "support_subject",
+        user_id: Some(user.id),
+        company_id: Some(user.company_id),
+    };
+    let reply = match state.ai.chat(&state.pool, caller, &chat(MINI_MODEL)).await {
+        Err(err) if err.is_model_permission() => {
+            state
+                .ai
+                .chat(&state.pool, caller, &chat(MINI_FALLBACK_MODEL))
+                .await
+        }
+        reply => reply,
+    };
+    reply.ok().as_deref().and_then(clean_subject)
+}
+
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(client::get_thread))
