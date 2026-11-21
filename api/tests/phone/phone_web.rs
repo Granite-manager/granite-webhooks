@@ -126,7 +126,8 @@ async fn a_browser_registers_once_per_web_session_with_the_cookie(pool: MySqlPoo
         device_row(&pool, id).await,
         (
             "web".into(),
-            Some(sessions::REP.into()),
+            // The web session's stored id: the hash of the cookie's.
+            Some(api::auth::session::session_key(sessions::REP)),
             100,
             100,
             "Chrome on Windows".into(),
@@ -330,7 +331,7 @@ async fn signing_out_signs_the_browser_phone_out(pool: MySqlPool) {
     sql(
         &pool,
         &format!(
-            "UPDATE sessions SET is_deleted = 1 WHERE id = '{}'",
+            "UPDATE sessions SET is_deleted = 1 WHERE id = SHA2('{}', 256)",
             sessions::ADMIN
         ),
     )
@@ -410,7 +411,7 @@ async fn a_connected_browser_rings_with_the_apps_phones(pool: MySqlPool) {
     sql(
         &pool,
         &format!(
-            "UPDATE sessions SET is_deleted = 1 WHERE id = '{}'",
+            "UPDATE sessions SET is_deleted = 1 WHERE id = SHA2('{}', 256)",
             sessions::REP
         ),
     )

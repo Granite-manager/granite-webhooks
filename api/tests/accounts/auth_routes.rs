@@ -113,6 +113,67 @@ async fn a_user_signs_in_and_out(pool: MySqlPool) {
         .assert_status_unauthorized();
 }
 
+/// A session is stored as the SHA-256 of its cookie's id: no id the
+/// database holds signs in. A session from before ids were hashed (a bare
+/// id) still signs in and signs out, so nobody is signed out by the change.
+#[test_db::test(seed)]
+async fn sessions_are_stored_hashed(pool: MySqlPool) {
+    let (server, _) = setup(pool.clone(), None).await;
+    let login = server
+        .post("/v1/auth/login")
+        .json(&json!({ "email": "rep@acme.test", "password": PASSWORD }))
+        .await;
+    login.assert_status_ok();
+    let cookie = session_cookie(&login);
+    let value = api::auth::cookie::cookie_value(&cookie, "__session").unwrap();
+    let id = api::auth::cookie::decode_session(&value, SECRET)
+        .and_then(|session| session.session_id)
+        .unwrap();
+    let stored: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM sessions WHERE user_id = 100 AND expiration_date IS NULL",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stored, [api::auth::session::session_key(&id)]);
+    assert_ne!(stored[0], id);
+    server
+        .get("/v1/me")
+        .add_header("cookie", cookie)
+        .await
+        .assert_status_ok();
+    // The hash copied out of the database signs nobody in, even in a cookie
+    // signed with the secret.
+    server
+        .get("/v1/me")
+        .with_session(&stored[0])
+        .await
+        .assert_status_unauthorized();
+
+    // A bare id from before hashing.
+    let bare = "dddddddd-0000-4000-8000-000000000100";
+    sqlx::query("INSERT INTO sessions (id, user_id) VALUES (?, 100)")
+        .bind(bare)
+        .execute(&pool)
+        .await
+        .unwrap();
+    server
+        .get("/v1/me")
+        .with_session(bare)
+        .await
+        .assert_status_ok();
+    server
+        .post("/v1/auth/logout")
+        .with_session(bare)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    server
+        .get("/v1/me")
+        .with_session(bare)
+        .await
+        .assert_status_unauthorized();
+}
+
 #[test_db::test(seed)]
 async fn sessions_never_end_by_time(pool: MySqlPool) {
     let (server, _) = setup(pool.clone(), Some(".granite-manager.com")).await;
@@ -122,24 +183,21 @@ async fn sessions_never_end_by_time(pool: MySqlPool) {
         .json(&json!({ "email": "rep@acme.test", "password": PASSWORD }))
         .await;
     login.assert_status_ok();
-    // Only the new one: the seed's sessions (aaaaaaaa-/bbbbbbbb- ids) are
-    // dated, and just as recent when the test database was just made.
-    let dated: i64 = sqlx::query_scalar(
+    // The new one has no date (the seed's sessions all have one).
+    let undated: i64 = sqlx::query_scalar(
         "SELECT CAST(COUNT(*) AS SIGNED) FROM sessions
-          WHERE user_id = 100 AND created_date > NOW() - INTERVAL 1 MINUTE
-            AND expiration_date IS NOT NULL
-            AND id NOT LIKE 'aaaaaaaa-%' AND id NOT LIKE 'bbbbbbbb-%'",
+          WHERE user_id = 100 AND expiration_date IS NULL",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(dated, 0);
+    assert_eq!(undated, 1);
     // Signed in three months ago, before sessions stopped ending; its date
     // runs out in an hour.
     sqlx::query(
         "UPDATE sessions SET created_date = NOW() - INTERVAL 3 MONTH,
                 expiration_date = NOW() + INTERVAL 1 HOUR
-          WHERE id = ?",
+          WHERE id = SHA2(?, 256)",
     )
     .bind(sessions::REP)
     .execute(&pool)
@@ -161,17 +219,19 @@ async fn sessions_never_end_by_time(pool: MySqlPool) {
     let cookie = session_cookie(&response);
     // ...and the session stops ending: an hour later it still signs in.
     let dated: Option<chrono::NaiveDateTime> =
-        sqlx::query_scalar("SELECT expiration_date FROM sessions WHERE id = ?")
+        sqlx::query_scalar("SELECT expiration_date FROM sessions WHERE id = SHA2(?, 256)")
             .bind(sessions::REP)
             .fetch_one(&pool)
             .await
             .unwrap();
     assert_eq!(dated, None);
-    sqlx::query("UPDATE sessions SET created_date = NOW() - INTERVAL 3 YEAR WHERE id = ?")
-        .bind(sessions::REP)
-        .execute(&pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE sessions SET created_date = NOW() - INTERVAL 3 YEAR WHERE id = SHA2(?, 256)",
+    )
+    .bind(sessions::REP)
+    .execute(&pool)
+    .await
+    .unwrap();
     server
         .get("/v1/me")
         .add_header("cookie", cookie)
@@ -186,7 +246,7 @@ async fn sessions_never_end_by_time(pool: MySqlPool) {
         .await
         .assert_status_unauthorized();
     let year: i64 = sqlx::query_scalar(
-        "SELECT CAST(YEAR(expiration_date) AS SIGNED) FROM sessions WHERE id = ?",
+        "SELECT CAST(YEAR(expiration_date) AS SIGNED) FROM sessions WHERE id = SHA2(?, 256)",
     )
     .bind(sessions::TOO_OLD)
     .fetch_one(&pool)

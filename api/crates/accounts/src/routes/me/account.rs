@@ -6,8 +6,9 @@
 
 use super::mfa::{MfaStatus, status as mfa_status};
 use super::undo_send::{UndoSend, undo_send_of};
-use crate::auth::{ShopOrEmployeeAccess, ShopOrEmployeeUser};
 use crate::auth::cookie::request_session_id;
+use crate::auth::session::stored_session_ids;
+use crate::auth::{ShopOrEmployeeAccess, ShopOrEmployeeUser};
 use crate::email_signature;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -637,11 +638,14 @@ async fn save(
     }
     if password.is_some() {
         let current = request_session_id(headers, &state.session_secret).unwrap_or_default();
+        let [key, bare] = stored_session_ids(&current);
         sqlx::query(
-            "UPDATE sessions SET is_deleted = 1 WHERE user_id = ? AND id <> ? AND is_deleted = 0",
+            "UPDATE sessions SET is_deleted = 1
+              WHERE user_id = ? AND id NOT IN (?, ?) AND is_deleted = 0",
         )
         .bind(actor.user_id)
-        .bind(current)
+        .bind(&key)
+        .bind(&bare)
         .execute(&mut *tx)
         .await?;
     }

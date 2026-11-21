@@ -28,7 +28,9 @@ fn signup(email: &str, subdomain: &str) -> Value {
     })
 }
 
-/// The new company and the session its manager signed in with.
+/// The new company and a session of its manager. Sign-up signed the manager
+/// in; that session's id is only in its cookie (the row holds its hash), so
+/// the tests sign in with a second one of their own.
 async fn signed_up(pool: &MySqlPool, email: &str) -> (i32, String) {
     let (company_id, user_id): (i32, i32) =
         sqlx::query_as("SELECT company_id, id FROM users WHERE email = ?")
@@ -36,12 +38,20 @@ async fn signed_up(pool: &MySqlPool, email: &str) -> (i32, String) {
             .fetch_one(pool)
             .await
             .unwrap();
-    let session: String =
-        sqlx::query_scalar("SELECT id FROM sessions WHERE user_id = ? AND is_deleted = 0")
+    let live: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sessions WHERE user_id = ? AND is_deleted = 0")
             .bind(user_id)
             .fetch_one(pool)
             .await
             .unwrap();
+    assert_eq!(live, 1, "sign-up signs the manager in");
+    let session = "cccccccc-0000-4000-8000-000000000001".to_owned();
+    sqlx::query("INSERT INTO sessions (id, user_id) VALUES (SHA2(?, 256), ?)")
+        .bind(&session)
+        .bind(user_id)
+        .execute(pool)
+        .await
+        .unwrap();
     (company_id, session)
 }
 
