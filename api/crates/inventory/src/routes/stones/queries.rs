@@ -1,6 +1,6 @@
 use super::schemas::{
-    ListStonesQuery, QuickStoneInput, SearchStonesQuery, SlabHold, SlabParentSale, SlabSale, Stone,
-    StoneDetail, StoneRef, StoneSlab,
+    CloseupPlace, ListStonesQuery, QuickStoneInput, SearchStonesQuery, SlabHold, SlabParentSale,
+    SlabSale, Stone, StoneDetail, StoneRef, StoneSlab,
 };
 use crate::sql::{escape_like, push_in};
 use chrono::{DateTime, Utc};
@@ -214,7 +214,27 @@ pub async fn find_stone(
     .bind(stone_id)
     .fetch_all(pool)
     .await?;
+    stone.closeup_place = closeup_place(pool, stone_id).await?;
     Ok(Some(stone))
+}
+
+/// Where the stone's close-up circle is; `None` when it sits at the top right.
+pub async fn closeup_place<'c, E>(
+    executor: E,
+    stone_id: i32,
+) -> Result<Option<CloseupPlace>, sqlx::Error>
+where
+    E: sqlx::Executor<'c, Database = sqlx::MySql>,
+{
+    let place: Option<(Option<f64>, Option<f64>, Option<f64>)> =
+        sqlx::query_as("SELECT closeup_x, closeup_y, closeup_size FROM stones WHERE id = ?")
+            .bind(stone_id)
+            .fetch_optional(executor)
+            .await?;
+    Ok(match place {
+        Some((Some(x), Some(y), Some(size))) => Some(CloseupPlace { x, y, size }),
+        _ => None,
+    })
 }
 
 #[derive(FromRow)]

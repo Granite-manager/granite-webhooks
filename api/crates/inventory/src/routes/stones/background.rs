@@ -14,6 +14,8 @@
 //! stone's close-up (`stones.closeup_url`) is drawn in a circle over the
 //! finished picture (`crate::stone_closeup`), with or without a background.
 
+use super::queries::closeup_place;
+use super::schemas::CloseupPlace;
 use crate::auth::AdminUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
@@ -121,6 +123,7 @@ async fn made_copy(
     background: Option<&SlabBackground>,
     picture_url: &str,
     closeup_url: Option<&str>,
+    place: Option<CloseupPlace>,
     company_id: i32,
 ) -> ApiResult<Option<String>> {
     if background.is_none() && closeup_url.is_none() {
@@ -149,7 +152,7 @@ async fn made_copy(
             bytes = frame(&back, &bytes, &spot)?;
         }
         if let Some(closeup) = closeup {
-            bytes = add_closeup(&bytes, &closeup)?;
+            bytes = add_closeup(&bytes, &closeup, place.map(Into::into))?;
         }
         let icon = make_icon(&bytes);
         Some((bytes, icon))
@@ -179,6 +182,7 @@ pub async fn stone_picture(
     company_id: i32,
     uploaded: &str,
     closeup: Option<&str>,
+    place: Option<CloseupPlace>,
 ) -> ApiResult<StonePicture> {
     let company = company_background(conn, company_id).await?;
     let made = made_copy(
@@ -186,6 +190,7 @@ pub async fn stone_picture(
         company.background.as_ref(),
         uploaded,
         closeup,
+        place,
         company_id,
     )
     .await?;
@@ -387,11 +392,13 @@ pub async fn apply(
     .fetch_all(&mut *conn)
     .await?;
     for (id, shown, original, closeup) in stale {
+        let place = closeup_place(&mut *conn, id).await?;
         let made = made_copy(
             &state.storage,
             company.background.as_ref(),
             &original,
             closeup.as_deref(),
+            place,
             user.company_id,
         )
         .await?;
