@@ -2441,7 +2441,7 @@
           "me"
         ],
         "summary": "Get my badges",
-        "description": "The sidebar badges and desktop alerts the CRM polls each minute, in one\nrequest: name the parts with `include` (repeat the key). Each part is what\nits own route returns: `emails_unread` as `GET /v1/emails/unread`,\n`sms_unread` as `GET /v1/sms/mine/unread-count`, `sms_alerts` as\n`GET /v1/sms/mine/desktop-alerts` (opening the `inbox` provider's page),\n`sales_orders` the count of pending `GET /v1/sales-orders` (absent unless\nthe caller's positions open the Sales orders tab). Parts not asked for are\nabsent. Reads only the CRM's database; the notification bell is\n`GET /v1/notifications`.",
+        "description": "The sidebar badges and desktop alerts the CRM polls each minute, in one\nrequest: name the parts with `include` (repeat the key). Each part is what\nits own route returns: `emails_unread` as `GET /v1/emails/unread`,\n`sms_unread` as `GET /v1/sms/mine/unread-count`, `sms_alerts` as\n`GET /v1/sms/mine/desktop-alerts` (opening the `inbox` provider's page),\n`sales_orders` the count of pending `GET /v1/sales-orders` (absent unless\nthe caller's positions open the Sales orders tab), `support_unread` the\ncaller's support requests with unread answers (as `unread` of\n`GET /v1/support/thread`). Parts not asked for are\nabsent. Reads only the CRM's database; the notification bell is\n`GET /v1/notifications`.",
         "operationId": "get_my_badges",
         "parameters": [
           {
@@ -2458,7 +2458,8 @@
                   "emails_unread",
                   "sms_unread",
                   "sms_alerts",
-                  "sales_orders"
+                  "sales_orders",
+                  "support_unread"
                 ]
               }
             }
@@ -2512,6 +2513,699 @@
           },
           "403": {
             "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/thread": {
+      "get": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Get my support chat",
+        "description": "The signed-in user's conversation with Granite Manager's support team:\ntheir messages and the team's answers over all their support requests,\noldest first (the team's internal notes are never included). Without\n`after`, the latest 100; with `after` (the newest message id the caller\nhas), only newer ones (at most 200), so a poll that finds nothing is a\ntiny answer. `active` says whether a request is still open, `unread` how\nmany have answers not yet read (mark them with\n`POST /v1/support/thread/read`). Write with `POST /v1/support/messages`.",
+        "operationId": "get_support_thread",
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Only messages newer than this message id (the newest one the caller\nhas). Leave out for the latest 100.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The messages and the thread's state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupportThread"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/messages": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Write to support",
+        "description": "Sends a message to Granite Manager's support team. It joins the user's\nopen request (status `open` or `waiting`); when they have none, it\nstarts a new one whose subject is the message's first line. The request\nbecomes `open` (the team owes an answer). Pictures must be uploaded to\nthe `bug-reports` folder first (`POST /v1/uploads`). The page, the\nPostHog session and the window size help the team see what the user\nsaw. Returns the saved message; answers come back through\n`GET /v1/support/thread`.",
+        "operationId": "send_support_message",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewSupportMessage"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupportMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty or too long, or a picture that was not uploaded for this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/thread/read": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Mark support's answers read",
+        "description": "Marks every answer of the support team to the signed-in user as read,\nwhich clears the Chat button's support badge (`support_unread` of\n`GET /v1/me/badges`, `unread` of `GET /v1/support/thread`). Call it when\nthe support chat shows new answers.",
+        "operationId": "mark_support_thread_read",
+        "responses": {
+          "204": {
+            "description": "Marked read"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/agent/bootstrap": {
+      "get": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Start the Support app",
+        "description": "Who is signed in, the team members requests can be assigned to (every\nsuperuser) and the choices of the request fields: types, statuses,\npriorities. Superusers whose session began with two-step sign-in only\n(403 otherwise: the app then asks to sign in again). Next:\n`GET /v1/support/agent/conversations`.",
+        "operationId": "start_support_app",
+        "responses": {
+          "200": {
+            "description": "The signed-in member, the team and the choices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Bootstrap"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a superuser, or not signed in with two-step sign-in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/agent/conversations": {
+      "get": {
+        "tags": [
+          "support"
+        ],
+        "summary": "List support requests",
+        "description": "The Support app's inbox: support requests, unread ones first, then the\nlatest message first (at most 200), with the client, their company, the\nassignee and the start of the latest message, plus counts per pile.\n`view` picks the statuses (default `active`: open and waiting),\n`assignee` whose (`me`, `unassigned`, a user id), `q` searches the\nsubject, the client and the company. Poll it with `version` (from the\nlast answer): when no request changed, it answers `unchanged` only.\nOpen one with `GET /v1/support/agent/conversations/{id}`.",
+        "operationId": "list_support_conversations",
+        "parameters": [
+          {
+            "name": "view",
+            "in": "query",
+            "description": "Which statuses (default `active`: open and waiting).",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "description": "Which requests the inbox shows.",
+              "enum": [
+                "active",
+                "open",
+                "waiting",
+                "resolved",
+                "all"
+              ]
+            }
+          },
+          {
+            "name": "assignee",
+            "in": "query",
+            "description": "`me` (assigned to the caller), `unassigned`, or a user id; leave out\nfor everyone's.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "description": "Words to find in the subject, the client's name or email, or the\ncompany's name.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "The `version` of the caller's last answer: when nothing changed\nsince, the answer is `{\"unchanged\": true}` without the lists.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The inbox, or `unchanged`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Inbox"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown assignee",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a superuser, or not signed in with two-step sign-in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/agent/conversations/{id}": {
+      "get": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Open a support request",
+        "description": "One request with its messages (oldest first, the team's internal notes\nincluded, each client message with the page they were on, their browser\nand the link to their PostHog recording at that moment), who wrote\n(their account, company, plan and usage), their PostHog person page and\nthe company's other requests. Poll an open one with `after` (the newest\nmessage id): only newer messages and the request's state come back.\nMark it read with `POST .../read`; answer with `POST .../messages`.",
+        "operationId": "get_support_conversation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Conversation id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Only messages newer than this id (a poll of an open conversation):\nthe client and their other requests are then left out.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a superuser, or not signed in with two-step sign-in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Change a support request",
+        "description": "Sets its status (`resolved` closes it: the client's next message starts\na new request), type, priority or assignee (any superuser, or null to\nunassign). Fields left out stay. Returns the request as the inbox lists\nit.",
+        "operationId": "update_support_conversation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Conversation id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown status, type or priority, or the assignee is not a superuser",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a superuser, or not signed in with two-step sign-in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/agent/conversations/{id}/messages": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Answer a support request",
+        "description": "Sends the team's answer to the client (it shows in their support chat\nand badges the Chat button), or with `internal` adds a note only the\nteam sees. An answer makes the request `waiting` (on the client), and\nassigns it to the one answering when nobody has it. Marks the request\nread. Returns the saved message.",
+        "operationId": "answer_support_conversation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Conversation id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentReply"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupportMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty or too long",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a superuser, or not signed in with two-step sign-in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/agent/conversations/{id}/read": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Mark a support request read",
+        "description": "The team has read the client's messages: the request loses its unread\nmark in every member's inbox. Call it when the request is on screen and\nthe client wrote since.",
+        "operationId": "mark_support_conversation_read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Conversation id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Marked read"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Not a superuser, or not signed in with two-step sign-in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such request",
             "content": {
               "application/json": {
                 "schema": {
@@ -9404,7 +10098,7 @@
           "stones"
         ],
         "summary": "Remake stone pictures for the current background",
-        "description": "Remakes up to four stone pictures that were made with an older\nbackground: on the current one, or back as uploaded when the company\nremoved its background. Call it again while `pending` is above 0.",
+        "description": "Remakes up to four stone pictures that were made with an older\nbackground: on the current one, or back as uploaded when the company\nremoved its background (the stone's close-up circle stays). Call it again while `pending` is above 0.",
         "operationId": "apply_slab_background",
         "responses": {
           "200": {
@@ -84322,6 +85016,50 @@
           }
         }
       },
+      "Agent": {
+        "type": "object",
+        "description": "A member of the support team.",
+        "required": [
+          "id",
+          "email"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "User id."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name; null when the user has none."
+          },
+          "email": {
+            "type": "string",
+            "description": "Login email."
+          }
+        }
+      },
+      "AgentReply": {
+        "type": "object",
+        "description": "Body of `POST /v1/support/agent/conversations/{id}/messages`.",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "The text (at most 5000 characters)."
+          },
+          "internal": {
+            "type": "boolean",
+            "description": "An internal note for the team: the client never sees it, and the\nrequest's status stays."
+          }
+        },
+        "additionalProperties": false
+      },
       "AgentResult": {
         "type": "object",
         "description": "The agent's structured result (`.github/posthog-autofix/result.schema.json`).\nIt is the agent's claim; [`RunReport::verification`] is what the workflow\nproved.",
@@ -85823,6 +86561,17 @@
                 "type": "null"
               }
             ]
+          },
+          "support_unread": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BadgeCount",
+                "description": "`support_unread`: the caller's support requests with an answer of\nGranite Manager's support team they have not read (the Chat button's\nbadge)."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -86368,96 +87117,51 @@
       },
       "Bootstrap": {
         "type": "object",
-        "description": "`GET /v1/phone/bootstrap`.",
+        "description": "`GET /v1/support/agent/bootstrap`.",
         "required": [
-          "serverTime",
-          "callingEnabled",
-          "user",
-          "callerIds",
-          "settings",
-          "availability",
-          "recordingMode",
-          "notices",
-          "contacts",
-          "unread",
-          "webBaseUrl",
-          "supportEmail",
-          "texting"
+          "me",
+          "agents",
+          "categories",
+          "statuses",
+          "priorities",
+          "posthog_project_url"
         ],
         "properties": {
-          "serverTime": {
-            "type": "string",
-            "format": "date-time",
-            "description": "Our clock (RFC 3339, UTC)."
+          "me": {
+            "$ref": "#/components/schemas/Agent",
+            "description": "The signed-in team member."
           },
-          "minAppVersion": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "The oldest app version that may call (semver); an older app shows\n\"Update required\" and places no calls. Null = any."
-          },
-          "callingEnabled": {
-            "type": "boolean",
-            "description": "The company's kill switch: false = no phone of the company can call."
-          },
-          "user": {
-            "$ref": "#/components/schemas/PhoneUser",
-            "description": "Who is signed in."
-          },
-          "device": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/PhoneDevice",
-                "description": "This session's phone, once registered (`POST /v1/phone/devices`);\nnull before."
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "callerIds": {
+          "agents": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/CallerId"
+              "$ref": "#/components/schemas/Agent"
             },
-            "description": "The numbers the user may call from (direct lines first)."
+            "description": "Everyone a request can be assigned to: every superuser."
           },
-          "settings": {
-            "$ref": "#/components/schemas/PhoneSettings",
-            "description": "The user's phone settings."
+          "categories": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Choice"
+            },
+            "description": "Request types (`category`)."
           },
-          "availability": {
-            "$ref": "#/components/schemas/Availability",
-            "description": "Whether the user's phones ring now."
+          "statuses": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Choice"
+            },
+            "description": "Statuses."
           },
-          "recordingMode": {
-            "$ref": "#/components/schemas/RecordingMode",
-            "description": "Which calls the company records: `off`, `inbound` or `both`."
+          "priorities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Choice"
+            },
+            "description": "Priorities, lowest first."
           },
-          "notices": {
-            "$ref": "#/components/schemas/Notices",
-            "description": "Notice versions and the user's acceptances."
-          },
-          "contacts": {
-            "$ref": "#/components/schemas/ContactsVersion",
-            "description": "The contact index's size and ETag."
-          },
-          "unread": {
-            "$ref": "#/components/schemas/Unread",
-            "description": "Unseen missed calls, voicemails and AI messages of the last 30 days\nin the user's Recents (the Recents badge)."
-          },
-          "webBaseUrl": {
+          "posthog_project_url": {
             "type": "string",
-            "description": "The CRM's address, for \"Open in CRM\" links."
-          },
-          "supportEmail": {
-            "type": "string",
-            "description": "Where users write for help."
-          },
-          "texting": {
-            "$ref": "#/components/schemas/Texting",
-            "description": "The Texts tab."
+            "description": "The PostHog project the CRM records to."
           }
         }
       },
@@ -88397,6 +89101,24 @@
         ],
         "description": "One to-do of a list to save: its text, or its text and person."
       },
+      "Choice": {
+        "type": "object",
+        "description": "A value with its label, for a select.",
+        "required": [
+          "value",
+          "label"
+        ],
+        "properties": {
+          "value": {
+            "type": "string",
+            "description": "The value to send."
+          },
+          "label": {
+            "type": "string",
+            "description": "What to show."
+          }
+        }
+      },
       "ChoiceInput": {
         "type": "object",
         "description": "An answer of a question being saved.",
@@ -88504,6 +89226,166 @@
           "error"
         ]
       },
+      "ClientInfo": {
+        "type": "object",
+        "description": "Who wrote, for the team: what helps answer without asking.",
+        "required": [
+          "user_id",
+          "email",
+          "is_admin",
+          "is_employee",
+          "uses_phone_app",
+          "company_id",
+          "company_name",
+          "source",
+          "user_count",
+          "customer_count"
+        ],
+        "properties": {
+          "user_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "User id (also their PostHog person id)."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Name."
+          },
+          "email": {
+            "type": "string",
+            "description": "Login email."
+          },
+          "phone_number": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Personal phone number."
+          },
+          "is_admin": {
+            "type": "boolean",
+            "description": "Company admin."
+          },
+          "is_employee": {
+            "type": "boolean",
+            "description": "Staff member of the company."
+          },
+          "positions": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their positions in the company, comma separated (`sales_rep, shop_worker`)."
+          },
+          "user_created_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the account was made."
+          },
+          "last_sign_in_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Their latest sign-in on the website."
+          },
+          "uses_phone_app": {
+            "type": "boolean",
+            "description": "They use the phone app (a phone signed in)."
+          },
+          "company_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Their company."
+          },
+          "company_name": {
+            "type": "string",
+            "description": "Its name."
+          },
+          "subdomain": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its web address label (`acme` of acme.granite-manager.com); null when none."
+          },
+          "source": {
+            "type": "string",
+            "description": "`superuser` (set up by Granite Manager) or `signup_page` (signed itself up)."
+          },
+          "signed_up_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When it signed itself up; null for companies Granite Manager set up."
+          },
+          "free_access_until": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "Free access granted until; null when none."
+          },
+          "user_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Live users of the company."
+          },
+          "max_users": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Its user limit."
+          },
+          "customer_count": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Its customers (leads included)."
+          },
+          "subscription_status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stripe subscription status (`active`, `past_due`, `canceled`, `none`, ...); null when never billed."
+          },
+          "plan_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Its plan name."
+          },
+          "monthly_price_cents": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "What it pays a month, in cents."
+          },
+          "current_period_end": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "When the paid period ends."
+          }
+        }
+      },
       "ClosedDeal": {
         "type": "object",
         "description": "A won or lost deal.",
@@ -88537,6 +89419,33 @@
             "description": "When it left its last stage."
           }
         }
+      },
+      "CloseupPlace": {
+        "type": "object",
+        "description": "Where the admin put the close-up circle (dragged and sized in Edit image).",
+        "required": [
+          "x",
+          "y",
+          "size"
+        ],
+        "properties": {
+          "x": {
+            "type": "number",
+            "format": "double",
+            "description": "Middle of the circle, as a share of the picture's width (0 to 1)."
+          },
+          "y": {
+            "type": "number",
+            "format": "double",
+            "description": "Middle of the circle, as a share of the picture's height (0 to 1)."
+          },
+          "size": {
+            "type": "number",
+            "format": "double",
+            "description": "Circle across, as a share of the picture's shorter side (0.1 to 1)."
+          }
+        },
+        "additionalProperties": false
       },
       "Coaching": {
         "type": "object",
@@ -90793,6 +91702,91 @@
           }
         }
       },
+      "ConversationChange": {
+        "type": "object",
+        "description": "Body of `PATCH /v1/support/agent/conversations/{id}`; fields left out\nstay as they are.",
+        "properties": {
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`open`, `waiting` or `resolved`."
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A request type (see the bootstrap's `categories`), or null to clear."
+          },
+          "priority": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`low`, `normal`, `high` or `urgent`."
+          },
+          "assignee_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "A superuser's id, or null to unassign."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConversationDetail": {
+        "type": "object",
+        "description": "`GET /v1/support/agent/conversations/{id}`.",
+        "required": [
+          "conversation",
+          "messages"
+        ],
+        "properties": {
+          "conversation": {
+            "$ref": "#/components/schemas/ConversationSummary",
+            "description": "The request."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SupportMessage"
+            },
+            "description": "Its messages, oldest first, internal notes included, each with the\npage the client was on and the link to their PostHog recording."
+          },
+          "client": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ClientInfo",
+                "description": "Who wrote; left out with `after`."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "posthog_person_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's PostHog person page (every recording of theirs); left out with `after`."
+          },
+          "history": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ConversationSummary"
+            },
+            "description": "The company's other requests, latest first (at most 20); left out with `after`."
+          }
+        }
+      },
       "ConversationFile": {
         "type": "object",
         "description": "A file of the message.",
@@ -90994,6 +91988,115 @@
           }
         },
         "additionalProperties": false
+      },
+      "ConversationSummary": {
+        "type": "object",
+        "description": "A support request as the inbox lists it.",
+        "required": [
+          "id",
+          "status",
+          "priority",
+          "subject",
+          "last_from_support",
+          "last_message_at",
+          "created_at",
+          "unread",
+          "user_id",
+          "user_email",
+          "company_id",
+          "company_name"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Conversation id."
+          },
+          "status": {
+            "type": "string",
+            "description": "`open` (the team owes an answer), `waiting` (on the client), `resolved`."
+          },
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Request type (see `categories` of the bootstrap); null until set."
+          },
+          "priority": {
+            "type": "string",
+            "description": "`low`, `normal`, `high` or `urgent`."
+          },
+          "assignee_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The team member handling it; null when unassigned."
+          },
+          "assignee_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Their name."
+          },
+          "subject": {
+            "type": "string",
+            "description": "The first line of the first message."
+          },
+          "last_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The start of the latest message."
+          },
+          "last_from_support": {
+            "type": "boolean",
+            "description": "The latest message is the team's (an answer or a note)."
+          },
+          "last_message_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the latest message was written."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the request began."
+          },
+          "unread": {
+            "type": "boolean",
+            "description": "The client wrote since the team last read it."
+          },
+          "user_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The client (user id)."
+          },
+          "user_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The client's name."
+          },
+          "user_email": {
+            "type": "string",
+            "description": "The client's email."
+          },
+          "company_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The client's company."
+          },
+          "company_name": {
+            "type": "string",
+            "description": "Its name."
+          }
+        }
       },
       "ConversionCount": {
         "type": "object",
@@ -100259,6 +101362,89 @@
           }
         }
       },
+      "Inbox": {
+        "type": "object",
+        "description": "`GET /v1/support/agent/conversations`.",
+        "required": [
+          "unchanged",
+          "version"
+        ],
+        "properties": {
+          "unchanged": {
+            "type": "boolean",
+            "description": "Nothing changed since the `version` asked with: the other fields are\nleft out."
+          },
+          "version": {
+            "type": "string",
+            "description": "Send back as `version` on the next poll."
+          },
+          "counts": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/InboxCounts",
+                "description": "Counts per pile."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "conversations": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ConversationSummary"
+            },
+            "description": "The requests, unread first, then the latest message first (at most\n200)."
+          }
+        }
+      },
+      "InboxCounts": {
+        "type": "object",
+        "description": "Requests per pile, for the app's sidebar (resolved ones not counted).",
+        "required": [
+          "active",
+          "open",
+          "waiting",
+          "unassigned",
+          "mine",
+          "unread"
+        ],
+        "properties": {
+          "active": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Open and waiting."
+          },
+          "open": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The team owes an answer."
+          },
+          "waiting": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Waiting on the client."
+          },
+          "unassigned": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active ones nobody is assigned to."
+          },
+          "mine": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active ones assigned to the caller."
+          },
+          "unread": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Active ones the client wrote in since the team last read them."
+          }
+        }
+      },
       "InboxGroup": {
         "type": "object",
         "description": "A live pipeline (group) of the company, for the website's Leads page.",
@@ -105358,6 +106544,56 @@
           "url": {
             "type": "string",
             "description": "URL of the picture uploaded to the `supports` folder."
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewSupportMessage": {
+        "type": "object",
+        "description": "Body of `POST /v1/support/messages`.",
+        "required": [
+          "body"
+        ],
+        "properties": {
+          "body": {
+            "type": "string",
+            "description": "The message (at most 5000 characters)."
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Pictures uploaded to the `bug-reports` folder (`POST /v1/uploads`),\nat most 4."
+          },
+          "page_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The CRM page the user is on (path and query)."
+          },
+          "posthog_session_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The user's PostHog session id (`posthog.get_session_id()`), so the\nteam can watch the recording."
+          },
+          "replay_seconds": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many seconds into that session's recording the user wrote."
+          },
+          "screen": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The browser window size, `WIDTHxHEIGHT`."
           }
         },
         "additionalProperties": false
@@ -123559,6 +124795,7 @@
         "description": "One stone with everything an edit form shows.",
         "required": [
           "id",
+          "slab_background_on",
           "is_display",
           "on_sale",
           "regular_stock",
@@ -123590,6 +124827,35 @@
               "null"
             ],
             "description": "Image URL; null when the stone has no picture."
+          },
+          "original_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The picture as uploaded, when `url` was made from it (on the slab\npicture background or with the close-up circle); edit this one."
+          },
+          "closeup_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Close-up shown in a red circle on `url`; null when none."
+          },
+          "closeup_place": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CloseupPlace",
+                "description": "Where the close-up circle is on the picture; null: at the top right."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slab_background_on": {
+            "type": "boolean",
+            "description": "Shown on the company's slab picture background (when it has one)."
           },
           "supplier_id": {
             "type": [
@@ -123804,6 +125070,31 @@
               "null"
             ],
             "description": "Image: the `url` of an upload to the `stones` folder\n(`POST /v1/uploads`). A new stone without one gets a placeholder\nimage; when editing, omit it to keep the current image."
+          },
+          "closeup_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Close-up of the stone: the `url` of an upload to the `stones` folder,\nshown in a red circle at the top right of the image. When editing,\nomit it to keep the current one; null removes it."
+          },
+          "closeup_place": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CloseupPlace",
+                "description": "Where the close-up circle goes on the image. When editing, omit it to\nkeep the current place; null puts it back at the top right."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "slab_background_on": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Put the image on the company's slab picture background (when it has\none). A new stone without it: true; when editing, omit it to keep it."
           },
           "is_display": {
             "type": "boolean",
@@ -124784,6 +126075,124 @@
               "null"
             ],
             "description": "Where that file is stored, to open it; null with `file_id`."
+          }
+        }
+      },
+      "SupportMessage": {
+        "type": "object",
+        "description": "One message of a support conversation.",
+        "required": [
+          "id",
+          "conversation_id",
+          "from_support",
+          "internal",
+          "body",
+          "images",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Message id; ids grow, so the newest one is the `after` of the next poll."
+          },
+          "conversation_id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The conversation (support request) it belongs to."
+          },
+          "from_support": {
+            "type": "boolean",
+            "description": "Written by the support team (else by the client)."
+          },
+          "internal": {
+            "type": "boolean",
+            "description": "An internal note of the team; the client never sees these."
+          },
+          "body": {
+            "type": "string",
+            "description": "The text, as written."
+          },
+          "author_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who wrote it (the team member's or the client's name); null when unknown."
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Pictures added to it (public storage URLs)."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it was written (ISO 8601, UTC)."
+          },
+          "page_path": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team's view only: the CRM page the client was on."
+          },
+          "replay_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team's view only: the PostHog recording of the client's\nsession, at the moment they wrote."
+          },
+          "user_agent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team's view only: the client's browser."
+          },
+          "screen": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The team's view only: the client's window size (`1440x900`)."
+          }
+        }
+      },
+      "SupportThread": {
+        "type": "object",
+        "description": "`GET /v1/support/thread`.",
+        "required": [
+          "messages",
+          "active",
+          "unread"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SupportMessage"
+            },
+            "description": "The caller's messages with support and support's answers, oldest\nfirst, over all their requests (internal notes left out)."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "A request of theirs is open or waiting on them: poll for answers\nwhile the support chat is on screen. False: nothing to wait for."
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The status of their latest request (`open`, `waiting`, `resolved`);\nnull when they never wrote to support."
+          },
+          "unread": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Their requests with an answer they have not read."
           }
         }
       },
@@ -130841,6 +132250,10 @@
     {
       "name": "notifications",
       "description": "The notification bell"
+    },
+    {
+      "name": "support",
+      "description": "The support chat: CRM users write to Granite Manager's support team, and the team (superusers with two-step sign-in) answers from the Support app"
     },
     {
       "name": "quickbooks",

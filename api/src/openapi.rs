@@ -70,6 +70,7 @@ use utoipa::{Modify, OpenApi};
         (name = "deals", description = "The sales pipeline: deals, their stages, activities and notes"),
         (name = "sms", description = "SMS conversations through CloudTalk or RingCentral"),
         (name = "notifications", description = "The notification bell"),
+        (name = "support", description = "The support chat: CRM users write to Granite Manager's support team, and the team (superusers with two-step sign-in) answers from the Support app"),
         (name = "quickbooks", description = "QuickBooks Online invoices and customers"),
         (name = "invoices", description = "Invoices the CRM keeps itself, for companies without QuickBooks"),
         (name = "followups", description = "AI follow-ups: the company rule they obey, timelines and enrollments"),
