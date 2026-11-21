@@ -3831,11 +3831,14 @@ async fn mark_confirmed(
     for user_id in managers {
         let id = sqlx::query(
             "INSERT INTO notifications
-                    (user_id, customer_id, message, notification_type, actor_name, due_at)
-             VALUES (?, ?, ?, 'schedule_ai_ready', 'AI', NOW())",
+                    (user_id, customer_id, event_id, message, notification_type, actor_name,
+                     due_at)
+             VALUES (?, ?, ?, ?, 'schedule_ai_ready', 'AI', NOW())",
         )
         .bind(user_id)
         .bind(wait.customer_id)
+        // The job it is about: a tap opens it (the bell and the phone).
+        .bind(wait.event_id)
         .bind(&message)
         .execute(pool)
         .await?
