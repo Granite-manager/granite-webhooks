@@ -832,7 +832,7 @@ async fn an_answer_that_found_nothing_asks_which_topic(pool: MySqlPool) {
         .collect();
     assert_eq!(
         labels[..2],
-        ["Texting registration (10DLC)", "Granite Manager (Telnyx)"]
+        ["Texting registration (10DLC)", "Granite Manager mobile service"]
     );
     assert!(named(&events, "crmManual").is_empty());
     let saved = history(&pool).await;
@@ -841,7 +841,7 @@ async fn an_answer_that_found_nothing_asks_which_topic(pool: MySqlPool) {
         .unwrap()
         .to_string();
     assert!(
-        asked.contains("Do you mean one of these?\n\n[[CLARIFY:What about the DLC form?|Texting registration (10DLC)=texting-registration-10dlc|Granite Manager (Telnyx)=admin-phone-telnyx"),
+        asked.contains("Do you mean one of these?\n\n[[CLARIFY:What about the DLC form?|Texting registration (10DLC)=texting-registration-10dlc|Granite Manager mobile service=admin-phone-telnyx"),
         "{asked}"
     );
 
