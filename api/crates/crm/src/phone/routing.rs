@@ -13,9 +13,11 @@
 //!
 //! On a user's own direct line (a direct number that rings nobody else),
 //! their forward, voicemail or message decision takes the whole call
-//! ([`Route::takeover`]). On shared and main lines, and direct lines that
-//! ring several people, it only keeps their own phones from ringing: one
-//! person's forward or rule never takes the call from the others.
+//! ([`Route::takeover`]). On a shared line, anyone's "Forward all calls" to
+//! a number forwards the whole call for everyone (the first such user by
+//! id). Otherwise, on shared and main lines and direct lines that ring
+//! several people, it only keeps their own phones from ringing: one
+//! person's voicemail or rule never takes the call from the others.
 //!
 //! Nothing rings while the company's calling is switched off (or the
 //! company is deleted) or the number is inactive: such calls go straight to
@@ -161,7 +163,8 @@ pub struct Route {
     /// The users whose phones ring, by id.
     pub ringers: Vec<Ringer>,
     /// On a user's own direct line: that user, and their decision when it
-    /// is not to ring (forward, voicemail or a message).
+    /// is not to ring (forward, voicemail or a message). On a shared line:
+    /// the first user whose "Forward all calls" goes to a number.
     pub takeover: Option<(i32, Decision)>,
 }
 
@@ -209,10 +212,16 @@ pub async fn route(
         now,
     };
     let own_line = line.kind == NumberKind::Direct && users.len() == 1;
+    let shared = line.kind == NumberKind::Shared;
     let mut route = Route::default();
     for user_id in users {
         let settings = settings::load(pool, user_id, config.company_id).await?;
         let mine = rules.get(&user_id).map_or(&[][..], Vec::as_slice);
+        if shared && route.takeover.is_none() {
+            if let Some(number) = call_rules::forwards_all_to(&settings, now) {
+                route.takeover = Some((user_id, Decision::Forward(number)));
+            }
+        }
         match call_rules::decide(&settings, mine, &call) {
             Decision::Ring => route.ringers.push(Ringer { user_id, settings }),
             Decision::Away => {}
