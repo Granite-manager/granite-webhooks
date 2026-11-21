@@ -87,7 +87,7 @@ impl Default for UserSettings {
     fn default() -> Self {
         Self {
             default_caller_number_id: None,
-            ai_notes: true,
+            ai_notes: false,
             dnd_until: None,
             dnd_indefinite: false,
             working_hours: None,
