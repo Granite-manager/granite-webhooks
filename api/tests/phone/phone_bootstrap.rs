@@ -237,7 +237,7 @@ async fn a_new_user_without_calling_gets_the_defaults(pool: MySqlPool) {
                   "companyName": "Other Granite Co", "isAdmin": false, "portal": null, "skills": ["sell_slabs", "edit_transactions", "edit_quotes"], "hasProjectsBoard": true, "sections": null, "isShopManager": false, "photoUrl": null },
         "device": null,
         "callerIds": [],
-        "settings": { "defaultCallerNumberId": null, "aiNotes": true, "workingHours": null,
+        "settings": { "defaultCallerNumberId": null, "aiNotes": false, "workingHours": null,
                       "cellNumber": null, "cellVerified": false, "cellFallback": false,
                       "ringTimeoutSecs": 25, "forwardAll": false, "forwardAllTo": "voicemail", "forwardAllNumber": null,
                           "displayNumber": "caller", "unknownShowMine": false, "announceDirect": false,

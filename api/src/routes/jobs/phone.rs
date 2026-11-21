@@ -66,7 +66,6 @@ use crate::phone::outcomes::{CONVERSATION_SECS, move_out_of_first_stage};
 use crate::phone::recordings::{self, CopyOutcome, RecordingKind};
 use crate::phone::revoke::{self, RevokeReason};
 use crate::routes::ai::call_note::{CALL_PROMPT, INBOUND_VOICEMAIL_PROMPT, VOICEMAIL_PROMPT};
-use crate::routes::deals::service::{Notification, notify_assignees};
 use crate::routes::followups::call_check::{CallCheck, CallId, PhoneDigits, check_call};
 use crate::state::AppState;
 use crate::transcribe::{TranscribeError, Transcript};
@@ -933,19 +932,7 @@ async fn finish(
         return Ok(NoteOutcome::Later);
     }
     tx.commit().await?;
-    if let (Some(note), Some(deal_id), Some(_)) = (note, deal_id, note_id) {
-        // The rep who made or took the call is not told of its note: they
-        // were on it. A colleague's call on their customer still tells them.
-        notify_assignees(
-            state,
-            deal_id,
-            call.user_id.unwrap_or(0),
-            AI_NOTE_AUTHOR,
-            note,
-            Notification::NoteAdded,
-        )
-        .await;
-    }
+    // An AI note is never sent anyone (no bell, no push): it waits on the deal.
     Ok(match status {
         TranscriptStatus::Done => NoteOutcome::Written,
         TranscriptStatus::Failed => NoteOutcome::Failed,
