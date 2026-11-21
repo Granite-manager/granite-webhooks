@@ -3103,6 +3103,61 @@
      ]
     }
    ]
+  },
+  {
+   "id": "quote-page",
+   "keywords": [
+    "customer quote page",
+    "customer's quote page",
+    "customers quote page",
+    "customers' quote page",
+    "client quote page",
+    "client's quote page",
+    "customer page quote",
+    "customer's page quote"
+   ],
+   "question": "Which one do you mean: Quotes in the app, or the customer quote page (the online quote customers fill in themselves)?",
+   "with_company": "Which one do you mean: Quotes in the app, the customer quote page (the online quote customers fill in themselves), or your company's own process?",
+   "choices": [
+    {
+     "label": "Quotes",
+     "keywords": [
+      "quotes list",
+      "all quotes",
+      "my quotes",
+      "in the app",
+      "emailed",
+      "email",
+      "view your quote",
+      "sales rep",
+      "drawing",
+      "revision",
+      "sold"
+     ],
+     "sections": [
+      "employee-quotes",
+      "employee-quotes-sending-and-selling",
+      "quote-portal-customer"
+     ]
+    },
+    {
+     "label": "Customer quote page",
+     "keywords": [
+      "online quote",
+      "online",
+      "fill in",
+      "draw their own",
+      "their own quote",
+      "own quote",
+      "themselves",
+      "customer quote options",
+      "showroom"
+     ],
+     "sections": [
+      "customer-online-quote"
+     ]
+    }
+   ]
   }
  ]
 }

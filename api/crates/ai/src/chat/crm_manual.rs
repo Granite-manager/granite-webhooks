@@ -476,7 +476,7 @@ pub enum Features {
 /// `crm_manual.json`, like "notifications"): the sections of the ones it
 /// names, or the question to ask when it names none.
 pub fn features(query: &str) -> Option<Features> {
-    let text = without_articles(&corrected(&normalize(query)));
+    let text = without_articles(&corrected(&normalize(&query.replace('\u{2019}', "'"))));
     let entry = MANUAL
         .clarify
         .iter()
@@ -1269,8 +1269,9 @@ fn asks_quote_link(normalized: &str) -> bool {
         // "a link ofr a cusotmer quote": any few words between.
         || re!(r"\b(?:link|url)\b(?: \w+){0,3} (?:c[ou]s\w*m\w*rs?|online) quote\b")
             .is_match(normalized)
-        // Not a bare "quote page": that is also the quote page inside the app.
-        || re!(r"\b(?:c[ou]s\w*m\w*rs?|online) quote page\b").is_match(normalized)
+        // Not a bare "quote page": that is also the quote page inside the app,
+        // and "customer quote page" is asked back (Quotes or the online quote).
+        || re!(r"\bonline quote page\b").is_match(normalized)
         // Not "the customer got the quote": one quote, by email.
         || re!(
             r"\b(?:c[ou]s\w*m\w*rs?|clients?) (?:can |could |to |will |would )?(?:create|make|build|draw|design|start)s? (?:a |an |their |his |her )?(?:own )?(?:online )?quotes?\b"
@@ -1581,7 +1582,7 @@ mod tests {
         for asked in [
             "customer quote link?",
             "Link to the online quote please",
-            "what's the customer quote page",
+            "customer quote page link",
             "send me the online quote page",
             "give me a link ofr a cusotmer quote",
             "No, so a customer can create a quote.",
@@ -1602,6 +1603,9 @@ mod tests {
             "how do I link a quote to a deal",
             "how many stones are in inventory",
             "how do I open the quote page",
+            // Quotes or the online quote: asked back.
+            "what's the customer quote page",
+            "customer's quote page",
             // One quote's link: only its email has it.
             "what's the quote url",
             "what does the customer see when i send them the quote link",
@@ -1916,6 +1920,33 @@ mod tests {
             ("Our company's process", Source::Company)
         );
         assert!(company.sections.is_empty());
+    }
+
+    /// "Customer's quote page" is Quotes in the app or the online quote
+    /// customers fill in themselves: asked back unless the question says which.
+    #[test]
+    fn a_customer_quote_page_is_asked_back_unless_the_question_says_which() {
+        for question in [
+            "customer's quote page",
+            "Customer’s quote page",
+            "where is the customer quote page",
+            "customer page quote",
+        ] {
+            let Some(Features::Ask(asked)) = features(question) else {
+                panic!("{question}")
+            };
+            let labels: Vec<&str> = asked.choices.iter().map(|c| c.label.as_str()).collect();
+            assert_eq!(labels, ["Quotes", "Customer quote page"], "{question}");
+        }
+        assert_eq!(
+            features("customer quote page where they fill in their own quote"),
+            Some(Features::Named(vec!["customer-online-quote".to_string()]))
+        );
+        let Some(Features::Named(ids)) = features("customer's quote page in my quotes") else {
+            panic!("named")
+        };
+        assert_eq!(ids[0], "employee-quotes");
+        assert_eq!(features("how do I create a quote for a customer"), None);
     }
 
     #[test]
