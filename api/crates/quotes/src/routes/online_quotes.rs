@@ -1428,6 +1428,29 @@ async fn keep_lead_message(
     }
 }
 
+/// The bell's "Online Quote" notification for each of `users`: the customer
+/// sent their measurements; it opens their newest quote. Their phones already
+/// get the `lead` push, so the row sends none. Best effort.
+async fn add_bell(state: &AppState, customer_id: i32, users: &[i32], customer: &str) {
+    let actor: String = customer.chars().take(255).collect();
+    for user in users {
+        if let Err(error) = sqlx::query(
+            "INSERT INTO notifications
+                    (user_id, customer_id, message, notification_type, actor_name, due_at)
+             VALUES (?, ?, 'Sent their measurements with the online quote',
+                     'online_quote', ?, NOW())",
+        )
+        .bind(user)
+        .bind(customer_id)
+        .bind(&actor)
+        .execute(&state.pool)
+        .await
+        {
+            tracing::error!(?error, user, customer_id, "could not add the online quote notification");
+        }
+    }
+}
+
 /// The sales managers get the lead in Telegram with a button per sales rep
 /// (this month's leads on it) to assign it, as the lead pipeline sends new
 /// leads, plus one to open the quote. Managers who could not be reached in
@@ -1474,6 +1497,7 @@ async fn notify_managers(
         }
     }
     let manager_ids: Vec<i32> = managers.iter().map(|m| m.id).collect();
+    add_bell(state, customer_id, &manager_ids, notice.customer).await;
     // `assign: "1"`: tapping it opens the lead inbox, where a manager picks its rep.
     if let Err(error) = push_manager_lead(
         state,
@@ -1552,6 +1576,7 @@ async fn notify_rep(
     branding: &Branding,
 ) {
     let title = format!("{} finished the online quote", notice.customer);
+    add_bell(state, customer_id, &[rep.id], notice.customer).await;
     push_lead_logged(
         state,
         company_id,

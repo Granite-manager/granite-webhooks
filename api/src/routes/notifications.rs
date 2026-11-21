@@ -484,6 +484,7 @@ fn type_title(kind: &str) -> Option<&'static str> {
         "signature_signed" => "Document Signed",
         "signature_declined" => "Document Declined",
         "quote_signed" => "Quote Signed",
+        ONLINE_QUOTE => "Online Quote",
         "delayed_message_sent" => "Scheduled Message Sent",
         "delayed_message_failed" => "Scheduled Message Failed",
         "e911_alert" => "Emergency Call",
@@ -517,6 +518,9 @@ const JOB_CONFIRMED: &str = "schedule_ai_ready";
 /// the company's Inventory Managers: it opens the Sales orders page.
 const SALES_ORDER: &str = "sales_order";
 const SALES_ORDERS_HREF: &str = "/employee/sales-orders";
+/// A customer sent their measurements with the online quote; for its sales
+/// rep, else the sales managers. It opens the customer's newest quote.
+const ONLINE_QUOTE: &str = "online_quote";
 /// Where an event's issue opens when it names no deal or customer.
 const SCHEDULE_HREF: &str = "/employee/schedule";
 /// The 10DLC texting registration's notifications
@@ -558,6 +562,8 @@ struct ActivityRow {
     actor_name: Option<String>,
     /// A customer payment's id (`pay_...`), for its `payment_*` rows.
     payment: Option<String>,
+    /// An `online_quote`'s quote: the customer's newest.
+    quote_id: Option<i32>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -663,6 +669,9 @@ async fn activity(
                 pr.id AS project_id, n.event_id, c.id AS customer_id, n.message,
                 c.name AS customer_name, n.notification_type, n.actor_name,
                 cp.public_id AS payment,
+                CASE WHEN n.notification_type = 'online_quote' THEN
+                  (SELECT MAX(q.id) FROM quotes q
+                    WHERE q.customer_id = c.id AND q.deleted_at IS NULL) END AS quote_id,
                 -- A deadline reminder happens at its deadline, not when it was scheduled.
                 DATE_FORMAT(CASE WHEN n.notification_type IN ('activity_deadline_reminder',
                                                               'project_task_reminder')
@@ -681,7 +690,8 @@ async fn activity(
             -- A scheduled message's outcome shows with or without a deal, and
             -- so does a job the AI confirmed and a job's customer to-dos.
             AND (((d.id IS NOT NULL OR pr.id IS NOT NULL) AND c.id IS NOT NULL)
-                 OR (n.notification_type IN ('installation_completed', 'customer_todos')
+                 OR (n.notification_type IN ('installation_completed', 'customer_todos',
+                                             'online_quote')
                      AND c.id IS NOT NULL AND c.deleted_at IS NULL)
                  OR n.notification_type IN ('e911_alert', 'tendlc_ready', 'tendlc_status',
                                             'phone_port', 'ai_promise_due',
@@ -736,6 +746,9 @@ async fn activity(
                 _ if promise => PROMISES_HREF.to_string(),
                 _ if kind == Some(TENDLC_READY) => TENDLC_READY_HREF.to_string(),
                 _ if kind == Some(SALES_ORDER) => SALES_ORDERS_HREF.to_string(),
+                _ if kind == Some(ONLINE_QUOTE) && row.quote_id.is_some() => {
+                    format!("/employee/quote/{}", row.quote_id.unwrap_or_default())
+                }
                 // A payment opens the customer's Projects tab at its project.
                 (_, Some(customer)) if kind.is_some_and(|kind| kind.starts_with("payment_")) => {
                     let at = row.payment.as_ref().map(|id| format!("?payment={id}"));
