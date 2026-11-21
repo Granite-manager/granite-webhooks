@@ -1446,7 +1446,12 @@ async fn add_bell(state: &AppState, customer_id: i32, users: &[i32], customer: &
         .execute(&state.pool)
         .await
         {
-            tracing::error!(?error, user, customer_id, "could not add the online quote notification");
+            tracing::error!(
+                ?error,
+                user,
+                customer_id,
+                "could not add the online quote notification"
+            );
         }
     }
 }
