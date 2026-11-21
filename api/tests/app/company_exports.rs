@@ -2,6 +2,7 @@
 
 use crate::common::{ALLOWED_ORIGIN, SECRET};
 use api::routes::jobs::company_exports::archive;
+use api::routes::jobs::company_exports::gcs::{Uploaded, Uploader};
 use api::routes::jobs::company_exports::tables::{
     self, FILE_COLUMNS, FileColumn, NOT_FILE_COLUMNS, Rule, SECRET_COLUMNS, Scope, TABLES,
 };
@@ -66,7 +67,10 @@ struct Zip(BTreeMap<String, Vec<u8>>);
 
 impl Zip {
     async fn read(storage: &Storage, key: &str) -> Self {
-        let bytes = storage.get(key).await.unwrap().unwrap().bytes;
+        Self::from_bytes(storage.get(key).await.unwrap().unwrap().bytes)
+    }
+
+    fn from_bytes(bytes: Vec<u8>) -> Self {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         let mut files = BTreeMap::new();
         for index in 0..archive.len() {
@@ -540,6 +544,80 @@ async fn the_next_days_add_only_new_files_and_mondays_all(pool: MySqlPool) {
             .contains_key("files/main/dynamic-images/images/bath.jpg")
     );
     assert_eq!(sent.lock().unwrap().len(), 3);
+}
+
+#[test_db::test(seed)]
+async fn a_company_with_a_google_bucket_gets_the_zip_there_and_no_email(pool: MySqlPool) {
+    set_up(&pool).await;
+    let (state, storage, sent) = state(&pool);
+    let uploaded = Arc::new(Mutex::new(Vec::<Uploaded>::new()));
+    let state = state.with_extension(Uploader::Memory(uploaded.clone()));
+    put(
+        &storage,
+        "dynamic-images/images/kitchen.jpg",
+        b"kitchen-bytes",
+    )
+    .await;
+    // Tuesday: emailed as before.
+    run_due(&state, new_york(10, 6)).await.unwrap();
+    assert_eq!(sent.lock().unwrap().len(), 1);
+
+    sqlx::query("UPDATE company_exports SET gcs_bucket = 'acme_backup' WHERE company_id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Wednesday: the first upload to Google has every file, and no email.
+    let run = run_due(&state, new_york(11, 8)).await.unwrap();
+    assert_eq!(run.sent, 1);
+    assert_eq!(sent.lock().unwrap().len(), 1);
+    assert!(!zips(&storage).iter().any(|key| key.contains("2026-11-11")));
+    let company: String = sqlx::query_scalar("SELECT name FROM company WHERE id = 100")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let first = uploaded.lock().unwrap()[0].clone();
+    assert_eq!(first.bucket, "acme_backup");
+    assert_eq!(first.name, format!("{company}/2026-11-11.zip"));
+    let zip = Zip::from_bytes(first.bytes);
+    assert_eq!(
+        zip.0["files/main/dynamic-images/images/kitchen.jpg"],
+        b"kitchen-bytes"
+    );
+    let (uri, object_key): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT gcs_uri, object_key FROM company_export_runs
+          WHERE company_id = 100 AND export_date = '2026-11-11' AND status = 'sent'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        uri.as_deref(),
+        Some(format!("gs://acme_backup/{company}/2026-11-11.zip").as_str())
+    );
+    assert_eq!(object_key, None);
+
+    // Thursday: only new files.
+    sqlx::query(
+        "INSERT INTO images (id, name, url, company_id) VALUES
+           (9103, 'Bath', 'https://files.test/bucket/dynamic-images/images/bath.jpg', 100)",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    put(&storage, "dynamic-images/images/bath.jpg", b"bath-bytes").await;
+    run_due(&state, new_york(12, 8)).await.unwrap();
+    let second = uploaded.lock().unwrap()[1].clone();
+    assert_eq!(second.name, format!("{company}/2026-11-12.zip"));
+    let zip = Zip::from_bytes(second.bytes);
+    assert!(
+        zip.0
+            .contains_key("files/main/dynamic-images/images/bath.jpg")
+    );
+    assert!(
+        !zip.0
+            .contains_key("files/main/dynamic-images/images/kitchen.jpg")
+    );
+    assert_eq!(sent.lock().unwrap().len(), 1);
 }
 
 #[test_db::test(seed)]
