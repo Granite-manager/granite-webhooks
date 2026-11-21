@@ -1339,3 +1339,65 @@ async fn the_closeup_circle_goes_where_the_admin_put_it(pool: MySqlPool) {
         .json();
     assert_eq!(detail["closeup_place"], Value::Null);
 }
+
+#[test_db::test(seed)]
+async fn a_stone_can_be_shown_without_the_slab_background(pool: MySqlPool) {
+    let (server, storage) = server_with_storage(pool.clone());
+    let background = upload(&server, &storage, "stones").await;
+    server
+        .put("/v1/stones/settings/slab-background")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "url": background, "spot": SPOT }))
+        .await
+        .assert_status_ok();
+    let uploaded = upload(&server, &storage, "stones").await;
+    let mut body = stone_body(Some(&uploaded));
+    body["slab_background_on"] = json!(false);
+    let id = server
+        .post("/v1/stones")
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    // Switched off: the picture as uploaded.
+    assert_eq!(stone_pictures(&pool, id).await, (uploaded.clone(), None));
+    let detail: Value = server
+        .get(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(detail["slab_background_on"], json!(false));
+
+    // Switched on: on the background; omitted when editing, it stays on.
+    let mut body = stone_body(None);
+    body["slab_background_on"] = json!(true);
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let (framed, original) = stone_pictures(&pool, id).await;
+    assert_ne!(framed, uploaded);
+    assert_eq!(original.as_deref(), Some(uploaded.as_str()));
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&stone_body(None))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(stone_pictures(&pool, id).await.0, framed);
+
+    // Off again: back as uploaded.
+    let mut body = stone_body(None);
+    body["slab_background_on"] = json!(false);
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(stone_pictures(&pool, id).await, (uploaded, None));
+}

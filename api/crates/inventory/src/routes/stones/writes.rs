@@ -53,6 +53,10 @@ pub struct StoneInput {
     #[serde(default, deserialize_with = "crate::serde_helpers::double_option")]
     #[schema(value_type = Option<CloseupPlace>)]
     pub closeup_place: Option<Option<CloseupPlace>>,
+    /// Put the image on the company's slab picture background (when it has
+    /// one). A new stone without it: true; when editing, omit it to keep it.
+    #[serde(default)]
+    pub slab_background_on: Option<bool>,
     /// Shown in the catalogs.
     #[serde(default)]
     pub is_display: bool,
@@ -269,6 +273,7 @@ pub async fn create(
         uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
     }
     let place = input.closeup_place.flatten().map(inside_picture);
+    let on_background = input.slab_background_on.unwrap_or(true);
     let picture = match uploaded {
         Some(url) => {
             uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
@@ -280,6 +285,7 @@ pub async fn create(
                     url,
                     closeup,
                     place,
+                    on_background,
                 )
                 .await?,
             )
@@ -288,10 +294,11 @@ pub async fn create(
     };
     let result = sqlx::query(
         "INSERT INTO stones (name, type, finishing, url, original_url, slab_background_version,
-            closeup_url, closeup_x, closeup_y, closeup_size, company_id, is_display, on_sale,
+            closeup_url, closeup_x, closeup_y, closeup_size, slab_background_on, company_id,
+            is_display, on_sale,
             regular_stock, supplier_id, width, length, cost_per_sqft, retail_price, level,
             bundle_number, bundle_location, delivery_date, block_number)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(input.name.trim())
     .bind(input.kind.trim())
@@ -307,6 +314,7 @@ pub async fn create(
     .bind(place.map(|p| p.x))
     .bind(place.map(|p| p.y))
     .bind(place.map(|p| p.size))
+    .bind(on_background)
     .bind(user.company_id)
     .bind(input.is_display)
     .bind(input.on_sale)
@@ -359,15 +367,16 @@ pub async fn update(
     JsonBody(input): JsonBody<StoneInput>,
 ) -> ApiResult<StatusCode> {
     let mut tx = state.pool.begin().await?;
-    let current: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT url, original_url, closeup_url FROM stones
+    let current: Option<(Option<String>, Option<String>, Option<String>, bool)> = sqlx::query_as(
+        "SELECT url, original_url, closeup_url, slab_background_on FROM stones
           WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
     )
     .bind(id)
     .bind(user.company_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (current_url, current_original, current_closeup) = current.ok_or(ApiError::NotFound)?;
+    let (current_url, current_original, current_closeup, current_on_background) =
+        current.ok_or(ApiError::NotFound)?;
     validate(&mut tx, user.company_id, &input).await?;
     let uploaded = non_empty(input.image_url.as_ref())
         .filter(|url| Some(*url) != current_url.as_deref())
@@ -389,10 +398,16 @@ pub async fn update(
         .map(|place| place.map(inside_picture))
         .filter(|place| *place != current_place);
     let place = place_change.unwrap_or(current_place);
+    let background_change = input
+        .slab_background_on
+        .filter(|on| *on != current_on_background);
+    let on_background = background_change.unwrap_or(current_on_background);
     // A new picture, or the one the stone was uploaded with when only the
-    // close-up or its place changed. A stone without a picture has nothing
+    // close-up, its place or the Slab background switch changed. A stone without a picture has nothing
     // to draw on.
-    let redraw = closeup_change.is_some() || (place_change.is_some() && closeup.is_some());
+    let redraw = closeup_change.is_some()
+        || background_change.is_some()
+        || (place_change.is_some() && closeup.is_some());
     let base = uploaded.or_else(|| {
         redraw.then_some(())?;
         current_original
@@ -412,6 +427,7 @@ pub async fn update(
                 url,
                 closeup,
                 place,
+                on_background,
             )
             .await?,
         ),
@@ -436,6 +452,14 @@ pub async fn update(
     if let Some(change) = closeup_change {
         sqlx::query("UPDATE stones SET closeup_url = ? WHERE id = ? AND company_id = ?")
             .bind(change)
+            .bind(id)
+            .bind(user.company_id)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if let Some(on) = background_change {
+        sqlx::query("UPDATE stones SET slab_background_on = ? WHERE id = ? AND company_id = ?")
+            .bind(on)
             .bind(id)
             .bind(user.company_id)
             .execute(&mut *tx)

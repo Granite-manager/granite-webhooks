@@ -174,8 +174,9 @@ async fn made_copy(
 }
 
 /// What to store for the stone picture `uploaded` (as uploaded): on the
-/// company's background when it has one, with `closeup` in a circle when
-/// given, as long as the files can be read.
+/// company's background when it has one and `on_background` (the stone's
+/// Slab background switch), with `closeup` in a circle when given, as long
+/// as the files can be read.
 pub async fn stone_picture(
     storage: &Storage,
     conn: &mut MySqlConnection,
@@ -183,11 +184,12 @@ pub async fn stone_picture(
     uploaded: &str,
     closeup: Option<&str>,
     place: Option<CloseupPlace>,
+    on_background: bool,
 ) -> ApiResult<StonePicture> {
     let company = company_background(conn, company_id).await?;
     let made = made_copy(
         storage,
-        company.background.as_ref(),
+        company.background.as_ref().filter(|_| on_background),
         uploaded,
         closeup,
         place,
@@ -380,8 +382,8 @@ pub async fn apply(
 ) -> ApiResult<Json<PendingPictures>> {
     let mut conn = state.pool.acquire().await?;
     let company = company_background(&mut conn, user.company_id).await?;
-    let stale: Vec<(i32, Option<String>, String, Option<String>)> = sqlx::query_as(
-        "SELECT id, url, original_url, closeup_url FROM stones
+    let stale: Vec<(i32, Option<String>, String, Option<String>, bool)> = sqlx::query_as(
+        "SELECT id, url, original_url, closeup_url, slab_background_on FROM stones
           WHERE company_id = ? AND deleted_at IS NULL AND original_url IS NOT NULL
             AND NOT (slab_background_version <=> ?)
           ORDER BY id LIMIT ?",
@@ -391,18 +393,20 @@ pub async fn apply(
     .bind(APPLY_BATCH)
     .fetch_all(&mut *conn)
     .await?;
-    for (id, shown, original, closeup) in stale {
+    for (id, shown, original, closeup, on_background) in stale {
         let place = closeup_place(&mut *conn, id).await?;
+        // A stone with its Slab background switch off gets only its circle.
+        let background = company.background.as_ref().filter(|_| on_background);
         let made = made_copy(
             &state.storage,
-            company.background.as_ref(),
+            background,
             &original,
             closeup.as_deref(),
             place,
             user.company_id,
         )
         .await?;
-        let adds_something = company.background.is_some() || closeup.is_some();
+        let adds_something = background.is_some() || closeup.is_some();
         match (adds_something, made) {
             (_, Some(url)) => {
                 sqlx::query("UPDATE stones SET url = ?, slab_background_version = ? WHERE id = ?")

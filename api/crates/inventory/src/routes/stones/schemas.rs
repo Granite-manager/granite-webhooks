@@ -136,6 +136,8 @@ pub struct StoneDetail {
     /// Where the close-up circle is on the picture; null: at the top right.
     #[sqlx(skip)]
     pub closeup_place: Option<CloseupPlace>,
+    /// Shown on the company's slab picture background (when it has one).
+    pub slab_background_on: bool,
     /// Supplier id; null if unknown.
     pub supplier_id: Option<i32>,
     /// Shown in the employee and customer catalogs.
