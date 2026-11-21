@@ -232,6 +232,22 @@ async fn sales_reps(pool: &MySqlPool, company_id: i32) -> ApiResult<Vec<Salesper
     .await?)
 }
 
+/// A non-deleted user of the company, whatever their position.
+async fn active_user(
+    pool: &MySqlPool,
+    company_id: i32,
+    id: i32,
+) -> ApiResult<Option<Salesperson>> {
+    Ok(sqlx::query_as(
+        "SELECT id, name, phone_number FROM users
+          WHERE id = ? AND company_id = ? AND is_deleted = 0",
+    )
+    .bind(id)
+    .bind(company_id)
+    .fetch_optional(pool)
+    .await?)
+}
+
 /// Body of `POST /v1/quotes`.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -381,8 +397,9 @@ mod full_address_tests {
 /// Create a quote
 ///
 /// An empty drawing (the company's counter depth and rounding) with the
-/// price list's "always include" extras, the caller as sales rep (else the
-/// customer's sales rep; 400 when neither is one), the customer's address,
+/// price list's "always include" extras, the caller as salesperson when they
+/// are a sales rep (else the customer's assigned person, whatever their
+/// position; else the caller), the customer's address,
 /// phone and email copied, and the price list's default tax rate and payment
 /// terms (else the company's first payment terms).
 #[crate::openapi::path(
@@ -393,7 +410,7 @@ mod full_address_tests {
     request_body = NewQuote,
     responses(
         (status = 201, description = "Created", body = CreatedId),
-        (status = 400, description = "No customer, or no sales rep for it", body = ErrorBody),
+        (status = 400, description = "No customer", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Caller is not an employee or admin", body = ErrorBody),
         (status = 500, description = "Database error", body = ErrorBody),
@@ -440,18 +457,29 @@ pub async fn create_quote(
     .fetch_optional(&state.pool)
     .await?;
     let customer = customer.ok_or_else(|| ApiError::BadRequest("Customer is required".into()))?;
-    // A quote's salesperson is always a sales rep: the caller when they are
-    // one, else the customer's rep.
+    // The salesperson: the caller when they are a sales rep, else the
+    // customer's assigned person (even one without the Sales Rep position,
+    // since the customer form keeps them), else the caller. Never a dead end.
     let reps = sales_reps(&state.pool, user.company_id).await?;
-    let rep = reps
-        .iter()
-        .find(|p| p.id == user.id)
-        .or_else(|| {
-            customer
-                .sales_rep
-                .and_then(|id| reps.iter().find(|p| p.id == id))
-        })
-        .ok_or_else(|| ApiError::BadRequest("Assign this customer to a sales rep first".into()))?;
+    let rep = match reps.into_iter().find(|p| p.id == user.id) {
+        Some(rep) => rep,
+        None => {
+            let assigned = match customer.sales_rep.filter(|id| *id != user.id) {
+                Some(id) => active_user(&state.pool, user.company_id, id).await?,
+                None => None,
+            };
+            match assigned {
+                Some(person) => person,
+                None => active_user(&state.pool, user.company_id, user.id)
+                    .await?
+                    .unwrap_or(Salesperson {
+                        id: user.id,
+                        name: None,
+                        phone_number: None,
+                    }),
+            }
+        }
+    };
     let lists = list_rows(&state.pool, user.company_id).await?;
     let chosen_id = match input.price_list_id {
         Some(id) => Some(id),

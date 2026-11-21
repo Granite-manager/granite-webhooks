@@ -238,15 +238,49 @@ async fn a_quote_by_a_non_rep_goes_to_the_customers_rep(pool: MySqlPool) {
         ("Rita Rep", 100, 107)
     );
 
-    // Bob has no rep, so Dina can't quote him; Rita can.
+    let salesperson_of = |id: i64| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (String, i32)>(
+                "SELECT sales_rep, salesperson_id FROM quotes WHERE id = ?",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // Bob has no rep, so Dina's quote is hers.
     let res = server
         .post("/v1/quotes")
         .with_session(sessions::DEALER)
         .json(&json!({ "customer_id": 1001 }))
         .await;
-    res.assert_status(StatusCode::BAD_REQUEST);
-    res.assert_json(&json!({ "error": "Assign this customer to a sales rep first" }));
-    create(&server, json!({ "customer_id": 1001 })).await;
+    res.assert_status(StatusCode::CREATED);
+    let id = res.json::<Value>()["id"].as_i64().unwrap();
+    assert_eq!(salesperson_of(id).await.1, 107);
+
+    // Bob's assigned person lost the Sales Rep position: the quote is still theirs.
+    sqlx::query("DELETE FROM users_positions WHERE user_id = 101")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE customers SET sales_rep = 101 WHERE id = 1001")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = server
+        .post("/v1/quotes")
+        .with_session(sessions::DEALER)
+        .json(&json!({ "customer_id": 1001 }))
+        .await;
+    res.assert_status(StatusCode::CREATED);
+    let id = res.json::<Value>()["id"].as_i64().unwrap();
+    assert_eq!(
+        salesperson_of(id).await,
+        ("Mark Manager".to_string(), 101)
+    );
 }
 
 #[test_db::test(seed)]
