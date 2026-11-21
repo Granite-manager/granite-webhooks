@@ -2,7 +2,7 @@
 //! (`/admin/projects`), a project in that stage shows the first one not done
 //! as its Next, and anyone who can see the project checks it off.
 
-use super::access::{STAGE_SQL, Stage, Viewer};
+use super::access::{Stage, Viewer};
 use super::schemas::{
     DoneStep, NotifyPosition, Person, ProcessStage, ProcessStep, ProcessStepAuto, ProcessStepInput,
     ProcessStepName, ProcessStepNotify, ProcessStepOrder, ProjectAction, StepAuto, StepDone,
@@ -12,7 +12,6 @@ use super::step_events::StepEventRule;
 use crate::auth::{AdminUser, EmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
-use crate::phone::crm_push::push_notification_logged;
 use crate::routes::created::CreatedId;
 use crate::state::AppState;
 use axum::Json;
@@ -1098,130 +1097,18 @@ pub async fn set_auto(
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
-/// Tells the person whose step is now next that it is theirs, then the
-/// Notify people of the step that came up (`arrivals`), not the one who
-/// checked `step_id` off. Logged, never returned: the check-off is saved.
+/// Tells the people in the step's "Told when it's up next" list of the step
+/// that came up (`arrivals`), and only them: whoever does the step is not
+/// told apart from that list (owner, 2026-11-20).
 pub(super) async fn tell_step_people(
     state: &AppState,
     actor_id: Option<i32>,
-    actor_name: Option<&str>,
+    _actor_name: Option<&str>,
     project_id: i32,
-    step_id: i32,
-    part_id: i32,
+    _step_id: i32,
+    _part_id: i32,
 ) {
-    if let Err(error) = tell_next_owner(state, actor_id, actor_name, project_id, part_id).await {
-        tracing::error!(
-            ?error,
-            project_id,
-            step_id,
-            part_id,
-            "project next step notification failed"
-        );
-    }
     super::arrivals::announce(state, actor_id, &[project_id]).await;
-}
-
-/// Tells the person whose step is now the project's (or the part's) Next that
-/// it is theirs, as given to them by whoever finished the one before
-/// (owner, 2026-11-18: Dasha wasn't told Layout was hers). Who: the person
-/// picked on the project, else the sales rep when the step is the rep's, else
-/// the company's rule. Not the one who finished, and not again while an
-/// earlier note of the same step is still open on their bell.
-async fn tell_next_owner(
-    state: &AppState,
-    actor_id: Option<i32>,
-    actor_name: Option<&str>,
-    project_id: i32,
-    part_id: i32,
-) -> sqlx::Result<()> {
-    let mut conn = state.pool.acquire().await?;
-    let project: Option<(i32, String, Option<i32>)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT p.company_id, CAST({STAGE_SQL} AS CHAR), p.sales_rep_id
-           FROM projects p
-           LEFT JOIN sales s ON s.id = p.sale_id AND s.company_id = p.company_id
-          WHERE p.id = ? AND p.archived_at IS NULL AND p.cancelled_at IS NULL"
-    )))
-    .bind(project_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some((company_id, mut stage_code, sales_rep_id)) = project else {
-        return Ok(());
-    };
-    if part_id > 0 {
-        let parts = super::parts::parts_of(&mut conn, company_id, &[project_id]).await?;
-        let Some(part) = parts.iter().find(|part| part.id == part_id) else {
-            return Ok(());
-        };
-        // A part with no fabrication has no In Fabrication steps.
-        if part.stage_code == Stage::Fabrication && !part.uses_fabrication {
-            return Ok(());
-        }
-        stage_code = part.stage_code.as_str().to_string();
-    }
-    let next: Option<(i32, bool, Option<i32>, Option<i32>)> = sqlx::query_as(
-        "SELECT st.id, st.responsible_sales_rep <> 0, st.responsible_user_id,
-                (SELECT o.user_id FROM project_step_owners o
-                  WHERE o.project_id = ? AND o.step_id = st.id)
-           FROM project_process_steps st
-          WHERE st.company_id = ? AND st.stage_code = ?
-            AND NOT EXISTS (SELECT 1 FROM project_process_steps_done d
-                             WHERE d.project_id = ? AND d.step_id = st.id AND d.part_id = ?)
-          ORDER BY st.position, st.id
-          LIMIT 1",
-    )
-    .bind(project_id)
-    .bind(company_id)
-    .bind(&stage_code)
-    .bind(project_id)
-    .bind(part_id)
-    .fetch_optional(&mut *conn)
-    .await?;
-    let Some((step_id, rep_step, rule_user, picked)) = next else {
-        return Ok(());
-    };
-    let owner = picked.or(if rep_step { sales_rep_id } else { rule_user });
-    let Some(owner) = owner.filter(|owner| Some(*owner) != actor_id) else {
-        return Ok(());
-    };
-    let actor = actor_name
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(|name| name.chars().take(255).collect::<String>());
-    let added = sqlx::query(
-        "INSERT INTO notifications
-            (user_id, project_id, message, notification_type, actor_name, due_at)
-         SELECT u.id, ?, m.message, ?, ?, NOW()
-           FROM users u
-           JOIN (SELECT LEFT(CONCAT(st.name, COALESCE((SELECT CONCAT(' (', pp.name, ')')
-                                                         FROM project_parts pp WHERE pp.id = ?), '')),
-                             255) AS message
-                   FROM project_process_steps st WHERE st.id = ?) m
-          WHERE u.id = ? AND u.company_id = ? AND u.is_deleted = 0
-            AND NOT EXISTS (SELECT 1 FROM notifications n
-                             WHERE n.user_id = u.id AND n.project_id = ?
-                               AND n.notification_type = ? AND n.message = m.message
-                               AND n.is_done = 0)",
-    )
-    .bind(project_id)
-    .bind(super::lists::STEP_ASSIGNED)
-    .bind(&actor)
-    .bind(part_id)
-    .bind(step_id)
-    .bind(owner)
-    .bind(company_id)
-    .bind(project_id)
-    .bind(super::lists::STEP_ASSIGNED)
-    .execute(&mut *conn)
-    .await?;
-    drop(conn);
-    if added.rows_affected() > 0 {
-        push_notification_logged(
-            state,
-            i64::try_from(added.last_insert_id()).unwrap_or_default(),
-        )
-        .await;
-    }
-    Ok(())
 }
 
 /// Save a stage's order of steps
