@@ -4,8 +4,11 @@
 //!
 //! The client's side (any signed-in user, their own conversations only):
 //!
-//! - `GET  /v1/support/thread`          → their messages, unread count, whether a request is open
-//! - `POST /v1/support/messages`        → write to support (starts a request when none is open)
+//! - `GET  /v1/support/conversations`       → their conversations (separate requests), by subject
+//! - `GET  /v1/support/conversations/{id}`  → one conversation's messages
+//! - `POST /v1/support/conversations/{id}/read` → mark its answers read
+//! - `GET  /v1/support/thread`          → every message of theirs at once (older clients)
+//! - `POST /v1/support/messages`        → write in a conversation, or start a new one
 //! - `POST /v1/support/thread/read`     → mark the team's answers read
 //!
 //! The team's side (superusers signed in with two-step sign-in, by session
@@ -25,6 +28,7 @@
 
 pub mod agent;
 pub mod client;
+pub mod conversations;
 
 use crate::auth::CurrentUser;
 use crate::auth::cookie::request_session_id;
@@ -50,8 +54,8 @@ const SUBJECT_PROMPT: &str = "Write the subject of this support request from a u
 pub fn clean_subject(raw: &str) -> Option<String> {
     let line = raw.lines().map(str::trim).find(|l| !l.is_empty())?;
     let line = line
-        .trim_start_matches(|c| matches!(c, '"' | '\'' | '“' | '”' | '«' | '»'))
-        .trim_end_matches(|c| matches!(c, '"' | '\'' | '“' | '”' | '«' | '»' | '.'))
+        .trim_start_matches(['"', '\'', '“', '”', '«', '»'])
+        .trim_end_matches(['"', '\'', '“', '”', '«', '»', '.'])
         .trim();
     let line = line.strip_prefix("Subject:").map_or(line, str::trim);
     (!line.is_empty()).then(|| line.chars().take(120).collect())
@@ -93,6 +97,9 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(client::get_thread))
         .routes(routes!(client::send_message))
         .routes(routes!(client::mark_thread_read))
+        .routes(routes!(conversations::list_mine))
+        .routes(routes!(conversations::get_mine))
+        .routes(routes!(conversations::read_mine))
         .routes(routes!(agent::bootstrap))
         .routes(routes!(agent::list_conversations))
         .routes(routes!(agent::get_conversation, agent::update_conversation))

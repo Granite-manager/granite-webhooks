@@ -344,3 +344,241 @@ async fn messages_are_checked(pool: MySqlPool) {
         .await;
     res.assert_status(StatusCode::CREATED);
 }
+
+/// A server whose AI answers with `subjects`, one per call, and records the
+/// questions.
+async fn server_with_ai(
+    pool: MySqlPool,
+    subjects: &[&str],
+) -> (TestServer, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+    use axum::routing::post;
+    use std::sync::{Arc, Mutex};
+    let asked: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let answers: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(
+        subjects.iter().rev().map(|s| (*s).to_string()).collect(),
+    ));
+    let router = axum::Router::new().route(
+        "/chat",
+        post({
+            let asked = asked.clone();
+            move |axum::Json(body): axum::Json<Value>| async move {
+                asked.lock().unwrap().push(body);
+                let content = answers.lock().unwrap().pop().unwrap_or_default();
+                axum::Json(json!({
+                    "choices": [{ "message": { "content": content } }],
+                    "usage": { "prompt_tokens": 50, "completion_tokens": 5 },
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let state = api::state::AppState::new(pool, common::SECRET, common::ALLOWED_ORIGIN).with_ai(
+        api::ai::Ai::new(Some("key"), &format!("http://{address}/chat")),
+    );
+    (TestServer::new(api::app(state)), asked)
+}
+
+#[test_db::test(seed)]
+async fn each_conversation_is_its_own_request_named_by_the_ai(pool: MySqlPool) {
+    make_agent(&pool).await;
+    let (server, asked) = server_with_ai(
+        pool.clone(),
+        &[
+            "\"Quote PDF shows the old sink.\"",
+            "Add a second calendar",
+            "Import customers from a CSV",
+        ],
+    )
+    .await;
+
+    // Nothing yet.
+    let none: Value = server
+        .get("/v1/support/conversations")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(
+        none,
+        json!({ "conversations": [], "active": false, "unread": 0 })
+    );
+
+    let first = write(
+        &server,
+        sessions::REP,
+        json!({ "body": "When I print the Miller quote it shows the old sink", "new_conversation": true }),
+    )
+    .await;
+    let quote = first["conversation_id"].as_i64().unwrap();
+    // The AI saw the message and named it.
+    assert_eq!(asked.lock().unwrap().len(), 1);
+    assert!(
+        asked.lock().unwrap()[0]
+            .to_string()
+            .contains("Miller quote")
+    );
+
+    // "hi" says nothing: the second message names the conversation.
+    let hi = write(
+        &server,
+        sessions::REP,
+        json!({ "body": "hi", "new_conversation": true }),
+    )
+    .await;
+    let calendar = hi["conversation_id"].as_i64().unwrap();
+    assert_ne!(calendar, quote);
+    write(
+        &server,
+        sessions::REP,
+        json!({ "body": "how do I add a second calendar?", "conversation_id": calendar }),
+    )
+    .await;
+    assert_eq!(asked.lock().unwrap().len(), 3);
+
+    let list: Value = server
+        .get("/v1/support/conversations")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    let subjects: Vec<&str> = list["conversations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["subject"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        subjects,
+        [
+            "Import customers from a CSV",
+            "Quote PDF shows the old sink"
+        ]
+    );
+    assert_eq!(list["active"], true);
+    // The team sees two separate requests.
+    let inbox: Value = server
+        .get("/v1/support/agent/conversations")
+        .with_session(sessions::SUPER_ADMIN)
+        .await
+        .json();
+    assert_eq!(inbox["conversations"].as_array().unwrap().len(), 2);
+
+    // The team renames one, notes and answers in the other.
+    let renamed: Value = server
+        .patch(&format!("/v1/support/agent/conversations/{calendar}"))
+        .with_session(sessions::SUPER_ADMIN)
+        .json(&json!({ "subject": "Second calendar for installers" }))
+        .await
+        .json();
+    assert_eq!(renamed["subject"], "Second calendar for installers");
+    server
+        .patch(&format!("/v1/support/agent/conversations/{calendar}"))
+        .with_session(sessions::SUPER_ADMIN)
+        .json(&json!({ "subject": "  " }))
+        .await
+        .assert_status(StatusCode::BAD_REQUEST);
+    for (body, internal) in [("Secret note", true), ("Print it again now.", false)] {
+        server
+            .post(&format!("/v1/support/agent/conversations/{quote}/messages"))
+            .with_session(sessions::SUPER_ADMIN)
+            .json(&json!({ "body": body, "internal": internal }))
+            .await
+            .assert_status(StatusCode::CREATED);
+    }
+
+    let list: Value = server
+        .get("/v1/support/conversations")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    let row = list["conversations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == quote)
+        .unwrap()
+        .clone();
+    assert_eq!(row["unread"], true);
+    assert_eq!(row["status"], "waiting");
+    assert_eq!(row["last_message"], "Print it again now.");
+    assert_eq!(list["unread"], 1);
+    assert!(!list.to_string().contains("Secret note"));
+
+    // One conversation: its own messages only, never the note.
+    let detail: Value = server
+        .get(&format!("/v1/support/conversations/{quote}"))
+        .with_session(sessions::REP)
+        .await
+        .json();
+    let bodies: Vec<&str> = detail["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        bodies,
+        [
+            "When I print the Miller quote it shows the old sink",
+            "Print it again now."
+        ]
+    );
+    let newest = detail["messages"][1]["id"].as_i64().unwrap();
+    let polled: Value = server
+        .get(&format!("/v1/support/conversations/{quote}"))
+        .add_query_param("after", newest)
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(polled["messages"], json!([]));
+    server
+        .post(&format!("/v1/support/conversations/{quote}/read"))
+        .with_session(sessions::REP)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let after: Value = server
+        .get("/v1/support/conversations")
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(after["unread"], 0);
+
+    // Resolved, then written in again: the same request opens again.
+    server
+        .patch(&format!("/v1/support/agent/conversations/{quote}"))
+        .with_session(sessions::SUPER_ADMIN)
+        .json(&json!({ "status": "resolved" }))
+        .await
+        .assert_status_ok();
+    let again = write(
+        &server,
+        sessions::REP,
+        json!({ "body": "It happened again", "conversation_id": quote }),
+    )
+    .await;
+    assert_eq!(again["conversation_id"], quote);
+    let reopened: Value = server
+        .get(&format!("/v1/support/conversations/{quote}"))
+        .with_session(sessions::REP)
+        .await
+        .json();
+    assert_eq!(reopened["conversation"]["status"], "open");
+
+    // Someone else's conversation does not exist for them.
+    server
+        .get(&format!("/v1/support/conversations/{quote}"))
+        .with_session(sessions::OTHER_COMPANY_REP)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    server
+        .post("/v1/support/messages")
+        .with_session(sessions::OTHER_COMPANY_REP)
+        .json(&json!({ "body": "sneaky", "conversation_id": quote }))
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+    server
+        .post(&format!("/v1/support/conversations/{quote}/read"))
+        .with_session(sessions::OTHER_COMPANY_REP)
+        .await
+        .assert_status(StatusCode::NOT_FOUND);
+}

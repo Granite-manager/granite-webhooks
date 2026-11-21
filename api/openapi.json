@@ -2604,7 +2604,7 @@
           "support"
         ],
         "summary": "Write to support",
-        "description": "Sends a message to Granite Manager's support team. It joins the user's\nopen request (status `open` or `waiting`); when they have none, it\nstarts a new one whose subject the AI writes from the message (its first\nline when the AI cannot). The request\nbecomes `open` (the team owes an answer). Pictures must be uploaded to\nthe `bug-reports` folder first (`POST /v1/uploads`). The page, the\nPostHog session and the window size help the team see what the user\nsaw. Returns the saved message; answers come back through\n`GET /v1/support/thread`.",
+        "description": "Sends a message to Granite Manager's support team: into the user's\nconversation `conversation_id` (opened again when resolved), into a new\nconversation with `new_conversation`, else into the user's open request\n(status `open` or `waiting`) or, when they have none, a new one. A new\nconversation's subject the AI writes from the message (its first\nline when the AI cannot). The request\nbecomes `open` (the team owes an answer). Pictures must be uploaded to\nthe `bug-reports` folder first (`POST /v1/uploads`). The page, the\nPostHog session and the window size help the team see what the user\nsaw. Returns the saved message; answers come back through\n`GET /v1/support/thread`.",
         "operationId": "send_support_message",
         "requestBody": {
           "content": {
@@ -2679,6 +2679,194 @@
           },
           "401": {
             "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/conversations": {
+      "get": {
+        "tags": [
+          "support"
+        ],
+        "summary": "List my support conversations",
+        "description": "The signed-in user's conversations with Granite Manager's support team,\neach a separate request named by its subject (written by the AI from the\nfirst message), latest message first, at most 100: status, the start of\nthe latest message, unread answers. Open one with\n`GET /v1/support/conversations/{id}`; start another with\n`POST /v1/support/messages` and `new_conversation`.",
+        "operationId": "list_my_support_conversations",
+        "responses": {
+          "200": {
+            "description": "The conversations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyConversations"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/conversations/{id}": {
+      "get": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Open one of my support conversations",
+        "description": "One of the signed-in user's conversations with its messages, oldest\nfirst (the team's internal notes are never included). With `after` (the\nnewest message id the caller has), only newer ones, so a poll that finds\nnothing is a tiny answer. Write in it with `POST /v1/support/messages`\nand its `conversation_id`; mark answers read with\n`POST /v1/support/conversations/{id}/read`. Another user's conversation\nis 404.",
+        "operationId": "get_my_support_conversation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Conversation id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Only messages newer than this message id (the newest one the caller\nhas), for polling.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The conversation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MyConversationDetail"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such conversation of the user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/support/conversations/{id}/read": {
+      "post": {
+        "tags": [
+          "support"
+        ],
+        "summary": "Mark a support conversation read",
+        "description": "Marks support's answers in one of the signed-in user's conversations as\nread (its unread mark and its share of the Chat button's badge go).\nAnother user's conversation is 404.",
+        "operationId": "mark_my_support_conversation_read",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Conversation id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Marked read"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such conversation of the user",
             "content": {
               "application/json": {
                 "schema": {
@@ -2968,7 +3156,7 @@
           "support"
         ],
         "summary": "Change a support request",
-        "description": "Sets its status (`resolved` closes it: the client's next message starts\na new request), type, priority or assignee (any superuser, or null to\nunassign). Fields left out stay. Returns the request as the inbox lists\nit.",
+        "description": "Sets its subject, status (`resolved` closes it; the client writing in it\nopens it again), type, priority or assignee (any superuser, or null to\nunassign). Fields left out stay. Returns the request as the inbox lists\nit.",
         "operationId": "update_support_conversation",
         "parameters": [
           {
@@ -3004,7 +3192,7 @@
             }
           },
           "400": {
-            "description": "Unknown status, type or priority, or the assignee is not a superuser",
+            "description": "Empty or long subject, unknown status, type or priority, or the assignee is not a superuser",
             "content": {
               "application/json": {
                 "schema": {
@@ -91706,6 +91894,13 @@
         "type": "object",
         "description": "Body of `PATCH /v1/support/agent/conversations/{id}`; fields left out\nstay as they are.",
         "properties": {
+          "subject": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A new subject (what the request is about; at most 200 characters)."
+          },
           "status": {
             "type": [
               "string",
@@ -105625,6 +105820,107 @@
           }
         }
       },
+      "MyConversation": {
+        "type": "object",
+        "description": "One of the user's support conversations, as their list shows it.",
+        "required": [
+          "id",
+          "subject",
+          "status",
+          "last_from_support",
+          "last_message_at",
+          "created_at",
+          "unread"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Conversation id (send it as `conversation_id` to write in it)."
+          },
+          "subject": {
+            "type": "string",
+            "description": "What it is about: written by the AI from the first message."
+          },
+          "status": {
+            "type": "string",
+            "description": "`open` (support owes an answer), `waiting` (support answered),\n`resolved` (done; writing in it opens it again)."
+          },
+          "last_message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The start of the latest message (the team's notes left out)."
+          },
+          "last_from_support": {
+            "type": "boolean",
+            "description": "The latest message is support's answer."
+          },
+          "last_message_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the latest message was written (ISO 8601, UTC)."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When it began."
+          },
+          "unread": {
+            "type": "boolean",
+            "description": "Support answered since the user last read it."
+          }
+        }
+      },
+      "MyConversationDetail": {
+        "type": "object",
+        "description": "`GET /v1/support/conversations/{id}`.",
+        "required": [
+          "conversation",
+          "messages"
+        ],
+        "properties": {
+          "conversation": {
+            "$ref": "#/components/schemas/MyConversation",
+            "description": "The conversation."
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SupportMessage"
+            },
+            "description": "Its messages, oldest first (the team's internal notes left out)."
+          }
+        }
+      },
+      "MyConversations": {
+        "type": "object",
+        "description": "`GET /v1/support/conversations`.",
+        "required": [
+          "conversations",
+          "active",
+          "unread"
+        ],
+        "properties": {
+          "conversations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MyConversation"
+            },
+            "description": "The user's conversations, latest message first (at most 100)."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "One of them is open or waiting: answers may still come."
+          },
+          "unread": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Conversations with an answer not read yet."
+          }
+        }
+      },
       "MyEmailTemplates": {
         "type": "object",
         "description": "The Email dialog's templates.",
@@ -106594,6 +106890,18 @@
               "null"
             ],
             "description": "The browser window size, `WIDTHxHEIGHT`."
+          },
+          "conversation_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The conversation to write in: one of the user's\n(`GET /v1/support/conversations`). A resolved one opens again."
+          },
+          "new_conversation": {
+            "type": "boolean",
+            "description": "Start a new conversation (a separate request) with this message.\nWith neither field the message joins the user's open request, or\nstarts one."
           }
         },
         "additionalProperties": false
