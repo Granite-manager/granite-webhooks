@@ -4,7 +4,7 @@
 use crate::error::ApiError;
 use crate::phone::calls::SALES_MANAGER_POSITION;
 use crate::phone::crm_push::{
-    LeadKind, push_lead_logged, push_leads_changed_logged, push_manager_lead, sales_managers,
+    LeadKind, push_lead, push_leads_changed_logged, push_manager_lead, sales_managers,
 };
 use crate::phone::numbers::last10;
 use crate::routes::deals::service::{enter_stage, sync_drip};
@@ -499,7 +499,7 @@ pub async fn notify_assigned_rep(
     if rep == actor {
         return;
     }
-    push_lead_logged(
+    let phones_told = push_lead(
         state,
         company_id,
         &[rep],
@@ -507,7 +507,11 @@ pub async fn notify_assigned_rep(
         customer_id,
         Some(deal_id),
     )
-    .await;
+    .await
+    .unwrap_or_else(|error| {
+        tracing::warn!(?error, company_id, customer_id, "lead push failed");
+        0
+    });
     let lead_link = format!("{}/employee/deals/edit/{deal_id}/project", state.app_url);
     let (text, headline, subject) = match reassigned {
         Some(customer) => (
@@ -523,6 +527,11 @@ pub async fn notify_assigned_rep(
     };
     if let Some(chat_id) = chat_id {
         state.telegram.send_text(Bot::Leads, chat_id, &text).await;
+        return;
+    }
+    // The app already told them (owner, 2026-11-21): the email is only for
+    // a rep with neither Telegram nor the app.
+    if phones_told > 0 {
         return;
     }
     let connect_telegram_link = format!("{}/link-telegram-both", state.app_url);
@@ -640,8 +649,7 @@ pub async fn ensure_open_deal_in_group(
     list: Option<i32>,
 ) -> Result<i64, sqlx::Error> {
     let mut tx = pool.begin().await?;
-    let deal =
-        open_deal_in_group(&mut tx, customer_id, company_id, sales_rep, group, list).await?;
+    let deal = open_deal_in_group(&mut tx, customer_id, company_id, sales_rep, group, list).await?;
     tx.commit().await?;
     if let Some(list_id) = deal.new_in_list {
         start_drips(pool, deal.id, list_id).await;

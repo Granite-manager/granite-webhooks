@@ -376,6 +376,24 @@ async fn handle_assign_lead<T: Telegram>(
             .await
             .map_or_else(|e| e, |_| (StatusCode::OK, "Invalid code"));
     }
+    // The app already told them (owner, 2026-11-21): the email is only for
+    // a rep with neither Telegram nor a signed-in phone.
+    let has_phone: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM phone_devices pd
+                          JOIN device_sessions ds ON ds.id = pd.device_session_id
+                         WHERE pd.user_id = ? AND pd.push_token IS NOT NULL
+                           AND pd.revoked_at IS NULL AND ds.revoked_at IS NULL)",
+    )
+    .bind(position.user_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or_else(|error| {
+        tracing::warn!(?error, lead_id, "Rep's phone not looked up");
+        false
+    });
+    if has_phone {
+        return OK_RESPONSE;
+    }
     let connect_telegram_link = "https://granite-manager.com/link-telegram-both";
     let message = format!(
         r"

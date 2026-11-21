@@ -248,7 +248,21 @@ impl TelegramBots {
             .send()
             .await;
         match response {
-            Ok(response) => response.json::<Answer>().await.ok().map(|answer| answer.ok),
+            // Only Telegram's "this chat is gone" answers (400 chat not found,
+            // 403 blocked) mean no: a rate limit (429), an outage (5xx) or a
+            // token problem (401) must never drop a working link.
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let answer = response.json::<Answer>().await.ok()?;
+                if answer.ok {
+                    Some(true)
+                } else if matches!(status, 400 | 403) {
+                    Some(false)
+                } else {
+                    tracing::warn!(?bot, status, "telegram getChat refused; link kept");
+                    None
+                }
+            }
             Err(err) => {
                 tracing::warn!(?bot, error = %err.without_url(), "telegram getChat failed");
                 None
