@@ -32315,7 +32315,7 @@
           "sms"
         ],
         "summary": "List conversations over every provider",
-        "description": "A page of the company's SMS conversations through any provider, merged by\nphone, latest first — or unread first when narrowed to one rep\n(`agent_id` = the rep's user id from `/v1/sms/all/sales-reps`). A search\nmatches phone digits, message text and customer or supplier names.",
+        "description": "A page of the company's SMS conversations through any provider, merged by\nphone, latest first — by the latest text, sent or received, when narrowed\nto one rep (`agent_id` = the rep's user id from `/v1/sms/all/sales-reps`).\nA search matches phone digits, message text and customer or supplier names.",
         "operationId": "list_all_sms_threads",
         "parameters": [
           {
@@ -32697,7 +32697,7 @@
           "sms"
         ],
         "summary": "List my conversations over every provider",
-        "description": "The caller's own SMS conversations through every provider they text\nthrough or have texted through (a `CloudTalk` agent id, a `RingCentral`\nextension, a Telnyx line), merged by phone: unread first, then latest.\nEach provider's part is what its own inbox shows the caller. A search\nmatches phone digits, message text and customer or supplier names.\n`line_id` keeps only the texts on that line.",
+        "description": "The caller's own SMS conversations through every provider they text\nthrough or have texted through (a `CloudTalk` agent id, a `RingCentral`\nextension, a Telnyx line), merged by phone: the latest text first, sent\nor received.\nEach provider's part is what its own inbox shows the caller. A search\nmatches phone digits, message text and customer or supplier names.\n`line_id` keeps only the texts on that line.",
         "operationId": "list_my_sms_threads",
         "parameters": [
           {
@@ -33232,7 +33232,7 @@
           "sms"
         ],
         "summary": "List conversations",
-        "description": "A page of the caller's SMS conversations (`scope=all`: the company's, for\nadmins), latest first — or unread first when narrowed to one rep. A\nsearch matches phone digits, message text and customer or supplier names.",
+        "description": "A page of the caller's SMS conversations (`scope=all`: the company's, for\nadmins), latest first — by the latest text, sent or received, when\nnarrowed to one rep. A search matches phone digits, message text and\ncustomer or supplier names.",
         "operationId": "list_sms_threads",
         "parameters": [
           {

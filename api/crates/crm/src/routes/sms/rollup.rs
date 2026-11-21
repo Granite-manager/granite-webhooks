@@ -323,10 +323,12 @@ fn outer(threads: &str, mut params: Vec<Param>, mode: Mode, one_rep: bool) -> (S
             )
         }
         Mode::List { limit, offset } => {
-            // Unread first only for one rep's inbox; the company-wide one is by
-            // the latest inbound.
+            // One rep's inbox: the latest text first, sent or received (what a
+            // teammate just sent on a shared line shows on top, never under
+            // old unread threads); the company-wide one is by the latest
+            // inbound.
             let order = if one_rep {
-                "(t.unread > 0) DESC, t.last_key DESC"
+                "t.last_key DESC"
             } else {
                 "COALESCE(t.last_inbound_at, t.last_at) DESC, t.last_id DESC"
             };

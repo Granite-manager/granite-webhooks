@@ -335,8 +335,9 @@ pub(super) async fn unread_threads(
 /// List conversations
 ///
 /// A page of the caller's SMS conversations (`scope=all`: the company's, for
-/// admins), latest first — or unread first when narrowed to one rep. A
-/// search matches phone digits, message text and customer or supplier names.
+/// admins), latest first — by the latest text, sent or received, when
+/// narrowed to one rep. A search matches phone digits, message text and
+/// customer or supplier names.
 #[crate::openapi::path(
     get,
     path = "/v1/sms/{provider}/threads",

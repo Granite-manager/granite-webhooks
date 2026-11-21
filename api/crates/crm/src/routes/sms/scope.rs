@@ -122,7 +122,7 @@ pub struct Narrowing {
     pub own: Option<RepRows>,
     /// Company lines, never thread keys.
     pub company_lines: Vec<String>,
-    /// One rep's inbox (unread first), not the company's.
+    /// One rep's inbox (the latest text first), not the company's.
     pub one_rep: bool,
     /// Only the texts on this line (last ten digits).
     pub line: Option<String>,

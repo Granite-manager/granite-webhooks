@@ -85,9 +85,9 @@ struct Merged {
 /// List conversations over every provider
 ///
 /// A page of the company's SMS conversations through any provider, merged by
-/// phone, latest first — or unread first when narrowed to one rep
-/// (`agent_id` = the rep's user id from `/v1/sms/all/sales-reps`). A search
-/// matches phone digits, message text and customer or supplier names.
+/// phone, latest first — by the latest text, sent or received, when narrowed
+/// to one rep (`agent_id` = the rep's user id from `/v1/sms/all/sales-reps`).
+/// A search matches phone digits, message text and customer or supplier names.
 #[crate::openapi::path(
     get,
     path = "/v1/sms/all/threads",
@@ -180,7 +180,8 @@ pub async fn my_lines(
 ///
 /// The caller's own SMS conversations through every provider they text
 /// through or have texted through (a `CloudTalk` agent id, a `RingCentral`
-/// extension, a Telnyx line), merged by phone: unread first, then latest.
+/// extension, a Telnyx line), merged by phone: the latest text first, sent
+/// or received.
 /// Each provider's part is what its own inbox shows the caller. A search
 /// matches phone digits, message text and customer or supplier names.
 /// `line_id` keeps only the texts on that line.
@@ -258,7 +259,8 @@ async fn sendable_providers(
 }
 
 /// A page of `sources`' conversations merged by phone: `scope` per
-/// provider, unread first when `one_rep`, only the texts on `line` with one.
+/// provider, by the latest text when `one_rep`, only the texts on `line`
+/// with one.
 async fn merged_threads(
     state: &AppState,
     user: &SessionUser,
@@ -341,13 +343,8 @@ async fn merged_threads(
 
     let mut merged: Vec<Merged> = by_phone.into_values().collect();
     merged.sort_by(|a, b| {
-        let unread_first = if one_rep {
-            (b.row.unread > 0).cmp(&(a.row.unread > 0))
-        } else {
-            std::cmp::Ordering::Equal
-        };
-        unread_first
-            .then(b.sort_at.cmp(&a.sort_at))
+        b.sort_at
+            .cmp(&a.sort_at)
             .then(b.row.last_at.cmp(&a.row.last_at))
     });
     let has_more = more || i64::try_from(merged.len()).unwrap_or(0) > window;
