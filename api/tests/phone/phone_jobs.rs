@@ -981,7 +981,7 @@ async fn the_job_closes_calls_left_open_and_ends_signed_out_browser_phones(pool:
     add_phone(&pool, 143, 100, 100).await;
     sql(&pool, "UPDATE device_sessions SET last_seen_at = UTC_TIMESTAMP() - INTERVAL 31 DAY WHERE id = 950141").await;
     sql(&pool, "UPDATE device_sessions SET expires_at = UTC_TIMESTAMP() - INTERVAL 1 MINUTE WHERE id = 950142").await;
-    sql(&pool, "UPDATE device_sessions SET platform = 'web', web_session_id = 'bbbbbbbb-0000-4000-8000-0000000d0100' WHERE id = 950143").await;
+    sql(&pool, "UPDATE device_sessions SET platform = 'web', web_session_id = SHA2('bbbbbbbb-0000-4000-8000-0000000d0100', 256) WHERE id = 950143").await;
     let (server, stubs, _storage) = server(&pool).await;
     let run = run_job(&server).await;
     assert_eq!(

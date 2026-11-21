@@ -483,6 +483,14 @@ with react-router 7 (unit-tested against cookies React Router produced).
 and applies the super-admin rule from `handlePermissions`. So the Lambda needs
 `SESSION_SECRET` set to the same value as the Remix app.
 
+The table never holds a session id that signs in: `sessions.id` (and a
+browser phone's `device_sessions.web_session_id`) is the SHA-256 (hex) of the
+cookie's id (`session::session_key`). A copy of the database plus
+`SESSION_SECRET` still signs nobody in. Rows from before ids were hashed keep
+the bare id until the pending migration
+`20270222090000_sessions-hash-existing-ids.sql` hashes them
+(`session::stored_session_ids` matches either).
+
 How the browser sends the cookie: the cookie is `HttpOnly`, and in production
 its domain is `.granite-manager.com`. The frontend calls the API with
 `credentials: 'include'`, so the browser attaches it as long as the API is on

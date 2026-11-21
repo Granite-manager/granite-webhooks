@@ -15,7 +15,7 @@ use crate::app_origin::{app_origin, company_subdomain};
 use crate::auth::cookie::{SessionData, encode_session, request_session_id};
 use crate::auth::device::DeviceUser;
 use crate::auth::session::{
-    effective_user, find_session_user, find_user, keep_session, user_positions,
+    effective_user, find_session_user, find_user, keep_session, session_key, user_positions,
 };
 use crate::auth::web_link::{self, Claims, TOKEN_TTL_SECS};
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -169,7 +169,7 @@ pub async fn open_web_link(
     }
     let session_id = uuid::Uuid::new_v4().to_string();
     sqlx::query("INSERT INTO sessions (id, user_id, expiration_date) VALUES (?, ?, NULL)")
-        .bind(&session_id)
+        .bind(session_key(&session_id))
         .bind(user.id)
         .execute(&state.pool)
         .await?;
