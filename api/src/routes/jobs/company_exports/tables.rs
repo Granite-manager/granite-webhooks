@@ -85,6 +85,7 @@ pub const TABLES: &[Table] = &[
     export("commission_settings", Company),
     export("company_billing", Company),
     export("company_billing_invoices", Company),
+    export("company_payment_settings", Company),
     export("company_domain_trust", Company),
     skip(
         "company_features",
@@ -104,6 +105,11 @@ pub const TABLES: &[Table] = &[
     export("customer_phone_index_builds", Company),
     export("customer_sources", Company),
     export("customer_surveys", Company),
+    skip(
+        "customer_payment_events",
+        "Stripe event ids, kept so an event is applied once",
+    ),
+    export("customer_payments", Company),
     export("customer_todo_reports", Company),
     export("customer_todos", Company),
     skip("customer_view_codes", "customer sign-in codes"),
@@ -202,6 +208,7 @@ pub const TABLES: &[Table] = &[
     export("quote_payment_terms", Company),
     export("quote_sale_event_templates", Company),
     export("quote_settings", Company),
+    export("quote_suggestion_hidden", Company),
     export("quote_tax_rates", Company),
     export("quotes", Company),
     export("referral_source_aliases", Company),

@@ -10,6 +10,10 @@ holds, and delete its section below.
 
 ## History
 
+`20270224090000_sessions-hash-existing-ids.sql` moved to `migrations/` on
+2026-11-21, once the API that reads hashed session ids was on both prod API
+Lambdas.
+
 `20260904120200_drop-users-onboarding-columns.sql` moved to `migrations/` on
 2026-09-11. Its preconditions no longer needed a human to sequence them:
 

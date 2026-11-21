@@ -296,6 +296,20 @@ pub fn forward_number(text: Option<&str>) -> Option<String> {
     text.and_then(to_e164).filter(|number| is_nanp(number))
 }
 
+/// Where the user's "Forward all calls" sends every call at `now`: a number
+/// that can be dialed, unless it is off, set to voicemail, or the user is on
+/// Do not disturb. On a shared line this forwards the whole number
+/// (`routing::route`).
+pub fn forwards_all_to(settings: &UserSettings, now: DateTime<Utc>) -> Option<String> {
+    if !settings.forward_all || settings.forward_all_to != ForwardAllTo::Number {
+        return None;
+    }
+    if settings.availability(now).status == AvailabilityStatus::Dnd {
+        return None;
+    }
+    forward_number(settings.forward_all_number.as_deref())
+}
+
 /// What the user's part of `call` is (see the module docs).
 pub fn decide(settings: &UserSettings, rules: &[CallRule], call: &Incoming<'_>) -> Decision {
     let availability = settings.availability(call.now);
@@ -435,6 +449,23 @@ mod tests {
         assert_eq!(decide(&settings, &rules, &now), Decision::Voicemail);
         settings.dnd_indefinite = true;
         assert_eq!(decide(&settings, &rules, &now), Decision::Away);
+    }
+
+    #[test]
+    fn forward_all_to_a_number_forwards_a_shared_line() {
+        let now = call(Some("3175550100"), &[]).now;
+        let mut settings = UserSettings::default();
+        assert_eq!(forwards_all_to(&settings, now), None);
+        settings.forward_all = true;
+        assert_eq!(forwards_all_to(&settings, now), None);
+        settings.forward_all_to = ForwardAllTo::Number;
+        settings.forward_all_number = Some("(317) 600-3119".into());
+        assert_eq!(forwards_all_to(&settings, now), Some("+13176003119".into()));
+        settings.forward_all_number = Some("+442079460958".into());
+        assert_eq!(forwards_all_to(&settings, now), None);
+        settings.forward_all_number = Some("(317) 600-3119".into());
+        settings.dnd_indefinite = true;
+        assert_eq!(forwards_all_to(&settings, now), None);
     }
 
     #[test]

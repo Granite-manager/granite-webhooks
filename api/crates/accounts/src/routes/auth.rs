@@ -34,7 +34,8 @@ use crate::auth::cookie::{
     encode_session_map, request_session_id,
 };
 use crate::auth::session::{
-    SUPER_ADMIN_POSITION, SessionUser, find_session_user, keep_session, user_positions,
+    SUPER_ADMIN_POSITION, SessionUser, find_session_user, keep_session, session_key,
+    user_positions,
 };
 use crate::auth::{CurrentUser, sha256_hex};
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -421,7 +422,7 @@ pub async fn start_session(state: &AppState, user_id: i32) -> ApiResult<Response
     let pool = &state.pool;
     let session_id = uuid::Uuid::new_v4().to_string();
     sqlx::query("INSERT INTO sessions (id, user_id, expiration_date) VALUES (?, ?, NULL)")
-        .bind(&session_id)
+        .bind(session_key(&session_id))
         .bind(user_id)
         .execute(pool)
         .await?;
@@ -460,8 +461,9 @@ pub async fn start_session(state: &AppState, user_id: i32) -> ApiResult<Response
 )]
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Response> {
     if let Some(session_id) = request_session_id(&headers, &state.session_secret) {
+        let key = session_key(&session_id);
         sqlx::query("UPDATE sessions SET is_deleted = 1 WHERE id = ?")
-            .bind(&session_id)
+            .bind(&key)
             .execute(&state.pool)
             .await?;
         crate::phone::revoke::revoke_web_session(

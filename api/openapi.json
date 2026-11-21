@@ -7163,6 +7163,837 @@
         }
       }
     },
+    "/v1/company/payment-settings": {
+      "get": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "Show the company's customer payment settings",
+        "description": "Whether the company's bank account is connected (so customers can pay\nit), and for each payment method the fee and how much of it the company\npasses on to the customer. While the account is being verified, Stripe is\nasked whether it approved it at most once a minute per company; between\nthose the answer is the last one kept. Connect an account with `POST\n/v1/company/payment-settings/bank-account`; make payment links with `POST\n/v1/customers/{id}/payments`.",
+        "operationId": "get_company_payment_settings",
+        "responses": {
+          "200": {
+            "description": "The settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompanyPaymentSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "Set who pays the payment fees",
+        "description": "How much of each method's fee the company adds to what its customers pay\n(the company pays the rest). Payment links made afterwards use the new\nsplit; existing ones keep theirs. Superusers and admins who are Managers\nonly.",
+        "operationId": "set_company_payment_fees",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentFeesInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "400": {
+            "description": "A share is out of range",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a superuser or an admin Manager, or customer payments are not turned on for the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/company/payment-settings/bank-account": {
+      "post": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "Connect the company's bank account",
+        "description": "Starts, or continues, Stripe's onboarding of the company: the first call\ncreates its Stripe account. Open `url`; afterwards `GET\n/v1/company/payment-settings` says `pending_verification` until Stripe\napproves the account, then `connected`. Superusers and admins who are\nManagers only.",
+        "operationId": "start_company_bank_onboarding",
+        "responses": {
+          "200": {
+            "description": "Stripe's page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BankOnboarding"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not a superuser or an admin Manager, or customer payments are not turned on for the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The company was deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Stripe failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Payments are not set up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/customers/{id}/payments": {
+      "get": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "List a customer's payments",
+        "description": "The payments and unpaid payment links of the jobs of the customer's\nfamily (the customer, its parent and the parent's other projects: what\n`GET /v1/customers/{id}/projects` lists), newest first, withdrawn links\nincluded. `project_key` names the job. Money that reached the company is\n`paid`; an ACH transfer on its way is `pending`; a `disputed` payment\nstill counts toward its job, a `lost` one no longer does. A waiting payment whose\nnews from Stripe may have been missed is checked with Stripe here, at\nmost once in 5 minutes each. Unpaid links made for a Stripe account the\ncompany no longer uses are withdrawn here (`canceled`).",
+        "operationId": "list_customer_payments",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The payments, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CustomerPayment"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such customer in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "Make a payment link",
+        "description": "A link the customer pays `amount_cents` of one job on, by card or ACH.\nThe fee split in effect now is saved on the payment. Send `url` to the\ncustomer: it never expires, and the payment stays `created` until they\npay. The amount cannot be more than is left to pay on the job: its price\nless what was paid (a disputed payment counts until the bank decides),\nwhat is on its way and the links not paid yet (400 says how much that\nis). A deal's payments include those made for its sales before they\njoined it. A sale that is part of a deal takes no link of its own (400:\nmake it for the deal), nor does a cancelled sale. 409 until the company's bank account is connected (`GET\n/v1/company/payment-settings`). Withdraw an unpaid link with `DELETE\n/v1/customers/{id}/payments/{payment_id}`.",
+        "operationId": "create_customer_payment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewPayment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The payment link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerPayment"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown job, a sale that is part of a deal or was cancelled, the amount is out of range, or it is more than is left to pay on the job",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin, or customer payments are not turned on for the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such customer in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The company's bank account is not connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/customers/{id}/payments/{payment_id}": {
+      "delete": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "Withdraw a payment link",
+        "description": "Cancels a link nobody paid yet (`created`): its page then says it is no\nlonger active, and its open Stripe page is closed. A payment that was\nmade, is on its way or failed cannot be canceled (409). Canceling a\ncanceled link again changes nothing.",
+        "operationId": "cancel_customer_payment",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Customer id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "payment_id",
+            "in": "path",
+            "description": "The payment's id (`pay_...`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Canceled"
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee or admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such customer or payment in the company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The payment was already made or started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/public/pay/{payment_id}": {
+      "get": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "Show a payment link's page",
+        "description": "What the customer is asked to pay, to whom and for which job, and whether\nit can still be paid (`status` is `created`). Once the customer opened\nStripe's page, Stripe is asked where the payment is (at most once a\nminute), so the page is right even when Stripe's own message was missed.\nA link made for a Stripe account the company no longer uses is withdrawn\n(`canceled`): it would send the money to the old account.\nNo session: the link's\nunguessable id is the credential. Next: `POST\n/v1/public/pay/{payment_id}/checkout`.",
+        "operationId": "get_pay_page",
+        "parameters": [
+          {
+            "name": "payment_id",
+            "in": "path",
+            "description": "The last part of the payment link (`pay_...`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The payment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayPage"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such payment link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/pay/{payment_id}/checkout": {
+      "post": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "Open Stripe's page for a payment link",
+        "description": "A Stripe Checkout page on the company's account for the payment's amount\nplus the customer's part of the fee, with the payment's one method. A\npage opened before is reused while Stripe keeps it open (24 hours), and\nrequests at the same time (two tabs) get the same page, so a payment is\nnot made twice. 409 unless the payment is `created`, and for a link made\nfor a Stripe account the company no longer uses (the link is withdrawn;\nthe company makes a new one, which charges its account of today).",
+        "operationId": "create_pay_checkout",
+        "parameters": [
+          {
+            "name": "payment_id",
+            "in": "path",
+            "description": "The last part of the payment link (`pay_...`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stripe's page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PayCheckout"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such payment link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The payment was made, is on its way, failed or was withdrawn, or the link was made for a Stripe account the company no longer uses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Stripe failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Payments are not set up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/pay/{payment_id}/demo": {
+      "post": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "Report a demo payment's outcome",
+        "description": "Demo mode only (`CUSTOMER_PAYMENTS_DEMO=1`, local runs; 404 otherwise):\nstands in for Stripe's webhook, moving the payment on and notifying the\ncompany exactly as a real payment would. Nothing is charged.",
+        "operationId": "report_demo_payment",
+        "parameters": [
+          {
+            "name": "payment_id",
+            "in": "path",
+            "description": "The last part of the payment link (`pay_...`)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DemoPayment"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Recorded (or the payment was already past that point)"
+          },
+          "400": {
+            "description": "Unknown outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not in demo mode, or no such payment link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/customer-view/{company_id}/{view_id}/payments": {
+      "get": {
+        "tags": [
+          "customer-view"
+        ],
+        "summary": "List the customer's payments",
+        "description": "The customer's jobs (the deals they signed and their sales) with what\nthey cost, what the customer paid through payment links and what is\nleft, with each payment and each link still to pay. Needs a verified\nvisitor.",
+        "operationId": "list_customer_view_payments",
+        "parameters": [
+          {
+            "name": "company_id",
+            "in": "path",
+            "description": "Company id",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int32"
+            }
+          },
+          {
+            "name": "view_id",
+            "in": "path",
+            "description": "The customer's page id (a UUID)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The jobs, the payments and the balance",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerViewPayments"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No code entered for this page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/webhooks/stripe-connect": {
+      "post": {
+        "tags": [
+          "customer-payments"
+        ],
+        "summary": "Receive a Stripe Connect event",
+        "description": "Stripe's webhook for the companies' connected accounts: Checkout,\npayment intent, refund and dispute events move a customer's payment on\n(and notify the company), and account events update the company's bank\nstatus. A declined card only notifies: the link stays payable. A partial\nrefund keeps the payment `paid` and records what was given back. A\ndispute makes it `disputed`, then `paid` again when won or `lost` when\nthe bank gives the money back (the dispute's own status decides, on any\n`charge.dispute.*` event). `account.application.deauthorized` (the\ncompany cut the platform off from its Stripe account) leaves the company\nnot connected. Events of an account only move payments made for that\naccount, also after the company changed to another one. Each\nchange is made once, however often Stripe sends the event. Needs a valid\n`Stripe-Signature` for `STRIPE_CONNECT_WEBHOOK_SECRET`; no session.",
+        "operationId": "receive_stripe_connect_webhook",
+        "parameters": [
+          {
+            "name": "Stripe-Signature",
+            "in": "header",
+            "description": "Stripe's signature of the body",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The Stripe event, as Stripe sent it",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Processed (or ignored)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectWebhookReceived"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid signature, or not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Processing failed; Stripe retries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/users/sales-reps": {
       "get": {
         "tags": [
@@ -40849,7 +41680,7 @@
           "quotes"
         ],
         "summary": "List remembered area names and items",
-        "description": "Area names and miscellaneous / text items (description, last price,\nquantity and Hide On Quote / Allow Discount / Taxable flags) typed on the\ncompany's 500 most recently changed, not deleted quotes, to offer them\nagain while a quote is drawn. Each comes once (names compared ignoring\ncase and spaces around them), with how many quotes used it and the values\nof the latest one; most used first, then most recent. Default area names\n(`Area #1`, `Area #2`, ...) are left out. At most 60 names and 150 items.",
+        "description": "Area names and miscellaneous / text items (description, last price,\nquantity and Hide On Quote / Allow Discount / Taxable flags) typed on the\ncompany's 500 most recently changed, not deleted quotes, to offer them\nagain while a quote is drawn. A name or item is offered only when quotes\nof at least 2 different customers use it (a quote with no customer counts\nby its deal, else on its own), so names typed for one job are not. Each\ncomes once (compared ignoring case and spaces), with the values of the\nlatest quote; used by most customers first, then most recent. Default area\nnames (`Area #1`, `Area #2`, ...) are left out. At most 60 names and 150\nitems. Suggestions taken out with `POST /v1/quotes/suggestions/hide` are\nleft out and listed in `hidden`, until quotes of 2 different customers\nchanged after that use them again.",
         "operationId": "list_quote_suggestions",
         "responses": {
           "200": {
@@ -40858,6 +41689,76 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/QuoteSuggestions"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an employee",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
+    "/v1/quotes/suggestions/hide": {
+      "post": {
+        "tags": [
+          "quotes"
+        ],
+        "summary": "Take a suggestion out of the list",
+        "description": "The x next to an area name or a custom item's description in the quote\neditor: `GET /v1/quotes/suggestions` stops offering it to everyone in the\ncompany (it is listed in `hidden` instead). Quotes that use it are not\nchanged. It is offered again once quotes of 2 different customers, changed\nafter this, use it. Hiding the same text again moves that time to now.\nBefore the `quote_suggestion_hidden` table exists nothing is stored and it\nstill answers 204.",
+        "operationId": "hide_quote_suggestion",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HideSuggestionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Hidden"
+          },
+          "400": {
+            "description": "Unknown kind, or no text",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
                 }
               }
             }
@@ -63616,7 +64517,7 @@
           "billing"
         ],
         "summary": "Subscribe through Stripe Checkout",
-        "description": "A Stripe Checkout link that subscribes the company to the plan; Stripe\nreturns to `/admin/billing?checkout=success` (or `cancel`). Only while the\ncompany has no running subscription (400 otherwise: change the plan).",
+        "description": "A Stripe Checkout link that subscribes the company to the plan; Stripe\nreturns to `/admin/billing?checkout=success` (or `cancel`). Only while the\ncompany has no running subscription (400 otherwise: change the plan).\nOnly one such page is open at a time: asked again for the same plan, the\nopen page is answered again; for another plan it is closed first, so the\ncompany cannot pay for two subscriptions from two pages.",
         "operationId": "create_billing_checkout",
         "requestBody": {
           "content": {
@@ -63897,7 +64798,7 @@
           "billing"
         ],
         "summary": "Pay the monthly subscription",
-        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`GET /v1/billing/first-payment`), charged now, or when the free time\nGranite Manager gave ends. Stripe returns to\n`/admin/billing?checkout=success` (or `cancel`); access opens once Stripe\nconfirms the payment. 400 when Stripe is not set up or refused, 409\nwhile a subscription is running. Managers only.",
+        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`GET /v1/billing/first-payment`), charged now, or when the free time\nGranite Manager gave ends. Stripe returns to\n`/admin/billing?checkout=success` (or `cancel`); access opens once Stripe\nconfirms the payment. 400 when Stripe is not set up or refused, 409\nwhile a subscription is running. Only one such page is open at a time\n(asked again, the open page is answered again; after a change of price\nit is closed and a new one made), so the company cannot pay twice from\ntwo pages. Managers only.",
         "operationId": "create_billing_first_payment_checkout",
         "responses": {
           "200": {
@@ -64172,7 +65073,7 @@
           "payments"
         ],
         "summary": "Start a company's monthly subscription",
-        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`subscription_price_cents`, read now; later price changes do not touch a\nrunning subscription). The first time, a Stripe customer is created and\nsaved on the company. Stripe sends the payer back to the payments page\nwith `&checkout=success` or `&checkout=cancel`. 409 while the company has\na live subscription: open the portal instead.",
+        "description": "A Stripe Checkout link for a monthly subscription at the company's price\n(`subscription_price_cents`, read now; later price changes do not touch a\nrunning subscription). The first time, a Stripe customer is created and\nsaved on the company. Stripe sends the payer back to the payments page\nwith `&checkout=success` or `&checkout=cancel`. 409 while the company has\na live subscription: open the portal instead. Only one such page is open\nat a time, so a company cannot pay for two subscriptions from two pages:\nasked again, the page that is open is answered again, and when the price\nor the first payment day changed since, that page is closed and a new one\nmade.",
         "operationId": "create_payment_checkout",
         "parameters": [
           {
@@ -67760,7 +68661,7 @@
           "superuser"
         ],
         "summary": "Switch a company feature",
-        "description": "Turns `quickbooks`, `signature`, `onboarding` or `leaderboard` on or off\nfor the company (an explicit setting, over the platform default).",
+        "description": "Turns `quickbooks`, `signature`, `onboarding`, `leaderboard` or\n`customer_payments` on or off for the company (an explicit setting, over\nthe platform default; `customer_payments` has no platform default and is\noff until turned on here).",
         "operationId": "switch_platform_company_feature",
         "parameters": [
           {
@@ -67776,7 +68677,7 @@
           {
             "name": "feature",
             "in": "path",
-            "description": "`quickbooks`, `signature`, `onboarding` or `leaderboard`",
+            "description": "`quickbooks`, `signature`, `onboarding`, `leaderboard` or `customer_payments`",
             "required": true,
             "schema": {
               "type": "string"
@@ -84034,7 +84935,8 @@
         "description": "An area name used on earlier quotes.",
         "required": [
           "name",
-          "uses"
+          "uses",
+          "customers"
         ],
         "properties": {
           "name": {
@@ -84045,6 +84947,11 @@
             "type": "integer",
             "format": "int64",
             "description": "How many of the recent quotes use it."
+          },
+          "customers": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many different customers those quotes are for (a quote with no\ncustomer counts by its deal, else on its own). Always 2 or more."
           },
           "last_used": {
             "type": [
@@ -84764,6 +85671,55 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "BankAccount": {
+        "type": "object",
+        "description": "The company's bank account, as Stripe last reported it.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/BankAccountStatus",
+            "description": "Whether the company can be paid."
+          },
+          "bank_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name of the bank payouts go to (the account's default bank\naccount at Stripe); null until connected, or when Stripe does not say."
+          },
+          "last4": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The account number's last 4 digits; null like `bank_name`."
+          }
+        }
+      },
+      "BankAccountStatus": {
+        "type": "string",
+        "description": "Whether the company can be paid.",
+        "enum": [
+          "not_connected",
+          "pending_verification",
+          "connected"
+        ]
+      },
+      "BankOnboarding": {
+        "type": "object",
+        "description": "Where the bank account is connected.",
+        "properties": {
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stripe's page to open: the company fills in its business and bank\ndetails there and is sent back to Admin → Company. The link works once\nand for a few minutes. Null in demo mode, where the account is\nconnected at once."
           }
         }
       },
@@ -88025,6 +88981,7 @@
           "quickbooks_enabled",
           "signature_enabled",
           "billing_required",
+          "customer_payments_enabled",
           "onboarding_enabled",
           "leaderboard_enabled"
         ],
@@ -88168,6 +89125,10 @@
           "billing_required": {
             "type": "boolean",
             "description": "Stripe payment required."
+          },
+          "customer_payments_enabled": {
+            "type": "boolean",
+            "description": "Customer payments switch: the company may connect a bank account and\ntake its customers' payments by card or ACH. Off unless turned on."
           },
           "onboarding_enabled": {
             "type": "boolean",
@@ -88575,6 +89536,29 @@
               "null"
             ],
             "description": "Its name."
+          }
+        }
+      },
+      "CompanyPaymentSettings": {
+        "type": "object",
+        "description": "A company's customer payment settings.",
+        "required": [
+          "bank",
+          "fees",
+          "enabled"
+        ],
+        "properties": {
+          "bank": {
+            "$ref": "#/components/schemas/BankAccount",
+            "description": "The bank account customers' money goes to."
+          },
+          "fees": {
+            "$ref": "#/components/schemas/PaymentFees",
+            "description": "The fee on each payment method and who pays it."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Customer payments are turned on for the company (by the platform,\ncompany by company). While false nothing can be set up and no link\ncan be made (403); links made before stay payable."
           }
         }
       },
@@ -89339,6 +90323,19 @@
           "channel": {
             "$ref": "#/components/schemas/Channel",
             "description": "How it reached the customer: `sms` or `email`."
+          }
+        }
+      },
+      "ConnectWebhookReceived": {
+        "type": "object",
+        "description": "Answer to Stripe.",
+        "required": [
+          "received"
+        ],
+        "properties": {
+          "received": {
+            "type": "boolean",
+            "description": "Always true."
           }
         }
       },
@@ -91383,6 +92380,101 @@
           }
         }
       },
+      "CustomerPayment": {
+        "type": "object",
+        "description": "One payment, or payment link, of a customer's job.",
+        "required": [
+          "id",
+          "project_key",
+          "method",
+          "status",
+          "amount_cents",
+          "fee_cents",
+          "customer_fee_cents",
+          "customer_fee_bps",
+          "company_fee_cents",
+          "refunded_cents",
+          "url",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The payment's id (`pay_...`), also the last part of its link."
+          },
+          "project_key": {
+            "type": "string",
+            "description": "The job it is for, as `GET /v1/customers/{id}/projects` lists them:\n`deal-<deal id>`, or `sale-<sale id>` for a sale that is not part of\na deal."
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethod",
+            "description": "How the customer pays."
+          },
+          "status": {
+            "$ref": "#/components/schemas/CustomerPaymentStatus",
+            "description": "Where the payment is."
+          },
+          "amount_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "What goes toward the job, in US cents."
+          },
+          "fee_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The whole fee on it, in US cents, as split when the link was made."
+          },
+          "customer_fee_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The part of the fee added to what the customer pays."
+          },
+          "customer_fee_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer's share of the fee in basis points (50 = 0.5%), as set\nwhen the link was made."
+          },
+          "company_fee_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The part of the fee taken from what the company receives."
+          },
+          "refunded_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "What was given back of what the customer was charged, in US cents: 0\nunless refunded. Above 0 on a `paid` payment, it was refunded in part."
+          },
+          "url": {
+            "type": "string",
+            "description": "The page the customer pays on. It never expires."
+          },
+          "failure_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed, as a short plain phrase of our own, never Stripe's\ntext (\"insufficient funds\", \"the bank account is closed\", \"the bank\ndeclined the transfer\"); null unless `failed`."
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When the link was made (ISO 8601, UTC)."
+          }
+        }
+      },
+      "CustomerPaymentStatus": {
+        "type": "string",
+        "description": "Where a payment is.",
+        "enum": [
+          "created",
+          "canceled",
+          "pending",
+          "paid",
+          "failed",
+          "refunded",
+          "disputed",
+          "lost"
+        ]
+      },
       "CustomerProjects": {
         "type": "object",
         "description": "The projects of a customer's family.",
@@ -91886,6 +92978,59 @@
             ],
             "format": "int32",
             "description": "Who follows it up: someone in the company; null for the job's sales rep."
+          }
+        }
+      },
+      "CustomerViewPayments": {
+        "type": "object",
+        "description": "What the customer paid and still owes.",
+        "required": [
+          "enabled",
+          "total_cents",
+          "paid_cents",
+          "pending_cents",
+          "balance_cents",
+          "projects",
+          "payments"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "Customer payments are turned on for the company. While false the\ncustomer's page shows payments only when there are some (links made\nbefore it was turned off): no balance for a company that takes its\nmoney another way."
+          },
+          "total_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What their jobs cost together (`projects`), in US cents."
+          },
+          "paid_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What they paid through payment links, less what was refunded. A\ndisputed payment counts until the bank decides; a lost one does not."
+          },
+          "pending_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "ACH transfers on their way."
+          },
+          "balance_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "`total_cents` minus `paid_cents`, never below zero. Money paid\nanother way (a check, cash) is not counted."
+          },
+          "projects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ViewJob"
+            },
+            "description": "Their jobs, oldest first: each deal that is won or has a sale, then\neach sale that is not part of such a deal. Cancelled sales are left\nout."
+          },
+          "payments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ViewPayment"
+            },
+            "description": "Their payments and open payment links, newest first."
           }
         }
       },
@@ -93239,6 +94384,29 @@
             "description": "By whom (name), when recorded."
           }
         }
+      },
+      "DemoOutcome": {
+        "type": "string",
+        "description": "What the demo payment page reports.",
+        "enum": [
+          "paid",
+          "pending",
+          "failed"
+        ]
+      },
+      "DemoPayment": {
+        "type": "object",
+        "description": "Body of `POST /v1/public/pay/{payment_id}/demo`.",
+        "required": [
+          "outcome"
+        ],
+        "properties": {
+          "outcome": {
+            "$ref": "#/components/schemas/DemoOutcome",
+            "description": "What happened to the payment."
+          }
+        },
+        "additionalProperties": false
       },
       "DesignDeal": {
         "type": "object",
@@ -96614,7 +97782,8 @@
           "quickbooks",
           "signature",
           "onboarding",
-          "leaderboard"
+          "leaderboard",
+          "customer_payments"
         ],
         "properties": {
           "quickbooks": {
@@ -96632,6 +97801,10 @@
           "leaderboard": {
             "type": "boolean",
             "description": "The points leaderboard is on (own switch, else the platform default)."
+          },
+          "customer_payments": {
+            "type": "boolean",
+            "description": "Customer payments are on: the company may connect a bank account and\ntake its customers' payments by card or ACH. Off unless turned on."
           }
         }
       },
@@ -98018,6 +99191,24 @@
           }
         }
       },
+      "HiddenSuggestion": {
+        "type": "object",
+        "description": "A suggestion taken out with the x, still not offered.",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`area` (an area name), `misc` or `text` (a custom item's description)."
+          },
+          "text": {
+            "type": "string",
+            "description": "The text as it was shown when it was taken out."
+          }
+        }
+      },
       "HiddenUser": {
         "type": "object",
         "description": "A calendar an admin hid from one user.",
@@ -98035,6 +99226,24 @@
             "type": "integer",
             "format": "int32",
             "description": "The user it is hidden from."
+          }
+        }
+      },
+      "HideSuggestionInput": {
+        "type": "object",
+        "description": "Body of `POST /v1/quotes/suggestions/hide`.",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "`area` for an area name, `misc` or `text` for a custom item's description."
+          },
+          "text": {
+            "type": "string",
+            "description": "The suggestion as shown (any case; spaces around and inside are tidied)."
           }
         }
       },
@@ -100416,7 +101625,8 @@
           "hide_on_quote",
           "allow_discount",
           "taxable",
-          "uses"
+          "uses",
+          "customers"
         ],
         "properties": {
           "kind": {
@@ -100456,6 +101666,11 @@
             "type": "integer",
             "format": "int64",
             "description": "How many of the recent quotes use it."
+          },
+          "customers": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many different customers those quotes are for (a quote with no\ncustomer counts by its deal, else on its own). Always 2 or more."
           },
           "last_used": {
             "type": [
@@ -103672,6 +104887,31 @@
           }
         }
       },
+      "NewPayment": {
+        "type": "object",
+        "description": "Body of `POST /v1/customers/{id}/payments`.",
+        "required": [
+          "project_key",
+          "method",
+          "amount_cents"
+        ],
+        "properties": {
+          "project_key": {
+            "type": "string",
+            "description": "The job to pay for, from `GET /v1/customers/{id}/projects`:\n`deal-<deal id>`, or `sale-<sale id>` for a sale that is not part of\na deal."
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethod",
+            "description": "How the customer will pay."
+          },
+          "amount_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What goes toward the job, in US cents: 100 ($1) to 99999999\n($999,999.99); a card payment at least 1000 ($10). The customer's part\nof the fee is added on top."
+          }
+        },
+        "additionalProperties": false
+      },
       "NewPhoneCustomer": {
         "type": "object",
         "description": "Body of `POST /v1/customers/from-phone`.",
@@ -106776,6 +108016,156 @@
             "description": "The new password: 8 characters or more (spaces around it are\ndropped, as sign-in drops them)."
           }
         }
+      },
+      "PayCheckout": {
+        "type": "object",
+        "description": "Where the customer pays.",
+        "properties": {
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Stripe's Checkout page to send the customer to; it comes back to the\npayment link with `?checkout=success` or `?checkout=cancel`. Null in\ndemo mode."
+          }
+        }
+      },
+      "PayPage": {
+        "type": "object",
+        "description": "What the payment page (`/pay/<payment id>`) shows.",
+        "required": [
+          "company_name",
+          "method",
+          "status",
+          "amount_cents",
+          "customer_fee_cents",
+          "customer_fee_bps",
+          "total_cents",
+          "demo"
+        ],
+        "properties": {
+          "company_name": {
+            "type": "string",
+            "description": "The company being paid."
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The job: the deal's title, else the sale's address; null without\neither."
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethod",
+            "description": "How the customer pays."
+          },
+          "status": {
+            "$ref": "#/components/schemas/CustomerPaymentStatus",
+            "description": "Where the payment is: only `created` can be paid."
+          },
+          "amount_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "What goes toward the job, in US cents."
+          },
+          "customer_fee_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer's part of the fee, added on top."
+          },
+          "customer_fee_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "That part as a share of the amount, in basis points (50 = 0.5%)."
+          },
+          "total_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "What the customer is charged: the two above together."
+          },
+          "demo": {
+            "type": "boolean",
+            "description": "Demo mode: nothing is charged, and the page reports the outcome\nitself with `POST /v1/public/pay/{payment_id}/demo`."
+          }
+        }
+      },
+      "PaymentFeeSetting": {
+        "type": "object",
+        "description": "How one payment method's fee is split.",
+        "required": [
+          "rate_bps",
+          "customer_share_bps",
+          "min_fee_cents",
+          "locked"
+        ],
+        "properties": {
+          "rate_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The fee on a payment, in basis points (300 = 3%)."
+          },
+          "customer_share_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer's part of it, `0..=rate_bps`; the company pays the rest."
+          },
+          "min_fee_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The least the fee on one payment can be, in US cents (900 = $9 for\ncards, 0 for ACH): a small payment's fee is this, not the rate."
+          },
+          "locked": {
+            "type": "boolean",
+            "description": "The split cannot be changed: the company pays the whole fee. True for\ncards for now."
+          }
+        }
+      },
+      "PaymentFees": {
+        "type": "object",
+        "description": "Each method's fee.",
+        "required": [
+          "card",
+          "ach"
+        ],
+        "properties": {
+          "card": {
+            "$ref": "#/components/schemas/PaymentFeeSetting",
+            "description": "Card payments."
+          },
+          "ach": {
+            "$ref": "#/components/schemas/PaymentFeeSetting",
+            "description": "ACH bank transfers."
+          }
+        }
+      },
+      "PaymentFeesInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/company/payment-settings`.",
+        "required": [
+          "card_customer_share_bps",
+          "ach_customer_share_bps"
+        ],
+        "properties": {
+          "card_customer_share_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer's part of the 3% card fee, in basis points. Must be 0:\nthe card fee cannot be passed on yet."
+          },
+          "ach_customer_share_bps": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer's part of the 1% ACH fee, in basis points: 0 to 100 in\nsteps of 10 (0.1%). The company pays the rest."
+          }
+        },
+        "additionalProperties": false
+      },
+      "PaymentMethod": {
+        "type": "string",
+        "description": "How a customer pays.",
+        "enum": [
+          "card",
+          "ach"
+        ]
       },
       "PaymentPage": {
         "type": "object",
@@ -110478,7 +111868,8 @@
         "type": "object",
         "description": "One job of a customer: a deal and its sales, or a sale on its own.",
         "required": [
-          "sale_ids"
+          "sale_ids",
+          "cancelled"
         ],
         "properties": {
           "deal_id": {
@@ -110501,7 +111892,7 @@
               "string",
               "null"
             ],
-            "description": "The deal's amount, else the sales' total, a decimal string."
+            "description": "The deal's amount, else the total of its sales that were not\ncancelled, a decimal string."
           },
           "address": {
             "type": [
@@ -110525,6 +111916,10 @@
               "format": "int32"
             },
             "description": "The sales of the job."
+          },
+          "cancelled": {
+            "type": "boolean",
+            "description": "A sale on its own that was cancelled: nothing is owed for it, and it\ntakes no payment link. Always false for a deal."
           }
         }
       },
@@ -111503,7 +112898,8 @@
         "description": "A sale to a customer of the family.",
         "required": [
           "id",
-          "customer_id"
+          "customer_id",
+          "cancelled"
         ],
         "properties": {
           "id": {
@@ -111545,6 +112941,10 @@
             ],
             "format": "date-time",
             "description": "When it was sold."
+          },
+          "cancelled": {
+            "type": "boolean",
+            "description": "The sale was cancelled: its price is not part of its deal's total."
           }
         }
       },
@@ -114472,7 +115872,8 @@
         "description": "`GET /v1/quotes/suggestions`.",
         "required": [
           "area_names",
-          "items"
+          "items",
+          "hidden"
         ],
         "properties": {
           "area_names": {
@@ -114480,14 +115881,21 @@
             "items": {
               "$ref": "#/components/schemas/AreaNameSuggestion"
             },
-            "description": "Area names, most used first (ties: most recent first). Default names\nsuch as `Area #2` are left out."
+            "description": "Area names, used by most customers first (ties: most recent first).\nDefault names such as `Area #2` and hidden ones are left out."
           },
           "items": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ItemSuggestion"
             },
-            "description": "Miscellaneous and text items, most used first (ties: most recent first)."
+            "description": "Miscellaneous and text items, used by most customers first (ties: most\nrecent first). Hidden ones are left out."
+          },
+          "hidden": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HiddenSuggestion"
+            },
+            "description": "Suggestions the company took out with the x. The editor also leaves\nthese out of its own built-in names (`Kitchen`, `Vanity`, ...) and of\nthe names on the quote being drawn. Compare ignoring case and spaces."
           }
         }
       },
@@ -128401,6 +129809,110 @@
                 "type": "null"
               }
             ]
+          }
+        }
+      },
+      "ViewJob": {
+        "type": "object",
+        "description": "One job of the customer: a deal they signed, or a sale that is not part\nof such a deal. The same jobs the CRM lists on the customer's Projects\ntab (`GET /v1/customers/{id}/projects`).",
+        "required": [
+          "project_key",
+          "price_cents"
+        ],
+        "properties": {
+          "project_key": {
+            "type": "string",
+            "description": "`deal-<deal id>` or `sale-<sale id>`."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The deal's title, else the address of the work; null without either."
+          },
+          "price_cents": {
+            "type": "integer",
+            "format": "int64",
+            "description": "What it costs, in US cents: the deal's amount, else its sales' prices."
+          }
+        }
+      },
+      "ViewPayment": {
+        "type": "object",
+        "description": "A payment as the customer sees it: the company's side of the fee is left\nout.",
+        "required": [
+          "id",
+          "project_key",
+          "method",
+          "status",
+          "amount_cents",
+          "customer_fee_cents",
+          "refunded_cents",
+          "url",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The payment's id (`pay_...`)."
+          },
+          "project_key": {
+            "type": "string",
+            "description": "The job it is for: `deal-<deal id>` or `sale-<sale id>`, one of\n`projects`."
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The job's name: the deal's title, else the sale's address; null\nwithout either."
+          },
+          "sale_id": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The sale it was made for, when it was made for a sale."
+          },
+          "method": {
+            "$ref": "#/components/schemas/PaymentMethod",
+            "description": "How it is paid."
+          },
+          "status": {
+            "$ref": "#/components/schemas/CustomerPaymentStatus",
+            "description": "Where it is; withdrawn links are not listed."
+          },
+          "amount_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "What goes toward the job, in US cents."
+          },
+          "customer_fee_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The customer's part of the fee, added on top."
+          },
+          "refunded_cents": {
+            "type": "integer",
+            "format": "int32",
+            "description": "What was given back to the customer, in US cents (0 unless refunded)."
+          },
+          "url": {
+            "type": "string",
+            "description": "The page to pay on, while `created`."
+          },
+          "failure_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why it failed, as a short plain phrase (\"insufficient funds\"); null\nunless `failed`."
+          },
+          "created_at": {
+            "type": "string",
+            "description": "When the link was made (ISO 8601, UTC)."
           }
         }
       },

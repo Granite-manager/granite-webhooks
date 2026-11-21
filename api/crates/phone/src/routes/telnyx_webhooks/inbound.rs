@@ -255,7 +255,7 @@ async fn answer(state: &AppState, hook: &Hook, line: &Line) -> ApiResult<Respons
                 call_sid: telnyx_sid,
                 status,
                 devices_rung: phones.len(),
-                ai_notes: true,
+                ai_notes: false,
             },
         )
         .await?;

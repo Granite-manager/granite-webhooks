@@ -2,7 +2,8 @@
 //! web session cookie.
 //!
 //! A browser phone is a device session of platform `web` whose
-//! `web_session_id` is the cookie's session, with its phone device and
+//! `web_session_id` is the cookie's session (its `sessions.id`, which is the
+//! hash of the cookie's id), with its phone device and
 //! Telnyx credential: one per web session (tabs share it). It rings with the
 //! user's app phones while its tab is connected to Telnyx (`presence`), and
 //! its calls are approved like the app's: the browser signs
@@ -19,7 +20,7 @@ use super::{RateLimited, denied, rate_limited, telnyx_failed};
 use crate::auth::EmployeeUser;
 use crate::auth::cookie::request_session_id;
 use crate::auth::device::{encoded_call_key, new_token, token_hash};
-use crate::auth::session::SessionUser;
+use crate::auth::session::{SessionUser, session_key};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
@@ -131,7 +132,8 @@ async fn web_calling(state: &AppState, company_id: i32) -> Result<CompanyConfig,
     Ok(config)
 }
 
-/// The request's web session id (it verified already: the extractor read it).
+/// The request's web session id, as the cookie holds it (it verified
+/// already: the extractor read it). Stored hashed: see `session_key`.
 fn web_session(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
     request_session_id(headers, &state.session_secret).ok_or(ApiError::Unauthorized)
 }
@@ -154,6 +156,7 @@ async fn web_device(
     user: &SessionUser,
     id: i64,
 ) -> ApiResult<WebDevice> {
+    let key = session_key(web_session);
     let device: Option<WebDevice> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT CAST(pd.id AS SIGNED) AS id, CAST(ds.id AS SIGNED) AS session_id,
                 ({LIVE_DEVICE}) AS live
@@ -163,7 +166,7 @@ async fn web_device(
             AND ds.user_id = ? AND ds.company_id = ? AND pd.company_id = ds.company_id"
     )))
     .bind(id)
-    .bind(web_session)
+    .bind(&key)
     .bind(user.id)
     .bind(user.company_id)
     .fetch_optional(pool)
@@ -252,15 +255,16 @@ async fn find_or_make(
     device_name: &str,
 ) -> ApiResult<(i64, i64, bool, Vec<i64>)> {
     let mut tx = pool.begin().await?;
+    let key = session_key(web_session);
     let locked: Option<String> =
         sqlx::query_scalar("SELECT id FROM sessions WHERE id = ? FOR UPDATE")
-            .bind(web_session)
+            .bind(&key)
             .fetch_optional(&mut *tx)
             .await?;
-    if locked.is_none() {
+    let Some(web_session) = locked else {
         tx.rollback().await?;
         return Err(ApiError::Unauthorized);
-    }
+    };
     let rows: Vec<(i64, i32, i32, Option<i64>)> = sqlx::query_as(
         "SELECT CAST(ds.id AS SIGNED), ds.user_id, ds.company_id, CAST(pd.id AS SIGNED)
            FROM device_sessions ds
@@ -268,7 +272,7 @@ async fn find_or_make(
           WHERE ds.web_session_id = ? AND ds.revoked_at IS NULL
           ORDER BY ds.id",
     )
-    .bind(web_session)
+    .bind(&web_session)
     .fetch_all(&mut *tx)
     .await?;
     let mut others = Vec::new();
@@ -316,7 +320,7 @@ async fn find_or_make(
     .bind(user.company_id)
     .bind(token_hash(&token))
     .bind(device_name)
-    .bind(web_session)
+    .bind(&web_session)
     .execute(&mut *tx)
     .await?
     .last_insert_id();

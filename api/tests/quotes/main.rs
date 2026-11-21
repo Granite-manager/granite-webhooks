@@ -7,6 +7,7 @@
 mod common;
 
 mod commissions;
+mod customer_payments;
 mod customer_view;
 mod feature_sales;
 mod job_pay;
@@ -20,6 +21,7 @@ mod quote_invoice_sync;
 mod quote_presets;
 mod quote_price_lists;
 mod quote_pricing_parity;
+mod quote_suggestions;
 mod quotes;
 mod sent_signature_requests;
 mod signature_documents;

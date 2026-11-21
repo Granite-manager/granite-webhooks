@@ -1201,6 +1201,14 @@ async fn ai_texts_follow_up_until_the_customer_agrees(pool: MySqlPool) {
     .unwrap();
     let message = "1000 is Confirmed: the customer agreed to the date (AI)".to_string();
     assert_eq!(told, [(100, message.clone()), (101, message)]);
+    // Each names the job, so a tap (the bell, the phone) opens it.
+    let jobs: Vec<Option<i32>> = sqlx::query_scalar(
+        "SELECT event_id FROM notifications WHERE notification_type = 'schedule_ai_ready'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(jobs, [Some(install), Some(install)]);
     // Settled: nothing more is read or sent.
     let body = run().await;
     assert_eq!(body["answers_read"], 0);

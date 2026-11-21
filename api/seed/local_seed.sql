@@ -35,17 +35,18 @@ INSERT INTO users_positions (user_id, position_id, company_id) VALUES
   (106, 1, 101);
 
 -- Session ids: aaaaaaaa-0000-4000-8000-000000000<user id>, plus broken ones.
+-- Stored hashed, as the API stores them; cookies carry the bare id.
 INSERT INTO sessions (id, user_id, expiration_date, is_deleted, created_date) VALUES
-  ('aaaaaaaa-0000-4000-8000-000000000100', 100, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
-  ('aaaaaaaa-0000-4000-8000-000000000101', 101, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
-  ('aaaaaaaa-0000-4000-8000-000000000102', 102, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
-  ('aaaaaaaa-0000-4000-8000-000000000103', 103, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
-  ('aaaaaaaa-0000-4000-8000-000000000104', 104, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
-  ('aaaaaaaa-0000-4000-8000-000000000105', 105, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
-  ('aaaaaaaa-0000-4000-8000-000000000106', 106, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
-  ('bbbbbbbb-0000-4000-8000-0000000e0100', 100, '2020-01-01 00:00:00', 0, '2019-12-01 00:00:00'),                   -- expired
-  ('bbbbbbbb-0000-4000-8000-0000000d0100', 100, '2037-12-31 00:00:00', 1, CURRENT_TIMESTAMP),                       -- logged out
-  ('bbbbbbbb-0000-4000-8000-0000000a0100', 100, '2037-12-31 00:00:00', 0, DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 3 MONTH)); -- too old
+  (SHA2('aaaaaaaa-0000-4000-8000-000000000100', 256), 100, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
+  (SHA2('aaaaaaaa-0000-4000-8000-000000000101', 256), 101, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
+  (SHA2('aaaaaaaa-0000-4000-8000-000000000102', 256), 102, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
+  (SHA2('aaaaaaaa-0000-4000-8000-000000000103', 256), 103, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
+  (SHA2('aaaaaaaa-0000-4000-8000-000000000104', 256), 104, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
+  (SHA2('aaaaaaaa-0000-4000-8000-000000000105', 256), 105, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
+  (SHA2('aaaaaaaa-0000-4000-8000-000000000106', 256), 106, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP),
+  (SHA2('bbbbbbbb-0000-4000-8000-0000000e0100', 256), 100, '2020-01-01 00:00:00', 0, '2019-12-01 00:00:00'),                   -- expired
+  (SHA2('bbbbbbbb-0000-4000-8000-0000000d0100', 256), 100, '2037-12-31 00:00:00', 1, CURRENT_TIMESTAMP),                       -- logged out
+  (SHA2('bbbbbbbb-0000-4000-8000-0000000a0100', 256), 100, '2037-12-31 00:00:00', 0, DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 3 MONTH)); -- too old
 
 -- Customers of company 100. Ids 1000+; 990000021 is the onboarding sample id.
 INSERT INTO customers (id, name, phone, phone_2, address, company_id, source, sales_rep, created_date, assigned_date, invalid_lead, deleted_at, parent_id, company_name, customer_temperature) VALUES
@@ -300,6 +301,8 @@ UPDATE activity_points_sources SET counts_from = '2026-01-01 00:00:00';
 -- points are not counted). Company 101 has inbound email and CloudTalk (fake
 -- credentials), so its dashboard offers the Sent emails and Sent SMS widgets.
 UPDATE company SET leaderboard_enabled = 1 WHERE id = 100;
+-- Company 100 may take its customers' payments; company 101 may not.
+UPDATE company SET customer_payments_enabled = 1 WHERE id = 100;
 UPDATE company SET domain = 'other.test', cloudtalk_access_key = 'seed-key',
                    cloudtalk_access_secret = 'seed-secret' WHERE id = 101;
 
@@ -412,7 +415,7 @@ INSERT INTO users (id, email, password, name, is_employee, is_admin, is_superuse
   (107, 'dealer@acme.test', '$2b$10$daaV4OW7Z3vjsAwLf.2lTeFKeDjT0vAMrimETNcoQ3i//afF85GEa', 'Dina Dealer', 1, 0, 0, 0, 100);
 
 INSERT INTO sessions (id, user_id, expiration_date, is_deleted, created_date) VALUES
-  ('aaaaaaaa-0000-4000-8000-000000000107', 107, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP);
+  (SHA2('aaaaaaaa-0000-4000-8000-000000000107', 256), 107, '2037-12-31 00:00:00', 0, CURRENT_TIMESTAMP);
 
 -- Nina (8695) is a lead of Rita's that only Dina's deals use.
 INSERT INTO customers (id, name, phone, company_id, source, sales_rep, created_date, customer_temperature) VALUES

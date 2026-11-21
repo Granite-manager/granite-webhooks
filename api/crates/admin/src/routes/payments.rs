@@ -379,7 +379,11 @@ async fn customer_of(state: &AppState, company: &CompanyRow) -> ApiResult<String
 /// running subscription). The first time, a Stripe customer is created and
 /// saved on the company. Stripe sends the payer back to the payments page
 /// with `&checkout=success` or `&checkout=cancel`. 409 while the company has
-/// a live subscription: open the portal instead.
+/// a live subscription: open the portal instead. Only one such page is open
+/// at a time, so a company cannot pay for two subscriptions from two pages:
+/// asked again, the page that is open is answered again, and when the price
+/// or the first payment day changed since, that page is closed and a new one
+/// made.
 #[crate::openapi::path(
     post,
     path = "/v1/public/payments/{token}/checkout",

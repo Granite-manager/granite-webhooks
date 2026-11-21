@@ -24,6 +24,8 @@ struct FakeStripe {
     subscriptions: HashMap<String, Value>,
     invoices: HashMap<String, Value>,
     payment_methods: HashMap<String, Value>,
+    /// Checkout sessions, oldest first.
+    checkouts: Vec<Value>,
     /// (method, path, form or query)
     requests: Vec<(String, String, String)>,
 }
@@ -151,10 +153,64 @@ async fn fake_stripe(state: Shared) -> String {
         )
         .route(
             "/v1/checkout/sessions",
-            post(|State(s): State<Shared>, body: String| async move {
+            get(
+                |State(s): State<Shared>, query: axum::extract::RawQuery| async move {
+                    let mut s = s.lock().unwrap();
+                    let query = query.0.unwrap_or_default();
+                    s.requests
+                        .push(("GET".into(), "/v1/checkout/sessions".into(), query.clone()));
+                    let params = form(&query);
+                    // Newest first, as Stripe lists them.
+                    let data: Vec<Value> = s
+                        .checkouts
+                        .iter()
+                        .rev()
+                        .filter(|session| {
+                            params
+                                .get("customer")
+                                .is_some_and(|customer| session["customer"] == customer.as_str())
+                                && params
+                                    .get("status")
+                                    .is_none_or(|status| session["status"] == status.as_str())
+                        })
+                        .cloned()
+                        .collect();
+                    Json(json!({ "object": "list", "data": data }))
+                },
+            )
+            .post(|State(s): State<Shared>, body: String| async move {
                 let mut s = s.lock().unwrap();
-                s.requests.push(("POST".into(), "/v1/checkout/sessions".into(), body));
-                Json(json!({ "id": "cs_1", "url": "https://checkout.stripe.com/c/cs_1" }))
+                s.requests
+                    .push(("POST".into(), "/v1/checkout/sessions".into(), body.clone()));
+                let params = form(&body);
+                let id = format!("cs_{}", s.checkouts.len() + 1);
+                let session = json!({
+                    "id": id, "object": "checkout.session", "status": "open",
+                    "mode": params.get("mode"), "customer": params.get("customer"),
+                    "url": format!("https://checkout.stripe.com/c/{id}"),
+                    "metadata": { "granite_request": params.get("metadata[granite_request]") },
+                });
+                s.checkouts.push(session.clone());
+                Json(session)
+            }),
+        )
+        .route(
+            "/v1/checkout/sessions/{id}/expire",
+            post(|State(s): State<Shared>, Path(id): Path<String>| async move {
+                let mut s = s.lock().unwrap();
+                s.requests.push((
+                    "POST".into(),
+                    "/v1/checkout/sessions/{id}/expire".into(),
+                    id.clone(),
+                ));
+                let session = s
+                    .checkouts
+                    .iter_mut()
+                    .find(|session| session["id"] == id.as_str() && session["status"] == "open")
+                    .ok_or_else(|| not_found())?;
+                session["status"] = json!("expired");
+                session["url"] = Value::Null;
+                Ok::<_, (StatusCode, Json<Value>)>(Json(session.clone()))
             }),
         )
         .route(
@@ -1013,7 +1069,7 @@ async fn checkout_creates_the_customer_and_returns_to_the_callers_host(pool: MyS
     let session = form(
         &requests
             .iter()
-            .find(|r| r.1 == "/v1/checkout/sessions")
+            .find(|r| r.0 == "POST" && r.1 == "/v1/checkout/sessions")
             .unwrap()
             .2,
     );
@@ -1031,6 +1087,37 @@ async fn checkout_creates_the_customer_and_returns_to_the_callers_host(pool: MyS
             .await
             .unwrap();
     assert_eq!(saved.as_deref(), Some("cus_created"));
+
+    // The same plan again: the page that is open, not a second one that
+    // could be paid as well. Another plan: the old page is closed first.
+    let again: Value = server
+        .post("/v1/billing/checkout")
+        .with_session(sessions::MANAGER)
+        .json(&json!({ "price_id": "price_flat" }))
+        .await
+        .json();
+    assert_eq!(
+        again,
+        json!({ "url": "https://checkout.stripe.com/c/cs_1" })
+    );
+    let other: Value = server
+        .post("/v1/billing/checkout")
+        .with_session(sessions::MANAGER)
+        .json(&json!({ "price_id": "price_plus" }))
+        .await
+        .json();
+    assert_eq!(
+        other,
+        json!({ "url": "https://checkout.stripe.com/c/cs_2" })
+    );
+    let stripe = stripe.lock().unwrap();
+    let open: Vec<&str> = stripe
+        .checkouts
+        .iter()
+        .filter(|session| session["status"] == "open")
+        .map(|session| session["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(open, ["cs_2"]);
 }
 
 #[test_db::test(seed)]

@@ -14,6 +14,7 @@
 //! other way and browser phones whose CRM sign-in ended.
 
 use super::routing::PHONE_USER;
+use crate::auth::session::session_key;
 use crate::push::PushError;
 use crate::state::AppState;
 use lambda_http::tracing;
@@ -253,18 +254,19 @@ pub async fn expired_sessions(pool: &MySqlPool, limit: i64) -> sqlx::Result<Vec<
     .await
 }
 
-/// Signs out the browser phones of web session `web_session_id` (the CRM
-/// signed out). The number of device sessions ended.
+/// Signs out the browser phones of web session `web_session_id` (the
+/// cookie's id; the CRM signed out). The number of device sessions ended.
 pub async fn revoke_web_session(
     state: &AppState,
     web_session_id: &str,
     reason: RevokeReason,
 ) -> Result<u64, sqlx::Error> {
+    let key = session_key(web_session_id);
     let sessions: Vec<i64> = sqlx::query_scalar(
         "SELECT CAST(id AS SIGNED) FROM device_sessions
           WHERE web_session_id = ? AND revoked_at IS NULL",
     )
-    .bind(web_session_id)
+    .bind(&key)
     .fetch_all(&state.pool)
     .await?;
     let mut ended = 0;

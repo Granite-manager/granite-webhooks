@@ -62,6 +62,13 @@ pub struct UserPositionRow {
     pub company_id: i32,
 }
 
+/// How a session is stored: `sessions.id` and
+/// `device_sessions.web_session_id` hold the SHA-256 (hex) of the cookie's
+/// session id, never the id itself, so a copy of the database signs nobody in.
+pub fn session_key(session_id: &str) -> String {
+    super::sha256_hex(session_id)
+}
+
 /// Same shape check as Remix `validSessionId`: a UUID string.
 pub fn valid_session_id(value: &str) -> bool {
     let bytes = value.as_bytes();
@@ -79,6 +86,7 @@ pub async fn find_session_user(
     if !valid_session_id(session_id) {
         return Ok(None);
     }
+    let key = session_key(session_id);
     sqlx::query_as::<_, SessionUser>(sqlx::AssertSqlSafe(format!(
         "SELECT users.id, users.email, users.name, users.phone_number,
                 COALESCE(users.is_employee, 0) AS is_employee,
@@ -91,7 +99,7 @@ pub async fn find_session_user(
            JOIN sessions ws ON ws.user_id = users.id
           WHERE ws.id = ? AND {LIVE_SESSION} AND users.is_deleted = 0"
     )))
-    .bind(session_id)
+    .bind(&key)
     .fetch_optional(pool)
     .await
 }
@@ -99,11 +107,12 @@ pub async fn find_session_user(
 /// A session from before sessions stopped ending by time stops ending too
 /// once it is used: its `expiration_date` is cleared, if it still signs in.
 pub async fn keep_session(pool: &MySqlPool, session_id: &str) -> Result<(), sqlx::Error> {
+    let key = session_key(session_id);
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE sessions ws SET ws.expiration_date = NULL
           WHERE ws.id = ? AND ws.expiration_date IS NOT NULL AND {LIVE_SESSION}"
     )))
-    .bind(session_id)
+    .bind(&key)
     .execute(pool)
     .await?;
     Ok(())

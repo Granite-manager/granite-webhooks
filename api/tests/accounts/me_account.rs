@@ -89,13 +89,15 @@ async fn a_new_password_ends_the_other_sessions(pool: MySqlPool) {
         .await
         .unwrap();
     assert!(bcrypt::verify("a-new-password", &hash).unwrap());
-    let ended: Vec<(String, bool)> =
-        sqlx::query_as("SELECT id, is_deleted = 1 FROM sessions WHERE user_id = 100 ORDER BY id")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-    for (id, deleted) in ended {
-        assert_eq!(deleted, id != sessions::REP, "{id}");
+    let ended: Vec<(String, bool, bool)> = sqlx::query_as(
+        "SELECT id, is_deleted = 1, id = SHA2(?, 256) FROM sessions WHERE user_id = 100 ORDER BY id",
+    )
+    .bind(sessions::REP)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    for (id, deleted, current) in ended {
+        assert_eq!(deleted, !current, "{id}");
     }
     server
         .get("/v1/me/account")

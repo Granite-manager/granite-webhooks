@@ -39,7 +39,7 @@ async fn lines(pool: &MySqlPool) {
 
 fn defaults() -> Value {
     json!({
-        "defaultCallerNumberId": null, "aiNotes": true, "workingHours": null,
+        "defaultCallerNumberId": null, "aiNotes": false, "workingHours": null,
         "cellNumber": null, "cellVerified": false, "cellFallback": false, "ringTimeoutSecs": 25,
         "forwardAll": false, "forwardAllTo": "voicemail", "forwardAllNumber": null,
                           "displayNumber": "caller", "unknownShowMine": false, "announceDirect": false,

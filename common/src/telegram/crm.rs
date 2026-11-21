@@ -26,6 +26,7 @@ pub fn notification_type_title(notification_type: &str) -> &'static str {
         "installation_completed" => "Installation Completed",
         "event_issue" => "Reported an Issue",
         "customer_todos" => "Customer To-dos",
+        "schedule_ai_ready" => "Job Confirmed",
         "sales_order" => "Sales Order",
         "project_task_assigned" => "Gave You a Task",
         "project_task_reminder" => "Task Due",

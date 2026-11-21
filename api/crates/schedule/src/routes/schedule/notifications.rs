@@ -2302,9 +2302,19 @@ pub struct Slot<'a> {
     /// Who the job is assigned to: the installer or template technician.
     pub crew: Option<&'a str>,
     /// An all-day event's time is left blank (`BLANK_TIME`) instead of
-    /// "All day": a text sent by hand offers the day, the time comes later.
+    /// being left out: a text sent by hand offers the day, the time comes later.
     pub blank_time: bool,
 }
+
+/// An all-day event's time, with the words that join it to the date
+/// (", ", "at", "arriving between … and …"), so only the date is sent.
+static ALL_DAY_TIME: LazyLock<Regex> = LazyLock::new(|| {
+    let time = r"\{\{\s*appointment\.(?:time|end_time|time_range)\s*\}\}";
+    Regex::new(&format!(
+        r"(?i)[ \t]*,?[ \t]*(?:\b(?:arriving|starting|beginning)\s+)?(?:(?:\bat|\baround|\bby|@)\s*)?(?:\b(?:between|from)\s+)?{time}(?:\s*(?:\band\b|\bto\b|\buntil\b|\btill\b|-|–)\s*{time})?"
+    ))
+    .unwrap()
+});
 
 /// The time in a text sent by hand for an event with no exact time.
 pub const BLANK_TIME: &str = "____";
@@ -2314,11 +2324,16 @@ pub const BLANK_TIME: &str = "____";
 /// assigned) stays, so the message is held back.
 pub fn fill_appointment(text: &str, slot: &Slot<'_>) -> String {
     let day = |at: NaiveDate| at.format("%A, %B %-d").to_string();
-    let no_time = if slot.blank_time {
-        BLANK_TIME
+    // An all-day event has no time: only its date is sent (a text sent by
+    // hand gets a blank to fill in).
+    let dropped;
+    let text = if slot.all_day && !slot.blank_time {
+        dropped = ALL_DAY_TIME.replace_all(text, "");
+        dropped.as_ref()
     } else {
-        "All day"
+        text
     };
+    let no_time = BLANK_TIME;
     let (date, time, end_date, end_time) = if slot.all_day {
         (
             day(slot.start.date()),
@@ -3870,11 +3885,14 @@ async fn tell_managers(state: &AppState, notice: &Notice, what: &str) -> Result<
     for user_id in managers {
         let id = sqlx::query(
             "INSERT INTO notifications
-                    (user_id, customer_id, message, notification_type, actor_name, due_at)
-             VALUES (?, ?, ?, 'schedule_ai_ready', ?, NOW())",
+                    (user_id, customer_id, event_id, message, notification_type, actor_name,
+                     due_at)
+             VALUES (?, ?, ?, ?, 'schedule_ai_ready', ?, NOW())",
         )
         .bind(user_id)
         .bind(notice.customer_id)
+        // The job it is about: a tap opens it (the bell and the phone).
+        .bind(notice.event_id)
         .bind(&message)
         .bind(notice.actor)
         .execute(pool)
@@ -4359,7 +4377,11 @@ mod tests {
         );
         // No address: the variable stays, so the send is held back.
         let all_day = slot(at("2030-01-15 00:00"), at("2030-01-17 00:00"), true, None);
-        assert!(fill_appointment(text, &all_day).contains("All day at {{appointment.address}}"));
+        // All day: only the date, the time and its joining words left out.
+        assert_eq!(
+            fill_appointment(text, &all_day),
+            "Hi, see you Tuesday, January 15 at {{appointment.address}}. {{customer.first_name}}"
+        );
         // The end, the window, the calendar; nobody assigned stays.
         assert_eq!(
             fill_appointment(
@@ -4373,8 +4395,28 @@ mod tests {
                 "{{appointment.end_date}} {{appointment.time_range}}",
                 &all_day
             ),
-            "Wednesday, January 16 All day"
+            "Wednesday, January 16"
         );
+        for (template, sent) in [
+            (
+                "Thank you for confirming! We will see you {{appointment.date}}, {{appointment.time_range}}!",
+                "Thank you for confirming! We will see you Tuesday, January 15!",
+            ),
+            (
+                "We're coming on {{appointment.date}}, arriving between {{appointment.time}} and {{appointment.end_time}}. Does this time work?",
+                "We're coming on Tuesday, January 15. Does this time work?",
+            ),
+            (
+                "See you {{appointment.date}} from {{ appointment.time }} to {{appointment.end_time}}.",
+                "See you Tuesday, January 15.",
+            ),
+            (
+                "Your appointment is {{appointment.date}} @ {{appointment.time}}.\nThanks!",
+                "Your appointment is Tuesday, January 15.\nThanks!",
+            ),
+        ] {
+            assert_eq!(fill_appointment(template, &all_day), sent);
+        }
         // Sent by hand: an all-day event's time is left blank to fill in.
         let by_hand = Slot {
             blank_time: true,
