@@ -9,8 +9,13 @@
 //! its unique key, so it goes out once. A failed run is tried again a few
 //! minutes later, three times in all; then `alert_recipients` are emailed.
 //! Zips older than `keep_days` are deleted.
+//!
+//! A company with `gcs_bucket` gets its zip in its own Google Cloud Storage
+//! bucket instead (see [`gcs`]): no email and no copy in our bucket. The
+//! files sent there are counted apart, so its first upload has them all.
 
 pub mod archive;
+pub mod gcs;
 pub mod tables;
 
 use crate::auth::job::JobCaller;
@@ -122,6 +127,8 @@ struct Config {
     company_id: i32,
     recipients: String,
     alert_recipients: Option<String>,
+    /// The company's own Google Cloud Storage bucket the zip goes to.
+    gcs_bucket: Option<String>,
     send_hour: i8,
     time_zone: String,
     keep_days: i16,
@@ -168,12 +175,14 @@ pub async fn run_due(state: &AppState, now: DateTime<Utc>) -> Result<ExportsRun,
         ..ExportsRun::default()
     };
     let configs: Vec<Config> = sqlx::query_as(
-        "SELECT company_id, recipients, alert_recipients, send_hour, time_zone, keep_days
+        "SELECT company_id, recipients, alert_recipients,
+                NULLIF(TRIM(gcs_bucket), '') AS gcs_bucket, send_hour, time_zone, keep_days
            FROM company_exports WHERE is_enabled = 1 ORDER BY company_id",
     )
     .fetch_all(&state.pool)
     .await?;
     let mailer = state.extensions.get_or_default::<Mailer>();
+    let uploader = state.extensions.get_or_default::<gcs::Uploader>();
     for config in configs {
         let Ok(zone) = config.time_zone.parse::<Tz>() else {
             tracing::error!(
@@ -188,7 +197,7 @@ pub async fn run_due(state: &AppState, now: DateTime<Utc>) -> Result<ExportsRun,
         if i64::from(local.hour()) >= i64::from(config.send_hour)
             && let Some(claim) = claim(state, config.company_id, day).await?
         {
-            match export_and_send(state, &mailer, &config, day, local, claim).await {
+            match export_and_send(state, &mailer, &uploader, &config, day, local, claim).await {
                 Ok(()) => {
                     run.sent += 1;
                     run.processed += 1;
@@ -279,30 +288,23 @@ async fn claim(
     Ok(Some(Claim { run_id, attempt }))
 }
 
-/// Builds, stores and emails the export of `day`.
+/// Builds and stores the export of `day`: in the company's Google bucket, or
+/// in our private bucket with a link emailed to the recipients.
 async fn export_and_send(
     state: &AppState,
     mailer: &Mailer,
+    uploader: &gcs::Uploader,
     config: &Config,
     day: NaiveDate,
     local: DateTime<Tz>,
     claim: Claim,
 ) -> Result<(), String> {
     let company_id = config.company_id;
+    let google = config.gcs_bucket.as_deref();
     let recipients = addresses(&config.recipients);
-    if recipients.is_empty() {
+    if google.is_none() && recipients.is_empty() {
         return Err("no recipients".into());
     }
-    let bucket = state
-        .signature_bucket
-        .as_deref()
-        .ok_or("no private bucket (SIGNATURE_STORAGE_BUCKET)")?
-        .to_string();
-    state
-        .storage
-        .verify_private(&bucket)
-        .await
-        .map_err(|error| format!("private bucket: {error}"))?;
     let db = |error: sqlx::Error| format!("database: {error}");
     let company_name: String = sqlx::query_scalar("SELECT name FROM company WHERE id = ?")
         .bind(company_id)
@@ -310,10 +312,14 @@ async fn export_and_send(
         .await
         .map_err(db)?
         .ok_or("the company does not exist")?;
+    // Uploads to Google count apart from emailed links: the first upload
+    // there has every file, then only new ones.
     let sent_runs: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM company_export_runs WHERE company_id = ? AND status = 'sent'",
+        "SELECT COUNT(*) FROM company_export_runs
+          WHERE company_id = ? AND status = 'sent' AND (gcs_uri IS NOT NULL) = ?",
     )
     .bind(company_id)
+    .bind(google.is_some())
     .fetch_one(&state.pool)
     .await
     .map_err(db)?;
@@ -321,13 +327,18 @@ async fn export_and_send(
     let sent_before: HashSet<String> = if full_files {
         HashSet::new()
     } else {
-        sqlx::query_scalar("SELECT file_hash FROM company_export_files WHERE company_id = ?")
-            .bind(company_id)
-            .fetch_all(&state.pool)
-            .await
-            .map_err(db)?
-            .into_iter()
-            .collect()
+        sqlx::query_scalar(
+            "SELECT f.file_hash FROM company_export_files f
+               JOIN company_export_runs r ON r.id = f.run_id
+              WHERE f.company_id = ? AND (r.gcs_uri IS NOT NULL) = ?",
+        )
+        .bind(company_id)
+        .bind(google.is_some())
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db)?
+        .into_iter()
+        .collect()
     };
     let built = archive::build(
         state,
@@ -343,41 +354,66 @@ async fn export_and_send(
     .await
     .map_err(|error| error.to_string())?;
 
-    let key = format!("{PREFIX}/{company_id}/{day}-{}.zip", random_hex());
     let zip_bytes = built.zip.len();
-    state
-        .storage
-        .put_private(&bucket, &key, built.zip, "application/zip")
-        .await
-        .map_err(|error| format!("upload: {error}"))?;
-    sqlx::query("UPDATE company_export_runs SET object_key = ?, zip_bytes = ? WHERE id = ?")
-        .bind(&key)
-        .bind(i64::try_from(zip_bytes).unwrap_or(i64::MAX))
-        .bind(claim.run_id)
-        .execute(&state.pool)
-        .await
-        .map_err(db)?;
+    let link_days = if let Some(gcs_bucket) = google {
+        let name = gcs::object_name(&safe_file_name(&company_name), day, claim.attempt);
+        let uri = uploader.upload(gcs_bucket, &name, built.zip).await?;
+        sqlx::query("UPDATE company_export_runs SET gcs_uri = ?, zip_bytes = ? WHERE id = ?")
+            .bind(&uri)
+            .bind(i64::try_from(zip_bytes).unwrap_or(i64::MAX))
+            .bind(claim.run_id)
+            .execute(&state.pool)
+            .await
+            .map_err(db)?;
+        None
+    } else {
+        let bucket = state
+            .signature_bucket
+            .as_deref()
+            .ok_or("no private bucket (SIGNATURE_STORAGE_BUCKET)")?
+            .to_string();
+        state
+            .storage
+            .verify_private(&bucket)
+            .await
+            .map_err(|error| format!("private bucket: {error}"))?;
+        let key = format!("{PREFIX}/{company_id}/{day}-{}.zip", random_hex());
+        state
+            .storage
+            .put_private(&bucket, &key, built.zip, "application/zip")
+            .await
+            .map_err(|error| format!("upload: {error}"))?;
+        sqlx::query("UPDATE company_export_runs SET object_key = ?, zip_bytes = ? WHERE id = ?")
+            .bind(&key)
+            .bind(i64::try_from(zip_bytes).unwrap_or(i64::MAX))
+            .bind(claim.run_id)
+            .execute(&state.pool)
+            .await
+            .map_err(db)?;
 
-    let link_days = i64::from(config.keep_days).clamp(1, MAX_LINK_DAYS);
-    let ttl = std::time::Duration::from_secs(u64::try_from(link_days * 86_400).unwrap_or(604_800));
-    let file_name = format!("{} export {day}.zip", safe_file_name(&company_name));
-    let link = state
-        .storage
-        .presign_get_in_for(
-            Some(&bucket),
-            &key,
-            "application/zip",
-            Some(&file_name),
-            ttl,
-        )
-        .await
-        .map_err(|error| format!("link: {error}"))?;
-    let expires = local + chrono::Duration::days(link_days);
-    let (subject, html) = email(&company_name, day, &link, expires, &built.manifest);
-    mailer
-        .send(&recipients, &subject, &html)
-        .await
-        .map_err(|error| format!("email: {error}"))?;
+        let link_days = i64::from(config.keep_days).clamp(1, MAX_LINK_DAYS);
+        let ttl =
+            std::time::Duration::from_secs(u64::try_from(link_days * 86_400).unwrap_or(604_800));
+        let file_name = format!("{} export {day}.zip", safe_file_name(&company_name));
+        let link = state
+            .storage
+            .presign_get_in_for(
+                Some(&bucket),
+                &key,
+                "application/zip",
+                Some(&file_name),
+                ttl,
+            )
+            .await
+            .map_err(|error| format!("link: {error}"))?;
+        let expires = local + chrono::Duration::days(link_days);
+        let (subject, html) = email(&company_name, day, &link, expires, &built.manifest);
+        mailer
+            .send(&recipients, &subject, &html)
+            .await
+            .map_err(|error| format!("email: {error}"))?;
+        Some(link_days)
+    };
 
     // Sent: from here on a failure must not send it again.
     let manifest = &built.manifest;
@@ -423,7 +459,7 @@ async fn record_files(
 ) -> Result<(), sqlx::Error> {
     for chunk in files.chunks(200) {
         let mut builder = sqlx::QueryBuilder::<sqlx::MySql>::new(
-            "INSERT IGNORE INTO company_export_files (company_id, file_hash, bucket, object_key, run_id, exported_at) ",
+            "INSERT INTO company_export_files (company_id, file_hash, bucket, object_key, run_id, exported_at) ",
         );
         builder.push_values(chunk, |mut row, file| {
             row.push_bind(company_id)
@@ -433,6 +469,11 @@ async fn record_files(
                 .push_bind(run_id)
                 .push("UTC_TIMESTAMP()");
         });
+        // A file sent again (a full day, or its first upload to Google)
+        // belongs to this run now.
+        builder.push(
+            " ON DUPLICATE KEY UPDATE run_id = VALUES(run_id), exported_at = VALUES(exported_at)",
+        );
         builder.build().execute(&state.pool).await?;
     }
     Ok(())
