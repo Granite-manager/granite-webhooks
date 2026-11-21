@@ -1414,7 +1414,7 @@ mod tests {
             .collect();
         assert_eq!(offered[0].0, "Texting registration (10DLC)");
         assert_eq!(offered[0].1, ["texting-registration-10dlc"]);
-        assert_eq!(offered[1].0, "Granite Manager (Telnyx)");
+        assert_eq!(offered[1].0, "Granite Manager mobile service");
         assert_eq!(offered[1].1, ["admin-phone-telnyx"]);
         assert!(offered.len() <= 3);
         // Not the sections the dead end was answered from.
