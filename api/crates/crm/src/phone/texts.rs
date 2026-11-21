@@ -664,7 +664,8 @@ pub async fn message(
     Ok(to_messages(pool, rows).await?.into_iter().next())
 }
 
-/// Marks the other number's texts read for `user_id` (the CRM's marker).
+/// Marks the other number's texts read for `user_id` (the CRM's marker),
+/// and for the users they share a Scheduling number with ([`share_read`]).
 pub async fn mark_read(
     pool: &MySqlPool,
     company_id: i32,
@@ -678,6 +679,42 @@ pub async fn mark_read(
     )
     .bind(user_id)
     .bind(company_id)
+    .bind(other10)
+    .execute(pool)
+    .await?;
+    share_read(pool, company_id, user_id, other10).await
+}
+
+/// A Scheduling number (a number linked to a position, such as the
+/// Scheduling Manager's, or the Notification number) is one inbox: when
+/// `user_id` reads the thread with `other10` and it has texts on such a
+/// number of theirs, it is read for that number's other users too. One they
+/// marked unread by hand stays unread for them.
+pub async fn share_read(
+    pool: &MySqlPool,
+    company_id: i32,
+    user_id: i32,
+    other10: &str,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO telnyx_sms_thread_reads (user_id, company_id, customer_phone_digits, last_read_at)
+         SELECT DISTINCT them.user_id, n.company_id, ?, UTC_TIMESTAMP()
+           FROM telnyx_number_users me
+           JOIN telnyx_numbers n ON n.id = me.number_id AND n.company_id = ?
+                AND (n.position_id IS NOT NULL OR n.notifications <> 0)
+           JOIN telnyx_number_users them ON them.number_id = n.id AND them.user_id <> me.user_id
+                AND them.can_call_from <> 0
+           JOIN users u ON u.id = them.user_id AND u.company_id = n.company_id AND u.is_deleted = 0
+          WHERE me.user_id = ? AND me.can_call_from <> 0
+            AND EXISTS (SELECT 1 FROM telnyx_sms s
+                         WHERE s.company_id = n.company_id AND s.is_echo = 0
+                           AND s.phone_digits = ? AND s.number_id = n.id)
+         ON DUPLICATE KEY UPDATE last_read_at = IF(last_read_at < '1971-01-01 00:00:00',
+             last_read_at, GREATEST(last_read_at, VALUES(last_read_at)))",
+    )
+    .bind(other10)
+    .bind(company_id)
+    .bind(user_id)
     .bind(other10)
     .execute(pool)
     .await?;

@@ -630,6 +630,11 @@ pub(super) async fn set_marker(
         .bind(&digits)
         .execute(pool)
         .await?;
+    // A Scheduling number is one inbox: read for one of its users is read
+    // for all of them.
+    if provider == SmsProvider::Telnyx && !unread {
+        crate::phone::texts::share_read(pool, user.company_id, user.id, &digits).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

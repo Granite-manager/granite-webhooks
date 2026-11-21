@@ -58,15 +58,16 @@ fn phones(list: &Value) -> Vec<&str> {
 const THREADS: &str = "/v1/sms/cloudtalk/threads";
 
 #[test_db::test(seed)]
-async fn a_rep_sees_own_and_own_number_threads_unread_first(pool: MySqlPool) {
+async fn a_rep_sees_own_and_own_number_threads_latest_first(pool: MySqlPool) {
     seed(&pool).await;
     let list = get(&pool, THREADS, sessions::REP).await;
-    assert_eq!(phones(&list), ["3175550777", "3175550100", "3175550888"]);
+    // The latest text first, sent or received: never unread first.
+    assert_eq!(phones(&list), ["3175550888", "3175550777", "3175550100"]);
     assert_eq!(list["total_count"], 3);
     assert_eq!(list["unread_count"], 2);
     assert_eq!(list["has_more"], false);
 
-    let alice = &list["threads"][1];
+    let alice = &list["threads"][2];
     assert_eq!(alice["customer_id"], 1000);
     assert_eq!(alice["customer_name"], "Alice Lead");
     assert_eq!(alice["last_message_text"], "Thanks!");
@@ -74,14 +75,14 @@ async fn a_rep_sees_own_and_own_number_threads_unread_first(pool: MySqlPool) {
     assert_eq!(alice["message_count"], 2);
     assert_eq!(alice["unread_count"], 1);
 
-    let supplier = &list["threads"][2];
+    let supplier = &list["threads"][0];
     assert_eq!(supplier["customer_name"], "Granite Supply");
     assert_eq!(supplier["last_message_text"], "📷 Photo");
     assert_eq!(supplier["last_direction"], "outbound");
     assert_eq!(supplier["unread_count"], 0);
 
     let page = get(&pool, &format!("{THREADS}?limit=1&offset=1"), sessions::REP).await;
-    assert_eq!(phones(&page), ["3175550100"]);
+    assert_eq!(phones(&page), ["3175550777"]);
     assert_eq!(page["has_more"], true);
 }
 
@@ -466,7 +467,7 @@ async fn the_admin_inbox_merges_every_provider(pool: MySqlPool) {
 
     // Rita (user 100) through both of her ids and her own number: her inbox.
     let rita = get(&pool, "/v1/sms/all/threads?agent_id=100", sessions::ADMIN).await;
-    assert_eq!(phones(&rita), ["3175550100", "3175550777", "3175550888"]);
+    assert_eq!(phones(&rita), ["3175550100", "3175550888", "3175550777"]);
 
     let thread = get(&pool, "/v1/sms/all/threads/3175550100", sessions::ADMIN).await;
     let texts: Vec<(&str, &str)> = thread["messages"]
@@ -532,9 +533,9 @@ async fn a_rep_on_two_providers_reads_every_text_in_one_inbox(pool: MySqlPool) {
     .await
     .unwrap();
 
-    // Her CloudTalk inbox and her RingCentral one, merged: unread first.
+    // Her CloudTalk inbox and her RingCentral one, merged: the latest first.
     let mine = get(&pool, "/v1/sms/mine/threads", sessions::REP).await;
-    assert_eq!(phones(&mine), ["3175550100", "3175550777", "3175550888"]);
+    assert_eq!(phones(&mine), ["3175550100", "3175550888", "3175550777"]);
     assert_eq!(mine["total_count"], 3);
     assert_eq!(mine["unread_count"], 2);
     assert_eq!(mine["threads"][0]["last_message_text"], "Via RingCentral");
@@ -774,4 +775,62 @@ async fn scheduling_managers_share_one_inbox(pool: MySqlPool) {
     );
     assert_eq!(texts("3175550305").await, ["Your template is booked"]);
     assert_eq!(texts("3175550102").await, ["Hi Bob", "Need a quote"]);
+}
+
+#[test_db::test(seed)]
+async fn the_scheduling_number_is_one_inbox_latest_first_and_read_by_all(pool: MySqlPool) {
+    seed(&pool).await;
+    // Rita and Mark both hold the Scheduling Manager's number 317-555-0950.
+    // Pat texted it and nobody answered; later Mark texted Sam from it.
+    sqlx::raw_sql(
+        "INSERT INTO telnyx_numbers (id, company_id, e164, last10, label, kind, position_id)
+           VALUES (950, 100, '+13175550950', '3175550950', 'Scheduling', 'shared', 13);
+         INSERT INTO telnyx_number_users (number_id, user_id, rings, can_call_from, via_position)
+           VALUES (950, 100, 1, 1, 1), (950, 101, 1, 1, 1);
+         INSERT INTO telnyx_sms (id, sender, recipient, text, direction, status, agent, sender_user_id,
+                                 company_id, created_date, sender10, recipient10, phone_digits, is_echo,
+                                 number_id) VALUES
+           (9300, 3175550401, 3175550950, 'Thanks', 'inbound', 'received', NULL, NULL, 100,
+            '2025-06-09 10:00:00', '3175550401', '3175550950', '3175550401', 0, 950),
+           (9301, 3175550950, 3175550402, 'We come Tuesday', 'outbound', 'sent', '101', 101, 100,
+            '2025-06-10 10:00:00', '3175550950', '3175550402', '3175550402', 0, 950);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Rita's inbox: what Mark just sent is on top, above every unread thread.
+    let mine = get(&pool, "/v1/sms/mine/threads", sessions::REP).await;
+    assert_eq!(
+        phones(&mine),
+        [
+            "3175550402",
+            "3175550401",
+            "3175550888",
+            "3175550777",
+            "3175550100"
+        ]
+    );
+    let sam = get(&pool, "/v1/sms/mine/threads/3175550402", sessions::REP).await;
+    assert_eq!(sam["messages"][0]["text"], "We come Tuesday");
+
+    // Pat's thread read by Mark is read for Rita too; Alice's and the
+    // stranger's (CloudTalk, not on the number) stay unread for her.
+    let count = "/v1/sms/mine/unread-count";
+    let mark_reads = async || {
+        server(pool.clone())
+            .post("/v1/sms/mine/threads/3175550401/read")
+            .with_session(sessions::MANAGER)
+            .await
+            .assert_status(StatusCode::NO_CONTENT);
+    };
+    assert_eq!(get(&pool, count, sessions::REP).await["count"], 3);
+    mark_reads().await;
+    assert_eq!(get(&pool, count, sessions::REP).await["count"], 2);
+
+    // One Rita marked unread by hand stays unread for her.
+    post(&pool, "/v1/sms/mine/threads/3175550401/unread").await;
+    assert_eq!(get(&pool, count, sessions::REP).await["count"], 3);
+    mark_reads().await;
+    assert_eq!(get(&pool, count, sessions::REP).await["count"], 3);
 }
