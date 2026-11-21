@@ -62,29 +62,11 @@ pub struct UserPositionRow {
     pub company_id: i32,
 }
 
-/// How a new session is stored: `sessions.id` and
+/// How a session is stored: `sessions.id` and
 /// `device_sessions.web_session_id` hold the SHA-256 (hex) of the cookie's
 /// session id, never the id itself, so a copy of the database signs nobody in.
 pub fn session_key(session_id: &str) -> String {
     super::sha256_hex(session_id)
-}
-
-/// The values `sessions.id` (or `device_sessions.web_session_id`) may hold for
-/// the cookie's session id: its [`session_key`] and, for a row from before ids
-/// were hashed, the bare id. Bind both into `IN (?, ?)`.
-///
-/// The bare id is only tried when it is a UUID ([`valid_session_id`]), so a
-/// hash copied out of the database never matches its own row. It can go once
-/// the pending migration `20270224090000_sessions-hash-existing-ids.sql` has
-/// hashed the old rows.
-pub fn stored_session_ids(session_id: &str) -> [String; 2] {
-    let key = session_key(session_id);
-    let bare = if valid_session_id(session_id) {
-        session_id.to_owned()
-    } else {
-        key.clone()
-    };
-    [key, bare]
 }
 
 /// Same shape check as Remix `validSessionId`: a UUID string.
@@ -104,7 +86,7 @@ pub async fn find_session_user(
     if !valid_session_id(session_id) {
         return Ok(None);
     }
-    let [key, bare] = stored_session_ids(session_id);
+    let key = session_key(session_id);
     sqlx::query_as::<_, SessionUser>(sqlx::AssertSqlSafe(format!(
         "SELECT users.id, users.email, users.name, users.phone_number,
                 COALESCE(users.is_employee, 0) AS is_employee,
@@ -115,10 +97,9 @@ pub async fn find_session_user(
                 users.ringcentral_phone_number, users.is_signature_available
            FROM users
            JOIN sessions ws ON ws.user_id = users.id
-          WHERE ws.id IN (?, ?) AND {LIVE_SESSION} AND users.is_deleted = 0"
+          WHERE ws.id = ? AND {LIVE_SESSION} AND users.is_deleted = 0"
     )))
     .bind(&key)
-    .bind(&bare)
     .fetch_optional(pool)
     .await
 }
@@ -126,13 +107,12 @@ pub async fn find_session_user(
 /// A session from before sessions stopped ending by time stops ending too
 /// once it is used: its `expiration_date` is cleared, if it still signs in.
 pub async fn keep_session(pool: &MySqlPool, session_id: &str) -> Result<(), sqlx::Error> {
-    let [key, bare] = stored_session_ids(session_id);
+    let key = session_key(session_id);
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "UPDATE sessions ws SET ws.expiration_date = NULL
-          WHERE ws.id IN (?, ?) AND ws.expiration_date IS NOT NULL AND {LIVE_SESSION}"
+          WHERE ws.id = ? AND ws.expiration_date IS NOT NULL AND {LIVE_SESSION}"
     )))
     .bind(&key)
-    .bind(&bare)
     .execute(pool)
     .await?;
     Ok(())

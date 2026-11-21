@@ -20,7 +20,7 @@ use super::{RateLimited, denied, rate_limited, telnyx_failed};
 use crate::auth::EmployeeUser;
 use crate::auth::cookie::request_session_id;
 use crate::auth::device::{encoded_call_key, new_token, token_hash};
-use crate::auth::session::{SessionUser, stored_session_ids};
+use crate::auth::session::{SessionUser, session_key};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
@@ -133,7 +133,7 @@ async fn web_calling(state: &AppState, company_id: i32) -> Result<CompanyConfig,
 }
 
 /// The request's web session id, as the cookie holds it (it verified
-/// already: the extractor read it). Stored hashed: see `stored_session_ids`.
+/// already: the extractor read it). Stored hashed: see `session_key`.
 fn web_session(state: &AppState, headers: &HeaderMap) -> Result<String, ApiError> {
     request_session_id(headers, &state.session_secret).ok_or(ApiError::Unauthorized)
 }
@@ -156,18 +156,17 @@ async fn web_device(
     user: &SessionUser,
     id: i64,
 ) -> ApiResult<WebDevice> {
-    let [key, bare] = stored_session_ids(web_session);
+    let key = session_key(web_session);
     let device: Option<WebDevice> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT CAST(pd.id AS SIGNED) AS id, CAST(ds.id AS SIGNED) AS session_id,
                 ({LIVE_DEVICE}) AS live
            FROM phone_devices pd
            JOIN device_sessions ds ON ds.id = pd.device_session_id
-          WHERE pd.id = ? AND pd.platform = 'web' AND ds.web_session_id IN (?, ?)
+          WHERE pd.id = ? AND pd.platform = 'web' AND ds.web_session_id = ?
             AND ds.user_id = ? AND ds.company_id = ? AND pd.company_id = ds.company_id"
     )))
     .bind(id)
     .bind(&key)
-    .bind(&bare)
     .bind(user.id)
     .bind(user.company_id)
     .fetch_optional(pool)
@@ -256,13 +255,10 @@ async fn find_or_make(
     device_name: &str,
 ) -> ApiResult<(i64, i64, bool, Vec<i64>)> {
     let mut tx = pool.begin().await?;
-    let [key, bare] = stored_session_ids(web_session);
-    // The row's own id (hashed, or bare from before ids were hashed) is what
-    // the device session stores, so the two keep joining.
+    let key = session_key(web_session);
     let locked: Option<String> =
-        sqlx::query_scalar("SELECT id FROM sessions WHERE id IN (?, ?) FOR UPDATE")
+        sqlx::query_scalar("SELECT id FROM sessions WHERE id = ? FOR UPDATE")
             .bind(&key)
-            .bind(&bare)
             .fetch_optional(&mut *tx)
             .await?;
     let Some(web_session) = locked else {
