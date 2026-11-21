@@ -75,7 +75,7 @@ pub fn session_key(session_id: &str) -> String {
 ///
 /// The bare id is only tried when it is a UUID ([`valid_session_id`]), so a
 /// hash copied out of the database never matches its own row. It can go once
-/// the pending migration `20270222090000_sessions-hash-existing-ids.sql` has
+/// the pending migration `20270224090000_sessions-hash-existing-ids.sql` has
 /// hashed the old rows.
 pub fn stored_session_ids(session_id: &str) -> [String; 2] {
     let key = session_key(session_id);

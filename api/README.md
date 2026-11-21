@@ -488,7 +488,7 @@ browser phone's `device_sessions.web_session_id`) is the SHA-256 (hex) of the
 cookie's id (`session::session_key`). A copy of the database plus
 `SESSION_SECRET` still signs nobody in. Rows from before ids were hashed keep
 the bare id until the pending migration
-`20270222090000_sessions-hash-existing-ids.sql` hashes them
+`20270224090000_sessions-hash-existing-ids.sql` hashes them
 (`session::stored_session_ids` matches either).
 
 How the browser sends the cookie: the cookie is `HttpOnly`, and in production
