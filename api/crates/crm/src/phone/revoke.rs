@@ -14,7 +14,7 @@
 //! other way and browser phones whose CRM sign-in ended.
 
 use super::routing::PHONE_USER;
-use crate::auth::session::stored_session_ids;
+use crate::auth::session::session_key;
 use crate::push::PushError;
 use crate::state::AppState;
 use lambda_http::tracing;
@@ -261,13 +261,12 @@ pub async fn revoke_web_session(
     web_session_id: &str,
     reason: RevokeReason,
 ) -> Result<u64, sqlx::Error> {
-    let [key, bare] = stored_session_ids(web_session_id);
+    let key = session_key(web_session_id);
     let sessions: Vec<i64> = sqlx::query_scalar(
         "SELECT CAST(id AS SIGNED) FROM device_sessions
-          WHERE web_session_id IN (?, ?) AND revoked_at IS NULL",
+          WHERE web_session_id = ? AND revoked_at IS NULL",
     )
     .bind(&key)
-    .bind(&bare)
     .fetch_all(&state.pool)
     .await?;
     let mut ended = 0;

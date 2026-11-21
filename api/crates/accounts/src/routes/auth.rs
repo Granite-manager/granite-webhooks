@@ -35,7 +35,7 @@ use crate::auth::cookie::{
 };
 use crate::auth::session::{
     SUPER_ADMIN_POSITION, SessionUser, find_session_user, keep_session, session_key,
-    stored_session_ids, user_positions,
+    user_positions,
 };
 use crate::auth::{CurrentUser, sha256_hex};
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -461,10 +461,9 @@ pub async fn start_session(state: &AppState, user_id: i32) -> ApiResult<Response
 )]
 pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Response> {
     if let Some(session_id) = request_session_id(&headers, &state.session_secret) {
-        let [key, bare] = stored_session_ids(&session_id);
-        sqlx::query("UPDATE sessions SET is_deleted = 1 WHERE id IN (?, ?)")
+        let key = session_key(&session_id);
+        sqlx::query("UPDATE sessions SET is_deleted = 1 WHERE id = ?")
             .bind(&key)
-            .bind(&bare)
             .execute(&state.pool)
             .await?;
         crate::phone::revoke::revoke_web_session(

@@ -114,8 +114,7 @@ async fn a_user_signs_in_and_out(pool: MySqlPool) {
 }
 
 /// A session is stored as the SHA-256 of its cookie's id: no id the
-/// database holds signs in. A session from before ids were hashed (a bare
-/// id) still signs in and signs out, so nobody is signed out by the change.
+/// database holds signs in.
 #[test_db::test(seed)]
 async fn sessions_are_stored_hashed(pool: MySqlPool) {
     let (server, _) = setup(pool.clone(), None).await;
@@ -150,23 +149,13 @@ async fn sessions_are_stored_hashed(pool: MySqlPool) {
         .await
         .assert_status_unauthorized();
 
-    // A bare id from before hashing.
+    // A row holding a bare id (as before ids were hashed) signs nobody in.
     let bare = "dddddddd-0000-4000-8000-000000000100";
     sqlx::query("INSERT INTO sessions (id, user_id) VALUES (?, 100)")
         .bind(bare)
         .execute(&pool)
         .await
         .unwrap();
-    server
-        .get("/v1/me")
-        .with_session(bare)
-        .await
-        .assert_status_ok();
-    server
-        .post("/v1/auth/logout")
-        .with_session(bare)
-        .await
-        .assert_status(StatusCode::NO_CONTENT);
     server
         .get("/v1/me")
         .with_session(bare)
