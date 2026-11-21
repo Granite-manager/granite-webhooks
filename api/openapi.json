@@ -53411,6 +53411,158 @@
         ]
       }
     },
+    "/v1/schedule/notifications/caller-id": {
+      "get": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "The caller ID name of the Scheduling call",
+        "description": "The name the phone companies show when the Scheduling call rings: the one\nlisted (CNAM) for the Scheduling Manager's line on Telnyx.",
+        "operationId": "get_scheduling_caller_id",
+        "responses": {
+          "200": {
+            "description": "The line and its caller ID name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchedulingCallerId"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Telnyx did not answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "schedule"
+        ],
+        "summary": "Set the caller ID name of the Scheduling call",
+        "description": "Lists the name (CNAM) for the Scheduling Manager's line on Telnyx, so the\npeople it calls see it instead of a bare number; empty stops listing one.\nThe phone companies take a few days to show a new name.",
+        "operationId": "set_scheduling_caller_id",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SchedulingCallerIdInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Saved on Telnyx",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchedulingCallerId"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Too long, a character the phone companies do not take, or no Scheduling Manager line",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Caller is not an admin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Database error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Telnyx did not take it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "session_cookie": []
+          }
+        ]
+      }
+    },
     "/v1/schedule/notifications/scheduling/replies": {
       "put": {
         "tags": [
@@ -82023,7 +82175,7 @@
           "telnyx-webhooks"
         ],
         "summary": "Take a scheduling call's answer",
-        "description": "The `<Gather>` action of `schedule-call`: `Digits` (1 yes, 2 no) or\n`SpeechResult` (the words said). A yes turns the job Confirmed and tells\nthe Scheduling Managers; a no tells them; \"repeat\" reads the message\nagain; anything else (nothing too) is asked again, and after the last\ntry the customer is told a text is coming and gets the scheduling text.",
+        "description": "The `<Gather>` action of `schedule-call`: `Digits` (1 yes, 2 no, 3 repeat) or\n`SpeechResult` (the words said). A yes turns the job Confirmed and tells\nthe Scheduling Managers; a no tells them; \"repeat\" reads the message\nagain; anything else (nothing too) is asked again, and after the last\ntry the customer is told a text is coming and gets the scheduling text.",
         "operationId": "answer_telnyx_schedule_call",
         "parameters": [
           {
@@ -119452,6 +119604,39 @@
               "null"
             ],
             "description": "Tell the sales rep when the installer taps Completed on an installation."
+          }
+        }
+      },
+      "SchedulingCallerId": {
+        "type": "object",
+        "description": "`GET` / `PUT /v1/schedule/notifications/caller-id`: the name people see\nwhen the Scheduling call rings.",
+        "properties": {
+          "line": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The Scheduling Manager's line the calls come from, E.164; `None` when\nthe company cannot place Scheduling calls."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The caller ID name listed for that line; `None` when none is."
+          }
+        }
+      },
+      "SchedulingCallerIdInput": {
+        "type": "object",
+        "description": "Body of `PUT /v1/schedule/notifications/caller-id`.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Up to 15 letters, digits, spaces and `& , . - '`. Empty or left out\nstops listing a name."
           }
         }
       },

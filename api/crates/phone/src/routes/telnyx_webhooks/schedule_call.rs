@@ -80,7 +80,7 @@ async fn ask(state: &AppState, hook: &Hook, call_id: i64) -> ApiResult<Response>
 
 /// Take a scheduling call's answer
 ///
-/// The `<Gather>` action of `schedule-call`: `Digits` (1 yes, 2 no) or
+/// The `<Gather>` action of `schedule-call`: `Digits` (1 yes, 2 no, 3 repeat) or
 /// `SpeechResult` (the words said). A yes turns the job Confirmed and tells
 /// the Scheduling Managers; a no tells them; "repeat" reads the message
 /// again; anything else (nothing too) is asked again, and after the last

@@ -37,6 +37,8 @@ struct Stub {
     texts: Arc<Mutex<Vec<(String, String)>>>,
     /// Each TeXML request: (path, body).
     calls: Arc<Mutex<Vec<(String, Value)>>>,
+    /// The Scheduling Manager's line's `cnam_listing` on Telnyx.
+    cnam: Arc<Mutex<Value>>,
 }
 
 impl Stub {
@@ -53,6 +55,26 @@ impl Stub {
         let bytes = axum::body::to_bytes(body, 1 << 20).await.unwrap();
         let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         let path = parts.uri.path().to_string();
+        if path == "/telnyx/phone_numbers" {
+            let wanted = parts
+                .uri
+                .query()
+                .unwrap_or_default()
+                .contains("13175550161");
+            let data = if wanted {
+                json!([{ "id": "num-9721", "phone_number": SCHEDULING }])
+            } else {
+                json!([])
+            };
+            return Json(json!({ "data": data })).into_response();
+        }
+        if path == "/telnyx/phone_numbers/num-9721/voice" {
+            if parts.method == axum::http::Method::PATCH {
+                *self.cnam.lock().unwrap() = body["cnam_listing"].clone();
+            }
+            let listing = self.cnam.lock().unwrap().clone();
+            return Json(json!({ "data": { "cnam_listing": listing } })).into_response();
+        }
         if path == "/telnyx/messages" {
             let text = |key: &str| body[key].as_str().unwrap_or_default().to_string();
             let n = {
@@ -303,12 +325,15 @@ async fn a_yes_on_the_call_confirms_the_job(pool: MySqlPool) {
         )),
         "{asked}"
     );
-    assert!(asked.contains("Hi Alice, this is Acme. Can we install "), "{asked}");
+    assert!(
+        asked.contains("Hi Alice, this is Acme. Can we install "),
+        "{asked}"
+    );
     assert!(!asked.to_lowercase().contains("reply"), "{asked}");
     assert!(
         asked.contains(
             "Say yes or press 1 to confirm. Say no or press 2. \
-             If you&apos;d like to repeat this information, say repeat.</Say></Gather>"
+             If you&apos;d like to repeat this information, say repeat or press 3.</Say></Gather>"
         ),
         "{asked}"
     );
@@ -321,7 +346,10 @@ async fn a_yes_on_the_call_confirms_the_job(pool: MySqlPool) {
 
     // Something else: asked again.
     let unclear = setup.says(call, "Who is this?").await;
-    assert!(unclear.contains("Sorry, I didn&apos;t understand your answer."), "{unclear}");
+    assert!(
+        unclear.contains("Sorry, I didn&apos;t understand your answer."),
+        "{unclear}"
+    );
     assert_eq!(call_state(&pool, call).await, ("asking".into(), 2, 0));
     // "Repeat": the message again; it uses up no try.
     let repeated = setup.says(call, "Repeat").await;
@@ -402,8 +430,16 @@ async fn nobody_picking_up_gets_the_scheduling_text(pool: MySqlPool) {
     let texts = setup.stub.texts();
     assert_eq!(texts.len(), 1);
     assert_eq!(texts[0].0, SCHEDULING);
-    assert!(texts[0].1.starts_with("Hi Alice, this is Acme. Can we install "));
-    assert!(texts[0].1.ends_with("Please reply YES to confirm, or NO and we'll find another time."));
+    assert!(
+        texts[0]
+            .1
+            .starts_with("Hi Alice, this is Acme. Can we install ")
+    );
+    assert!(
+        texts[0]
+            .1
+            .ends_with("Please reply YES to confirm, or NO and we'll find another time.")
+    );
     assert_eq!(waiting(&pool, install).await, 1);
     assert_eq!(status(&pool, install).await, "called");
     let lines = history(&pool, install).await;
@@ -450,11 +486,18 @@ async fn voicemail_and_unclear_answers_end_with_the_text(pool: MySqlPool) {
         .await;
     assert_eq!(call_state(&pool, call).await.0, "asking");
     setup
-        .hook("schedule-call-machine", call, &[("AnsweredBy", "machine_start")])
+        .hook(
+            "schedule-call-machine",
+            call,
+            &[("AnsweredBy", "machine_start")],
+        )
         .await;
     assert_eq!(call_state(&pool, call).await.0, "unanswered");
     let redirect = setup.stub.calls();
-    assert_eq!(redirect.last().unwrap().0, "/telnyx/texml/calls/v3:call-1/update");
+    assert_eq!(
+        redirect.last().unwrap().0,
+        "/telnyx/texml/calls/v3:call-1/update"
+    );
     assert!(setup.pick_up(call).await.contains("<Hangup/>"));
     assert_eq!(setup.stub.texts().len(), 1);
     assert!(
@@ -468,7 +511,12 @@ async fn voicemail_and_unclear_answers_end_with_the_text(pool: MySqlPool) {
     let call = setup.call(&pool, other).await;
     setup.pick_up(call).await;
     assert!(setup.says(call, "maybe").await.contains("<Gather"));
-    assert!(setup.hook("schedule-call-answer", call, &[]).await.contains("<Gather"));
+    assert!(
+        setup
+            .hook("schedule-call-answer", call, &[])
+            .await
+            .contains("<Gather")
+    );
     let bye = setup.says(call, "yes but can you come later").await;
     assert!(
         bye.contains(
@@ -559,4 +607,70 @@ async fn calls_need_calling_and_an_auto_confirm_text(pool: MySqlPool) {
     assert!(history(&pool, install).await.is_empty());
     // A callback for a call that does not exist hangs up.
     assert!(setup.pick_up(999_999).await.contains("<Hangup/>"));
+}
+
+#[test_db::test(seed)]
+async fn admins_set_the_caller_id_name_of_the_call(pool: MySqlPool) {
+    let setup = setup(&pool).await;
+    let read = || {
+        setup
+            .server
+            .get("/v1/schedule/notifications/caller-id")
+            .with_session(sessions::ADMIN)
+    };
+    let shown: Value = read().await.json();
+    assert_eq!(shown, json!({ "line": SCHEDULING, "name": null }));
+    let saved = setup
+        .server
+        .put("/v1/schedule/notifications/caller-id")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "  Granite   Depot " }))
+        .await;
+    saved.assert_status_ok();
+    assert_eq!(
+        saved.json::<Value>(),
+        json!({ "line": SCHEDULING, "name": "Granite Depot" })
+    );
+    assert_eq!(
+        *setup.stub.cnam.lock().unwrap(),
+        json!({ "cnam_listing_enabled": true, "cnam_listing_details": "Granite Depot" })
+    );
+    assert_eq!(read().await.json::<Value>()["name"], "Granite Depot");
+    // Too long, or a character the phone companies do not take: nothing changes.
+    for name in ["Granite Depot of Indy", "Granite!"] {
+        setup
+            .server
+            .put("/v1/schedule/notifications/caller-id")
+            .with_session(sessions::ADMIN)
+            .json(&json!({ "name": name }))
+            .await
+            .assert_status(StatusCode::BAD_REQUEST);
+    }
+    assert_eq!(read().await.json::<Value>()["name"], "Granite Depot");
+    // Only admins.
+    setup
+        .server
+        .put("/v1/schedule/notifications/caller-id")
+        .with_session(sessions::REP)
+        .json(&json!({ "name": "Other" }))
+        .await
+        .assert_status(StatusCode::FORBIDDEN);
+    // Empty stops listing a name.
+    setup
+        .server
+        .put("/v1/schedule/notifications/caller-id")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "name": "" }))
+        .await
+        .assert_status_ok();
+    assert_eq!(read().await.json::<Value>()["name"], Value::Null);
+    // Calling switched off: no line to name.
+    sqlx::query("UPDATE telnyx_company_config SET enabled = 0 WHERE company_id = 100")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        read().await.json::<Value>(),
+        json!({ "line": null, "name": null })
+    );
 }
