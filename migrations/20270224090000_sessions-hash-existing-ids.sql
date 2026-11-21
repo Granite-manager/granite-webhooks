@@ -3,9 +3,9 @@
 -- for new sessions (`auth::session::session_key`). The cookies keep the bare
 -- id, so nobody is signed out.
 --
--- Apply only once the API release that reads hashed ids is deployed to every
--- API Lambda: the old release looks rows up by the bare id and would sign
--- every web user out.
+-- Applied only after the API release that reads hashed ids (PR #777) was on
+-- every API Lambda: the old release looks rows up by the bare id and would
+-- sign every web user out.
 --
 -- One transaction (sqlx wraps a migration in one): a browser phone's
 -- `device_sessions.web_session_id` is a copy of its `sessions.id`, so both
