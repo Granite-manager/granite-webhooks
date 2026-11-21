@@ -553,6 +553,9 @@ pub async fn get_conversation(
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConversationChange {
+    /// A new subject (what the request is about; at most 200 characters).
+    #[serde(default)]
+    pub subject: Option<String>,
     /// `open`, `waiting` or `resolved`.
     #[serde(default)]
     pub status: Option<String>,
@@ -571,8 +574,8 @@ pub struct ConversationChange {
 
 /// Change a support request
 ///
-/// Sets its status (`resolved` closes it: the client's next message starts
-/// a new request), type, priority or assignee (any superuser, or null to
+/// Sets its subject, status (`resolved` closes it; the client writing in it
+/// opens it again), type, priority or assignee (any superuser, or null to
 /// unassign). Fields left out stay. Returns the request as the inbox lists
 /// it.
 #[crate::openapi::path(
@@ -584,7 +587,7 @@ pub struct ConversationChange {
     request_body = ConversationChange,
     responses(
         (status = 200, description = "Changed", body = ConversationSummary),
-        (status = 400, description = "Unknown status, type or priority, or the assignee is not a superuser", body = ErrorBody),
+        (status = 400, description = "Empty or long subject, unknown status, type or priority, or the assignee is not a superuser", body = ErrorBody),
         (status = 401, description = "No valid session", body = ErrorBody),
         (status = 403, description = "Not a superuser, or not signed in with two-step sign-in", body = ErrorBody),
         (status = 404, description = "No such request", body = ErrorBody),
@@ -630,16 +633,27 @@ pub async fn update_conversation(
             return Err(ApiError::BadRequest("Assign a superuser".into()));
         }
     }
+    let subject = match change.subject.as_deref().map(str::trim) {
+        None => current.subject,
+        Some("") => return Err(ApiError::BadRequest("Write a subject".into())),
+        Some(s) if s.chars().count() > 200 => {
+            return Err(ApiError::BadRequest(
+                "A subject is at most 200 characters".into(),
+            ));
+        }
+        Some(s) => s.to_string(),
+    };
     let status = change.status.unwrap_or(current.status);
     let category = change.category.unwrap_or(current.category);
     let priority = change.priority.unwrap_or(current.priority);
     let assignee = change.assignee_id.unwrap_or(current.assignee_id);
     sqlx::query(
         "UPDATE support_conversations
-            SET status = ?, category = ?, priority = ?, assignee_id = ?,
+            SET subject = ?, status = ?, category = ?, priority = ?, assignee_id = ?,
                 resolved_at = CASE WHEN ? = 'resolved' THEN COALESCE(resolved_at, NOW(3)) END
           WHERE id = ?",
     )
+    .bind(subject)
     .bind(&status)
     .bind(category)
     .bind(priority)

@@ -161,6 +161,15 @@ pub struct NewSupportMessage {
     /// The browser window size, `WIDTHxHEIGHT`.
     #[serde(default)]
     pub screen: Option<String>,
+    /// The conversation to write in: one of the user's
+    /// (`GET /v1/support/conversations`). A resolved one opens again.
+    #[serde(default)]
+    pub conversation_id: Option<i32>,
+    /// Start a new conversation (a separate request) with this message.
+    /// With neither field the message joins the user's open request, or
+    /// starts one.
+    #[serde(default)]
+    pub new_conversation: bool,
 }
 
 /// `value` when it looks like a PostHog session id (UUID-like).
@@ -198,9 +207,11 @@ pub fn subject_of(body: &str) -> String {
 
 /// Write to support
 ///
-/// Sends a message to Granite Manager's support team. It joins the user's
-/// open request (status `open` or `waiting`); when they have none, it
-/// starts a new one whose subject the AI writes from the message (its first
+/// Sends a message to Granite Manager's support team: into the user's
+/// conversation `conversation_id` (opened again when resolved), into a new
+/// conversation with `new_conversation`, else into the user's open request
+/// (status `open` or `waiting`) or, when they have none, a new one. A new
+/// conversation's subject the AI writes from the message (its first
 /// line when the AI cannot). The request
 /// becomes `open` (the team owes an answer). Pictures must be uploaded to
 /// the `bug-reports` folder first (`POST /v1/uploads`). The page, the
@@ -263,14 +274,27 @@ pub async fn send_message(
         .filter(|s| *s >= 0);
 
     let mut tx = state.pool.begin().await?;
-    let open: Option<i32> = sqlx::query_scalar(
-        "SELECT id FROM support_conversations
-          WHERE user_id = ? AND status IN ('open', 'waiting')
-          ORDER BY id DESC LIMIT 1 FOR UPDATE",
-    )
-    .bind(user.id)
-    .fetch_optional(&mut *tx)
-    .await?;
+    let open: Option<i32> = if let Some(id) = input.conversation_id {
+        let mine: Option<i32> = sqlx::query_scalar(
+            "SELECT id FROM support_conversations WHERE id = ? AND user_id = ? FOR UPDATE",
+        )
+        .bind(id)
+        .bind(user.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        Some(mine.ok_or(ApiError::NotFound)?)
+    } else if input.new_conversation {
+        None
+    } else {
+        sqlx::query_scalar(
+            "SELECT id FROM support_conversations
+              WHERE user_id = ? AND status IN ('open', 'waiting')
+              ORDER BY id DESC LIMIT 1 FOR UPDATE",
+        )
+        .bind(user.id)
+        .fetch_optional(&mut *tx)
+        .await?
+    };
     let created = open.is_none();
     let conversation_id = if let Some(id) = open {
         id
@@ -308,7 +332,7 @@ pub async fn send_message(
         i64::try_from(message_id).map_err(|err| ApiError::Internal(err.to_string()))?;
     sqlx::query(
         "UPDATE support_conversations
-            SET status = 'open', last_message_id = ?, last_message_at = NOW(3),
+            SET status = 'open', resolved_at = NULL, last_message_id = ?, last_message_at = NOW(3),
                 last_client_message_at = NOW(3), client_read_at = NOW(3)
           WHERE id = ?",
     )
@@ -326,15 +350,45 @@ pub async fn send_message(
     tx.commit().await?;
     // A new request: Luna writes its subject (the first line stays when it
     // cannot), unless someone renamed it meanwhile.
-    if created && let Some(subject) = super::ai_subject(&state, &user, &body).await {
-        sqlx::query("UPDATE support_conversations SET subject = ? WHERE id = ? AND subject = ?")
-            .bind(subject)
-            .bind(conversation_id)
-            .bind(subject_of(&body))
-            .execute(&state.pool)
-            .await?;
+    if created {
+        if let Some(subject) = super::ai_subject(&state, &user, &body).await {
+            retitle(&state.pool, conversation_id, &subject_of(&body), &subject).await?;
+        }
+    } else {
+        // A first message too short to tell what it is about ("hi", "help"):
+        // the second one, before the team answered, names it.
+        let (subject, first, messages, answered): (String, String, i64, bool) = sqlx::query_as(
+            "SELECT c.subject,
+                    (SELECT body FROM support_messages WHERE conversation_id = c.id ORDER BY id LIMIT 1),
+                    (SELECT COUNT(*) FROM support_messages WHERE conversation_id = c.id),
+                    c.last_agent_message_at IS NOT NULL
+               FROM support_conversations c WHERE c.id = ?",
+        )
+        .bind(conversation_id)
+        .fetch_one(&state.pool)
+        .await?;
+        if messages == 2 && !answered && first.chars().count() < SHORT_FIRST_MESSAGE {
+            let both = format!("{first}\n{body}");
+            if let Some(better) = super::ai_subject(&state, &user, &both).await {
+                retitle(&state.pool, conversation_id, &subject, &better).await?;
+            }
+        }
     }
     Ok((StatusCode::CREATED, Json(row.for_client())))
+}
+
+/// A first message shorter than this (characters) says too little for a subject.
+const SHORT_FIRST_MESSAGE: usize = 25;
+
+/// Sets the subject unless it changed since `was` (someone renamed it).
+async fn retitle(pool: &MySqlPool, id: i32, was: &str, subject: &str) -> sqlx::Result<()> {
+    sqlx::query("UPDATE support_conversations SET subject = ? WHERE id = ? AND subject = ?")
+        .bind(subject)
+        .bind(id)
+        .bind(was)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Mark support's answers read
