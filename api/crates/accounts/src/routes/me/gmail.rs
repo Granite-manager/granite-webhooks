@@ -199,8 +199,8 @@ pub async fn finish(
     }
     let pool = &state.pool;
     let actor = home_actor(pool, user.id).await?;
-    if !oauth_state::verify(
-        &state.session_secret,
+    if !oauth_state::verify_recent(
+        &state.session_secrets,
         &input.state,
         STATE_KIND,
         actor.company_id,

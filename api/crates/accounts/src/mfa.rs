@@ -205,12 +205,15 @@ pub fn seal(state: &AppState, secret: &str) -> String {
 /// open.
 pub fn open(state: &AppState, stored: &str) -> Option<String> {
     let (tag, sealed) = stored.split_at_checked(2)?;
-    let key: [u8; 32] = match tag {
-        "a:" => env_key()?,
-        "s:" => Sha256::digest(state.session_secret.as_bytes()).into(),
-        _ => return None,
-    };
-    decrypt(&key, sealed.as_bytes())
+    match tag {
+        "a:" => decrypt(&env_key()?, sealed.as_bytes()),
+        // Sealed under the secret of its day: during a rotation, either one.
+        "s:" => state.session_secrets.all().find_map(|secret| {
+            let key: [u8; 32] = Sha256::digest(secret.as_bytes()).into();
+            decrypt(&key, sealed.as_bytes())
+        }),
+        _ => None,
+    }
 }
 
 /// Seconds since 1970, as codes count time.

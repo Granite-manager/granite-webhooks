@@ -16,6 +16,7 @@ use crate::auth::session::SessionUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::native_delivery;
+use crate::session_secrets::SessionSecrets;
 use crate::state::AppState;
 use crate::webhooks_client::{OutgoingAttachment, OutgoingEmail, SendFailure};
 use axum::Json;
@@ -378,14 +379,14 @@ async fn schedule(
 /// The first attachment the caller may not use (see [`may_attach`]).
 async fn unauthorized_attachment<'a>(
     pool: &MySqlPool,
-    secret: &str,
+    secrets: &SessionSecrets,
     user: &SessionUser,
     attachments: &'a [SendAttachment],
 ) -> ApiResult<Option<&'a str>> {
     for attachment in attachments {
         if !may_attach(
             pool,
-            secret,
+            secrets,
             user,
             &attachment.url,
             attachment.token.as_deref(),
@@ -402,12 +403,12 @@ async fn unauthorized_attachment<'a>(
 /// valid `token`) or on a conversation of their company they may read.
 pub(super) async fn may_attach(
     pool: &MySqlPool,
-    secret: &str,
+    secrets: &SessionSecrets,
     user: &SessionUser,
     url: &str,
     token: Option<&str>,
 ) -> ApiResult<bool> {
-    if attachment_token::verify(secret, url, user.id, token) {
+    if attachment_token::verify(secrets, url, user.id, token) {
         return Ok(true);
     }
     let row: Option<(Option<String>, Option<i32>)> = sqlx::query_as(
@@ -636,7 +637,7 @@ pub async fn deliver(
     let pool = &state.pool;
     let deal_customer = deal_customer(pool, user, email).await?;
     if let Some(name) =
-        unauthorized_attachment(pool, &state.session_secret, user, &email.attachments).await?
+        unauthorized_attachment(pool, &state.session_secrets, user, &email.attachments).await?
     {
         return Err(ApiError::BadRequest(format!(
             "Attachment is not available: {name}"

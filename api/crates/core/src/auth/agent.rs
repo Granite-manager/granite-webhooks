@@ -159,7 +159,11 @@ pub async fn authenticate(
     token: &str,
 ) -> Result<(SessionUser, Vec<UserPositionRow>), ApiError> {
     let now = chrono::Utc::now().timestamp();
-    let claims = verify(&state.session_secret, token, now).ok_or(ApiError::Unauthorized)?;
+    let claims = state
+        .session_secrets
+        .recent(now)
+        .find_map(|secret| verify(secret, token, now))
+        .ok_or(ApiError::Unauthorized)?;
     let route = parts
         .extensions
         .get::<axum::extract::MatchedPath>()

@@ -127,7 +127,11 @@ pub async fn open_web_link(
     Path(token): Path<String>,
 ) -> ApiResult<Response> {
     let now = chrono::Utc::now().timestamp();
-    let Some(claims) = web_link::verify(&state.session_secret, &token, now) else {
+    let Some(claims) = state
+        .session_secrets
+        .recent(now)
+        .find_map(|secret| web_link::verify(secret, &token, now))
+    else {
         return Ok(redirect(&format!("{}/login", state.app_url), Vec::new()));
     };
     // The phone that asked is still signed in, as this user.

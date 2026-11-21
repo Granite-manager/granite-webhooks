@@ -61,8 +61,9 @@ const CALL_KEY_CONTEXT: &str = "granite-phone-call-key:";
 ///
 /// Nothing is stored: the app gets it once at sign-in ([`encoded_call_key`])
 /// and the server derives it again for each call, so a copy of the database
-/// cannot sign calls. A new `SESSION_SECRET` changes every key (phones then
-/// sign in again before they can call).
+/// cannot sign calls. A new `SESSION_SECRET` changes every key: a rotation
+/// keeps accepting keys from the old one for phones signed in before it
+/// (`crate::session_secrets`).
 pub fn call_key(secret: &str, session_id: i64) -> [u8; 32] {
     let mut mac =
         Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC takes keys of any length");

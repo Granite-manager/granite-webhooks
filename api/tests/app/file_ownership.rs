@@ -929,7 +929,7 @@ async fn uploads_land_under_the_uploaders_company(pool: MySqlPool) {
         if folder == "emails" {
             let user_id = if session == sessions::REP { 100 } else { 102 };
             assert!(attachment_token::verify(
-                SECRET,
+                &api::session_secrets::SessionSecrets::new(SECRET),
                 first_url,
                 user_id,
                 first["token"].as_str()

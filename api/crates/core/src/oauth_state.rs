@@ -32,6 +32,20 @@ pub fn sign(secret: &str, provider: &str, company_id: i32, user_id: i32) -> Stri
     format!("{payload}.{signature}")
 }
 
+/// [`verify`] under any session secret a short-lived value may be signed
+/// with now (`crate::session_secrets`).
+pub fn verify_recent(
+    secrets: &crate::session_secrets::SessionSecrets,
+    state: &str,
+    provider: &str,
+    company_id: i32,
+    user_id: i32,
+) -> bool {
+    secrets
+        .recent(chrono::Utc::now().timestamp())
+        .any(|secret| verify(secret, state, provider, company_id, user_id))
+}
+
 /// Whether `state` is one this server signed for the provider, company and
 /// user, and has not expired.
 pub fn verify(secret: &str, state: &str, provider: &str, company_id: i32, user_id: i32) -> bool {

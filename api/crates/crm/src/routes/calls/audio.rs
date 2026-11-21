@@ -115,10 +115,20 @@ pub async fn recording(
         }
         _ => return Err(ApiError::BadRequest("Unsupported media id".into())),
     };
-    let key = cache_key(&state.session_secret, user.company_id, provider, media_id);
-    let content_type = if let Some(content_type) = state.storage.head(&key).await? {
-        content_type
+    // Cached under the secret of its day: during a rotation, either one (the
+    // imported CloudTalk audio is only here).
+    let mut cached = None;
+    for secret in state.session_secrets.all() {
+        let key = cache_key(secret, user.company_id, provider, media_id);
+        if let Some(content_type) = state.storage.head(&key).await? {
+            cached = Some((key, content_type));
+            break;
+        }
+    }
+    let (key, content_type) = if let Some(cached) = cached {
+        cached
     } else {
+        let key = cache_key(&state.session_secret, user.company_id, provider, media_id);
         let (bytes, content_type) = fetch_audio(&state, user.company_id, call_id, link)
             .await
             .map_err(|err| {
@@ -134,7 +144,7 @@ pub async fn recording(
             return Err(ApiError::NotFound);
         }
         state.storage.put(&key, bytes, &content_type).await?;
-        content_type
+        (key, content_type)
     };
     let url = state.storage.presign_get(&key, &content_type).await?;
     Ok(Json(CallRecording { url, content_type }))

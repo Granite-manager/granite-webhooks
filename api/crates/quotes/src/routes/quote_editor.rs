@@ -2695,7 +2695,7 @@ pub async fn email_quote(
     }
     // Only files the caller uploaded: any other URL could be another company's.
     if let Some(attachment) = input.attachments.iter().find(|a| {
-        !attachment_token::verify(&state.session_secret, &a.url, user.id, a.token.as_deref())
+        !attachment_token::verify(&state.session_secrets, &a.url, user.id, a.token.as_deref())
     }) {
         return Err(ApiError::BadRequest(format!(
             "Attachment is not available: {}",

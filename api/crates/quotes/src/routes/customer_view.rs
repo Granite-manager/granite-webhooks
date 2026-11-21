@@ -64,7 +64,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .merge(crate::routes::customer_view_extras::router())
 }
 
-const COOKIE: &str = "__customer_view";
+const COOKIE: &str = crate::auth::cookie::CUSTOMER_VIEW_COOKIE_NAME;
 const CODE_EXPIRY_MINUTES: i64 = 10;
 const SEND_COOLDOWN_SECONDS: i64 = 45;
 /// Codes per address and company an hour: with [`MAX_VERIFY_ATTEMPTS`]
@@ -644,15 +644,18 @@ async fn verify(
         return Err(invalid());
     }
     let normalized: String = code.chars().filter(|c| !c.is_whitespace()).collect();
-    let actual = code_hash(&state.session_secret, &token, &normalized);
+    let now = chrono::Utc::now().timestamp();
     let matches = normalized.len() == 6
         && normalized.bytes().all(|b| b.is_ascii_digit())
-        && actual.len() == expected.len()
-        && actual
-            .bytes()
-            .zip(expected.bytes())
-            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-            == 0;
+        && state.session_secrets.recent(now).any(|secret| {
+            let actual = code_hash(secret, &token, &normalized);
+            actual.len() == expected.len()
+                && actual
+                    .bytes()
+                    .zip(expected.bytes())
+                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                    == 0
+        });
     if !matches {
         return Err(invalid());
     }

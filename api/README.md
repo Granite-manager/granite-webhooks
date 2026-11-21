@@ -489,6 +489,32 @@ cookie's id (`session::session_key`). A copy of the database plus
 `SESSION_SECRET` still signs nobody in. Rows from before ids were hashed were
 hashed by `20270224090000_sessions-hash-existing-ids.sql` (2026-11-21).
 
+### Replacing `SESSION_SECRET`
+
+`SESSION_SECRET` signs more than the cookie: the phones' call keys, email
+attachment tokens, survey links, the call-recording cache keys, agent
+tokens, web links, OAuth state and customer-view codes. A plain swap would
+sign everyone out and stop every phone from calling. Instead
+(`crates/core/src/session_secrets.rs`), `SESSION_SECRET_OTHER` is a second
+secret that is accepted but never signs, and a rotation is two changes to
+both `granite/granite-api` and `granite/granite-api-stream` (the browser
+talks to both Lambdas), each followed by a cold start of both:
+
+1. Add `SESSION_SECRET_OTHER` = the new secret. Both now accept both.
+2. Set `SESSION_SECRET` = the new secret, `SESSION_SECRET_OTHER` = the old
+   one, `SESSION_SECRET_SWITCHED_AT` = unix seconds a few minutes after the
+   swap.
+
+After that the old secret keeps opening what lives long, for as long as it
+is set: session cookies (the API signs an old cookie again for the request,
+and `GET /v1/auth/session`, asked as every CRM page opens, gives the browser
+the new one), the call keys of phones signed in before the switch, attachment
+tokens in drafts and scheduled emails, survey links in sent emails, cached
+recordings and `s:` two-step secrets (dev). Short-lived values signed with it
+work for one more hour after the switch only. The Lambda logs
+`session secrets` at cold start with whether a second secret is set (never
+the values).
+
 How the browser sends the cookie: the cookie is `HttpOnly`, and in production
 its domain is `.granite-manager.com`. The frontend calls the API with
 `credentials: 'include'`, so the browser attaches it as long as the API is on
@@ -657,8 +683,9 @@ an HMAC keyed with the phone's call key (see the contract); a SIP user in
 `from` must be that phone's. The call key (`callKey`, shown once at sign-in)
 is HMAC-SHA256 of `SESSION_SECRET` over the device session id
 (`auth/device.rs`): derived again for each call and never stored, so a copy
-of the database cannot sign calls. A new `SESSION_SECRET` changes every key:
-phones then sign in again before they can call. Emergency codes (911, 112,
+of the database cannot sign calls. A new `SESSION_SECRET` changes every key,
+so a rotation keeps accepting keys from the old secret for the phones signed
+in before it (see "Replacing `SESSION_SECRET`"). Emergency codes (911, 112,
 933, 988) are never refused; the other N11 codes are.
 
 Calls are matched to customers by `customer_phone_index`, the last 10

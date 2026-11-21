@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 pub const SESSION_COOKIE_NAME: &str = "__session";
+/// A quote viewer's cookie (the customer view's code check), also signed.
+pub const CUSTOMER_VIEW_COOKIE_NAME: &str = "__customer_view";
+/// Every cookie the API signs with `SESSION_SECRET`.
+pub const SIGNED_COOKIE_NAMES: [&str; 2] = [SESSION_COOKIE_NAME, CUSTOMER_VIEW_COOKIE_NAME];
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -65,6 +69,41 @@ pub fn request_session_id(headers: &axum::http::HeaderMap, secret: &str) -> Opti
         .flat_map(|header| cookie_values(header, SESSION_COOKIE_NAME))
         .find_map(|value| decode_session(&value, secret))
         .and_then(|session| session.session_id)
+}
+
+/// `header` (a `Cookie` header) with old-secret cookies signed again.
+///
+/// Every cookie named in `names` that verifies only under `other` is signed
+/// under `current`, its contents kept; the other cookies stay as they are.
+/// `None` when none needed it. A secret rotation (`crate::session_secrets`) keeps old cookies working
+/// this way without each reader knowing about it.
+pub fn resign_cookies(header: &str, names: &[&str], current: &str, other: &str) -> Option<String> {
+    let mut changed = false;
+    let pairs: Vec<String> = header
+        .split(';')
+        .map(|pair| {
+            let resigned = pair.split_once('=').and_then(|(key, value)| {
+                let name = key.trim();
+                if !names.contains(&name) {
+                    return None;
+                }
+                let value = value.trim();
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .unwrap_or(value);
+                let value = percent_decode_str(value).decode_utf8().ok()?;
+                if decode_session(&value, current).is_some() {
+                    return None;
+                }
+                let data = decode_session_map(&value, other)?;
+                Some(format!("{name}={}", encode_session_map(&data, current)))
+            });
+            changed |= resigned.is_some();
+            resigned.unwrap_or_else(|| pair.trim().to_string())
+        })
+        .collect();
+    changed.then(|| pairs.join("; "))
 }
 
 /// Verifies the signature and decodes the session payload. `None` for any
@@ -279,6 +318,42 @@ mod tests {
         assert_eq!(back["activeCompanyId"], 100);
         assert!(back.contains_key("__flash_message__"));
         assert!(decode_session_map(&decoded, "other").is_none());
+    }
+
+    #[test]
+    fn old_secret_cookies_are_signed_again_and_keep_their_contents() {
+        let header = format!("theme=dark; __session=foreign.c2lnbmF0dXJl; {WITH_FLASH}; x=1");
+        let names = [SESSION_COOKIE_NAME];
+        let resigned = resign_cookies(&header, &names, "new-secret", "test-secret").unwrap();
+        let ours = cookie_values(&resigned, SESSION_COOKIE_NAME)
+            .find_map(|value| decode_session_map(&value, "new-secret"))
+            .unwrap();
+        assert_eq!(ours["sessionId"], "11111111-2222-4333-8444-555555555555");
+        assert_eq!(ours["activeCompanyId"], 101);
+        assert!(ours.contains_key("__flash_message__"));
+        assert!(resigned.starts_with("theme=dark; __session=foreign.c2lnbmF0dXJl; __session="));
+        assert!(resigned.ends_with("; x=1"));
+    }
+
+    #[test]
+    fn cookies_that_need_nothing_are_left_alone() {
+        let names = [SESSION_COOKIE_NAME];
+        let current = format!("a=1; {WITH_FLASH}");
+        assert_eq!(resign_cookies(&current, &names, "test-secret", "old"), None);
+        assert_eq!(
+            resign_cookies(
+                "__session=foreign.c2lnbmF0dXJl",
+                &names,
+                "new",
+                "test-secret"
+            ),
+            None
+        );
+        let other_name = format!("a=1; {}", WITH_FLASH.replacen("__session", "__other", 1));
+        assert_eq!(
+            resign_cookies(&other_name, &names, "new", "test-secret"),
+            None
+        );
     }
 
     #[test]
