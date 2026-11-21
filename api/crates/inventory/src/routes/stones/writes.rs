@@ -40,6 +40,12 @@ pub struct StoneInput {
     /// image; when editing, omit it to keep the current image.
     #[serde(default)]
     pub image_url: Option<String>,
+    /// Close-up of the stone: the `url` of an upload to the `stones` folder,
+    /// shown in a red circle at the top right of the image. When editing,
+    /// omit it to keep the current one; null removes it.
+    #[serde(default, deserialize_with = "crate::serde_helpers::double_option")]
+    #[schema(value_type = Option<String>)]
+    pub closeup_url: Option<Option<String>>,
     /// Shown in the catalogs.
     #[serde(default)]
     pub is_display: bool,
@@ -231,19 +237,26 @@ pub async fn create(
     let image_url = uploaded.unwrap_or(STONE_PLACEHOLDER).to_string();
     let mut tx = state.pool.begin().await?;
     validate(&mut tx, user.company_id, &input).await?;
+    let closeup = input
+        .closeup_url
+        .as_ref()
+        .and_then(|url| non_empty(url.as_ref()));
+    if let Some(url) = closeup {
+        uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
+    }
     let picture = match uploaded {
         Some(url) => {
             uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
-            Some(stone_picture(&state.storage, &mut tx, user.company_id, url).await?)
+            Some(stone_picture(&state.storage, &mut tx, user.company_id, url, closeup).await?)
         }
         None => None,
     };
     let result = sqlx::query(
         "INSERT INTO stones (name, type, finishing, url, original_url, slab_background_version,
-            company_id, is_display, on_sale,
+            closeup_url, company_id, is_display, on_sale,
             regular_stock, supplier_id, width, length, cost_per_sqft, retail_price, level,
             bundle_number, bundle_location, delivery_date, block_number)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(input.name.trim())
     .bind(input.kind.trim())
@@ -255,6 +268,7 @@ pub async fn create(
     )
     .bind(picture.as_ref().and_then(|p| p.original_url.as_deref()))
     .bind(picture.as_ref().and_then(|p| p.version))
+    .bind(closeup)
     .bind(user.company_id)
     .bind(input.is_display)
     .bind(input.on_sale)
@@ -307,27 +321,51 @@ pub async fn update(
     JsonBody(input): JsonBody<StoneInput>,
 ) -> ApiResult<StatusCode> {
     let mut tx = state.pool.begin().await?;
-    let current: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT url, original_url FROM stones
+    let current: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT url, original_url, closeup_url FROM stones
           WHERE id = ? AND company_id = ? AND deleted_at IS NULL",
     )
     .bind(id)
     .bind(user.company_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (current_url, current_original) = current.ok_or(ApiError::NotFound)?;
+    let (current_url, current_original, current_closeup) = current.ok_or(ApiError::NotFound)?;
     validate(&mut tx, user.company_id, &input).await?;
     let uploaded = non_empty(input.image_url.as_ref())
         .filter(|url| Some(*url) != current_url.as_deref())
         .filter(|url| Some(*url) != current_original.as_deref());
-    let picture = match uploaded {
+    // Some(None): the close-up is removed; None: it stays as it is.
+    let closeup_change = input
+        .closeup_url
+        .as_ref()
+        .map(|url| non_empty(url.as_ref()))
+        .filter(|url| *url != current_closeup.as_deref());
+    if let Some(Some(url)) = closeup_change {
+        uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
+    }
+    let closeup = closeup_change.unwrap_or(current_closeup.as_deref());
+    // A new picture, or the one the stone was uploaded with when only the
+    // close-up changed. A stone without a picture has nothing to draw on.
+    let base = uploaded.or_else(|| {
+        closeup_change?;
+        current_original
+            .as_deref()
+            .or(current_url.as_deref())
+            .filter(|url| *url != STONE_PLACEHOLDER)
+    });
+    if let Some(url) = uploaded {
+        uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
+    }
+    let picture = match base {
         Some(url) => {
-            uploads::attach(&state.storage, url, UploadFolder::Stones, user.company_id).await?;
-            Some(stone_picture(&state.storage, &mut tx, user.company_id, url).await?)
+            Some(stone_picture(&state.storage, &mut tx, user.company_id, url, closeup).await?)
         }
         None => None,
     };
-    let new_url = picture.as_ref().map(|p| p.url.clone());
+    let new_url = picture
+        .as_ref()
+        .map(|p| p.url.clone())
+        .filter(|url| Some(url) != current_url.as_ref());
     if let Some(picture) = &picture {
         sqlx::query(
             "UPDATE stones SET original_url = ?, slab_background_version = ?
@@ -339,6 +377,14 @@ pub async fn update(
         .bind(user.company_id)
         .execute(&mut *tx)
         .await?;
+    }
+    if let Some(change) = closeup_change {
+        sqlx::query("UPDATE stones SET closeup_url = ? WHERE id = ? AND company_id = ?")
+            .bind(change)
+            .bind(id)
+            .bind(user.company_id)
+            .execute(&mut *tx)
+            .await?;
     }
     sqlx::query(
         "UPDATE stones SET material_id = IF(TRIM(name) <=> ?, material_id, NULL), name = ?, type = ?, finishing = ?, url = COALESCE(?, url),
@@ -372,12 +418,19 @@ pub async fn update(
     set_colors(&mut tx, id, &input.color_ids).await?;
     link_materials(&mut tx, user.company_id, Some(id)).await?;
     tx.commit().await?;
+    // Another stone can point at the same photo; it keeps it. The old
+    // picture goes with the one it was uploaded as, when it was on the
+    // company's background or had a close-up.
+    let mut old_files = Vec::new();
     if new_url.is_some() {
-        // Another stone can point at the same photo; it keeps it. The old
-        // picture goes with the one it was uploaded as, when it was on the
-        // company's background.
+        old_files.extend([&current_url, &current_original].into_iter().flatten());
+    }
+    if closeup_change.is_some() {
+        old_files.extend(current_closeup.as_ref());
+    }
+    if !old_files.is_empty() {
         let mut conn = state.pool.acquire().await?;
-        for old in [&current_url, &current_original].into_iter().flatten() {
+        for old in old_files {
             remove_unused(&state.storage, &mut conn, old, user.company_id).await?;
         }
     }

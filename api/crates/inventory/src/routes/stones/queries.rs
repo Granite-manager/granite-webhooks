@@ -190,7 +190,7 @@ pub async fn find_stone(
     stone_id: i32,
 ) -> Result<Option<StoneDetail>, sqlx::Error> {
     let stone = sqlx::query_as::<_, StoneDetail>(
-        "SELECT id, name, type, url, supplier_id,
+        "SELECT id, name, type, url, original_url, closeup_url, supplier_id,
             COALESCE(is_display, 0) AS is_display,
             COALESCE(on_sale, 0) AS on_sale,
             COALESCE(regular_stock, 0) AS regular_stock,
