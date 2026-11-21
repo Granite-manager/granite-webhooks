@@ -3,9 +3,9 @@
 //! Reads `supplier_files`, writes `supplier_file_chunks` for the AI chat and the quote builder's
 //! "Price from Supplier". Port of the CRM's `supplierFileProcessor.server.ts`:
 //! CSV/TSV/TXT are chunked as they are; PDFs are split into batches of eight
-//! pages, each turned into a Markdown table by the model (from the text layer
-//! when it has one, else from the pages themselves); pictures go to the model
-//! by URL.
+//! pages, each turned into a Markdown table by the model from the pages
+//! themselves (their text layer only when the pages cannot be read); pictures
+//! go to the model by URL.
 //!
 //! The scheduled `POST /v1/jobs/supplier-files` runs [`run_once`] until the
 //! queue is empty: it first returns files stuck in `processing` to the queue,
@@ -29,7 +29,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 pub const MAX_ATTEMPTS: i32 = 3;
-pub const PIPELINE_VERSION: i32 = 2;
+/// 3: PDFs are read from their pages, not their text layer, so every file
+/// read before is read again.
+pub const PIPELINE_VERSION: i32 = 3;
 pub const STALE_PROCESSING_MINUTES: i32 = 10;
 pub const MAX_FILE_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_PAGES: usize = 240;
@@ -412,27 +414,31 @@ fn pdf_text(bytes: &[u8]) -> Option<String> {
     Some(parts.join("\n"))
 }
 
+/// One batch as a Markdown table, read from the pages themselves (asked
+/// twice). A text layer loses the layout: a price in a merged cell beside
+/// its group ("Group 7 ... $34.93") comes out after the page's rows, in any
+/// order, so the group prices were mixed up or lost. Only when the pages
+/// cannot be read is the text layer read instead, if the batch has one.
 async fn structure_batch(
     extractor: &impl Extractor,
     batch: &PdfBatch,
     filename: &str,
     company_id: Option<i32>,
 ) -> Option<String> {
-    let text = pdf_text(&batch.bytes).filter(|text| text.chars().count() >= BATCH_TEXT_MIN_CHARS);
     for _ in 0..2 {
-        let structured = match &text {
-            Some(text) => extractor.structure_text(text, company_id).await,
-            None => {
-                extractor
-                    .structure_pdf_batch(&batch.bytes, filename, &batch.page_label, company_id)
-                    .await
-            }
-        };
+        let structured = extractor
+            .structure_pdf_batch(&batch.bytes, filename, &batch.page_label, company_id)
+            .await;
         if is_valid_output(structured.as_deref()) {
             return structured;
         }
     }
-    None
+    let text =
+        pdf_text(&batch.bytes).filter(|text| text.chars().count() >= BATCH_TEXT_MIN_CHARS)?;
+    let structured = extractor.structure_text(&text, company_id).await;
+    is_valid_output(structured.as_deref())
+        .then_some(structured)
+        .flatten()
 }
 
 /// Structures the batches, up to [`BATCH_CONCURRENCY`] at once, in page

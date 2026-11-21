@@ -666,8 +666,28 @@ async fn a_scanned_pdf_goes_to_the_model_page_batch_by_batch_in_order(pool: MySq
     assert_eq!(headings, ["pages 1-8", "pages 9-10"]);
 }
 
+/// A text layer loses which group a merged-cell price belongs to, so the
+/// model reads the pages.
 #[test_db::test(seed)]
-async fn a_pdf_with_text_is_structured_from_its_text(pool: MySqlPool) {
+async fn a_pdf_with_text_is_also_read_from_its_pages(pool: MySqlPool) {
+    let line = "Alaska White 3cm Group 2 130x65 $21.00 Black Pearl 2cm Group 1 126x63 $14.50 ";
+    let fake = Fake {
+        files: HashMap::from([(
+            "s3/text.pdf".to_string(),
+            (pdf(2, &line.repeat(4)), "application/pdf".into()),
+        )]),
+        pdf_reply: Some(TABLE.into()),
+        text_reply: Some(TABLE.into()),
+        ..Fake::default()
+    };
+    add_file(&pool, 9701, "s3/text.pdf", "pending", 0).await;
+    run_once(&pool, &fake).await.unwrap();
+    assert_eq!(file_state(&pool, 9701).await.0, "ready");
+    assert_eq!(*fake.calls.lock().unwrap(), ["pdf:pages 1-2"]);
+}
+
+#[test_db::test(seed)]
+async fn a_pdf_whose_pages_cannot_be_read_falls_back_to_its_text(pool: MySqlPool) {
     let line = "Alaska White 3cm Group 2 130x65 $21.00 Black Pearl 2cm Group 1 126x63 $14.50 ";
     let fake = Fake {
         files: HashMap::from([(
@@ -681,8 +701,10 @@ async fn a_pdf_with_text_is_structured_from_its_text(pool: MySqlPool) {
     run_once(&pool, &fake).await.unwrap();
     assert_eq!(file_state(&pool, 9701).await.0, "ready");
     let calls = fake.calls.lock().unwrap().clone();
-    assert_eq!(calls.len(), 1);
-    assert!(calls[0].starts_with("text:"));
+    // The pages twice, then the text layer.
+    assert_eq!(calls[..2], ["pdf:pages 1-2", "pdf:pages 1-2"]);
+    assert_eq!(calls.len(), 3);
+    assert!(calls[2].starts_with("text:"));
 }
 
 #[test_db::test(seed)]
