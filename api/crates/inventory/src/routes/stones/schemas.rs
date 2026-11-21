@@ -128,6 +128,11 @@ pub struct StoneDetail {
     pub kind: Option<String>,
     /// Image URL; null when the stone has no picture.
     pub url: Option<String>,
+    /// The picture as uploaded, when `url` was made from it (on the slab
+    /// picture background or with the close-up circle); edit this one.
+    pub original_url: Option<String>,
+    /// Close-up shown in a red circle on `url`; null when none.
+    pub closeup_url: Option<String>,
     /// Supplier id; null if unknown.
     pub supplier_id: Option<i32>,
     /// Shown in the employee and customer catalogs.

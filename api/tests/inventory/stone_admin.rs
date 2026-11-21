@@ -1002,7 +1002,10 @@ async fn new_stone_pictures_are_placed_on_the_company_background(pool: MySqlPool
         json!({ "url": background, "spot": SPOT })
     );
     assert_eq!(settings["slab_background_pending"], 0);
-    assert_eq!(stone_pictures(&pool, earlier_id).await, (earlier.clone(), None));
+    assert_eq!(
+        stone_pictures(&pool, earlier_id).await,
+        (earlier.clone(), None)
+    );
 
     // A stone added now shows its picture on the background and keeps the upload.
     let uploaded = upload(&server, &storage, "stones").await;
@@ -1146,4 +1149,118 @@ async fn the_slab_background_is_validated_and_admin_only(pool: MySqlPool) {
         "This file is not a picture",
     )
     .await;
+}
+
+// ---- Close-up circle (Admin › Stones › Add / Edit › Close-up)
+
+async fn stone_closeup(pool: &MySqlPool, id: i64) -> Option<String> {
+    sqlx::query_scalar("SELECT closeup_url FROM stones WHERE id = ?")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test_db::test(seed)]
+async fn a_closeup_is_drawn_in_a_circle_on_the_stone_picture(pool: MySqlPool) {
+    let (server, storage) = server_with_storage(pool.clone());
+    let uploaded = upload(&server, &storage, "stones").await;
+    let closeup = upload(&server, &storage, "stones").await;
+    let mut body = stone_body(Some(&uploaded));
+    body["closeup_url"] = json!(closeup);
+    let id = server
+        .post("/v1/stones")
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .json::<Value>()["id"]
+        .as_i64()
+        .unwrap();
+    // Without a background: the upload with the circle, the upload kept.
+    let (shown, original) = stone_pictures(&pool, id).await;
+    assert_ne!(shown, uploaded);
+    assert_eq!(original.as_deref(), Some(uploaded.as_str()));
+    assert_eq!(
+        stone_closeup(&pool, id).await.as_deref(),
+        Some(closeup.as_str())
+    );
+    let detail: Value = server
+        .get(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .await
+        .json();
+    assert_eq!(detail["original_url"], json!(uploaded));
+    assert_eq!(detail["closeup_url"], json!(closeup));
+
+    // Editing without the field keeps the picture and the close-up.
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&stone_body(None))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(stone_pictures(&pool, id).await.0, shown);
+
+    // A background goes under the circle: both in one picture.
+    let background = upload(&server, &storage, "stones").await;
+    let saved = server
+        .put("/v1/stones/settings/slab-background")
+        .with_session(sessions::ADMIN)
+        .json(&json!({ "url": background, "spot": SPOT }))
+        .await;
+    assert_eq!(pending(saved).await, 1);
+    let applied = server
+        .post("/v1/stones/settings/slab-background/apply")
+        .with_session(sessions::ADMIN)
+        .await;
+    assert_eq!(pending(applied).await, 0);
+    let (framed, original) = stone_pictures(&pool, id).await;
+    assert_ne!(framed, shown);
+    assert_eq!(original.as_deref(), Some(uploaded.as_str()));
+    let keys = storage.memory_keys();
+    assert!(keys.contains(&key(&closeup)) && !keys.contains(&key(&shown)));
+
+    // Removing the background keeps the circle.
+    let removed = server
+        .delete("/v1/stones/settings/slab-background")
+        .with_session(sessions::ADMIN)
+        .await;
+    assert_eq!(pending(removed).await, 1);
+    server
+        .post("/v1/stones/settings/slab-background/apply")
+        .with_session(sessions::ADMIN)
+        .await
+        .assert_status_ok();
+    let (circled, original) = stone_pictures(&pool, id).await;
+    assert_ne!(circled, uploaded);
+    assert_eq!(original.as_deref(), Some(uploaded.as_str()));
+
+    // Removing the close-up puts the picture back as uploaded and deletes it.
+    let mut body = stone_body(None);
+    body["closeup_url"] = Value::Null;
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(stone_pictures(&pool, id).await, (uploaded.clone(), None));
+    assert_eq!(stone_closeup(&pool, id).await, None);
+    let keys = storage.memory_keys();
+    assert!(keys.contains(&key(&uploaded)));
+    assert!(!keys.contains(&key(&closeup)) && !keys.contains(&key(&circled)));
+
+    // Adding one to an existing picture draws it without a new upload.
+    let second = upload(&server, &storage, "stones").await;
+    let mut body = stone_body(None);
+    body["closeup_url"] = json!(second);
+    server
+        .put(&format!("/v1/stones/{id}"))
+        .with_session(sessions::ADMIN)
+        .json(&body)
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let (shown, original) = stone_pictures(&pool, id).await;
+    assert_ne!(shown, uploaded);
+    assert_eq!(original.as_deref(), Some(uploaded.as_str()));
 }

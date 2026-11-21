@@ -10,7 +10,9 @@
 //! - `POST /v1/stones/settings/slab-background/apply` → remake a few stone
 //!   pictures made with an older background; call until `pending` is 0
 //!
-//! Pictures uploaded before a background was set are left as they are.
+//! Pictures uploaded before a background was set are left as they are. A
+//! stone's close-up (`stones.closeup_url`) is drawn in a circle over the
+//! finished picture (`crate::stone_closeup`), with or without a background.
 
 use crate::auth::AdminUser;
 use crate::error::{ApiError, ApiResult, ErrorBody};
@@ -20,6 +22,7 @@ use crate::openapi::ToSchema;
 use crate::routes::uploads::{self, schemas::UploadFolder};
 use crate::slab_background::{Spot, frame, valid_spot};
 use crate::state::AppState;
+use crate::stone_closeup::add_closeup;
 use crate::storage::{Storage, icon_key};
 use crate::thumbnails::make_icon;
 use axum::Json;
@@ -108,24 +111,46 @@ pub async fn pending_pictures(
     .await
 }
 
-/// The picture at `picture_url` on the background, stored as a new file of
-/// the company with its thumbnail: its URL. `None` when either file is
-/// missing or not a picture this can read.
-async fn framed_copy(
+/// The stone picture at `picture_url` as shown: on the background when the
+/// company has one, with the close-up in a red circle when the stone has one.
+/// Stored as a new file of the company with its thumbnail: its URL. `None`
+/// when there is nothing to add, or a file is missing or not a picture this
+/// can read.
+async fn made_copy(
     storage: &Storage,
-    background: &SlabBackground,
+    background: Option<&SlabBackground>,
     picture_url: &str,
+    closeup_url: Option<&str>,
     company_id: i32,
 ) -> ApiResult<Option<String>> {
-    let (Some(back), Some(picture)) = (
-        storage.get_url(&background.url).await?,
-        storage.get_url(picture_url).await?,
-    ) else {
+    if background.is_none() && closeup_url.is_none() {
+        return Ok(None);
+    }
+    let Some(picture) = storage.get_url(picture_url).await? else {
         return Ok(None);
     };
-    let spot = background.spot;
+    let back = match background {
+        Some(background) => match storage.get_url(&background.url).await? {
+            Some(file) => Some((file.bytes, background.spot)),
+            None => return Ok(None),
+        },
+        None => None,
+    };
+    let closeup = match closeup_url {
+        Some(url) => match storage.get_url(url).await? {
+            Some(file) => Some(file.bytes),
+            None => return Ok(None),
+        },
+        None => None,
+    };
     let made = tokio::task::spawn_blocking(move || {
-        let bytes = frame(&back.bytes, &picture.bytes, &spot)?;
+        let mut bytes = picture.bytes;
+        if let Some((back, spot)) = back {
+            bytes = frame(&back, &bytes, &spot)?;
+        }
+        if let Some(closeup) = closeup {
+            bytes = add_closeup(&bytes, &closeup)?;
+        }
         let icon = make_icon(&bytes);
         Some((bytes, icon))
     })
@@ -145,20 +170,26 @@ async fn framed_copy(
     Ok(Some(storage.public_url(&key)?))
 }
 
-/// What to store for the stone picture just uploaded to `uploaded`: on the
-/// company's background when it has one and the picture can be read.
+/// What to store for the stone picture `uploaded` (as uploaded): on the
+/// company's background when it has one, with `closeup` in a circle when
+/// given, as long as the files can be read.
 pub async fn stone_picture(
     storage: &Storage,
     conn: &mut MySqlConnection,
     company_id: i32,
     uploaded: &str,
+    closeup: Option<&str>,
 ) -> ApiResult<StonePicture> {
     let company = company_background(conn, company_id).await?;
-    let framed = match &company.background {
-        Some(background) => framed_copy(storage, background, uploaded, company_id).await?,
-        None => None,
-    };
-    Ok(match framed {
+    let made = made_copy(
+        storage,
+        company.background.as_ref(),
+        uploaded,
+        closeup,
+        company_id,
+    )
+    .await?;
+    Ok(match made {
         Some(url) => StonePicture {
             url,
             original_url: Some(uploaded.to_string()),
@@ -179,12 +210,14 @@ pub async fn remove_unused(
     url: &str,
     company_id: i32,
 ) -> Result<(), sqlx::Error> {
-    let used: Option<i32> =
-        sqlx::query_scalar("SELECT id FROM stones WHERE url = ? OR original_url = ? LIMIT 1")
-            .bind(url)
-            .bind(url)
-            .fetch_optional(&mut *conn)
-            .await?;
+    let used: Option<i32> = sqlx::query_scalar(
+        "SELECT id FROM stones WHERE url = ? OR original_url = ? OR closeup_url = ? LIMIT 1",
+    )
+    .bind(url)
+    .bind(url)
+    .bind(url)
+    .fetch_optional(&mut *conn)
+    .await?;
     if used.is_none() {
         uploads::remove(storage, url, company_id).await;
     }
@@ -321,7 +354,7 @@ pub async fn remove(
 ///
 /// Remakes up to four stone pictures that were made with an older
 /// background: on the current one, or back as uploaded when the company
-/// removed its background. Call it again while `pending` is above 0.
+/// removed its background (the stone's close-up circle stays). Call it again while `pending` is above 0.
 #[crate::openapi::path(
     post,
     path = "/v1/stones/settings/slab-background/apply",
@@ -342,8 +375,8 @@ pub async fn apply(
 ) -> ApiResult<Json<PendingPictures>> {
     let mut conn = state.pool.acquire().await?;
     let company = company_background(&mut conn, user.company_id).await?;
-    let stale: Vec<(i32, Option<String>, String)> = sqlx::query_as(
-        "SELECT id, url, original_url FROM stones
+    let stale: Vec<(i32, Option<String>, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, url, original_url, closeup_url FROM stones
           WHERE company_id = ? AND deleted_at IS NULL AND original_url IS NOT NULL
             AND NOT (slab_background_version <=> ?)
           ORDER BY id LIMIT ?",
@@ -353,15 +386,18 @@ pub async fn apply(
     .bind(APPLY_BATCH)
     .fetch_all(&mut *conn)
     .await?;
-    for (id, shown, original) in stale {
-        let framed = match &company.background {
-            Some(background) => {
-                framed_copy(&state.storage, background, &original, user.company_id).await?
-            }
-            None => None,
-        };
-        match (&company.background, framed) {
-            (Some(_), Some(url)) => {
+    for (id, shown, original, closeup) in stale {
+        let made = made_copy(
+            &state.storage,
+            company.background.as_ref(),
+            &original,
+            closeup.as_deref(),
+            user.company_id,
+        )
+        .await?;
+        let adds_something = company.background.is_some() || closeup.is_some();
+        match (adds_something, made) {
+            (_, Some(url)) => {
                 sqlx::query("UPDATE stones SET url = ?, slab_background_version = ? WHERE id = ?")
                     .bind(url)
                     .bind(company.version)
@@ -369,8 +405,8 @@ pub async fn apply(
                     .execute(&mut *conn)
                     .await?;
             }
-            // The original can no longer be read: the picture stays as it is.
-            (Some(_), None) => {
+            // A file can no longer be read: the picture stays as it is.
+            (true, None) => {
                 sqlx::query("UPDATE stones SET slab_background_version = ? WHERE id = ?")
                     .bind(company.version)
                     .bind(id)
@@ -378,7 +414,7 @@ pub async fn apply(
                     .await?;
                 continue;
             }
-            (None, _) => {
+            (false, None) => {
                 sqlx::query(
                     "UPDATE stones SET url = original_url, original_url = NULL,
                             slab_background_version = NULL
