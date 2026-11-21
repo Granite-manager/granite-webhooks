@@ -140,8 +140,12 @@ async fn sales_goal_needs_an_employee(pool: MySqlPool) {
 // ---- GET /v1/me/telegram ----------------------------------------------------
 
 /// A stand-in for api.telegram.org: `getChat` answers ok only for the chat ids
-/// in `reachable`, and every call is recorded as "<token>:<chat id>".
-async fn fake_telegram(reachable: &'static [&'static str]) -> (String, Arc<Mutex<Vec<String>>>) {
+/// in `reachable` (others get `refusal`, as Telegram's 400 "chat not found"
+/// or 429 "Too Many Requests"), and every call is recorded as "<token>:<chat id>".
+async fn fake_telegram(
+    reachable: &'static [&'static str],
+    refusal: StatusCode,
+) -> (String, Arc<Mutex<Vec<String>>>) {
     let calls = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&calls);
     let app = Router::new().route(
@@ -152,7 +156,9 @@ async fn fake_telegram(reachable: &'static [&'static str]) -> (String, Arc<Mutex
                 async move {
                     let chat = body["chat_id"].as_str().unwrap_or_default().to_string();
                     recorded.lock().unwrap().push(format!("{bot}:{chat}"));
-                    Json(json!({ "ok": reachable.contains(&chat.as_str()) }))
+                    let ok = reachable.contains(&chat.as_str());
+                    let status = if ok { StatusCode::OK } else { refusal };
+                    (status, Json(json!({ "ok": ok })))
                 }
             },
         ),
@@ -199,7 +205,7 @@ async fn telegram_status_without_bots_trusts_the_saved_links(pool: MySqlPool) {
 async fn telegram_links_the_bot_cannot_reach_are_removed(pool: MySqlPool) {
     // Mark's leads chat (900101) still works; his notifications chat (910101)
     // blocked the bot.
-    let (base, calls) = fake_telegram(&["900101"]).await;
+    let (base, calls) = fake_telegram(&["900101"], StatusCode::FORBIDDEN).await;
     let bots = TelegramBots::new(Some("111:leads"), Some(" 222:notes "), &base);
     let server = TestServer::new(app(
         AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN).with_telegram(bots)
@@ -233,6 +239,27 @@ async fn telegram_links_the_bot_cannot_reach_are_removed(pool: MySqlPool) {
         .json();
     assert_eq!(status["leads_linked"], false);
     assert!(calls.lock().unwrap().is_empty());
+}
+
+#[test_db::test(seed)]
+async fn telegram_links_stay_when_telegram_is_busy(pool: MySqlPool) {
+    // A rate limit (429) is not "this chat is gone": both links stay.
+    let (base, _) = fake_telegram(&[], StatusCode::TOO_MANY_REQUESTS).await;
+    let bots = TelegramBots::new(Some("111:leads"), Some("222:notes"), &base);
+    let server = TestServer::new(app(
+        AppState::new(pool.clone(), SECRET, ALLOWED_ORIGIN).with_telegram(bots)
+    ));
+    let status: Value = server
+        .get("/v1/me/telegram")
+        .with_session(sessions::MANAGER)
+        .await
+        .json();
+    assert_eq!(status["leads_linked"], true);
+    assert_eq!(status["notifications_linked"], true);
+    assert_eq!(
+        telegram_ids(&pool, 101).await,
+        (Some(900_101), Some(910_101))
+    );
 }
 
 #[test_db::test(seed)]
