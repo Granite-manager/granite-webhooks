@@ -1,13 +1,15 @@
 //! Event details > Scheduling call: an automatic call that reads an
 //! auto-confirm text to the customer and takes their answer by fixed rules
 //! (no AI): "yes" or 1 confirms the job, "no" or 2 tells the Scheduling
-//! Managers, "repeat" reads the message again, and anything else is asked
+//! Managers, "repeat" or 3 reads the message again, and anything else is asked
 //! again. It is placed once, from the Scheduling Manager's line; a call that
 //! brings no yes or no (nobody picked up, voicemail, busy, a hang-up, no
 //! clear answer) is followed by the same scheduling text, which then waits
 //! for the customer's reply like any auto-confirm text.
 //!
 //! - `POST /v1/events/{id}/confirmation-call` → place the call (`place`)
+//! - `GET`/`PUT /v1/schedule/notifications/caller-id` → the name people see
+//!   when it rings (`caller_id`, `set_caller_id`)
 //!
 //! Telnyx's callbacks (`api-phone`, `telnyx_webhooks/schedule_call.rs`) run
 //! it: `ask` when the customer picks up, `answer` for what they said or
@@ -19,7 +21,7 @@ use super::{
     failure_text, mark_called, message_user, record, render, reply_sender, sms_phone,
     start_waiting, tell_managers,
 };
-use crate::auth::ShopOrEmployeeUser;
+use crate::auth::{AdminUser, ShopOrEmployeeUser};
 use crate::error::{ApiError, ApiResult, ErrorBody};
 use crate::extract::JsonBody;
 use crate::openapi::ToSchema;
@@ -35,7 +37,7 @@ use sqlx::MySqlPool;
 
 /// What the voice asks after the message.
 pub const PROMPT: &str = "Say yes or press 1 to confirm. Say no or press 2. \
-     If you'd like to repeat this information, say repeat.";
+     If you'd like to repeat this information, say repeat or press 3.";
 /// What it says to an answer that is no yes, no or repeat.
 pub const ASK_AGAIN: &str = "Sorry, I didn't understand your answer. Please say yes or no. \
      You can also press 1 for yes, or 2 for no.";
@@ -111,13 +113,14 @@ pub enum Heard {
     Unclear,
 }
 
-/// Reads the answer: the key pressed (1 yes, 2 no), else the words said. A
+/// Reads the answer: the key pressed (1 yes, 2 no, 3 repeat), else the words said. A
 /// yes is only a short, plain yes; a no stays a no whatever comes with it;
 /// both at once, or neither, is unclear.
 pub fn heard(digits: Option<&str>, speech: Option<&str>) -> Heard {
     match digits.map(str::trim) {
         Some("1") => return Heard::Yes,
         Some("2") => return Heard::No,
+        Some("3") => return Heard::Repeat,
         Some(other) if !other.is_empty() => return Heard::Unclear,
         _ => {}
     }
@@ -212,6 +215,140 @@ pub async fn caller(state: &AppState, company_id: i32) -> Result<Option<Caller>,
         app_id,
         from: line.e164,
         base: config.webhook_base(&state.phone),
+    }))
+}
+
+/// The longest caller ID name the phone companies keep.
+pub const MAX_CALLER_ID_NAME: usize = 15;
+
+/// `GET` / `PUT /v1/schedule/notifications/caller-id`: the name people see
+/// when the Scheduling call rings.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SchedulingCallerId {
+    /// The Scheduling Manager's line the calls come from, E.164; `None` when
+    /// the company cannot place Scheduling calls.
+    pub line: Option<String>,
+    /// The caller ID name listed for that line; `None` when none is.
+    pub name: Option<String>,
+}
+
+/// Body of `PUT /v1/schedule/notifications/caller-id`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SchedulingCallerIdInput {
+    /// Up to 15 letters, digits, spaces and `& , . - '`. Empty or left out
+    /// stops listing a name.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// The name as the phone companies take it: trimmed, inner spaces single;
+/// `None` when empty.
+pub fn caller_id_name(name: Option<&str>) -> Result<Option<String>, &'static str> {
+    let name = name
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if name.chars().count() > MAX_CALLER_ID_NAME {
+        return Err("The caller ID name can be at most 15 characters");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || " &,.-'".contains(c))
+    {
+        return Err("Use only letters, numbers, spaces and & , . - '");
+    }
+    Ok(Some(name))
+}
+
+/// The caller ID name of the Scheduling call
+///
+/// The name the phone companies show when the Scheduling call rings: the one
+/// listed (CNAM) for the Scheduling Manager's line on Telnyx.
+#[crate::openapi::path(
+    get,
+    path = "/v1/schedule/notifications/caller-id",
+    operation_id = "get_scheduling_caller_id",
+    tag = "schedule",
+    responses(
+        (status = 200, description = "The line and its caller ID name", body = SchedulingCallerId),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 502, description = "Telnyx did not answer", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn caller_id(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+) -> ApiResult<Json<SchedulingCallerId>> {
+    let Some(caller) = caller(&state, user.company_id).await? else {
+        return Ok(Json(SchedulingCallerId {
+            line: None,
+            name: None,
+        }));
+    };
+    let name = state
+        .telnyx
+        .caller_id_name(&caller.from)
+        .await
+        .map_err(|err| {
+            tracing::warn!(error = %err, "caller ID name not read");
+            ApiError::Upstream("Telnyx did not answer. Try again.".into())
+        })?;
+    Ok(Json(SchedulingCallerId {
+        line: Some(caller.from),
+        name,
+    }))
+}
+
+/// Set the caller ID name of the Scheduling call
+///
+/// Lists the name (CNAM) for the Scheduling Manager's line on Telnyx, so the
+/// people it calls see it instead of a bare number; empty stops listing one.
+/// The phone companies take a few days to show a new name.
+#[crate::openapi::path(
+    put,
+    path = "/v1/schedule/notifications/caller-id",
+    operation_id = "set_scheduling_caller_id",
+    tag = "schedule",
+    request_body = SchedulingCallerIdInput,
+    responses(
+        (status = 200, description = "Saved on Telnyx", body = SchedulingCallerId),
+        (status = 400, description = "Too long, a character the phone companies do not take, or no Scheduling Manager line", body = ErrorBody),
+        (status = 401, description = "No valid session", body = ErrorBody),
+        (status = 403, description = "Caller is not an admin", body = ErrorBody),
+        (status = 502, description = "Telnyx did not take it", body = ErrorBody),
+        (status = 500, description = "Database error", body = ErrorBody),
+    ),
+    security(("session_cookie" = []))
+)]
+pub async fn set_caller_id(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    JsonBody(input): JsonBody<SchedulingCallerIdInput>,
+) -> ApiResult<Json<SchedulingCallerId>> {
+    let name = caller_id_name(input.name.as_deref()).map_err(bad)?;
+    let Some(caller) = caller(&state, user.company_id).await? else {
+        return Err(bad(
+            "Calls need a Granite Manager phone line for the Scheduling Manager. Ask your admin to set one up.",
+        ));
+    };
+    state
+        .telnyx
+        .set_caller_id_name(&caller.from, name.as_deref())
+        .await
+        .map_err(|err| {
+            tracing::warn!(error = %err, "caller ID name not saved");
+            ApiError::Upstream("Telnyx did not take the name. Try again.".into())
+        })?;
+    Ok(Json(SchedulingCallerId {
+        line: Some(caller.from),
+        name,
     }))
 }
 
@@ -770,9 +907,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn caller_id_names_are_what_phone_companies_take() {
+        assert_eq!(caller_id_name(None), Ok(None));
+        assert_eq!(caller_id_name(Some("   ")), Ok(None));
+        assert_eq!(
+            caller_id_name(Some("  Granite   Depot ")),
+            Ok(Some("Granite Depot".into()))
+        );
+        assert_eq!(
+            caller_id_name(Some("Bob's Tops & Co")),
+            Ok(Some("Bob's Tops & Co".into()))
+        );
+        assert!(caller_id_name(Some("Granite Depot Indy")).is_err());
+        assert!(caller_id_name(Some("Granite!")).is_err());
+        assert!(caller_id_name(Some("Granité")).is_err());
+    }
+
+    #[test]
     fn keys_and_plain_words_are_read() {
         assert_eq!(heard(Some("1"), None), Heard::Yes);
         assert_eq!(heard(Some("2"), None), Heard::No);
+        assert_eq!(heard(Some("3"), None), Heard::Repeat);
         assert_eq!(heard(Some("7"), Some("yes")), Heard::Unclear);
         for yes in [
             "Yes.",

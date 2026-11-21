@@ -803,6 +803,82 @@ impl Telnyx {
         }
         Ok(numbers)
     }
+
+    /// Telnyx's id of a number on our account (`GET /phone_numbers?filter[phone_number]=`,
+    /// matched exactly); `None` when the account does not have it.
+    async fn number_id(&self, e164: &str) -> Result<Option<String>, TelnyxError> {
+        let digits: String = e164.chars().filter(char::is_ascii_digit).collect();
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("filter[phone_number]", &digits)
+            .append_pair("page[size]", "20")
+            .finish();
+        let answer = self
+            .json(Method::GET, &format!("/phone_numbers?{query}"), None)
+            .await?;
+        Ok(answer["data"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|row| {
+                row["phone_number"].as_str().is_some_and(|number| {
+                    number
+                        .chars()
+                        .filter(char::is_ascii_digit)
+                        .eq(digits.chars())
+                })
+            })
+            .and_then(|row| row["id"].as_str().map(str::to_string)))
+    }
+
+    /// The caller ID name listed for a number, which the people it calls see
+    /// (`GET /phone_numbers/{id}/voice`, `cnam_listing`): `None` when none is
+    /// listed. [`TelnyxError::Unexpected`] when the account has no such number.
+    pub async fn caller_id_name(&self, e164: &str) -> Result<Option<String>, TelnyxError> {
+        let id = self
+            .number_id(e164)
+            .await?
+            .ok_or(TelnyxError::Unexpected("number not on the account"))?;
+        let answer = self
+            .json(
+                Method::GET,
+                &format!("/phone_numbers/{}/voice", segment(&id)),
+                None,
+            )
+            .await?;
+        let listing = &answer["data"]["cnam_listing"];
+        Ok(listing["cnam_listing_enabled"]
+            .as_bool()
+            .unwrap_or(false)
+            .then(|| listing["cnam_listing_details"].as_str())
+            .flatten()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string))
+    }
+
+    /// Lists `name` as the number's caller ID name, or stops listing one when
+    /// `None` (`PATCH /phone_numbers/{id}/voice`, `cnam_listing`).
+    pub async fn set_caller_id_name(
+        &self,
+        e164: &str,
+        name: Option<&str>,
+    ) -> Result<(), TelnyxError> {
+        let id = self
+            .number_id(e164)
+            .await?
+            .ok_or(TelnyxError::Unexpected("number not on the account"))?;
+        let listing = name.map_or_else(
+            || json!({ "cnam_listing_enabled": false }),
+            |name| json!({ "cnam_listing_enabled": true, "cnam_listing_details": name }),
+        );
+        self.send(
+            Method::PATCH,
+            &format!("/phone_numbers/{}/voice", segment(&id)),
+            Some(&json!({ "cnam_listing": listing })),
+        )
+        .await
+        .map(drop)
+    }
 }
 
 /// An id as one URL path segment.

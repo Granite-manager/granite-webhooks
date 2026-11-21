@@ -78,6 +78,10 @@ pub fn router() -> OpenApiRouter<AppState> {
             notifications::delete_list
         ))
         .routes(routes!(notifications::set_scheduling))
+        .routes(routes!(
+            notifications::calls::caller_id,
+            notifications::calls::set_caller_id
+        ))
         .routes(routes!(notifications::set_auto_confirm_replies))
         .routes(routes!(notifications::create_template))
         .routes(routes!(notifications::order_templates))
