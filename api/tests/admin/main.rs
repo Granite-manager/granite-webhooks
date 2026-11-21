@@ -26,4 +26,5 @@ mod reports;
 mod signup;
 mod superuser;
 mod superuser_companies;
+mod support_chat;
 mod survey_results;

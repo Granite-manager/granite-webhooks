@@ -243,6 +243,7 @@ pub const TABLES: &[Table] = &[
     export("stone_types", Company),
     export("stones", Company),
     export("suppliers", Company),
+    export("support_conversations", Company),
     export("supports", Company),
     export("telegram_lead_messages", Company),
     export("telnyx_company_config", Company),
@@ -355,7 +356,10 @@ pub const TABLES: &[Table] = &[
         Parent("instruction_id", "instructions", "id"),
     ),
     skip("login_attempts", "sign-in attempts"),
-    skip("login_challenges", "sign-ins waiting for a code or a new password"),
+    skip(
+        "login_challenges",
+        "sign-ins waiting for a code or a new password",
+    ),
     export("notification_email_hides", Parent("user_id", "users", "id")),
     export("notifications", Parent("user_id", "users", "id")),
     skip("password_reset_tokens", "password reset links"),
@@ -452,6 +456,10 @@ pub const TABLES: &[Table] = &[
         Parent("supplier_file_id", "supplier_files", "id"),
     ),
     export("supplier_files", Parent("supplier_id", "suppliers", "id")),
+    export(
+        "support_messages",
+        Parent("conversation_id", "support_conversations", "id"),
+    ),
     // AI line calls to or from the company's numbers.
     export(
         "telnyx_calls",

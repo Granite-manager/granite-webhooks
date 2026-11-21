@@ -23,6 +23,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .merge(me::router())
         .merge(badges::router())
+        .merge(support_chat::router())
         .merge(customers::router())
         .merge(customer_todos::router())
         .merge(customer_sources::router())

@@ -27,5 +27,6 @@ pub mod signup;
 pub mod superuser;
 pub mod superuser_companies;
 pub mod superuser_ringcentral;
+pub mod support_chat;
 pub mod survey_results;
 pub mod teach_progress;

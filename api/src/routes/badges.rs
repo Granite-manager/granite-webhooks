@@ -1,7 +1,8 @@
 //! The sidebar badges and desktop alerts in one request.
 //!
 //! - `GET /v1/me/badges` → the parts asked for: the inbox badge, the texts
-//!   badge, the texts to alert about, the sales orders to confirm
+//!   badge, the texts to alert about, the sales orders to confirm, unread
+//!   support answers
 //!
 //! Every open tab polls these each minute. One request instead of one per
 //! badge keeps the Lambdas and database connections of the poll to one. Each
@@ -38,6 +39,9 @@ pub enum BadgePart {
     /// The sales orders to confirm, the count of `GET /v1/sales-orders`
     /// (pending).
     SalesOrders,
+    /// The caller's support requests with an answer they have not read, as
+    /// `unread` of `GET /v1/support/thread`.
+    SupportUnread,
 }
 
 /// Query of `GET /v1/me/badges`.
@@ -99,6 +103,11 @@ pub struct Badges {
     /// the Sales orders tab.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sales_orders: Option<BadgeCount>,
+    /// `support_unread`: the caller's support requests with an answer of
+    /// Granite Manager's support team they have not read (the Chat button's
+    /// badge).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support_unread: Option<BadgeCount>,
 }
 
 /// Get my badges
@@ -109,7 +118,9 @@ pub struct Badges {
 /// `sms_unread` as `GET /v1/sms/mine/unread-count`, `sms_alerts` as
 /// `GET /v1/sms/mine/desktop-alerts` (opening the `inbox` provider's page),
 /// `sales_orders` the count of pending `GET /v1/sales-orders` (absent unless
-/// the caller's positions open the Sales orders tab). Parts not asked for are
+/// the caller's positions open the Sales orders tab), `support_unread` the
+/// caller's support requests with unread answers (as `unread` of
+/// `GET /v1/support/thread`). Parts not asked for are
 /// absent. Reads only the CRM's database; the notification bell is
 /// `GET /v1/notifications`.
 #[crate::openapi::path(
@@ -134,7 +145,7 @@ pub async fn get_badges(
 ) -> ApiResult<Json<Badges>> {
     if query.include.is_empty() {
         return Err(ApiError::BadRequest(
-            "include names at least one part: emails_unread, sms_unread, sms_alerts or sales_orders"
+            "include names at least one part: emails_unread, sms_unread, sms_alerts, sales_orders or support_unread"
                 .into(),
         ));
     }
@@ -158,8 +169,13 @@ pub async fn get_badges(
         badges.sms_alerts = Some(SmsAlerts { alerts });
     }
     if wants(BadgePart::SalesOrders) && access.allows("/v1/sales-orders") {
-        let count = crate::routes::sales_orders::pending_count(&state.pool, user.company_id).await?;
+        let count =
+            crate::routes::sales_orders::pending_count(&state.pool, user.company_id).await?;
         badges.sales_orders = Some(BadgeCount { count });
+    }
+    if wants(BadgePart::SupportUnread) {
+        let count = crate::routes::support_chat::client_unread(&state.pool, user.id).await?;
+        badges.support_unread = Some(BadgeCount { count });
     }
     Ok(Json(badges))
 }
