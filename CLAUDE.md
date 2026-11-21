@@ -2,6 +2,7 @@
 
 - After every request, whatever it is, push the work, open a PR into `main` and merge it right away; always, never ask first, never wait for CI. Migrations and deploys stay manual. Full rule: @.cursor/rules/always-pr-and-merge-main.mdc
 
+- AWS is always the owner's personal account (profile `personal`, account 741448943665), never the default profile (the work account), for every command, script and deploy. `.claude/settings.json` sets `AWS_PROFILE=personal`; `make deploy` checks the account before uploading.
 - Never run tests on GitHub: CI test workflows start only by hand (workflow_dispatch), never on pull requests or pushes; run tests locally (owner, 2026-11-08).
 - Answer the owner short: reply to exactly what was asked in a few lines (a yes/no question gets yes/no plus one line). Reports: one line per item. No long explanations unless asked.
 - No web pages in the phone app, ever: no links to the CRM or website, no in-app browser, no web view, no "open on the web" handoff. Every feature the website has is built as native app screens. Only outside apps stay outside (maps, phone dialer, mail, app store, the privacy policy).
