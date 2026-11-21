@@ -241,7 +241,7 @@ async fn a_quote_by_a_non_rep_goes_to_the_customers_rep(pool: MySqlPool) {
     let salesperson_of = |id: i64| {
         let pool = pool.clone();
         async move {
-            sqlx::query_as::<_, (String, i32)>(
+            sqlx::query_as::<_, (Option<String>, i32)>(
                 "SELECT sales_rep, salesperson_id FROM quotes WHERE id = ?",
             )
             .bind(id)
@@ -279,7 +279,7 @@ async fn a_quote_by_a_non_rep_goes_to_the_customers_rep(pool: MySqlPool) {
     let id = res.json::<Value>()["id"].as_i64().unwrap();
     assert_eq!(
         salesperson_of(id).await,
-        ("Mark Manager".to_string(), 101)
+        (Some("Mark Manager".to_string()), 101)
     );
 }
 

@@ -233,11 +233,7 @@ async fn sales_reps(pool: &MySqlPool, company_id: i32) -> ApiResult<Vec<Salesper
 }
 
 /// A non-deleted user of the company, whatever their position.
-async fn active_user(
-    pool: &MySqlPool,
-    company_id: i32,
-    id: i32,
-) -> ApiResult<Option<Salesperson>> {
+async fn active_user(pool: &MySqlPool, company_id: i32, id: i32) -> ApiResult<Option<Salesperson>> {
     Ok(sqlx::query_as(
         "SELECT id, name, phone_number FROM users
           WHERE id = ? AND company_id = ? AND is_deleted = 0",
