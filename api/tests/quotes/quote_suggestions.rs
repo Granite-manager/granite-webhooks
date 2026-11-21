@@ -141,3 +141,29 @@ async fn names_of_one_customer_are_not_offered_and_the_x_hides_for_the_company(p
     );
 }
 
+
+#[test_db::test(seed)]
+async fn quotes_with_a_deal_are_read(pool: MySqlPool) {
+    // `quotes.deal_id` is BIGINT UNSIGNED: a quote tied to a deal once broke
+    // the whole list (500).
+    quote(&pool, 9811, 1000, &["Kitchen"], &[]).await;
+    quote(&pool, 9812, 1004, &["Kitchen"], &[]).await;
+    let deal: u64 = sqlx::query_scalar(
+        "SELECT d.id FROM deals d JOIN customers c ON c.id = d.customer_id
+          WHERE c.company_id = 100 ORDER BY d.id LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE quotes SET deal_id = ? WHERE id IN (9811, 9812)")
+        .bind(deal)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let res = server(pool)
+        .get("/v1/quotes/suggestions")
+        .with_session(sessions::REP)
+        .await;
+    res.assert_status_ok();
+    assert_eq!(names(&res.json()), ["Kitchen"]);
+}

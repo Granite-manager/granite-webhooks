@@ -113,7 +113,8 @@ pub struct QuoteSuggestions {
 struct DrawingRow {
     id: i32,
     customer_id: Option<i32>,
-    deal_id: Option<i64>,
+    // `quotes.deal_id` is BIGINT UNSIGNED.
+    deal_id: Option<u64>,
     areas: Option<String>,
     items: Option<String>,
     used_at: Option<String>,

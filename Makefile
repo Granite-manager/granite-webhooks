@@ -1,6 +1,9 @@
 # Variables
 REGION := us-east-2
 AWS_DEPLOY_PROFILE ?= personal
+# The owner's personal AWS account, the only one this repo deploys to: a deploy
+# whose credentials answer as any other account stops before uploading.
+GRANITE_AWS_ACCOUNT := 741448943665
 IAM_ROLE := arn:aws:iam::741448943665:role/cargo-lambda-role-2ed5069c-8882-460d-bdc8-192d9b724756
 
 # Tool commands
@@ -67,6 +70,8 @@ deploy:
 	$(MAKE) build APP=$(APP) ENV=$(ENV)
 	@eval "$$(aws configure export-credentials --profile $(AWS_DEPLOY_PROFILE) --format env)" && \
 	unset AWS_PROFILE && \
+	account=$$(aws sts get-caller-identity --query Account --output text) && \
+	{ test "$$account" = "$(GRANITE_AWS_ACCOUNT)" || { echo "AWS is account $$account, not Granite Manager's $(GRANITE_AWS_ACCOUNT): fix the '$(AWS_DEPLOY_PROFILE)' profile" >&2; exit 1; }; } && \
 	dir=$$(mktemp -d) && trap 'rm -rf "$$dir"' EXIT && \
 	echo "Deploying $(FUNCTION)" && \
 	pids= && \
@@ -115,6 +120,8 @@ deploy-time-triggered: build-time-triggered
 	@scripts/check-migrations.sh prod
 	@eval "$$(aws configure export-credentials --profile $(AWS_DEPLOY_PROFILE) --format env)" && \
 	unset AWS_PROFILE && \
+	account=$$(aws sts get-caller-identity --query Account --output text) && \
+	{ test "$$account" = "$(GRANITE_AWS_ACCOUNT)" || { echo "AWS is account $$account, not Granite Manager's $(GRANITE_AWS_ACCOUNT): fix the '$(AWS_DEPLOY_PROFILE)' profile" >&2; exit 1; }; } && \
 	$(CARGO_LAMBDA) lambda deploy \
 		--iam-role $(IAM_ROLE) \
 		--region $(REGION) \
